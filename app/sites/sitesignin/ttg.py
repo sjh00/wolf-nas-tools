@@ -79,3 +79,6 @@ class TTG(_ISiteSigninHandler):
         if sign_status:
             self.info(f"签到成功")
             return True, f'【{site}】签到成功'
+        else:
+            self.error(f"签到失败，未知原因")
+            return False, f'【{site}】签到失败，未知原因'
