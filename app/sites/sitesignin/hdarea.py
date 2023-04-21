@@ -1,8 +1,3 @@
-import random
-import re
-
-from lxml import etree
-
 from app.sites.sitesignin._base import _ISiteSigninHandler
 from app.utils import StringUtils, RequestUtils
 from config import Config
@@ -10,17 +5,11 @@ from config import Config
 
 class HDArea(_ISiteSigninHandler):
     """
-    好大签到 随机
+    好大签到
     """
+    
     # 匹配的站点Url，每一个实现类都需要设置为自己的站点Url
     site_url = "hdarea.co"
-
-    # 已签到
-    _sign_regex = ['<a href="showup.php">已签到</a>',
-                   '<a href="showup.php">Show Up</a>',
-                   '<a href="showup.php">Показать</a>',
-                   '<a href="showup.php">已簽到</a>',
-                   '<a href="showup.php">已簽到</a>']
 
     # 签到成功
     _success_text = "此次签到您获得"
