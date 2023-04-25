@@ -46,7 +46,7 @@ class CustomReleaseGroups(_IPluginModule):
                             'content':
                                 {
                                     'id': 'release_groups',
-                                    'placeholder': '多个制作组/字幕组请用;分隔，支持正则表达式，特殊字符注意转义',
+                                    'placeholder': '多个制作组/字幕组请用;或换行分隔，支持正则表达式，特殊字符注意转义',
                                     'rows': 5
                                 }
                         },
