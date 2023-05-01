@@ -479,9 +479,10 @@ class Plex(_IMediaClient):
         sessions = self._plex.sessions()
         ret_sessions = []
         for session in sessions:
+            bitrate = sum([m.bitrate or 0 for m in session.media])
             ret_sessions.append({
                 "type": session.TAG,
-                "bitrate": sum([m.bitrate for m in session.media]),
+                "bitrate": bitrate,
                 "address": session.player.address
             })
         return ret_sessions
@@ -557,7 +558,7 @@ class Plex(_IMediaClient):
                 "type": item_type,
                 "image": image,
                 "link": link,
-                "percent": item.viewOffset / item.duration * 100
+                "percent": item.viewOffset / item.duration * 100 if item.viewOffset and item.duration else 0
             })
         return ret_resume
 
