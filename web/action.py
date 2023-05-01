@@ -23,7 +23,7 @@ from app.filetransfer import FileTransfer
 from app.filter import Filter
 from app.helper import DbHelper, ProgressHelper, ThreadHelper, \
     MetaHelper, DisplayHelper, WordsHelper, IndexerHelper, IyuuHelper
-from app.helper import RssHelper
+from app.helper import RssHelper, PluginHelper
 from app.indexer import Indexer
 from app.media import Category, Media, Bangumi, DouBan, Scraper
 from app.media.meta import MetaInfo, MetaBase
@@ -42,7 +42,7 @@ from app.utils import StringUtils, EpisodeFormat, RequestUtils, PathUtils, \
     SystemUtils, ExceptionUtils, Torrent
 from app.utils.types import RmtMode, OsType, SearchType, SyncType, MediaType, MovieTypes, TvTypes, \
     EventType, SystemConfigKey, RssType
-from config import RMT_MEDIAEXT, RMT_SUBEXT, Config
+from config import RMT_MEDIAEXT, RMT_SUBEXT, RMT_AUDIO_TRACK_EXT, Config
 from web.backend.search_torrents import search_medias_for_web, search_media_by_message
 from web.backend.user import User
 from web.backend.web_utils import WebUtils
@@ -1047,8 +1047,8 @@ class WebAction:
         """
         检查新版本
         """
-        version, url, flag = WebUtils.get_latest_version()
-        if flag:
+        version, url = WebUtils.get_latest_version()
+        if version:
             return {"code": 0, "version": version, "url": url}
         return {"code": -1, "version": "", "url": ""}
 
@@ -4040,6 +4040,8 @@ class WebAction:
                         flag = True
                     elif "SUBFILE" in ft and f".{str(ext).lower()}" in RMT_SUBEXT:
                         flag = True
+                    elif "AUDIOTRACKFILE" in ft and f".{str(ext).lower()}" in RMT_AUDIO_TRACK_EXT:
+                        flag = True
                     if flag:
                         r.append({
                             "path": ff.replace("\\", "/"),
@@ -4981,6 +4983,7 @@ class WebAction:
         user_plugins = SystemConfig().get(SystemConfigKey.UserInstalledPlugins) or []
         if module_id not in user_plugins:
             user_plugins.append(module_id)
+            PluginHelper.install(module_id)
         # 保存配置
         SystemConfig().set(SystemConfigKey.UserInstalledPlugins, user_plugins)
         # 重新加载插件
@@ -5011,7 +5014,9 @@ class WebAction:
         """
         获取插件列表
         """
-        return {"code": 0, "result": PluginManager().get_plugin_apps(current_user.level)}
+        plugins = PluginManager().get_plugin_apps(current_user.level)
+        statistic = PluginHelper.statistic()
+        return {"code": 0, "result": plugins, "statistic": statistic}
 
     @staticmethod
     def get_plugin_page(data):
@@ -5160,4 +5165,10 @@ class WebAction:
         """
         获取命令列表
         """
-        return [{"id": cid, "name": cmd.get("desc")} for cid, cmd in self._commands.items()]
+        return [{
+            "id": cid,
+            "name": cmd.get("desc")
+        } for cid, cmd in self._commands.items()] + [{
+            "id": item.get("cmd"),
+            "name": item.get("desc")
+        } for item in PluginManager().get_plugin_commands()]
