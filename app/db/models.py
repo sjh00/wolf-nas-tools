@@ -22,7 +22,6 @@ class CONFIGFILTERRULES(Base):
     GROUP_ID = Column(Text, index=True)
     ROLE_NAME = Column(Text)
     PRIORITY = Column(Text)
-    ORIGINAL_LANGUAGE = Column(Text)
     INCLUDE = Column(Text)
     EXCLUDE = Column(Text)
     SIZE_LIMIT = Column(Text)
@@ -373,6 +372,8 @@ class SITEBRUSHTASK(Base):
     SEED_SIZE = Column(Text)
     INTEVAL = Column(Text)
     LABEL = Column(Text)
+    UP_LIMIT = Column(Text)
+    DL_LIMIT = Column(Text)
     SAVEPATH = Column(Text)
     DOWNLOADER = Column(Text)
     TRANSFER = Column(Text)
@@ -510,7 +511,7 @@ class TRANSFERHISTORY(Base):
     DEST = Column(Text)
     DEST_PATH = Column(Text)
     DEST_FILENAME = Column(Text)
-    DATE = Column(Text)
+    DATE = Column(Text, index=True)
 
     def as_dict(self):
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
