@@ -116,6 +116,7 @@ class _IIndexClient(metaclass=ABCMeta):
                                        upload_volume_factor=uploadvolumefactor,
                                        download_volume_factor=downloadvolumefactor,
                                        labels=labels)
+
             # 先过滤掉可以明确的类型
             if meta_info.type == MediaType.TV and filter_args.get("type") == MediaType.MOVIE:
                 log.info(
@@ -123,13 +124,12 @@ class _IIndexClient(metaclass=ABCMeta):
                     f"不匹配类型：{filter_args.get('type').value}")
                 index_rule_fail += 1
                 continue
-            # 初步检查订阅过滤规则匹配
+            # 检查订阅过滤规则匹配
             match_flag, res_order, match_msg = self.filter.check_torrent_filter(
                 meta_info=meta_info,
                 filter_args=filter_args,
                 uploadvolumefactor=uploadvolumefactor,
-                downloadvolumefactor=downloadvolumefactor,
-                donthave_original_language=True)
+                downloadvolumefactor=downloadvolumefactor)
             if not match_flag:
                 log.info(f"【{self.client_name}】{match_msg}")
                 index_rule_fail += 1
@@ -149,10 +149,9 @@ class _IIndexClient(metaclass=ABCMeta):
                     # 查询缓存
                     cache_info = self.media.get_cache_info(meta_info)
                     if match_media \
-                            and str(cache_info.get("id")) == str(match_media.tmdb_id) and cache_info.get("original_language"):
+                            and str(cache_info.get("id")) == str(match_media.tmdb_id):
                         # 缓存匹配，合并媒体数据
                         media_info = self.media.merge_media_info(meta_info, match_media)
-                        media_info.original_language = cache_info.get("original_language")
                     else:
                         # 重新识别
                         media_info = self.media.get_media_info(title=torrent_name, subtitle=description, chinese=False)
@@ -184,16 +183,6 @@ class _IIndexClient(metaclass=ABCMeta):
                             f"{media_info.tmdb_id}，不是 {filter_args.get('type').value}")
                         index_rule_fail += 1
                         continue
-                # 再次检查订阅过滤规则匹配
-                match_flag, res_order, match_msg = self.filter.check_torrent_filter(
-                    meta_info=media_info,
-                    filter_args=filter_args,
-                    uploadvolumefactor=uploadvolumefactor,
-                    downloadvolumefactor=downloadvolumefactor)
-                if not match_flag:
-                    log.info(f"【{self.client_name}】{match_msg}")
-                    index_rule_fail += 1
-                    continue
                 # 洗版
                 if match_media.over_edition:
                     # 季集不完整的资源不要

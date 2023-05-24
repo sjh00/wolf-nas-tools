@@ -390,28 +390,34 @@ def sites():
 @App.route('/sitelist', methods=['POST', 'GET'])
 @login_required
 def sitelist():
-    IndexerSites = Indexer().get_indexers(check=False)
+    IndexerSites = Indexer().get_indexer_dict(check=False)
     return render_template("site/sitelist.html",
                            Sites=IndexerSites,
                            Count=len(IndexerSites))
+
+
+# 唤起App中转页面
+@App.route('/open', methods=['POST', 'GET'])
+def open_app():
+    return render_template("openapp.html")
 
 
 # 站点资源页面
 @App.route('/resources', methods=['POST', 'GET'])
 @login_required
 def resources():
-    site_id = request.args.get("site")
+    site_domain = request.args.get("site")
     site_name = request.args.get("title")
     page = request.args.get("page") or 0
     keyword = request.args.get("keyword")
     Results = WebAction().list_site_resources({
-        "id": site_id,
+        "site": site_domain,
         "page": page,
         "keyword": keyword
     }).get("data") or []
     return render_template("site/resources.html",
                            Results=Results,
-                           SiteId=site_id,
+                           SiteDomain=site_domain,
                            Title=site_name,
                            KeyWord=keyword,
                            TotalCount=len(Results),
@@ -1199,9 +1205,9 @@ def plex_webhook():
     request_json = json.loads(request.form.get('payload', {}))
     log.debug("收到Plex Webhook报文：%s" % str(request_json))
     # 事件类型
-    event_match = request_json.get("event") in ["media.play", "media.stop"]
+    event_match = request_json.get("event") in ["media.play", "media.stop", "library.new"]
     # 媒体类型
-    type_match = request_json.get("Metadata", {}).get("type") in ["movie", "episode"]
+    type_match = request_json.get("Metadata", {}).get("type") in ["movie", "episode", "show"]
     # 是否直播
     is_live = request_json.get("Metadata", {}).get("live") == "1"
     # 如果事件类型匹配,媒体类型匹配,不是直播
@@ -1673,6 +1679,7 @@ def stream_logging():
     """
     实时日志EventSources响应
     """
+
     def __logging(_source=""):
         """
         实时日志
@@ -1706,6 +1713,7 @@ def stream_progress():
     """
     实时日志EventSources响应
     """
+
     def __progress(_type):
         """
         实时日志

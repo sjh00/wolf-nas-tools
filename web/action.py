@@ -24,7 +24,7 @@ from app.downloader import Downloader
 from app.filetransfer import FileTransfer
 from app.filter import Filter
 from app.helper import DbHelper, ProgressHelper, ThreadHelper, \
-    MetaHelper, DisplayHelper, WordsHelper, IndexerHelper
+    MetaHelper, DisplayHelper, WordsHelper
 from app.helper import RssHelper, PluginHelper
 from app.indexer import Indexer
 from app.media import Category, Media, Bangumi, DouBan, Scraper
@@ -311,8 +311,6 @@ class WebAction:
 
     @staticmethod
     def start_service():
-        # 加载索引器配置
-        IndexerHelper()
         # 加载站点配置
         SiteConf()
         # 启动虚拟显示
@@ -1931,6 +1929,8 @@ class WebAction:
         brushtask_state = data.get("brushtask_state")
         brushtask_rssurl = data.get("brushtask_rssurl")
         brushtask_label = data.get("brushtask_label")
+        brushtask_up_limit = data.get("brushtask_up_limit")
+        brushtask_dl_limit = data.get("brushtask_dl_limit")
         brushtask_savepath = data.get("brushtask_savepath")
         brushtask_transfer = 'Y' if data.get("brushtask_transfer") else 'N'
         brushtask_sendmessage = 'Y' if data.get(
@@ -1983,6 +1983,8 @@ class WebAction:
             "downloader": brushtask_downloader,
             "seed_size": brushtask_totalsize,
             "label": brushtask_label,
+            "up_limit": brushtask_up_limit,
+            "dl_limit": brushtask_dl_limit,
             "savepath": brushtask_savepath,
             "transfer": brushtask_transfer,
             "state": brushtask_state,
@@ -2100,22 +2102,12 @@ class WebAction:
         meta_info.size = float(size) * 1024 ** 3 if size else 0
         match_flag, res_order, match_msg = \
             Filter().check_torrent_filter(meta_info=meta_info,
-                                          filter_args={"rule": rulegroup},
-                                          donthave_original_language=True)
-        if match_flag:
-            # 重新查询TMDB以适配原始语言过滤
-            media_info = Media().get_media_info(title=title)
-            if media_info and media_info.original_language:
-                meta_info.original_language = media_info.original_language
-                match_flag, res_order, match_msg = \
-                Filter().check_torrent_filter(meta_info=meta_info,
-                                            filter_args={"rule": rulegroup})
+                                          filter_args={"rule": rulegroup})
         return {
             "code": 0,
             "flag": match_flag,
             "text": "匹配" if match_flag else "未匹配",
-            "order": 100 - res_order if res_order else 0,
-            "original_language": f"原始语言：{meta_info.original_language}" if meta_info.original_language else False
+            "order": 100 - res_order if res_order else 0
         }
 
     @staticmethod
@@ -2255,7 +2247,6 @@ class WebAction:
             "group": data.get("group_id"),
             "name": data.get("rule_name"),
             "pri": data.get("rule_pri"),
-            "original_language": data.get("rule_original_language"),
             "include": data.get("rule_include"),
             "exclude": data.get("rule_exclude"),
             "size": data.get("rule_sizelimit"),
@@ -2386,7 +2377,7 @@ class WebAction:
             # 参数
             params = data.get("params") or {}
             # 排序
-            sort = params.get("sort") or "T"
+            sort = params.get("sort") or "R"
             # 选中的分类
             tags = params.get("tags") or ""
             # 过滤参数
@@ -2787,7 +2778,7 @@ class WebAction:
 
     @staticmethod
     def list_site_resources(data):
-        resources = Indexer().list_resources(index_id=data.get("id"),
+        resources = Indexer().list_resources(url=data.get("site"),
                                              page=data.get("page"),
                                              keyword=data.get("keyword"))
         if not resources:
@@ -3303,7 +3294,6 @@ class WebAction:
             rules.append({
                 "name": rule.ROLE_NAME,
                 "pri": rule.PRIORITY,
-                "original_language": rule.ORIGINAL_LANGUAGE,
                 "include": rule.INCLUDE,
                 "exclude": rule.EXCLUDE,
                 "size": rule.SIZE_LIMIT,
@@ -3340,7 +3330,6 @@ class WebAction:
                             "group": group_id,
                             "name": rule.get("name"),
                             "pri": rule.get("pri"),
-                            "original_language": rule.get("original_language"),
                             "include": rule.get("include"),
                             "exclude": rule.get("exclude"),
                             "size": rule.get("size"),
@@ -3971,9 +3960,8 @@ class WebAction:
                         rule_info = {}
                         rule = rule.split(",")
                         rule_info['name'] = rule[2][1:-1]
-                        rule_info['original_language'] = rule[4][1:-1]
-                        rule_info['include'] = rule[5][1:-1]
-                        rule_info['exclude'] = rule[6][1:-1]
+                        rule_info['include'] = rule[4][1:-1]
+                        rule_info['exclude'] = rule[5][1:-1]
                         rulegroup['rules'].append(rule_info)
                     rulegroup["sql"].append(sql_list[i + 1])
                 Init_RuleGroups.append(rulegroup)
@@ -4263,7 +4251,7 @@ class WebAction:
         """
         获取索引器
         """
-        return {"code": 0, "indexers": Indexer().get_user_indexer_dict()}
+        return {"code": 0, "indexers": Indexer().get_indexer_dict()}
 
     @staticmethod
     def __get_download_dirs(data):
@@ -4771,20 +4759,9 @@ class WebAction:
             site = data.get("site")
             params = data.get("params")
         else:
-            UserSiteAuthParams = SystemConfig().get(SystemConfigKey.UserSiteAuthParams)
-            if UserSiteAuthParams:
-                site = UserSiteAuthParams.get("site")
-                params = UserSiteAuthParams.get("params")
-            else:
-                return {"code": 1, "msg": "参数错误"}
+            site, params = None, {}
         state, msg = User().check_user(site, params)
         if state:
-            # 保存认证数据
-            SystemConfig().set(key=SystemConfigKey.UserSiteAuthParams,
-                               value={
-                                   "site": site,
-                                   "params": params
-                               })
             return {"code": 0, "msg": "认证成功"}
         return {"code": 1, "msg": f"{msg or '认证失败，请检查合作站点账号是否正常！'}"}
 

@@ -8,11 +8,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 import log
-from app.conf import ModuleConf
 from app.downloader import Downloader
 from app.filter import Filter
 from app.helper import DbHelper, RssHelper
-from app.media import Media
 from app.media.meta import MetaInfo
 from app.message import Message
 from app.sites import Sites, SiteConf
@@ -24,7 +22,6 @@ from config import BRUSH_REMOVE_TORRENTS_INTERVAL, Config
 
 @singleton
 class BrushTask(object):
-    media = None
     message = None
     sites = None
     siteconf = None
@@ -37,13 +34,11 @@ class BrushTask(object):
     _torrents_cache = []
     _qb_client = "qbittorrent"
     _tr_client = "transmission"
-    _language_options = [] # tmdb电影语言列表
 
     def __init__(self):
         self.init_config()
 
     def init_config(self):
-        self.media = Media()
         self.dbhelper = DbHelper()
         self.rsshelper = RssHelper()
         self.message = Message()
@@ -51,9 +46,6 @@ class BrushTask(object):
         self.siteconf = SiteConf()
         self.filter = Filter()
         self.downloader = Downloader()
-        self._language_options = [m.get('value') for m in ModuleConf.DISCOVER_FILTER_CONF.get(
-            "tmdb_movie").get("with_original_language").get("options")
-            if m.get('value') and m.get('value') != 'other']
         # 移除现有任务
         self.stop_service()
         # 读取刷流任务列表
@@ -121,6 +113,8 @@ class BrushTask(object):
                 "site_id": task.SITE,
                 "interval": task.INTEVAL,
                 "label": task.LABEL,
+                "up_limit": task.UP_LIMIT,
+                "dl_limit": task.DL_LIMIT,
                 "savepath": task.SAVEPATH,
                 "state": task.STATE,
                 "downloader": task.DOWNLOADER,
@@ -545,6 +539,8 @@ class BrushTask(object):
         # 判断大小
         seed_size = taskinfo.get("seed_size") or None
         task_name = taskinfo.get("name")
+        up_limit_speed = taskinfo.get("up_limit") or None
+        dl_limit_speed = taskinfo.get("dl_limit") or None
         downloader_id = taskinfo.get("downloader")
         downloader_name = taskinfo.get("downloader_name")
         total_size = self.dbhelper.get_brushtask_totalsize(taskinfo.get("id"))
@@ -559,6 +555,20 @@ class BrushTask(object):
                 log.warn("【Brush】刷流任务 %s 当前保种体积 %sGB，不再新增下载"
                          % (task_name, round(int(total_size) / 1024 / 1024 / 1024, 1)))
                 return False
+
+        # 检查下载速度上限、上传速度上限
+        if (up_limit_speed and str(up_limit_speed).isdigit()) or (dl_limit_speed and str(dl_limit_speed).isdigit()):
+            downloader = self.downloader.get_downloader(downloader_id=downloader_id)
+            client_speed = downloader.get_client_speed()
+            if client_speed and up_limit_speed and str(up_limit_speed).isdigit():
+                if float(client_speed.get('up_speed')) / 1024 >= float(up_limit_speed):
+                    log.warn("【Brush】刷流任务 %s 所选下载器 %s 目前上传速度 %s Kb/s，不再新增下载"
+                             % (task_name, downloader_name, round(float(client_speed.get('up_speed')) / 1024, 4)))
+            if client_speed and dl_limit_speed and str(dl_limit_speed).isdigit():
+                if float(client_speed.get('dl_speed')) / 1024 >= float(dl_limit_speed):
+                    log.warn("【Brush】刷流任务 %s 所选下载器 %s 目前下载速度 %s Kb/s，不再新增下载"
+                             % (task_name, downloader_name, round(float(client_speed.get('dl_speed')) / 1024, 4)))
+
         # 检查正在下载的任务数
         if dlcount:
             downloading_count = self.__get_downloading_count(downloader_id)
@@ -707,30 +717,6 @@ class BrushTask(object):
                         if rule_sizes[0] == "bw" and not float(min_size) * 1024 ** 3 < float(torrent_size) < float(
                                 max_size) * 1024 ** 3:
                             return False
-
-            rule_original_language = rss_rule.get("original_language")
-            if rule_original_language:
-                meta_original_language = ''
-                # 识别种子名称，开始搜索TMDB以适配原始语言过滤
-                media_info = MetaInfo(title=title)
-                cache_info = self.media.get_cache_info(media_info)
-                if cache_info.get("id") and cache_info.get("original_language"):
-                    # 使用缓存信息
-                    meta_original_language = cache_info.get("original_language")
-                else:
-                    # 重新查询TMDB
-                    media_info = self.media.get_media_info(title=title)
-                    if media_info and media_info.original_language:
-                        meta_original_language = media_info.original_language
-                if meta_original_language:
-                    meta_original_language = meta_original_language.strip()
-                    if rule_original_language == 'other':
-                        if meta_original_language[:2] in self._language_options:
-                            return False
-                    elif rule_original_language[:2] != meta_original_language[:2]:
-                        return False
-                else:
-                    return False
 
             # 检查包含规则
             if rss_rule.get("include"):

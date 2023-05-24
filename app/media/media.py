@@ -170,7 +170,7 @@ class Media:
                       season_number=None):
         """
         搜索tmdb中的媒体信息，匹配返回一条尽可能正确的信息
-        :param file_media_name: 检索的名称
+        :param file_media_name: 剑索的名称
         :param search_type: 类型：电影、电视剧、动漫
         :param first_media_year: 年份，如要是季集需要是首播年份(first_air_date)
         :param media_year: 当前季集年份
@@ -817,9 +817,6 @@ class Media:
                                                      tmdbid=cache_info.get("id"),
                                                      chinese=chinese,
                                                      append_to_response=append_to_response)
-                if not cache_info.get("original_language"):
-                    self.__insert_media_cache(media_key=media_key,
-                                          file_media_info=file_media_info)
             else:
                 file_media_info = None
         # 赋值TMDB信息并返回
@@ -846,7 +843,6 @@ class Media:
                     "type": file_media_info.get("media_type"),
                     "year": cache_year,
                     "title": cache_title,
-                    "original_language": file_media_info.get("original_language"),
                     "poster_path": file_media_info.get("poster_path"),
                     "backdrop_path": file_media_info.get("backdrop_path")
                 }
@@ -922,8 +918,6 @@ class Media:
                             meta_info.en_name = parent_info.en_name
                         if not meta_info.year:
                             meta_info.year = parent_info.year
-                        if not meta_info.original_language:
-                            meta_info.original_language = parent_info.original_language
                         if parent_info.type and parent_info.type == MediaType.TV \
                                 and meta_info.type != MediaType.TV:
                             meta_info.type = parent_info.type
@@ -988,9 +982,6 @@ class Media:
                                                                  tmdbid=cache_info.get("id"),
                                                                  chinese=chinese,
                                                                  append_to_response=append_to_response)
-                            if not cache_info.get("original_language"):
-                                self.__insert_media_cache(media_key=media_key,
-                                                    file_media_info=file_media_info)
                         else:
                             # 缓存为未识别
                             file_media_info = None
@@ -1043,7 +1034,7 @@ class Media:
         return ret_infos
 
     @staticmethod
-    def __dict_tmdbinfos(infos, mtype=None):
+    def __dict_tmdbinfos(infos, mtype=None, poster_filter=False):
         """
         TMDB电影信息转为字典
         """
@@ -1054,6 +1045,8 @@ class Media:
             tmdbid = info.get("id")
             vote = round(float(info.get("vote_average")), 1) if info.get("vote_average") else 0,
             image = Config().get_tmdbimage_url(info.get("poster_path"))
+            if poster_filter and not image:
+                continue
             overview = info.get("overview")
             if mtype:
                 media_type = mtype.value
@@ -2015,10 +2008,10 @@ class Media:
         try:
             if mtype == MediaType.MOVIE:
                 movies = self.discover.discover_movies(params=params, page=page)
-                return self.__dict_tmdbinfos(movies, mtype)
+                return self.__dict_tmdbinfos(infos=movies, mtype=mtype, poster_filter=True)
             elif mtype == MediaType.TV:
                 tvs = self.discover.discover_tv_shows(params=params, page=page)
-                return self.__dict_tmdbinfos(tvs, mtype)
+                return self.__dict_tmdbinfos(infos=tvs, mtype=mtype, poster_filter=True)
         except Exception as e:
             print(str(e))
         return []
