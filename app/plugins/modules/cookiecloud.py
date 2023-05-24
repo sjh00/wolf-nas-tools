@@ -1,12 +1,12 @@
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Event
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.helper import IndexerHelper
+from app.indexer import Indexer
 from app.plugins.modules._base import _IPluginModule
 from app.sites import Sites
 from app.utils import RequestUtils
@@ -37,8 +37,8 @@ class CookieCloud(_IPluginModule):
 
     # 私有属性
     sites = None
+    indexer = None
     _scheduler = None
-    _index_helper = None
     # 设置开关
     _req = None
     _server = None
@@ -72,7 +72,7 @@ class CookieCloud(_IPluginModule):
                             'content': [
                                 {
                                     'id': 'server',
-                                    'placeholder': 'http://nastool.cn:8088'
+                                    'placeholder': 'https://nastool.org/cookiecloud'
                                 }
                             ]
 
@@ -150,7 +150,7 @@ class CookieCloud(_IPluginModule):
 
     def init_config(self, config=None):
         self.sites = Sites()
-        self._index_helper = IndexerHelper()
+        self.indexer = Indexer()
 
         # 读取配置
         if config:
@@ -186,7 +186,8 @@ class CookieCloud(_IPluginModule):
             if self._onlyonce:
                 self.info(f"同步服务启动，立即运行一次")
                 self._scheduler.add_job(self.__cookie_sync, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())))
+                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                                            seconds=3))
                 # 关闭一次性开关
                 self._onlyonce = False
                 self.update_config({
@@ -291,7 +292,7 @@ class CookieCloud(_IPluginModule):
                     update_count += 1
             else:
                 # 查询是否在索引器范围
-                indexer_info = self._index_helper.get_indexer_info(domain_url)
+                indexer_info = self.indexer.get_indexer(domain_url)
                 if indexer_info:
                     # 支持则新增站点
                     site_pri = self.sites.get_max_site_pri() + 1
