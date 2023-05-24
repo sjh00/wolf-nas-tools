@@ -116,6 +116,7 @@ class _IIndexClient(metaclass=ABCMeta):
                                        upload_volume_factor=uploadvolumefactor,
                                        download_volume_factor=downloadvolumefactor,
                                        labels=labels)
+
             # 先过滤掉可以明确的类型
             if meta_info.type == MediaType.TV and filter_args.get("type") == MediaType.MOVIE:
                 log.info(
