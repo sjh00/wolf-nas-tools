@@ -778,6 +778,8 @@ function add_rss_manual(flag) {
     search_sites = select_GetSelectedVAL("search_sites");
     if (search_sites.length === SearchSitesLength) {
       search_sites = [];
+    } else if (search_sites.length <= 0) {
+      search_sites = ["#dontuse"];
     }
   }
   // 储存订阅设置
@@ -908,7 +910,7 @@ function show_add_rss_media_modal(mtype) {
     check_manual_input_path("rss_save_path", "rss_save_path_manual", rss_setting.save_path);
     if (rss_setting.search_sites.length === 0) {
       select_SelectALL(true, 'search_sites');
-    } else {
+    } else if (rss_setting.search_sites !== ["#dontuse"]) {
       select_SelectPart(rss_setting.search_sites, 'search_sites');
     }
     if (rss_setting.rss_sites.length === 0) {
@@ -960,7 +962,7 @@ function show_default_rss_setting_modal(mtype) {
       }
       if (ret.data.search_sites.length === 0) {
         select_SelectALL(false, 'default_search_sites');
-      } else {
+      } else if (ret.data.search_sites !== ["#dontuse"]) {
         select_SelectPart(ret.data.search_sites, 'default_search_sites')
       }
     } else {
@@ -986,7 +988,7 @@ function save_default_rss_setting() {
   const search_sites = select_GetSelectedVAL("default_search_sites");
   const sites = {
     rss_sites: (rss_sites.length === RssSitesLength) ? [] : rss_sites,
-    search_sites: (search_sites.length === SearchSitesLength) ? [] : search_sites
+    search_sites: (search_sites.length === SearchSitesLength) ? [] : search_sites.length > 0 ? search_sites : ["#dontuse"]
   };
   const common = input_select_GetVal("modal-default-rss-setting", "default_rss_setting_");
   const key = common.mtype === "MOV" ? "DefaultRssSettingMOV" : "DefaultRssSettingTV";
@@ -1069,7 +1071,7 @@ function show_edit_rss_media_modal(rssid, type) {
       }
       if (ret.detail.search_sites.length === 0) {
         select_SelectALL(true, 'search_sites');
-      } else {
+      } else if (ret.detail.search_sites !== ["#dontuse"]) {
         select_SelectPart(ret.detail.search_sites, 'search_sites')
       }
       $("[name='rss_add_btn']").hide();

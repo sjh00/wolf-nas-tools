@@ -93,7 +93,7 @@ class Subscribe:
         :param fuzzy_match: 是否模糊匹配
         :param mediaid: 媒体ID，DB:/BG:/TMDBID
         :param rss_sites: 订阅站点列表，为空则表示全部站点
-        :param search_sites: 搜索站点列表，为空则表示全部站点
+        :param search_sites: 搜索站点列表，为空则表示全部站点，为["#dontuse"]表示不使用搜索
         :param over_edition: 是否选版
         :param filter_restype: 质量过滤
         :param filter_pix: 分辨率过滤
@@ -439,7 +439,8 @@ class Subscribe:
             else:
                 note_info = {}
             rss_sites = [site for site in rss_sites if site in rss_sites_valid]
-            search_sites = [site for site in search_sites if site in search_sites_valid]
+            if search_sites != ["#dontuse"]:
+                search_sites = [site for site in search_sites if site in search_sites_valid]
             ret_dict[str(rss_movie.ID)] = {
                 "id": rss_movie.ID,
                 "name": rss_movie.NAME,
@@ -514,7 +515,8 @@ class Subscribe:
             else:
                 note_info = {}
             rss_sites = [site for site in rss_sites if site in rss_sites_valid]
-            search_sites = [site for site in search_sites if site in search_sites_valid]
+            if search_sites != ["#dontuse"]:
+                search_sites = [site for site in search_sites if site in search_sites_valid]
             ret_dict[str(rss_tv.ID)] = {
                 "id": rss_tv.ID,
                 "name": rss_tv.NAME,
@@ -701,8 +703,8 @@ class Subscribe:
         if rss_movies:
             log.info("【Subscribe】共有 %s 个电影订阅需要搜索" % len(rss_movies))
         for rid, rss_info in rss_movies.items():
-            # 跳过模糊匹配的
-            if rss_info.get("fuzzy_match"):
+            # 跳过模糊匹配的和不进行搜索的
+            if rss_info.get("fuzzy_match") or rss_info.get("search_sites") == ["#dontuse"]:
                 continue
             # 搜索站点范围
             rssid = rss_info.get("id")
@@ -788,8 +790,8 @@ class Subscribe:
             log.info("【Subscribe】共有 %s 个电视剧订阅需要检索" % len(rss_tvs))
         rss_no_exists = {}
         for rid, rss_info in rss_tvs.items():
-            # 跳过模糊匹配的
-            if rss_info.get("fuzzy_match"):
+            # 跳过模糊匹配的和不进行搜索的
+            if rss_info.get("fuzzy_match") or rss_info.get("search_sites") == ["#dontuse"]:
                 continue
             rssid = rss_info.get("id")
             name = rss_info.get("name")
