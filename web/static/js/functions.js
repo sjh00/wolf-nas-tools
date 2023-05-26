@@ -897,6 +897,12 @@ function show_add_rss_media_modal(mtype) {
     $("#rss_download_setting").val(rss_setting.download_setting);
     refresh_savepath_select('rss_save_path', false, rss_setting.download_setting);
     check_manual_input_path("rss_save_path", "rss_save_path_manual", rss_setting.save_path);
+    if (rss_setting.rss_sites.length === 0) {
+      select_SelectALL(true, 'rss_sites');
+      $("#rss_sites_div > div > div.btn-list > a").text("全不选");
+    } else {
+      select_SelectPart(rss_setting.rss_sites, 'rss_sites');
+    }
     if (rss_setting.search_sites.length === 0) {
       select_SelectALL(true, 'search_sites');
       $("#rss_search_sites_div > div > div.btn-list > a").text("全不选");
@@ -904,12 +910,6 @@ function show_add_rss_media_modal(mtype) {
       select_SelectALL(false, "search_sites");
     } else {
       select_SelectPart(rss_setting.search_sites, 'search_sites');
-    }
-    if (rss_setting.rss_sites.length === 0) {
-      select_SelectALL(true, 'rss_sites');
-      $("#rss_sites_div > div > div.btn-list > a").text("全不选");
-    } else {
-      select_SelectPart(rss_setting.rss_sites, 'rss_sites');
     }
   } else {
     $("#rss_restype").val('');
@@ -921,8 +921,10 @@ function show_add_rss_media_modal(mtype) {
     $("#rss_save_path").val('');
     $("#rss_save_path_manual").val('');
     $("#rss_download_setting").val('');
-    select_SelectALL(false, "rss_sites");
-    select_SelectALL(false, "search_sites");
+    select_SelectALL(true, 'rss_sites');
+    $("#rss_sites_div > div > div.btn-list > a").text("全不选");
+    select_SelectALL(true, 'search_sites');
+    $("#rss_search_sites_div > div > div.btn-list > a").text("全不选");
   }
   $("[name='rss_edit_btn']").hide();
   $("[name='rss_add_btn']").show();
@@ -971,8 +973,10 @@ function show_default_rss_setting_modal(mtype) {
       $("#default_rss_setting_exclude").val('');
       $("#default_rss_setting_download_setting").val('');
       $("#default_rss_setting_over_edition").val('0');
-      select_SelectALL(false, "default_rss_sites");
-      select_SelectALL(false, "default_search_sites");
+      select_SelectALL(true, 'default_rss_sites');
+      $("#default_rss_setting_rss_sites_div > div > div.btn-list > a").text("全不选");
+      select_SelectALL(true, 'default_search_sites');
+      $("#default_rss_setting_search_sites_div > div > div.btn-list > a").text("全不选");
     }
     $("#default_rss_setting_mtype").val(mtype);
     $("#modal-default-rss-setting").modal('show');
