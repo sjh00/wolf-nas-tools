@@ -910,6 +910,7 @@ function show_add_rss_media_modal(mtype) {
     check_manual_input_path("rss_save_path", "rss_save_path_manual", rss_setting.save_path);
     if (rss_setting.search_sites.length === 0) {
       select_SelectALL(true, 'search_sites');
+      $("#rss_search_sites_div > div > div.btn-list > a").text("全不选");
     } else if (rss_setting.search_sites === ["#dontuse"]) {
       select_SelectALL(false, "search_sites");
     } else {
@@ -917,6 +918,7 @@ function show_add_rss_media_modal(mtype) {
     }
     if (rss_setting.rss_sites.length === 0) {
       select_SelectALL(true, 'rss_sites');
+      $("#rss_sites_div > div > div.btn-list > a").text("全不选");
     } else {
       select_SelectPart(rss_setting.rss_sites, 'rss_sites');
     }
@@ -959,11 +961,13 @@ function show_default_rss_setting_modal(mtype) {
       $("#default_rss_setting_over_edition").val(ret.data.over_edition);
       if (ret.data.rss_sites.length === 0) {
         select_SelectALL(true, 'default_rss_sites');
+        $("#default_rss_setting_rss_sites_div > div > div.btn-list > a").text("全不选");
       } else {
         select_SelectPart(ret.data.rss_sites, 'default_rss_sites');
       }
       if (ret.data.search_sites.length === 0) {
         select_SelectALL(true, 'default_search_sites');
+        $("#default_rss_setting_search_sites_div > div > div.btn-list > a").text("全不选");
       } else if (ret.data.search_sites === ["#dontuse"]) {
         select_SelectALL(false, "default_search_sites");
       } else {
@@ -1070,11 +1074,13 @@ function show_edit_rss_media_modal(rssid, type) {
       check_manual_input_path("rss_save_path", "rss_save_path_manual", ret.detail.save_path);
       if (ret.detail.rss_sites.length === 0) {
         select_SelectALL(true, 'rss_sites');
+        $("#rss_sites_div > div > div.btn-list > a").text("全不选");
       } else {
         select_SelectPart(ret.detail.rss_sites, 'rss_sites')
       }
       if (ret.detail.search_sites.length === 0) {
         select_SelectALL(true, 'search_sites');
+        $("#rss_search_sites_div > div > div.btn-list > a").text("全不选");
       } else if (ret.detail.search_sites === ["#dontuse"]) {
         select_SelectALL(false, 'search_sites');
       } else {
