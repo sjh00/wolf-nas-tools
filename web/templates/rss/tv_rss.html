@@ -138,7 +138,11 @@
                   {% endfor %}
                   {% for Site in Attr.search_sites %}
                     <span class="badge badge-outline text-teal me-1 mb-1" title="搜索站点">
+                      {% if Site == '#dontuse' %}
+                      不搜索
+                      {% else %}
                       {{ Site }}
+                      {% endif %}
                     </span>
                   {% endfor %}
                 </small>
