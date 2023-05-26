@@ -591,7 +591,7 @@
       $("#userrss_rss_save_path_manual").val('');
       $("#userrss_rss_over_edition").val('0');
       select_SelectALL(false, 'userrss_rss_rss_sites');
-      select_SelectALL(false, 'userrss_rss_search_sites')
+      select_SelectALL(false, 'userrss_rss_search_sites');
     }
   }
 
@@ -600,8 +600,8 @@
     if (detail.uses === "D") {
       $("#userrss_download_rule").val(detail.filter);
       $("#userrss_download_download_setting").val(detail.download_setting);
-      refresh_savepath_select('userrss_download_save_path', false, detail.download_setting)
-      check_manual_input_path("userrss_download_save_path", "userrss_download_save_path_manual", detail.save_path)
+      refresh_savepath_select('userrss_download_save_path', false, detail.download_setting);
+      check_manual_input_path("userrss_download_save_path", "userrss_download_save_path_manual", detail.save_path);
       $("#userrss_download_recognization").val(detail.recognization);
     } else if (detail.uses === "R") {
       $("#userrss_rss_restype").val(detail.filter_args.restype);
@@ -613,13 +613,15 @@
       check_manual_input_path("userrss_rss_save_path", "userrss_rss_save_path_manual", detail.save_path)
       $("#userrss_rss_over_edition").val(detail.over_edition);
       if (detail.sites.rss_sites.length === 0) {
-        select_SelectALL(true, 'userrss_rss_rss_sites')
+        select_SelectALL(true, 'userrss_rss_rss_sites');
       } else {
         select_SelectPart(detail.sites.rss_sites, 'userrss_rss_rss_sites');
       }
       if (detail.sites.search_sites.length === 0) {
-        select_SelectALL(true, 'userrss_rss_search_sites')
-      } else if (detail.sites.search_sites !== ["#dontuse"]) {
+        select_SelectALL(true, 'userrss_rss_search_sites');
+      } else if (detail.sites.search_sites === ["#dontuse"]) {
+        select_SelectALL(false, 'userrss_rss_search_sites');
+      } else {
         select_SelectPart(detail.sites.search_sites, 'userrss_rss_search_sites');
       }
     }
