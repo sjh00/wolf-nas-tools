@@ -619,7 +619,7 @@
       }
       if (detail.sites.search_sites.length === 0) {
         select_SelectALL(true, 'userrss_rss_search_sites')
-      } else {
+      } else if (detail.sites.search_sites !== ["#dontuse"]) {
         select_SelectPart(detail.sites.search_sites, 'userrss_rss_search_sites');
       }
     }
@@ -736,7 +736,7 @@
       let search_sites = select_GetSelectedVAL('userrss_rss_search_sites');
       userrss_detail.sites = {
         rss_sites: (rss_sites.length === RssSitesLength) ? [] : rss_sites,
-        search_sites: (search_sites.length === SearchSitesLength) ? [] : search_sites
+        search_sites: (search_sites.length === SearchSitesLength) ? [] : search_sites.length > 0 ? search_sites : ["#dontuse"]
       }
     } else {
       return;
