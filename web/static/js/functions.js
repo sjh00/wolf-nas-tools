@@ -958,7 +958,7 @@ function show_default_rss_setting_modal(mtype) {
       $("#default_rss_setting_download_setting").val(ret.data.download_setting);
       $("#default_rss_setting_over_edition").val(ret.data.over_edition);
       if (ret.data.rss_sites.length === 0) {
-        select_SelectALL(false, 'default_rss_sites');
+        select_SelectALL(true, 'default_rss_sites');
       } else {
         select_SelectPart(ret.data.rss_sites, 'default_rss_sites');
       }
