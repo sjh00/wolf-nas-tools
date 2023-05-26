@@ -899,7 +899,9 @@ function show_add_rss_media_modal(mtype) {
     check_manual_input_path("rss_save_path", "rss_save_path_manual", rss_setting.save_path);
     if (rss_setting.search_sites.length === 0) {
       select_SelectALL(true, 'search_sites');
-    } else if (rss_setting.search_sites !== ["#dontuse"]) {
+    } else if (rss_setting.search_sites === ["#dontuse"]) {
+      select_SelectALL(false, "search_sites");
+    } else {
       select_SelectPart(rss_setting.search_sites, 'search_sites');
     }
     if (rss_setting.rss_sites.length === 0) {
@@ -947,12 +949,14 @@ function show_default_rss_setting_modal(mtype) {
       if (ret.data.rss_sites.length === 0) {
         select_SelectALL(false, 'default_rss_sites');
       } else {
-        select_SelectPart(ret.data.rss_sites, 'default_rss_sites')
+        select_SelectPart(ret.data.rss_sites, 'default_rss_sites');
       }
       if (ret.data.search_sites.length === 0) {
-        select_SelectALL(false, 'default_search_sites');
-      } else if (ret.data.search_sites !== ["#dontuse"]) {
-        select_SelectPart(ret.data.search_sites, 'default_search_sites')
+        select_SelectALL(true, 'default_search_sites');
+      } else if (ret.data.search_sites === ["#dontuse"]) {
+        select_SelectALL(false, "default_search_sites");
+      } else {
+        select_SelectPart(ret.data.search_sites, 'default_search_sites');
       }
     } else {
       $("#default_rss_setting_restype").val('');
@@ -1060,8 +1064,10 @@ function show_edit_rss_media_modal(rssid, type) {
       }
       if (ret.detail.search_sites.length === 0) {
         select_SelectALL(true, 'search_sites');
-      } else if (ret.detail.search_sites !== ["#dontuse"]) {
-        select_SelectPart(ret.detail.search_sites, 'search_sites')
+      } else if (ret.detail.search_sites === ["#dontuse"]) {
+        select_SelectALL(false, 'search_sites');
+      } else {
+        select_SelectPart(ret.detail.search_sites, 'search_sites');
       }
       $("[name='rss_add_btn']").hide();
       $("[name='rss_edit_btn']").show();
