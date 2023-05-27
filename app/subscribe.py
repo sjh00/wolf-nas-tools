@@ -701,7 +701,7 @@ class Subscribe:
         else:
             rss_movies = self.get_subscribe_movies(state=state)
         if rss_movies:
-            log.info("【Subscribe】共有 %s 个电影订阅需要搜索" % len(rss_movies))
+            log.info("【Subscribe】开始尝试对电影订阅进行检索")
         for rid, rss_info in rss_movies.items():
             # 跳过模糊匹配的和不进行搜索的
             if rss_info.get("fuzzy_match") or rss_info.get("search_sites") == ["#dontuse"]:
@@ -787,7 +787,7 @@ class Subscribe:
         else:
             rss_tvs = self.get_subscribe_tvs(state=state)
         if rss_tvs:
-            log.info("【Subscribe】共有 %s 个电视剧订阅需要检索" % len(rss_tvs))
+            log.info("【Subscribe】开始尝试对电视剧订阅进行检索")
         rss_no_exists = {}
         for rid, rss_info in rss_tvs.items():
             # 跳过模糊匹配的和不进行搜索的
