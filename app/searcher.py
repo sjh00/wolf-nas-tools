@@ -86,6 +86,8 @@ class Searcher:
         """
         if not media_info:
             return None, {}, 0, 0
+        elif sites and sites == ["#dontuse"]:
+            return None, no_exists, 0, 0
         # 进度计数重置
         self.progress.start(ProgressKey.Search)
         # 查找的季
