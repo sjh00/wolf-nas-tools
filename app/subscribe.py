@@ -703,8 +703,8 @@ class Subscribe:
         if rss_movies:
             log.info("【Subscribe】开始尝试对电影订阅进行检索")
         for rid, rss_info in rss_movies.items():
-            # 跳过模糊匹配的和不进行搜索的
-            if rss_info.get("fuzzy_match") or rss_info.get("search_sites") == ["#dontuse"]:
+            # 跳过模糊匹配的
+            if rss_info.get("fuzzy_match"):
                 continue
             # 搜索站点范围
             rssid = rss_info.get("id")
@@ -752,8 +752,7 @@ class Subscribe:
                     "team": rss_info.get('filter_team'),
                     "rule": rss_info.get('filter_rule'),
                     "include": rss_info.get('filter_include'),
-                    "exclude": rss_info.get('filter_exclude'),
-                    "site": rss_info.get("search_sites")
+                    "exclude": rss_info.get('filter_exclude')
                 }
                 search_result, _, _, _ = self.searcher.search_one_media(
                     media_info=media_info,
@@ -790,8 +789,8 @@ class Subscribe:
             log.info("【Subscribe】开始尝试对电视剧订阅进行检索")
         rss_no_exists = {}
         for rid, rss_info in rss_tvs.items():
-            # 跳过模糊匹配的和不进行搜索的
-            if rss_info.get("fuzzy_match") or rss_info.get("search_sites") == ["#dontuse"]:
+            # 跳过模糊匹配的
+            if rss_info.get("fuzzy_match"):
                 continue
             rssid = rss_info.get("id")
             name = rss_info.get("name")
@@ -885,8 +884,7 @@ class Subscribe:
                     "team": rss_info.get('filter_team'),
                     "rule": rss_info.get('filter_rule'),
                     "include": rss_info.get('filter_include'),
-                    "exclude": rss_info.get('filter_exclude'),
-                    "site": rss_info.get("search_sites")
+                    "exclude": rss_info.get('filter_exclude')
                 }
                 search_result, no_exists, _, _ = self.searcher.search_one_media(
                     media_info=media_info,
