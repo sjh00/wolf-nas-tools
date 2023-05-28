@@ -24,6 +24,9 @@ class Tokens:
             return None
         else:
             token = self._tokens[self._index]
+            if not token:
+                self._index = self._index + 1
+                return self.cur()
             return token
 
     def get_next(self):
