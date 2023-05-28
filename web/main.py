@@ -748,8 +748,16 @@ def service():
 @login_required
 def history():
     pagenum = request.args.get("pagenum")
+    if pagenum:
+        pagenum = int(pagenum)
+    else:
+        pagenum = 30
     keyword = request.args.get("s") or ""
     current_page = request.args.get("page")
+    if current_page:
+        current_page = int(current_page)
+    else:
+        current_page = 1
     Result = WebAction().get_transfer_history({"keyword": keyword, "page": current_page, "pagenum": pagenum})
     PageRange = WebUtils.get_page_range(current_page=Result.get("currentPage"),
                                         total_page=Result.get("totalPage"))
@@ -762,7 +770,7 @@ def history():
                            CurrentPage=Result.get("currentPage"),
                            TotalPage=Result.get("totalPage"),
                            PageRange=PageRange,
-                           PageNum=Result.get("currentPage"))
+                           PageNum=Result.get("pageNum"))
 
 
 # TMDB缓存页面
@@ -770,17 +778,19 @@ def history():
 @login_required
 def tmdbcache():
     page_num = request.args.get("pagenum")
-    if not page_num:
+    if page_num:
+        page_num = int(page_num)
+    else:
         page_num = 30
     search_str = request.args.get("s")
     if not search_str:
         search_str = ""
     current_page = request.args.get("page")
-    if not current_page:
-        current_page = 1
-    else:
+    if current_page:
         current_page = int(current_page)
-    total_count, tmdb_caches = MetaHelper().dump_meta_data(search_str, current_page, page_num)
+    else:
+        current_page = 1
+    total_count, tmdb_caches = MetaHelper().dump_meta_data(search=search_str, page=current_page, num=page_num)
     total_page = floor(total_count / page_num) + 1
     page_range = WebUtils.get_page_range(current_page=current_page,
                                          total_page=total_page)
@@ -801,8 +811,16 @@ def tmdbcache():
 @login_required
 def unidentification():
     pagenum = request.args.get("pagenum")
+    if pagenum:
+        pagenum = int(pagenum)
+    else:
+        pagenum = 30
     keyword = request.args.get("s") or ""
     current_page = request.args.get("page")
+    if current_page:
+        current_page = int(current_page)
+    else:
+        current_page = 1
     Result = WebAction().get_unknown_list_by_page({"keyword": keyword, "page": current_page, "pagenum": pagenum})
     PageRange = WebUtils.get_page_range(current_page=Result.get("currentPage"),
                                         total_page=Result.get("totalPage"))
@@ -814,7 +832,7 @@ def unidentification():
                            CurrentPage=Result.get("currentPage"),
                            TotalPage=Result.get("totalPage"),
                            PageRange=PageRange,
-                           PageNum=Result.get("currentPage"))
+                           PageNum=Result.get("pageNum"))
 
 
 # 文件管理页面
