@@ -179,6 +179,18 @@ function select_SelectALL(status, name) {
 }
 
 /**
+ * 全选事件-根据私有自定义数据名称全选
+ * @param: status 全选框状态
+ * @param: name 被管理checkbox的name
+ * @param: dataoption data-*私有自定义数据名称（*号部分）
+ **/
+function select_dataop_SelectALL(status, name, dataoption) {
+  if (dataoption.indexOf("]") === -1) {
+    $(`input[${select_name(name)}][type=checkbox][data-${dataoption}]`).prop("checked", status);
+  }
+}
+
+/**
  * 部分选定事件
  * @param: status 全选框状态
  * @param: name 被管理checkbox的name

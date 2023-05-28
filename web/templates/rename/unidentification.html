@@ -30,7 +30,23 @@
           <div class="card-header">
             <div class="d-flex">
               <div class="text-muted">
-                共 {{ TotalCount }} 条记录<span class="d-none d-md-inline-block"> ，搜索：</span>
+                共 {{ TotalCount }} 条记录<span class="d-none d-md-inline-block"> ，每页显示：</span>
+              </div>
+              <div class="ms-auto text-muted">
+                <div class="ms-2 d-none d-md-inline-block">
+                  <select class="form-select form-select-sm" id="pagenum_select" title="每页显示">
+                    {% for pn in (30,50,100,200,300,500,1000) %}
+                      <option value={{pn}}
+                      {% if pn == PageNum %}
+                        selected
+                      {% endif %}
+                      >{{pn}}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+              <div class="ms-2 text-muted">
+                <span class="d-none d-md-inline-block">条 ，搜索：</span>
               </div>
               <div class="ms-auto text-muted">
                 <div class="ms-2 d-none d-md-inline-block">
@@ -40,6 +56,10 @@
               </div>              
             </div>
             <div class="card-actions">
+              <a href="javascript:checknotexists_curpage()" class="btn d-none d-md-inline-block" id="checknotexistsinpage" title="选择无效项" style="visibility: hidden;">
+                {{ SVG.circle_x() }}
+                选择无效项
+              </a>
               <a href="javascript:reidentification_all()" class="btn d-none d-md-inline-block" title="重新识别">
                 {{ SVG.refresh() }}
                 重新识别
@@ -76,10 +96,17 @@
                 {% for Path in Items %}
                   <tr>
                     <td>
+                      {% if Path.isexists %}
                       <input class="form-check-input m-0 align-middle" name="unknow_record" value="{{ Path.id }}" type="checkbox">
                     </td>
                     <td>
                       <a href='javascript:navmenu("mediafile?dir={{ Path.name.replace("\\", "/") }}")'>{{ Path.name }}</a>
+                      {% else %}
+                      <input class="form-check-input m-0 align-middle" name="unknow_record" value="{{ Path.id }}" type="checkbox" data-notexists="true">
+                    </td>
+                    <td>
+                      <del class="text-warning">{{ Path.name }}</del> <span class="text-muted">（路径已不存在）</span>
+                      {% endif %}
                       {% if Path.to %}
                         <div class="text-muted">
                           => {{ Path.to }}
@@ -150,24 +177,34 @@
   </div>
 </div>
 <script type="text/javascript">
-  // 上一页
-  function go_pre_page(search, page) {
-    navmenu("unidentification?s=" + search + "&page=" + (page - 1))
-  }
-
-  // 下一页
-  function go_next_page(search, page) {
-    navmenu("unidentification?s=" + search + "&page=" + (page + 1))
-  }
+  // 每页显示
+  $('#pagenum_select').bind('change', function () {
+    const keyword = $("#search_word").val();
+    const pagenum = $('#pagenum_select').val();
+    navmenu("unidentification?s=" + keyword + "&pagenum=" + pagenum);
+  });
 
   // 搜索按钮
   $('#search_word').bind('keypress', function (event) {
     if (event.keyCode == "13") {
       const keyword = $("#search_word").val();
-      navmenu("unidentification?s=" + keyword);
+      const pagenum = $('#pagenum_select').val();
+      navmenu("unidentification?s=" + keyword + "&pagenum=" + pagenum);
     }
   });
 
+  // 上一页
+  function go_pre_page(search, page) {
+    const pagenum = $('#pagenum_select').val();
+    navmenu("unidentification?s=" + search + "&page=" + (page - 1) + "&pagenum=" + pagenum);
+  }
+
+  // 下一页
+  function go_next_page(search, page) {
+    const pagenum = $('#pagenum_select').val();
+    navmenu("unidentification?s=" + search + "&page=" + (page + 1) + "&pagenum=" + pagenum);
+  }
+  
   //显示弹出窗口
   function show_rename_modal(id, path, rmt_mode) {
     show_manual_transfer_modal(1, path, rmt_mode, '', id, '');
@@ -212,6 +249,16 @@
       return;
     }
     re_identification("unidentification", logids);
+  }
+
+  if ($(`input[name=unknow_record][type=checkbox][data-notexists=true]`).length > 0){
+    $('#checknotexistsinpage').css('visibility','visible');
+  } else {
+    $('#checknotexistsinpage').css('visibility','hidden');
+  }
+  //选择当前页所有路径已不存在项
+  function checknotexists_curpage() {
+    select_dataop_SelectALL('true', 'unknow_record', 'notexists=true');
   }
 
 </script>
