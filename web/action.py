@@ -1501,6 +1501,8 @@ class WebAction:
                     dest_dir = ""
                 if not path:
                     return {"retcode": -1, "retmsg": "未识别路径有误"}
+                if not os.path.exists(path): # 路径文件或文件夹不存在
+                    continue
                 succ_flag, msg = _filetransfer.transfer_media(in_from=SyncType.MAN,
                                                               rmt_mode=rmt_mode,
                                                               in_path=path,
@@ -3829,6 +3831,7 @@ class WebAction:
             sync_mode = rec.MODE or ""
             rmt_mode = ModuleConf.get_dictenum_key(ModuleConf.RMT_MODES,
                                                    sync_mode) if sync_mode else ""
+            isexists = os.path.exists(path) # 路径文件或文件夹是否还存在
             Items.append({
                 "id": rec.ID,
                 "path": path,
@@ -3836,6 +3839,7 @@ class WebAction:
                 "name": path,
                 "sync_mode": sync_mode,
                 "rmt_mode": rmt_mode,
+                "isexists": isexists,
             })
         TotalPage = floor(totalCount / PageNum) + 1
 
