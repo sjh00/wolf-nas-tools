@@ -190,8 +190,7 @@ class MetaVideo(MetaBase):
                 self._stop_cnname_flag = True
         else:
             is_roman_digit = re.search(self._roman_numerals, token)
-            # 阿拉伯数字或者罗马数字
-            if token.isdigit() or is_roman_digit:
+            if token.isdigit(): # 阿拉伯数字
                 # 第季集后面的不要
                 if self._last_token_type == 'name_se_words':
                     return
@@ -206,12 +205,10 @@ class MetaVideo(MetaBase):
                         except ValueError:
                             return
                     # 中文名后面跟的数字不是年份的极有可能是集
-                    if not is_roman_digit \
-                            and self._last_token_type == "cnname" \
-                            and int(token) < 1900:
+                    if self._last_token_type == "cnname" and int(token) < 1900:
                         return
-                    if (token.isdigit() and len(token) < 4) or is_roman_digit:
-                        # 4位以下的数字或者罗马数字，拼装到已有标题中
+                    if (token.isdigit() and len(token) < 4):
+                        # 4位以下的数字，拼装到已有标题中
                         if self._last_token_type == "cnname":
                             self.cn_name = "%s %s" % (self.cn_name, token)
                         elif self._last_token_type == "enname":
@@ -225,6 +222,13 @@ class MetaVideo(MetaBase):
                     # 名字未出现前的第一个数字，记下来
                     if not self._unknown_name_str:
                         self._unknown_name_str = token
+            elif is_roman_digit: # 罗马数字
+                # 拼装到已有标题中
+                if self._last_token_type == "cnname":
+                    self.cn_name = "%s %s" % (self.cn_name, token)
+                elif self._last_token_type == "enname":
+                    self.en_name = "%s %s" % (self.en_name, token)
+                self._continue_flag = False
             elif re.search(r"%s" % self._season_re, token, re.IGNORECASE):
                 # 季的处理
                 if self.en_name and re.search(r"SEASON$", self.en_name, re.IGNORECASE):
