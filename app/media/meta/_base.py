@@ -166,6 +166,18 @@ class MetaBase(object):
         elif self.cn_name:
             return self.cn_name
         return ""
+    
+    def set_name(self, modifiedname):
+        '''
+        修正标题
+        :param modifiedname: 修正后的标题名称
+        '''
+        if self.cn_name and StringUtils.is_all_chinese(self.cn_name):
+            self.cn_name = modifiedname
+        elif self.en_name:
+            self.en_name = modifiedname
+        elif self.cn_name:
+            self.cn_name = modifiedname
 
     def get_title_string(self):
         if self.title:
