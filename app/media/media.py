@@ -706,43 +706,26 @@ class Media:
             return {}
         return self.meta.get_meta_data_by_key(self.__make_cache_key(meta_info))
 
-    def get_media_info(self, title,
-                       subtitle=None,
-                       mtype=None,
-                       strict=None,
-                       cache=True,
-                       language=None,
-                       chinese=True,
-                       append_to_response=None,
-                       onlyen=False):
+    def __get_media_tmdbinfo_with_notmdbinfo(self,
+                                meta_info,
+                                strict=None,
+                                cache=True,
+                                language=None,
+                                chinese=True,
+                                append_to_response=None,
+                                onlyen = False):
         """
-        只有名称信息，判别是电影还是电视剧并搜刮TMDB信息，用于种子名称识别
-        :param title: 种子名称
-        :param subtitle: 种子副标题
-        :param mtype: 类型：电影、电视剧、动漫
+        根据名称，识别TMDB信息
+        :param meta_info: MetaInfo对象字典
         :param strict: 是否严格模式，为true时，不会再去掉年份再查一次
         :param cache: 是否使用缓存，默认TRUE
         :param language: 语言
         :param chinese: 原标题为英文时是否从别名中搜索中文名称
         :param append_to_response: 额外查询的信息
         :param onlyen: 指定是否只识别英文名称
-        :return: 带有TMDB信息的MetaInfo对象
+        :return: 带有TMDB信息的文件对应的MetaInfo对象字典
         """
-        if not self.tmdb:
-            log.error("【Meta】TMDB API Key 未设置！")
-            return None
-        if not title:
-            return None
-        # 设置语言
-        self.__set_language(language)
-        # 识别
-        meta_info = MetaInfo(title, subtitle=subtitle, onlyen=onlyen)
-        if not meta_info.get_name() or not meta_info.type:
-            log.warn("【Rmt】%s 未识别出有效信息！" % meta_info.org_string)
-            return None
-        if mtype:
-            meta_info.type = mtype
-        
+
         # 标题名称可能情况的修正测试（仅电影类型）---
         use_modifiedname = False # 是否使用修正名称
         modifiedname = None # 标题修正名称
@@ -809,7 +792,7 @@ class Media:
                                                          mtype=meta_info.type)
             if not file_media_info and self._chatgpt_enable:
                 # 通过ChatGPT查询
-                mtype, seaons, episodes, file_media_info = self.__search_chatgpt(file_name=title,
+                mtype, seaons, episodes, file_media_info = self.__search_chatgpt(file_name=meta_info.org_string,
                                                                                  mtype=meta_info.type)
                 # 修正类型和集数
                 meta_info.type = mtype
@@ -854,12 +837,49 @@ class Media:
                 file_media_info = None
         # 如果标题为中文且未匹配到tmdb，则尝试用仅英文名称匹配
         if not file_media_info and StringUtils.is_chinese(meta_info.get_name()):
-            return self.get_media_info(title=title,subtitle=subtitle,mtype=mtype,strict=strict,
-                                       cache=cache,language=language,chinese=chinese,
-                                       append_to_response=append_to_response, onlyen=True)
+            meta_info = MetaInfo(title=meta_info.org_string, subtitle=meta_info.subtitle, onlyen=onlyen)
+            return self.__get_media_tmdbinfo_with_notmdbinfo(meta_info=meta_info,strict=strict,cache=cache,language=language,chinese=chinese,
+                                                             append_to_response=append_to_response, onlyen=True)
         # 赋值TMDB信息并返回
         meta_info.set_tmdb_info(file_media_info)
         return meta_info
+
+    def get_media_info(self, title,
+                       subtitle=None,
+                       mtype=None,
+                       strict=None,
+                       cache=True,
+                       language=None,
+                       chinese=True,
+                       append_to_response=None):
+        """
+        只有名称信息，判别是电影还是电视剧并搜刮TMDB信息，用于种子名称识别
+        :param title: 种子名称
+        :param subtitle: 种子副标题
+        :param mtype: 类型：电影、电视剧、动漫
+        :param strict: 是否严格模式，为true时，不会再去掉年份再查一次
+        :param cache: 是否使用缓存，默认TRUE
+        :param language: 语言
+        :param chinese: 原标题为英文时是否从别名中搜索中文名称
+        :param append_to_response: 额外查询的信息
+        :return: 带有TMDB信息的MetaInfo对象
+        """
+        if not self.tmdb:
+            log.error("【Meta】TMDB API Key 未设置！")
+            return None
+        if not title:
+            return None
+        # 设置语言
+        self.__set_language(language)
+        # 识别
+        meta_info = MetaInfo(title, subtitle=subtitle)
+        if not meta_info.get_name() or not meta_info.type:
+            log.warn("【Rmt】%s 未识别出有效信息！" % meta_info.org_string)
+            return None
+        if mtype:
+            meta_info.type = mtype
+        return self.__get_media_tmdbinfo_with_notmdbinfo(meta_info=meta_info,strict=strict,cache=cache,language=language,
+                                                         chinese=chinese,append_to_response=append_to_response)
 
     def __insert_media_cache(self, media_key, file_media_info):
         """
@@ -887,120 +907,6 @@ class Media:
             })
         else:
             self.meta.update_meta_data({media_key: {'id': 0}})
-
-    def __get_media_tmdbinfo_on_file_with_notmdbinfo(self,
-                                meta_info,
-                                language=None,
-                                chinese=True,
-                                append_to_response=None,
-                                onlyen = False):
-        """
-        根据文件名，搜刮TMDB信息，用于文件名称的识别
-        :param meta_info: MetaInfo对象字典
-        :param language: 语言
-        :param chinese: 原标题为英文时是否从别名中搜索中文名称
-        :param append_to_response: 附加信息
-        :param onlyen: 指定是否只识别英文名称
-        :return: 带有TMDB信息的文件对应的MetaInfo对象字典
-        """
-
-        # 标题名称可能情况的修正测试（仅电影类型）---
-        use_modifiedname = False # 是否使用修正名称
-        modifiedname = None # 标题修正名称
-        if meta_info.type == MediaType.MOVIE or meta_info.type == MediaType.UNKNOWN:
-            fmnspaceindex = meta_info.get_name().find(' ')
-            ## 判断标题名称开头是否疑似含有序号
-            if fmnspaceindex > 0 and meta_info.get_name()[:fmnspaceindex].isdigit():
-                modifiedname = meta_info.get_name()[fmnspaceindex+1:]
-        # ---
-        
-        # 区配缓存及TMDB
-        media_key = self.__make_cache_key(meta_info=meta_info)
-        if not self.meta.get_meta_data_by_key(media_key) and modifiedname:
-            # 缓存没有且标题名称有修正测试（仅电影类型）
-            media_key = self.__make_cache_key(meta_info=meta_info,modifiedname=modifiedname)
-            use_modifiedname = True
-        if not self.meta.get_meta_data_by_key(media_key):
-            # 没有缓存数据
-            use_modifiedname = False
-            file_media_info = self.__search_tmdb(file_media_name=meta_info.get_name(),
-                                                    first_media_year=meta_info.year,
-                                                    search_type=meta_info.type,
-                                                    media_year=meta_info.year,
-                                                    season_number=meta_info.begin_season)
-            if not file_media_info and modifiedname:
-                # 标题名称有修正测试（仅电影类型）
-                file_media_info = self.__search_tmdb(file_media_name=modifiedname,
-                                                    first_media_year=meta_info.year,
-                                                    search_type=MediaType.MOVIE
-                                                    )
-                use_modifiedname = True
-            if use_modifiedname and file_media_info:
-                meta_info.set_name(modifiedname=modifiedname)
-            else:
-                use_modifiedname = False
-            if not file_media_info:
-                if self._rmt_match_mode == MatchMode.NORMAL:
-                    # 去掉年份再查一次，有可能是年份错误
-                    file_media_info = self.__search_tmdb(file_media_name=meta_info.get_name(),
-                                                         search_type=meta_info.type)
-            if not file_media_info and self._chatgpt_enable:
-                # 从ChatGPT查询
-                mtype, seaons, episodes, file_media_info = self.__search_chatgpt(file_name=meta_info.org_string,
-                                                                                 mtype=meta_info.type)
-                # 修正类型和集数
-                meta_info.type = mtype
-                if not meta_info.get_season_string():
-                    meta_info.set_season(seaons)
-                if not meta_info.get_episode_string():
-                    meta_info.set_episode(episodes)
-            if not file_media_info and self._search_keyword:
-                cache_name = cacheman["tmdb_supply"].get(meta_info.get_name())
-                is_movie = False
-                if not cache_name:
-                    cache_name, is_movie = self.__search_engine(meta_info.get_name())
-                    cacheman["tmdb_supply"].set(meta_info.get_name(), cache_name)
-                if cache_name:
-                    log.info("【Meta】开始辅助查询：%s ..." % cache_name)
-                    if is_movie:
-                        file_media_info = self.__search_tmdb(file_media_name=cache_name,
-                                                             search_type=MediaType.MOVIE)
-                    else:
-                        file_media_info = self.__search_multi_tmdb(file_media_name=cache_name)
-            # 补全TMDB信息
-            if file_media_info and not file_media_info.get("genres"):
-                file_media_info = self.get_tmdb_info(mtype=file_media_info.get("media_type"),
-                                                     tmdbid=file_media_info.get("id"),
-                                                     chinese=chinese,
-                                                     append_to_response=append_to_response)
-            # 保存到缓存
-            if file_media_info is not None:
-                self.__insert_media_cache(media_key=media_key,
-                                          file_media_info=file_media_info)
-        else:
-            # 使用缓存信息
-            if use_modifiedname:
-                meta_info.set_name(modifiedname=modifiedname)
-            cache_info = self.meta.get_meta_data_by_key(media_key)
-            if cache_info.get("id"):
-                file_media_info = self.get_tmdb_info(mtype=cache_info.get("type"),
-                                                     tmdbid=cache_info.get("id"),
-                                                     chinese=chinese,
-                                                     append_to_response=append_to_response)
-                if not cache_info.get("original_language"):
-                    self.__insert_media_cache(media_key=media_key,
-                                              file_media_info=file_media_info)
-            else:
-                # 缓存为未识别
-                file_media_info = None
-        # 如果标题为中文且未匹配到tmdb，则尝试用仅英文名称匹配
-        if not file_media_info and StringUtils.is_chinese(meta_info.get_name()):
-            meta_info = MetaInfo(title=meta_info.org_string, subtitle=meta_info.subtitle, onlyen=onlyen)
-            return self.__get_media_tmdbinfo_on_file_with_notmdbinfo(meta_info=meta_info,language=language,chinese=chinese,
-                                                                     append_to_response=append_to_response, onlyen=True)
-        # 赋值TMDB信息
-        meta_info.set_tmdb_info(file_media_info)
-        return meta_info
 
     def get_media_info_on_files(self,
                                 file_list,
@@ -1080,7 +986,7 @@ class Media:
                     if not meta_info.get_name() or not meta_info.type:
                         log.warn("【Rmt】%s 未识别出有效信息！" % meta_info.org_string)
                         continue
-                    meta_info = self.__get_media_tmdbinfo_on_file_with_notmdbinfo(meta_info=meta_info,language=language,chinese=chinese,append_to_response=append_to_response)
+                    meta_info = self.__get_media_tmdbinfo_with_notmdbinfo(meta_info=meta_info,language=language,chinese=chinese,append_to_response=append_to_response)
                 # 自带TMDB信息
                 else:
                     meta_info = MetaInfo(title=file_name, mtype=media_type)
