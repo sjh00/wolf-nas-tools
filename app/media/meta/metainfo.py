@@ -9,12 +9,13 @@ from app.utils.types import MediaType
 from config import RMT_MEDIAEXT
 
 
-def MetaInfo(title, subtitle=None, mtype=None):
+def MetaInfo(title, subtitle=None, mtype=None, onlyen=False):
     """
     媒体整理入口，根据名称和副标题，判断是哪种类型的识别，返回对应对象
     :param title: 标题、种子名、文件名
     :param subtitle: 副标题、描述
     :param mtype: 指定识别类型，为空则自动识别类型
+    :param onlyen: 指定是否只识别英文名称
     :return: MetaAnime、MetaVideo
     """
 
@@ -36,9 +37,9 @@ def MetaInfo(title, subtitle=None, mtype=None):
         fileflag = False
 
     if mtype == MediaType.ANIME or is_anime(rev_title):
-        meta_info = MetaAnime(rev_title, subtitle, fileflag)
+        meta_info = MetaAnime(title=rev_title, subtitle=subtitle, fileflag=fileflag, onlyen=onlyen)
     else:
-        meta_info = MetaVideo(rev_title, subtitle, fileflag)
+        meta_info = MetaVideo(title=rev_title, subtitle=subtitle, fileflag=fileflag, onlyen=onlyen)
 
     # 设置原始名称
     meta_info.org_string = org_title
