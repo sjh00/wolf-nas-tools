@@ -214,7 +214,7 @@ class MetaVideo(MetaBase):
                         # 4位以下的数字或者罗马数字，拼装到已有标题中
                         if self._last_token_type == "cnname":
                             self.cn_name = "%s %s" % (self.cn_name, token)
-                        elif self._last_token_type == "enname":
+                        elif self._last_token_type == "enname" or self._last_token_type == "EPISODE":
                             self.en_name = "%s %s" % (self.en_name, token)
                         self._continue_flag = False
                     elif token.isdigit() and len(token) == 4:
