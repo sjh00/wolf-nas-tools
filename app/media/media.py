@@ -222,6 +222,14 @@ class Media:
                     info.get('first_air_date')))
         # 返回
         if not info:
+            # 检索名称排除前面为序号的情况
+            fmnspaceindex = file_media_name.find(' ')
+            if fmnspaceindex > 0 and file_media_name[:fmnspaceindex].isdigit():
+                return self.__search_tmdb(file_media_name=file_media_name[fmnspaceindex+1:],
+                                          search_type=search_type,
+                                          first_media_year=first_media_year,
+                                          media_year=media_year,
+                                          season_number=season_number)
             log.info("【Meta】%s 以年份 %s 在TMDB中未找到%s信息!" % (
                 file_media_name, StringUtils.xstr(first_media_year), search_type.value if search_type else ""))
         return info
