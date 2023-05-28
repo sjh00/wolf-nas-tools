@@ -15,6 +15,8 @@ class MetaBase(object):
     category_handler = None
     # 是否处理的文件
     fileflag = False
+    # 是否只识别英文名称
+    onlyen = False
     # 原字符串
     org_string = None
     # 识别词处理后字符串
@@ -149,7 +151,7 @@ class MetaBase(object):
     _subtitle_episode_re = r"(?<![全|共]\s*)[第\s]+([0-9一二三四五六七八九十百零EP\-]+)\s*[集话話期](?!\s*[全|共])"
     _subtitle_episode_all_re = r"([0-9一二三四五六七八九十百零]+)\s*集\s*[全|共]|[全|共]\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期]"
 
-    def __init__(self, title, subtitle=None, fileflag=False):
+    def __init__(self, title, subtitle=None, fileflag=False, onlyen=False):
         self.category_handler = Category()
         self.fanart = Fanart()
         if not title:
@@ -157,6 +159,7 @@ class MetaBase(object):
         self.org_string = title
         self.subtitle = subtitle
         self.fileflag = fileflag
+        self.onlyen = onlyen
 
     def get_name(self):
         if self.cn_name and StringUtils.is_all_chinese(self.cn_name):
