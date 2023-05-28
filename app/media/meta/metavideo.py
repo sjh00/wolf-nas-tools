@@ -50,8 +50,8 @@ class MetaVideo(MetaBase):
     _video_encode_re = r"^[HX]26[45]$|^AVC$|^HEVC$|^VC\d?$|^MPEG\d?$|^Xvid$|^DivX$|^HDR\d*$"
     _audio_encode_re = r"^DTS\d?$|^DTSHD$|^DTSHDMA$|^Atmos$|^TrueHD\d?$|^AC3$|^\dAudios?$|^DDP\d?$|^DD\d?$|^LPCM\d?$|^AAC\d?$|^FLAC\d?$|^HD\d?$|^MA\d?$"
 
-    def __init__(self, title, subtitle=None, fileflag=False):
-        super().__init__(title, subtitle, fileflag)
+    def __init__(self, title, subtitle=None, fileflag=False, onlyen=False):
+        super().__init__(title=title, subtitle=subtitle, fileflag=fileflag, onlyen=onlyen)
         if not title:
             return
         original_title = title
@@ -180,14 +180,15 @@ class MetaVideo(MetaBase):
             return
         if StringUtils.is_chinese(token):
             # 含有中文，直接做为标题（连着的数字或者英文会保留），且不再取用后面出现的中文
-            self._last_token_type = "cnname"
-            if not self.cn_name:
-                self.cn_name = token
-            elif not self._stop_cnname_flag:
-                if not re.search("%s" % self._name_no_chinese_re, token, flags=re.IGNORECASE) \
-                        and not re.search("%s" % self._name_se_words, token, flags=re.IGNORECASE):
-                    self.cn_name = "%s %s" % (self.cn_name, token)
-                self._stop_cnname_flag = True
+            if not self.onlyen:
+                self._last_token_type = "cnname"
+                if not self.cn_name:
+                    self.cn_name = token
+                elif not self._stop_cnname_flag:
+                    if not re.search("%s" % self._name_no_chinese_re, token, flags=re.IGNORECASE) \
+                            and not re.search("%s" % self._name_se_words, token, flags=re.IGNORECASE):
+                        self.cn_name = "%s %s" % (self.cn_name, token)
+                    self._stop_cnname_flag = True
         else:
             is_roman_digit = re.search(self._roman_numerals, token)
             # 阿拉伯数字或者罗马数字
