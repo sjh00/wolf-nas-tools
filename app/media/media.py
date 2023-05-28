@@ -694,13 +694,17 @@ class Media:
         return ret_infos
 
     @staticmethod
-    def __make_cache_key(meta_info):
+    def __make_cache_key(meta_info, modifiedname=None):
         """
         生成缓存的key
+        :param meta_info: 媒体信息
+        :param modifiedname: 修改后的名称
         """
         if not meta_info:
             return None
-        return f"[{meta_info.type.value}]{meta_info.get_name()}-{meta_info.year}-{meta_info.begin_season}"
+        if not modifiedname:
+            modifiedname = meta_info.get_name()
+        return f"[{meta_info.type.value}]{modifiedname}-{meta_info.year}-{meta_info.begin_season}"
 
     def get_cache_info(self, meta_info):
         """
@@ -935,6 +939,12 @@ class Media:
                         continue
                     # 区配缓存及TMDB
                     media_key = self.__make_cache_key(meta_info)
+                    if not self.meta.get_meta_data_by_key(media_key):
+                        # 未找到缓存数据，判断标题开头是否含有序号
+                        meta_info_name = meta_info.get_name()
+                        fmnspaceindex = meta_info_name.find(' ')
+                        if fmnspaceindex > 0 and meta_info_name[:fmnspaceindex].isdigit():
+                            media_key = self.__make_cache_key(meta_info=meta_info,modifiedname=meta_info_name[fmnspaceindex+1:])
                     if not self.meta.get_meta_data_by_key(media_key):
                         # 没有缓存数据
                         file_media_info = self.__search_tmdb(file_media_name=meta_info.get_name(),
