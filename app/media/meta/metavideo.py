@@ -80,6 +80,8 @@ class MetaVideo(MetaBase):
         title = re.sub(r'[0-9.]+\s*[MGT]i?B(?![A-Z]+)', "", title, flags=re.IGNORECASE)
         # 把年月日去掉
         title = re.sub(r'\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}', "", title)
+        # 特殊制作组名称处理
+        title = re.sub(r"(?<=[^a-zA-Z\d]blucook)#\d{1,5}", "", title, count=1, flags=re.IGNORECASE)
         # 拆分tokens
         tokens = Tokens(title)
         self.tokens = tokens
