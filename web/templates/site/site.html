@@ -85,7 +85,7 @@
           <div class="row">
             <div class="col">
               {% if Site.rss_enable and Site.rssurl %}
-              <span class="badge bg-azure-lt mb-1 me-1">订阅</span>
+              <span class="badge bg-azure-lt mb-1 me-1">订阅{% if Site.withinhour and Site.withinhour > 0 %}{{Site.withinhour}}小时内{% endif %}</span>
               {% endif %}
               {% if Site.brush_enable and Site.rssurl %}
               <span class="badge bg-indigo-lt mb-1 me-1">刷流</span>
@@ -275,7 +275,7 @@
           </div>
           <div class="col-lg-4">
             <div class="mb-3">
-              <label class="form-label required">RSS限定小时内订阅（小时） <span class="form-help"
+              <label class="form-label required">RSS限定小时内订阅(小时) <span class="form-help"
                   title="默认0或空不受影响，设置小时数则仅订阅最近该小时以内的种子；刷流不受此限制"
                   data-bs-toggle="tooltip">?</span></label>
               <input class="form-control" id="site_withinhour" type="number" min="0" autocomplete="off">

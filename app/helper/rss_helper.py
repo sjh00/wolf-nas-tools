@@ -110,7 +110,7 @@ class RssHelper:
             return True
         if not site_withinhour or site_withinhour <= 0:
             return True
-        if rss_pubdate + timedelta(hours=site_withinhour) >= datetime.now():
+        if rss_pubdate + timedelta(hours=site_withinhour) >= datetime.now(rss_pubdate.tzinfo):
             return True
         else:
             return False
