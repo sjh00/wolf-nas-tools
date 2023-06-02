@@ -162,7 +162,8 @@ class MetaBase(object):
         self.onlyen = onlyen
 
     def get_name(self):
-        if self.cn_name and StringUtils.is_all_chinese(self.cn_name):
+        if self.cn_name and (StringUtils.is_all_chinese(self.cn_name) \
+                             or (len(self.cn_name) > 4 and StringUtils.is_chinese(self.cn_name[0]) and StringUtils.is_chinese(self.cn_name[1:]))):
             return self.cn_name
         elif self.en_name:
             return self.en_name
@@ -175,7 +176,8 @@ class MetaBase(object):
         修正标题
         :param modifiedname: 修正后的标题名称
         '''
-        if self.cn_name and StringUtils.is_all_chinese(self.cn_name):
+        if self.cn_name and (StringUtils.is_all_chinese(self.cn_name) \
+                             or (len(self.cn_name) > 4 and StringUtils.is_chinese(self.cn_name[0]) and StringUtils.is_chinese(self.cn_name[1:]))):
             self.cn_name = modifiedname
         elif self.en_name:
             self.en_name = modifiedname
