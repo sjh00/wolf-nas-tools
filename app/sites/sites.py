@@ -92,6 +92,7 @@ class Sites:
                 "chrome": True if site_note.get("chrome") == "Y" else False,
                 "proxy": True if site_note.get("proxy") == "Y" else False,
                 "subtitle": True if site_note.get("subtitle") == "Y" else False,
+                "withinhour": site_note.get("withinhour"),
                 "limit_interval": site_note.get("limit_interval"),
                 "limit_count": site_note.get("limit_count"),
                 "limit_seconds": site_note.get("limit_seconds"),

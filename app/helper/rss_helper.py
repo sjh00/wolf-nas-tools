@@ -1,4 +1,5 @@
 import xml.dom.minidom
+from datetime import datetime, timedelta
 
 from app.db import MainDb, DbPersist
 from app.db.models import RSSTORRENTS
@@ -95,6 +96,24 @@ class RssHelper:
                     return None
                 ExceptionUtils.exception_traceback(e2)
         return ret_array
+
+    @staticmethod
+    def is_rss_inhour(rss_pubdate, site_withinhour):
+        """
+        判断RSS是否为在限定小时内发布
+        """
+        if not rss_pubdate:
+            return False
+        try:
+            site_withinhour = int(site_withinhour)
+        except:
+            return True
+        if not site_withinhour or site_withinhour <= 0:
+            return True
+        if rss_pubdate + timedelta(hours=site_withinhour) >= datetime.now():
+            return True
+        else:
+            return False
 
     @DbPersist(_db)
     def insert_rss_torrents(self, media_info):
