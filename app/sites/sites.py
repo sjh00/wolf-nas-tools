@@ -73,6 +73,14 @@ class Sites:
                 rss_enable = False
                 brush_enable = False
                 statistic_enable = False
+            site_withinhour = site_note.get("withinhour")
+            if site_withinhour:
+                try:
+                    site_withinhour = int(site_withinhour)
+                except:
+                    site_withinhour = 0
+            else:
+                site_withinhour = 0
             site_info = {
                 "id": site.ID,
                 "name": site.NAME,
@@ -92,7 +100,7 @@ class Sites:
                 "chrome": True if site_note.get("chrome") == "Y" else False,
                 "proxy": True if site_note.get("proxy") == "Y" else False,
                 "subtitle": True if site_note.get("subtitle") == "Y" else False,
-                "withinhour": site_note.get("withinhour"),
+                "withinhour": site_withinhour,
                 "limit_interval": site_note.get("limit_interval"),
                 "limit_count": site_note.get("limit_count"),
                 "limit_seconds": site_note.get("limit_seconds"),
