@@ -273,7 +273,15 @@
               </select>
             </div>
           </div>
-          <div class="col-lg-8">
+          <div class="col-lg-4">
+            <div class="mb-3">
+              <label class="form-label required">RSS限定小时内订阅（小时） <span class="form-help"
+                  title="默认0或空不受影响，设置小时数则仅订阅最近该小时以内的种子；刷流不受此限制"
+                  data-bs-toggle="tooltip">?</span></label>
+              <input class="form-control" id="site_withinhour" type="number" min="0" autocomplete="off">
+            </div>
+          </div>
+          <div class="col-lg-4">
             <div class="mb-3">
             <label class="form-label">User-Agent <span class="form-help"
                   title="站点签到/数据获取/搜索请求时使用的User-Agent，为空则使用基础配置中User-Agent设置" data-bs-toggle="tooltip">?</span></label>
@@ -473,6 +481,7 @@
     $("#site_proxy").val('N');
     $("#site_parse").val('Y');
     $("#site_subtitle").val('N');
+    $("#site_withinhour").val(0);
     $("#site_unread_msg_notify").val('Y');
     $("#sitelimit_interval").val('');
     $("#sitelimit_count").val('');
@@ -497,6 +506,12 @@
         $("#site_cookie").val(ret.site.cookie);
         $("#site_ua").val(ret.site.ua);
         $("#site_download_setting").val(ret.site.download_setting);
+        let site_withinhour = Number(ret.site.withinhour);
+        if (site_withinhour && !isNaN(site_withinhour)) {
+          $("#site_withinhour").val(site_withinhour);
+        } else {
+          $("#site_withinhour").val(0);
+        }
         if (ret.site.parse) {
           $("#site_parse").val("Y");
         } else {
@@ -596,6 +611,10 @@
     let chrome = $("#site_chrome").val();
     let proxy = $("#site_proxy").val();
     let subtitle = $("#site_subtitle").val();
+    let withinhour = Number($("#site_withinhour").val());
+    if( !withinhour ) {
+      withinhour = 0;
+    }
     // 流控规则
     let limit_interval = $("#sitelimit_interval").val();
     if (limit_interval && isNaN(limit_interval)) {
@@ -635,6 +654,7 @@
         "proxy": proxy,
         "message": site_unread_msg_notify,
         "subtitle": subtitle,
+        "withinhour": withinhour,
         "limit_interval": limit_interval,
         "limit_count": limit_count,
         "limit_seconds": limit_seconds
