@@ -913,14 +913,18 @@ function show_add_rss_media_modal(mtype) {
       $("#rss_sites_div > div > div.btn-list > a").text("全不选");
     } else {
       select_SelectPart(rss_setting.rss_sites, 'rss_sites');
+      $("#rss_sites_div > div > div.btn-list > a").text("全选");
     }
     if (rss_setting.search_sites.length === 0) {
       select_SelectALL(true, 'search_sites');
       $("#rss_search_sites_div > div > div.btn-list > a").text("全不选");
-    } else if (rss_setting.search_sites === ["#dontuse"]) {
-      select_SelectALL(false, "search_sites");
     } else {
-      select_SelectPart(rss_setting.search_sites, 'search_sites');
+      if (rss_setting.search_sites === ["#dontuse"]) {
+        select_SelectALL(false, "search_sites");
+      } else {
+        select_SelectPart(rss_setting.search_sites, 'search_sites');
+      }
+      $("#rss_search_sites_div > div > div.btn-list > a").text("全选");
     }
   } else {
     $("#rss_restype").val('');
@@ -966,14 +970,18 @@ function show_default_rss_setting_modal(mtype) {
         $("#default_rss_setting_rss_sites_div > div > div.btn-list > a").text("全不选");
       } else {
         select_SelectPart(ret.data.rss_sites, 'default_rss_sites');
+        $("#default_rss_setting_rss_sites_div > div > div.btn-list > a").text("全选");
       }
       if (ret.data.search_sites.length === 0) {
         select_SelectALL(true, 'default_search_sites');
         $("#default_rss_setting_search_sites_div > div > div.btn-list > a").text("全不选");
-      } else if (ret.data.search_sites === ["#dontuse"]) {
-        select_SelectALL(false, "default_search_sites");
       } else {
-        select_SelectPart(ret.data.search_sites, 'default_search_sites');
+        if (ret.data.search_sites === ["#dontuse"]) {
+          select_SelectALL(false, "default_search_sites");
+        } else {
+          select_SelectPart(ret.data.search_sites, 'default_search_sites');
+        }
+        $("#default_rss_setting_search_sites_div > div > div.btn-list > a").text("全选");
       }
     } else {
       $("#default_rss_setting_restype").val('');
@@ -1080,15 +1088,19 @@ function show_edit_rss_media_modal(rssid, type) {
         select_SelectALL(true, 'rss_sites');
         $("#rss_sites_div > div > div.btn-list > a").text("全不选");
       } else {
-        select_SelectPart(ret.detail.rss_sites, 'rss_sites')
+        select_SelectPart(ret.detail.rss_sites, 'rss_sites');
+        $("#rss_sites_div > div > div.btn-list > a").text("全选");
       }
       if (ret.detail.search_sites.length === 0) {
         select_SelectALL(true, 'search_sites');
         $("#rss_search_sites_div > div > div.btn-list > a").text("全不选");
-      } else if (ret.detail.search_sites === ["#dontuse"]) {
-        select_SelectALL(false, 'search_sites');
       } else {
-        select_SelectPart(ret.detail.search_sites, 'search_sites');
+        if (ret.detail.search_sites === ["#dontuse"]) {
+          select_SelectALL(false, 'search_sites');
+        } else {
+          select_SelectPart(ret.detail.search_sites, 'search_sites');
+        }
+        $("#rss_search_sites_div > div > div.btn-list > a").text("全选");
       }
       $("[name='rss_add_btn']").hide();
       $("[name='rss_edit_btn']").show();
