@@ -124,6 +124,8 @@ class Rss:
                 site_proxy = site_info.get("proxy")
                 # 使用的规则
                 site_fliter_rule = site_info.get("rule")
+                # 限定订阅的小时数
+                site_withinhour = site_info.get("withinhour")
                 # 开始下载RSS
                 log.info(f"【Rss】正在处理：{site_name}")
                 if site_info.get("pri"):
@@ -150,6 +152,10 @@ class Rss:
                     try:
                         # 种子名
                         title = article.get('title')
+                        # 检查种子发布日期是否在要求时间内
+                        if not self.rsshelper.is_rss_inhour(article.get('pubdate'), site_withinhour):
+                            log.info(f"【Rss】{title} 超出限定发布时限，跳过")
+                            continue
                         # 种子链接
                         enclosure = article.get('enclosure')
                         # 种子页面
