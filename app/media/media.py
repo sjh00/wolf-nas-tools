@@ -728,15 +728,21 @@ class Media:
 
         # 标题名称可能情况的修正测试---
         use_modifiedname = False # 是否使用修正名称
-        modifiedname = None # 标题修正名称
+        modifiedname = meta_info.get_name() # 标题修正名称
         ## 判断标题名称开头是否疑似含有序号
-        fmnspaceindex = meta_info.get_name().find(' ')
-        if fmnspaceindex > 0 and meta_info.get_name()[:fmnspaceindex].isdigit():
-            modifiedname = meta_info.get_name()[fmnspaceindex+1:]
+        fmnspaceindex = modifiedname.find(' ')
+        if fmnspaceindex > 0 and modifiedname[:fmnspaceindex].isdigit():
+            modifiedname = modifiedname[fmnspaceindex+1:]
         ## 判断标题结尾是否重复含有年份
         fmnendswithyear = ' %s' % meta_info.year
-        if meta_info.get_name().endswith(fmnendswithyear):
-            modifiedname = meta_info.get_name()[:-len(fmnendswithyear)]
+        if modifiedname.endswith(fmnendswithyear):
+            modifiedname = modifiedname[:-len(fmnendswithyear)]
+        ## 判断中文名和英文名中间没有分割开的情况
+        if StringUtils.is_chinese(modifiedname[0]) and StringUtils.is_english(modifiedname[-1]):
+            while modifiedname and StringUtils.is_english(modifiedname[-1]):
+                modifiedname = modifiedname[:-1]
+        if modifiedname == meta_info.get_name():
+            modifiedname = None
         # ---
 
         media_key = self.__make_cache_key(meta_info=meta_info)
