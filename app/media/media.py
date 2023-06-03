@@ -726,19 +726,22 @@ class Media:
         :return: 带有TMDB信息的文件对应的MetaInfo对象字典
         """
 
-        # 标题名称可能情况的修正测试（仅电影类型）---
+        # 标题名称可能情况的修正测试---
         use_modifiedname = False # 是否使用修正名称
         modifiedname = None # 标题修正名称
-        if meta_info.type == MediaType.MOVIE or meta_info.type == MediaType.UNKNOWN:
-            fmnspaceindex = meta_info.get_name().find(' ')
-            ## 判断标题名称开头是否疑似含有序号
-            if fmnspaceindex > 0 and meta_info.get_name()[:fmnspaceindex].isdigit():
-                modifiedname = meta_info.get_name()[fmnspaceindex+1:]
+        ## 判断标题名称开头是否疑似含有序号
+        fmnspaceindex = meta_info.get_name().find(' ')
+        if fmnspaceindex > 0 and meta_info.get_name()[:fmnspaceindex].isdigit():
+            modifiedname = meta_info.get_name()[fmnspaceindex+1:]
+        ## 判断标题结尾是否重复含有年份
+        fmnendswithyear = ' %s' % meta_info.year
+        if meta_info.get_name().endswith(fmnendswithyear):
+            modifiedname = meta_info.get_name()[:-len(fmnendswithyear)]
         # ---
 
         media_key = self.__make_cache_key(meta_info=meta_info)
         if cache and not self.meta.get_meta_data_by_key(media_key) and modifiedname:
-            # 缓存没有且标题名称有修正测试（仅电影类型）
+            # 缓存没有且标题名称有修正测试
             media_key = self.__make_cache_key(meta_info=meta_info,modifiedname=modifiedname)
             use_modifiedname = True
         if not cache or not self.meta.get_meta_data_by_key(media_key):
@@ -776,11 +779,27 @@ class Media:
                         # 非严格模式下去掉年份和类型再查一次
                         file_media_info = self.__search_multi_tmdb(file_media_name=meta_info.get_name())
             if not file_media_info and modifiedname:
-                # 标题名称有修正测试（仅电影类型）
-                file_media_info = self.__search_tmdb(file_media_name=modifiedname,
-                                                     first_media_year=meta_info.year,
-                                                     search_type=MediaType.MOVIE
-                                                     )
+                # 标题名称有修正测试
+                if meta_info.type == MediaType.TV:
+                    # 确定是电视
+                    file_media_info = self.__search_tmdb(file_media_name=modifiedname,
+                                                         first_media_year=meta_info.year,
+                                                         search_type=meta_info.type,
+                                                         media_year=meta_info.year,
+                                                         season_number=meta_info.begin_season
+                                                         )
+                else:
+                    # 有年份先按电影查
+                    file_media_info = self.__search_tmdb(file_media_name=modifiedname,
+                                                         first_media_year=meta_info.year,
+                                                         search_type=MediaType.MOVIE
+                                                         )
+                    # 没有再按电视剧查
+                    if not file_media_info:
+                        file_media_info = self.__search_tmdb(file_media_name=modifiedname,
+                                                             first_media_year=meta_info.year,
+                                                             search_type=MediaType.TV
+                                                             )
                 use_modifiedname = True
             if use_modifiedname and file_media_info:
                 meta_info.set_name(modifiedname=modifiedname)
