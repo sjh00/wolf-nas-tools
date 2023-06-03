@@ -568,6 +568,9 @@ class WebAction:
                                                     user_name=current_user.username)
             if not ret:
                 return {"retcode": -1, "retmsg": ret_msg}
+            else:
+                # 更新电影订阅状态
+                Subscribe().update_subscribe(meta_info=media)
         return {"retcode": 0, "retmsg": ""}
 
     @staticmethod
@@ -604,6 +607,9 @@ class WebAction:
                                                 user_name=current_user.username)
         if not ret:
             return {"code": 1, "msg": ret_msg or "如连接正常，请检查下载任务是否存在"}
+        else:
+            # 更新电影订阅状态
+            Subscribe().update_subscribe(meta_info=media)
         return {"code": 0, "msg": "下载成功"}
 
     @staticmethod
@@ -634,6 +640,8 @@ class WebAction:
                                   torrent_file=file_path,
                                   in_from=SearchType.WEB,
                                   user_name=current_user.username)
+            # 更新电影订阅状态
+            Subscribe().update_subscribe(meta_info=media_info)
         # 下载链接
         if urls and not isinstance(urls, list):
             urls = [urls]
@@ -663,6 +671,8 @@ class WebAction:
                                   torrent_file=file_path,
                                   in_from=SearchType.WEB,
                                   user_name=current_user.username)
+            # 更新电影订阅状态
+            Subscribe().update_subscribe(meta_info=media_info)
 
         return {"code": 0, "msg": "添加下载完成！"}
 
