@@ -193,6 +193,8 @@ class MetaVideo(MetaBase):
             if not self.onlyen:
                 self._last_token_type = "cnname"
                 if not self.cn_name:
+                    # 去除名称种直接跟“第一季”“共三季”等词的情况
+                    token = re.sub(r'[全共第][0-9一二三四五六七八九十]+季全?', '', token, re.IGNORECASE)
                     self.cn_name = token
                 elif not self._stop_cnname_flag:
                     if not re.search("%s" % self._name_no_chinese_re, token, flags=re.IGNORECASE) \
