@@ -1027,3 +1027,35 @@ class Subscribe:
         清空订阅缺失集数
         """
         self.dbhelper.truncate_rss_episodes()
+    
+    def update_subscribe(self, meta_info):
+        """
+        更新订阅信息
+        :param meta_info: 要检测并更新的订阅媒体信息
+        """
+        mtype = meta_info.type
+        title = meta_info.get_name()
+        year = meta_info.year
+        season = None
+        if mtype != MediaType.MOVIE:
+            season = meta_info.get_season_string()
+            if season:
+                year = None
+        rssid = self.get_subscribe_id(mtype=mtype,
+                                      title=title,
+                                      year=year,
+                                      season=season,
+                                      tmdbid=meta_info.tmdb_id)
+        if rssid:
+            if mtype == MediaType.MOVIE:
+                rss_movies = self.get_subscribe_movies(rid=rssid)
+                for rid, rss_info in rss_movies.items():
+                    over_edition = rss_info.get("over_edition")
+                    if over_edition: # 洗版
+                        self.update_subscribe_over_edition(rtype=MediaType.MOVIE,
+                                                           rssid=rssid,
+                                                           media=meta_info)
+                    else:
+                        self.finish_rss_subscribe(rssid=rssid, media=meta_info)
+            else:
+                pass #TODO
