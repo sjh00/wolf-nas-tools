@@ -93,6 +93,19 @@ class StringUtils:
             return True
         else:
             return False
+    
+    @staticmethod
+    def is_english(word):
+        """
+        判断是否含有英文
+        """
+        if isinstance(word, list):
+            word = " ".join(word)
+        chn = re.compile(r'[a-zA-Z]')
+        if chn.search(word):
+            return True
+        else:
+            return False
 
     @staticmethod
     def is_all_chinese(word):
