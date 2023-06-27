@@ -167,12 +167,20 @@ class DbHelper:
             begin_pos = (int(page) - 1) * int(rownum)
 
         if search:
-            search = f"%{search}%"
-            count = self._db.query(TRANSFERHISTORY).filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search))
-                                                           | (TRANSFERHISTORY.TITLE.like(search))).count()
-            data = self._db.query(TRANSFERHISTORY).filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search))
-                                                          | (TRANSFERHISTORY.TITLE.like(search))).order_by(
-                TRANSFERHISTORY.DATE.desc()).limit(int(rownum)).offset(begin_pos).all()
+            if search[0] == search[-1] == '/':
+                search = search[1:-1]
+                count = self._db.query(TRANSFERHISTORY).filter((TRANSFERHISTORY.SOURCE_FILENAME.regexp_match(search))
+                                                            | (TRANSFERHISTORY.TITLE.regexp_match(search))).count()
+                data = self._db.query(TRANSFERHISTORY).filter((TRANSFERHISTORY.SOURCE_FILENAME.regexp_match(search))
+                                                            | (TRANSFERHISTORY.TITLE.regexp_match(search))).order_by(
+                    TRANSFERHISTORY.DATE.desc()).limit(int(rownum)).offset(begin_pos).all()
+            else:
+                search = f"%{search}%"
+                count = self._db.query(TRANSFERHISTORY).filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search))
+                                                            | (TRANSFERHISTORY.TITLE.like(search))).count()
+                data = self._db.query(TRANSFERHISTORY).filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search))
+                                                            | (TRANSFERHISTORY.TITLE.like(search))).order_by(
+                    TRANSFERHISTORY.DATE.desc()).limit(int(rownum)).offset(begin_pos).all()
             return count, data
         else:
             return self._db.query(TRANSFERHISTORY).count(), self._db.query(TRANSFERHISTORY).order_by(
