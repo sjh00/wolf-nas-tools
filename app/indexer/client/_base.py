@@ -150,9 +150,10 @@ class _IIndexClient(metaclass=ABCMeta):
                         # 查询缓存
                         cache_info = self.media.get_cache_info(meta_info)
                         if match_media \
-                                and str(cache_info.get("id")) == str(match_media.tmdb_id):
+                                and str(cache_info.get("id")) == str(match_media.tmdb_id) and cache_info.get("original_language"):
                             # 缓存匹配，合并媒体数据
                             media_info = self.media.merge_media_info(meta_info, match_media)
+                            media_info.original_language = cache_info.get("original_language")
                         else:
                             # 重新识别
                             media_info = self.media.get_media_info(title=torrent_name, subtitle=description, chinese=False)
