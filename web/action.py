@@ -2112,6 +2112,10 @@ class WebAction:
             return {"code": -1}
         meta_info = MetaInfo(title=title, subtitle=subtitle)
         meta_info.size = float(size) * 1024 ** 3 if size else 0
+        if not meta_info.original_language:
+            media_info = Media().get_media_info(title=title)
+            if media_info and media_info.original_language:
+                meta_info.original_language = media_info.original_language
         match_flag, res_order, match_msg = \
             Filter().check_torrent_filter(meta_info=meta_info,
                                           filter_args={"rule": rulegroup})
@@ -2119,7 +2123,8 @@ class WebAction:
             "code": 0,
             "flag": match_flag,
             "text": "匹配" if match_flag else "未匹配",
-            "order": 100 - res_order if res_order else 0
+            "order": 100 - res_order if res_order else 0,
+            "original_language": f"原始语言：{meta_info.original_language}" if meta_info.original_language else False
         }
 
     @staticmethod
@@ -2259,6 +2264,7 @@ class WebAction:
             "group": data.get("group_id"),
             "name": data.get("rule_name"),
             "pri": data.get("rule_pri"),
+            "original_language": data.get("rule_original_language"),
             "include": data.get("rule_include"),
             "exclude": data.get("rule_exclude"),
             "size": data.get("rule_sizelimit"),
@@ -3306,6 +3312,7 @@ class WebAction:
             rules.append({
                 "name": rule.ROLE_NAME,
                 "pri": rule.PRIORITY,
+                "original_language": rule.ORIGINAL_LANGUAGE,
                 "include": rule.INCLUDE,
                 "exclude": rule.EXCLUDE,
                 "size": rule.SIZE_LIMIT,
@@ -3342,6 +3349,7 @@ class WebAction:
                             "group": group_id,
                             "name": rule.get("name"),
                             "pri": rule.get("pri"),
+                            "original_language": rule.get("original_language"),
                             "include": rule.get("include"),
                             "exclude": rule.get("exclude"),
                             "size": rule.get("size"),
@@ -3974,8 +3982,9 @@ class WebAction:
                         rule_info = {}
                         rule = rule.split(",")
                         rule_info['name'] = rule[2][1:-1]
-                        rule_info['include'] = rule[4][1:-1]
-                        rule_info['exclude'] = rule[5][1:-1]
+                        rule_info['original_language'] = rule[4][1:-1]
+                        rule_info['include'] = rule[5][1:-1]
+                        rule_info['exclude'] = rule[6][1:-1]
                         rulegroup['rules'].append(rule_info)
                     rulegroup["sql"].append(sql_list[i + 1])
                 Init_RuleGroups.append(rulegroup)

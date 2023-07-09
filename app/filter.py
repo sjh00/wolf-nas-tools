@@ -15,6 +15,7 @@ class Filter:
     dbhelper = None
     _groups = []
     _rules = []
+    _language_options = [] # tmdb电影语言列表
 
     def __init__(self):
         self.init_config()
@@ -24,6 +25,9 @@ class Filter:
         self.rg_matcher = ReleaseGroupsMatcher()
         self._groups = self.get_filter_group()
         self._rules = self.get_filter_rule()
+        self._language_options = [m.get('value') for m in ModuleConf.DISCOVER_FILTER_CONF.get(
+            "tmdb_movie").get("with_original_language").get("options")
+            if m.get('value') and m.get('value') != 'other']
 
     def get_rule_groups(self, groupid=None, default=False):
         """
@@ -67,6 +71,7 @@ class Filter:
                 "group": rule.GROUP_ID,
                 "name": rule.ROLE_NAME,
                 "pri": rule.PRIORITY or 0,
+                "original_language": rule.ORIGINAL_LANGUAGE or '',
                 "include": rule.INCLUDE.split("\n") if rule.INCLUDE else [],
                 "exclude": rule.EXCLUDE.split("\n") if rule.EXCLUDE else [],
                 "size": rule.SIZE_LIMIT,
@@ -127,6 +132,19 @@ class Filter:
                 rule_match = True
                 # 命中规则的序号
                 order_seq = 100 - int(filter_info.get('pri'))
+                # 指定原始语言
+                rule_original_language = filter_info.get('original_language')
+                if rule_original_language and rule_match:
+                    meta_original_language = meta_info.original_language
+                    if meta_original_language:
+                        meta_original_language = meta_original_language.strip()
+                        if rule_original_language == 'other':
+                            if meta_original_language[:2] in self._language_options:
+                                rule_match = False
+                        elif rule_original_language[:2] != meta_original_language[:2]:
+                            rule_match = False
+                    else:
+                        rule_match = False
                 # 必须包括的项
                 includes = filter_info.get('include')
                 if includes and rule_match:
@@ -311,10 +329,11 @@ class Filter:
         # 过滤过滤规则，-1表示不使用过滤规则，空则使用默认过滤规则
         if filter_args.get("rule"):
             # 已设置默认规则
-            match_flag, order_seq, rule_name = self.check_rules(meta_info, filter_args.get("rule"), donthave_original_language=donthave_original_language)
+            match_flag, order_seq, rule_name = self.check_rules(meta_info, filter_args.get("rule"))
             meta_original_language = f"原始语言：{meta_info.original_language}" if meta_info.original_language else ""
             match_msg = "%s %s 大小：%s 促销：%s 不符合订阅/站点过滤规则 %s 要求" % (
                 meta_info.org_string,
+                meta_original_language,
                 StringUtils.str_filesize(meta_info.size),
                 meta_info.get_volume_factor_string(),
                 rule_name
@@ -322,10 +341,11 @@ class Filter:
             return match_flag, order_seq, match_msg
         else:
             # 默认过滤规则
-            match_flag, order_seq, rule_name = self.check_rules(meta_info, donthave_original_language=donthave_original_language)
+            match_flag, order_seq, rule_name = self.check_rules(meta_info)
             meta_original_language = f"原始语言：{meta_info.original_language}" if meta_info.original_language else ""
             match_msg = "%s %s 大小：%s 促销：%s 不符合默认过滤规则 %s 要求" % (
                 meta_info.org_string,
+                meta_original_language,
                 StringUtils.str_filesize(meta_info.size),
                 meta_info.get_volume_factor_string(),
                 rule_name
