@@ -54,7 +54,6 @@ class MetaVideo(MetaBase):
         super().__init__(title=title, subtitle=subtitle, fileflag=fileflag, onlyen=onlyen)
         if not title:
             return
-        original_title = title
         self._source = ""
         self._effect = []
         # 判断是否纯数字命名
@@ -126,7 +125,7 @@ class MetaVideo(MetaBase):
         # 提取原盘DIY
         if self.resource_type and "BluRay" in self.resource_type:
             if (self.subtitle and re.findall(r'D[Ii]Y', self.subtitle)) \
-                    or re.findall(r'-D[Ii]Y@', original_title):
+                    or re.findall(r'-D[Ii]Y@', self.org_string):
                 self.resource_type = f"{self.resource_type} DIY"
         # 解析副标题，只要季和集
         self.init_subtitle(self.org_string)
@@ -142,9 +141,9 @@ class MetaVideo(MetaBase):
         if self.part and self.part.upper() == "PART":
             self.part = None
         # 制作组/字幕组
-        self.resource_team = ReleaseGroupsMatcher().match(title=original_title) or None
+        self.resource_team = ReleaseGroupsMatcher().match(title=self.org_string) or None
         # 自定义占位符
-        self.customization = CustomizationMatcher().match(title=original_title) or None
+        self.customization = CustomizationMatcher().match(title=self.org_string) or None
 
     def __fix_name(self, name):
         if not name:
@@ -440,7 +439,7 @@ class MetaVideo(MetaBase):
                     and self._last_token_type == "episode":
                 self.end_episode = int(token)
                 self.total_episodes = (self.end_episode - self.begin_episode) + 1
-                if self.fileflag and self.total_episodes > 2:
+                if re.search(r'[ \.\d]EP?\d{1,3}[ \.]\d{1,3}[ \.]',self.org_string,re.IGNORECASE) or (self.fileflag and self.total_episodes > 2):
                     self.end_episode = None
                     self.total_episodes = 1
                 self._continue_flag = False
