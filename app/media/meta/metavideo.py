@@ -25,7 +25,7 @@ class MetaVideo(MetaBase):
     _effect = []
     # 正则式区
     _season_re = r"S(\d{2})|^S(\d{1,2})$|S(\d{1,2})E"
-    _episode_re = r"EP?(\d{2,4})$|^EP?(\d{1,4})$|^S\d{1,2}EP?(\d{1,4})$|S\d{2}EP?(\d{2,4})"
+    _episode_re = r"EP?(\d{2,4})$|^EP?(\d{1,4})$|^S\d{1,2}EP?(\d{1,4})$|S\d{2}E?P?(\d{2,4})"
     _part_re = r"(^PART[0-9ABI]{0,2}$|^CD[0-9]{0,2}$|^DVD[0-9]{0,2}$|^DISK[0-9]{0,2}$|^DISC[0-9]{0,2}$)"
     _roman_numerals = r"^(?=[MDCLXVI])M*(C[MD]|D?C{0,3})(X[CL]|L?X{0,3})(I[XV]|V?I{0,3})$"
     _source_re = r"^BLURAY$|^HDTV$|^UHDTV$|^HDDVD$|^WEBRIP$|^DVDRIP$|^BDRIP$|^BLU$|^WEB$|^BD$|^HDRip$"
@@ -81,6 +81,8 @@ class MetaVideo(MetaBase):
         title = re.sub(r'\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}', "", title)
         # 特殊制作组名称处理
         title = re.sub(r"(?<=[^a-zA-Z\d]blucook)#\d{1,5}", "", title, count=1, flags=re.IGNORECASE)
+        # 特殊后缀处理
+        title = re.sub(r"[\._]BONUS[\._]DISC|\.extras-\d+", "", title, count=1, flags=re.IGNORECASE)
         # 拆分tokens
         tokens = Tokens(title)
         self.tokens = tokens
