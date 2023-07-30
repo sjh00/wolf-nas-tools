@@ -125,7 +125,7 @@
                     </td>
                     <td>
                       <div class="text-wrap">
-                        <a href='javascript:navmenu("mediafile?dir={{ History.SOURCE_PATH.replace("\\", "/") }}")'>
+                        <a href='javascript:navmenu("mediafile?dir={{ History.SOURCE_PATH.replace("\\", "/") | urlquote | urlquote }}")'>
                           {{ History.SOURCE_FILENAME or '' }}</a>
                       </div>
                       <div class="text-wrap">
@@ -134,7 +134,7 @@
                         {% endif %}
                         {% if History.DEST_PATH %}
                           <a class="text-green"
-                             href='javascript:navmenu("mediafile?dir={{ History.DEST_PATH.replace("\\", "/") }}")'>
+                             href='javascript:navmenu("mediafile?dir={{ History.DEST_PATH.replace("\\", "/") | urlquote | urlquote }}")'>
                             {{ History.DEST_FILENAME or '' }}
                           </a>
                         {% else %}
