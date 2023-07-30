@@ -976,7 +976,7 @@ class Media:
                     log.warn("【Meta】%s 不存在" % file_path)
                     continue
                 # 过滤掉特殊目录下的子文件
-                if not os.path.isdir(file_path):
+                if os.path.isfile(file_path):
                     # 过滤掉蓝光原盘目录下的子文件
                     if PathUtils.get_bluray_dir(file_path):
                         log.info("【Meta】%s 跳过蓝光原盘文件：" % file_path)
