@@ -100,7 +100,7 @@
                       <input class="form-check-input m-0 align-middle" name="unknow_record" value="{{ Path.id }}" type="checkbox">
                     </td>
                     <td>
-                      <a href='javascript:navmenu("mediafile?dir={{ Path.name.replace("\\", "/") }}")'>{{ Path.name }}</a>
+                      <a href='javascript:navmenu("mediafile?dir={{ Path.name.replace("\\", "/") | urlquote | urlquote }}")'>{{ Path.name }}</a>
                       {% else %}
                       <input class="form-check-input m-0 align-middle" name="unknow_record" value="{{ Path.id }}" type="checkbox" data-notexists="true">
                     </td>
