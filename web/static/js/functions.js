@@ -1546,8 +1546,9 @@ function show_manual_transfer_modal(manual_type, inpath, syncmod, media_type, un
     $('#rename_header').text("手动识别");
     $('#rename_path_div').show();
     $('#rename_inpath_div').hide();
-    $('#rename_outpath_div').hide();
+    $('#rename_outpath_div').show();
     $("#rename_path").val(inpath);
+    $("#rename_outpath").val('');
     $("#rename_syncmod_manual").val(syncmod);
     $("#unknown_id").val(unknown_id);
     $("#transferlog_id").val(transferlog_id);
