@@ -163,10 +163,10 @@ class PathUtils:
             return False
         dorf_namelower = os.path.basename(path).lower()
         if os.path.isdir(path):
-            if re.match(r'.+?[\._ ]BONUS[\._ ]DISC|behind the scenes$|deleted scenes$|interviews$|scenes$|samples$|shorts$|featurettes$|clips$',dorf_namelower,re.I):
+            if re.match(r'.+?\bBONUS[\._ ]DISC\b|bonus$|extras$|extra$',dorf_namelower,re.I):
                 return True
-        elif re.match(r'.+?[\._ ]BONUS[\._ ]DISC[\._ ]|.+?SP?\d{1,2}\.extras\.\d{2,}|.+?\.extras-\d+\.',dorf_namelower,re.I):
-                return True
+        elif re.match(r'.+?\bBONUS[\._ ]DISC\b|.+?\bSP?\d{1,2}\bextras\b\d{2,}|.+?\bextras-\d+\b',dorf_namelower,re.I):
+            return True
         return False
 
     @staticmethod
@@ -181,7 +181,7 @@ class PathUtils:
             extradirpath = os.path.dirname(path)
         dorf_namelower = os.path.basename(extradirpath).lower()
         
-        if re.match(r'.+?[\._ ]BONUS[\._ ]DISC|behind the scenes$|deleted scenes$|interviews$|scenes$|samples$|shorts$|featurettes$|clips$',dorf_namelower,re.I):
+        if re.match(r'.+?\bBONUS[\._ ]DISC\b|bonus$|extras$|extra$',dorf_namelower,re.I):
             return extradirpath
         
         return None
