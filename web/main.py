@@ -12,8 +12,8 @@ from functools import wraps
 from math import floor
 from pathlib import Path
 from threading import Lock
-from urllib import parse
 from urllib.parse import unquote
+from markupsafe import Markup
 
 from flask import Flask, request, json, render_template, make_response, session, send_from_directory, send_file, \
     redirect, Response
@@ -1825,3 +1825,9 @@ def str_filesize(size):
 @App.template_filter('hash')
 def md5_hash(text):
     return StringUtils.md5_hash(text)
+
+# URLQuote过滤器
+@App.template_filter('urlquote')
+def urlencode_filter(text):
+    text = urllib.parse.quote(text)
+    return Markup(text)
