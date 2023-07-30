@@ -466,6 +466,9 @@ class MetaVideo(MetaBase):
                 self.type = MediaType.TV
         elif token.upper() == "EPISODE":
             self._last_token_type = "EPISODE"
+        elif token.upper() == "OF":
+            self._last_token_type = "OF"
+            self._continue_flag = False
 
     def __init_resource_type(self, token):
         if not self.get_name():
