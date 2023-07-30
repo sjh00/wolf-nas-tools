@@ -735,7 +735,8 @@ class WebAction:
         """
         手工转移
         """
-        path = dest_dir = None
+        path = None
+        dest_dir = data.get("outpath") or None
         syncmod = ModuleConf.RMT_MODES.get(data.get("syncmod"))
         logid = data.get("logid")
         if logid:
@@ -743,7 +744,7 @@ class WebAction:
             if transinfo:
                 path = os.path.join(
                     transinfo.SOURCE_PATH, transinfo.SOURCE_FILENAME)
-                dest_dir = transinfo.DEST
+                dest_dir = dest_dir or transinfo.DEST
             else:
                 return {"retcode": -1, "retmsg": "未查询到转移日志记录"}
         else:
@@ -752,7 +753,7 @@ class WebAction:
                 inknowninfo = FileTransfer().get_unknown_info_by_id(unknown_id)
                 if inknowninfo:
                     path = inknowninfo.PATH
-                    dest_dir = inknowninfo.DEST
+                    dest_dir = dest_dir or inknowninfo.DEST
                 else:
                     return {"retcode": -1, "retmsg": "未查询到未识别记录"}
         if not dest_dir:
