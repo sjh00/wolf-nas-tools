@@ -975,16 +975,27 @@ class Media:
                 if not os.path.exists(file_path):
                     log.warn("【Meta】%s 不存在" % file_path)
                     continue
+                # 过滤掉特殊目录下的子文件
+                if not os.path.isdir(file_path):
+                    # 过滤掉蓝光原盘目录下的子文件
+                    if PathUtils.get_bluray_dir(file_path):
+                        log.info("【Meta】%s 跳过蓝光原盘文件：" % file_path)
+                        continue
+                    # 过滤掉额外内容目录下的子文件
+                    elif PathUtils.get_extras_dir(file_path):
+                        log.info("【Meta】%s 跳过额外内容文件：" % file_path)
+                        continue
                 # 解析媒体名称
+                # 判断是否额外内容
+                isextras = PathUtils.is_extras(file_path)
                 # 先用自己的名称
                 file_name = os.path.basename(file_path)
                 parent_name = os.path.basename(os.path.dirname(file_path))
                 parent_parent_name = os.path.basename(PathUtils.get_parent_paths(file_path, 2))
-                # 过滤掉蓝光原盘目录下的子文件
-                if not os.path.isdir(file_path) \
-                        and PathUtils.get_bluray_dir(file_path):
-                    log.info("【Meta】%s 跳过蓝光原盘文件：" % file_path)
-                    continue
+                if isextras and len(file_name)<12:
+                    file_name = parent_name
+                    parent_name = parent_parent_name
+                    parent_parent_name = os.path.basename(PathUtils.get_parent_paths(file_path, 3))
                 # 没有自带TMDB信息
                 if not tmdb_info:
                     # 识别名称
@@ -1033,6 +1044,8 @@ class Media:
                             meta_info.end_episode = end_ep
                     # 加入缓存
                     self.save_rename_cache(file_name, tmdb_info)
+                if isextras:
+                    meta_info.note['is_extras'] = True
                 # 按文件路程存储
                 return_media_infos[file_path] = meta_info
             except Exception as err:
