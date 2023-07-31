@@ -10,6 +10,28 @@
       </div>
       <div class="col-auto ms-auto d-print-none">
         <div class="btn-list">
+          <div class="dropdown" id="checknotexistsinpage" style="visibility: hidden;">
+            <a href="#" class="btn ms-auto d-none d-sm-inline-block dropdown-toggle"
+               data-bs-toggle="dropdown" aria-expanded="false">
+               {{ SVG.circle_x() }}
+              选择无效项
+            </a>
+            <a href="#" class="btn d-sm-none btn-icon"
+               data-bs-toggle="dropdown" aria-expanded="false">
+              {{ SVG.circle_x() }}
+            </a>
+            <div class="dropdown-menu dropdown-menu-end">
+              <a class="dropdown-item" href="javascript:checknotexists_curpage(1)" >
+                选择仅源路径无效的项
+              </a>
+              <a class="dropdown-item" href="javascript:checknotexists_curpage(2)" >
+                选择仅媒体库路径无效的项
+              </a>
+              <a class="dropdown-item" href="javascript:checknotexists_curpage(3)" >
+                选择路径均无效的项
+              </a>
+            </div>
+          </div>
           <a href="javascript:batch_check_action('reidentification')"
              class="btn btn-primary ms-auto d-none d-sm-inline-block">
             {{ SVG.refresh() }}
@@ -55,7 +77,20 @@
           <div class="card-body border-bottom py-3">
             <div class="d-flex">
               <div class="text-muted">
-                共 {{ TotalCount }} 条记录
+                共 {{ TotalCount }} 条记录<span class="d-none d-md-inline-block"> ，每页显示：</span>
+              </div>
+              <div class="text-muted">
+                <div class="ms-2 d-none d-md-inline-block">
+                  <select class="form-select form-select-sm" id="pagenum_select" title="每页显示">
+                    {% for pn in (30,50,100,200,300,500,1000) %}
+                      <option value={{pn}}
+                      {% if pn == PageNum %}
+                        selected
+                      {% endif %}
+                      >{{pn}}</option>
+                    {% endfor %}
+                  </select>
+                </div>
               </div>
               <div class="ms-auto text-muted">
                 搜索:
@@ -87,7 +122,8 @@
                 {% for History in Historys %}
                   <tr>
                     <td class="w-1">
-                      <input class="form-check-input m-0 align-middle" name="transfer_history" value="{{ History.ID }}" type="checkbox">
+                      <input class="form-check-input m-0 align-middle" name="transfer_history" value="{{ History.ID }}" type="checkbox"
+                      {% if not History.ISEXISTS_SOURCE_PATH and not History.ISEXISTS_DEST_PATH %} data-notexists="3"{% elif not History.ISEXISTS_SOURCE_PATH %} data-notexists="1"{% elif not History.ISEXISTS_DEST_PATH %} data-notexists="2"{% endif %}>
                     </td>
                     <td>
                       <div class="d-flex py-1 align-items-center">
@@ -125,18 +161,26 @@
                     </td>
                     <td>
                       <div class="text-wrap">
+                        {% if History.ISEXISTS_SOURCE_PATH %}
                         <a href='javascript:navmenu("mediafile?dir={{ History.SOURCE_PATH.replace("\\", "/") | urlquote | urlquote }}")'>
                           {{ History.SOURCE_FILENAME or '' }}</a>
+                        {% else %}
+                        <del class="text-warning">{{ History.SOURCE_FILENAME or '' }}</del> <span class="text-muted">（路径已不存在）</span>
+                        {% endif %}
                       </div>
                       <div class="text-wrap">
                         {% if History.DEST_PATH or History.DEST_FILENAME %}
                         <span class="text-muted">=> </span>
                         {% endif %}
                         {% if History.DEST_PATH %}
+                          {% if History.ISEXISTS_DEST_PATH %}
                           <a class="text-green"
                              href='javascript:navmenu("mediafile?dir={{ History.DEST_PATH.replace("\\", "/") | urlquote | urlquote }}")'>
                             {{ History.DEST_FILENAME or '' }}
                           </a>
+                          {% else %}
+                          <del class="text-warning">{{ History.DEST_FILENAME or '' }}</del> <span class="text-muted">（路径已不存在）</span>
+                          {% endif %}
                         {% else %}
                           {{ History.DEST_FILENAME or '' }}
                         {% endif %}
@@ -201,7 +245,7 @@
                 {% for page in PageRange %}
                   <li class="page-item {% if page==CurrentPage %} active {% endif %}">
                     <a class="page-link"
-                       href="javascript:navmenu('history?s={{ Search }}&page={{ page }}')">{{ page }}</a>
+                       href="javascript:navmenu('history?s={{ Search }}&page={{ page }}&pagenum={{ PageNum }}')">{{ page }}</a>
                   </li>
                 {% endfor %}
                 <li class="page-item {% if CurrentPage >= TotalPage %} disabled {% endif %}">
@@ -219,14 +263,23 @@
   </div>
 </div>
 <script type="text/javascript">
+  // 每页显示
+  $('#pagenum_select').bind('change', function () {
+    const keyword = $("#search_word").val();
+    const pagenum = $('#pagenum_select').val();
+    navmenu("history?s=" + keyword + "&pagenum=" + pagenum);
+  });
+
   // 上一页
   function go_pre_page(search, page) {
-    navmenu("history?s=" + search + "&page=" + (page - 1))
+    const pagenum = $('#pagenum_select').val();
+    navmenu("history?s=" + search + "&page=" + (page - 1) + "&pagenum=" + pagenum);
   }
 
   // 下一页
   function go_next_page(search, page) {
-    navmenu("history?s=" + search + "&page=" + (page + 1))
+    const pagenum = $('#pagenum_select').val();
+    navmenu("history?s=" + search + "&page=" + (page + 1) + "&pagenum=" + pagenum);
   }
 
   //手动重新识别
@@ -256,7 +309,8 @@
   $('#search_word').bind('keypress', function (event) {
     if (event.keyCode == "13") {
       const keyword = $("#search_word").val();
-      navmenu("history?s=" + keyword);
+      const pagenum = $('#pagenum_select').val();
+      navmenu("history?s=" + keyword + "&pagenum=" + pagenum);
     }
   });
 
@@ -277,6 +331,16 @@
   function single_delete_history(flag, logid, name) {
     const logids = [logid];
     delete_history(flag, logids, name);
+  }
+
+  if ($(`input[name=transfer_history][type=checkbox][data-notexists]`).length > 0){
+    $('#checknotexistsinpage').css('visibility','visible');
+  } else {
+    $('#checknotexistsinpage').css('visibility','hidden');
+  }
+  //选择当前页所有路径已不存在项
+  function checknotexists_curpage(kind) {
+    select_dataop_SelectALL('true', 'transfer_history', 'notexists='+kind);
   }
 
 </script>
