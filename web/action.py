@@ -3783,9 +3783,13 @@ class WebAction:
             sync_mode = history.get("MODE")
             rmt_mode = ModuleConf.get_dictenum_key(
                 ModuleConf.RMT_MODES, sync_mode) if sync_mode else ""
+            isexists_source_path = os.path.exists(history.get("SOURCE_PATH")) if history.get("SOURCE_PATH") else True # 源路径文件或文件夹是否还存在
+            isexists_dest_path = os.path.exists(history.get("DEST_PATH")) if history.get("DEST_PATH") else True # 转移后路径文件或文件夹是否还存在
             history.update({
                 "SYNC_MODE": sync_mode,
-                "RMT_MODE": rmt_mode
+                "RMT_MODE": rmt_mode,
+                "ISEXISTS_SOURCE_PATH": isexists_source_path,
+                "ISEXISTS_DEST_PATH": isexists_dest_path
             })
             historys_list.append(history)
         TotalPage = floor(totalCount / PageNum) + 1
