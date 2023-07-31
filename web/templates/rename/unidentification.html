@@ -159,7 +159,7 @@
                 {% for page in PageRange %}
                   <li class="page-item {% if page==CurrentPage %} active {% endif %}">
                     <a class="page-link"
-                       href="javascript:navmenu('unidentification?s={{ Search }}&page={{ page }}')">{{ page }}</a>
+                       href="javascript:navmenu('unidentification?s={{ Search }}&page={{ page }}&pagenum={{ PageNum }}')">{{ page }}</a>
                   </li>
                 {% endfor %}
                 <li class="page-item {% if CurrentPage >= TotalPage %} disabled {% endif %}">
