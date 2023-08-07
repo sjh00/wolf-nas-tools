@@ -207,7 +207,7 @@
   // 搜索按钮/延时动态搜索
   $('#search_word').bind({
     keypress:function (event) { if (event.keyCode == "13") { gosearch(); }},
-    keyup:function(event) { clearTimeout(searchkeytimeout); searchkeytimeout = setTimeout(gosearch, 500); }
+    input:function(event) { clearTimeout(searchkeytimeout); searchkeytimeout = setTimeout(gosearch, 500); }
   });
   
   //显示弹出窗口
