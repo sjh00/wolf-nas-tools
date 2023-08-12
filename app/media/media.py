@@ -17,6 +17,7 @@ from app.utils import PathUtils, EpisodeFormat, RequestUtils, NumberUtils, Strin
 from app.utils.types import MediaType, MatchMode
 from config import Config, KEYWORD_BLACKLIST, KEYWORD_SEARCH_WEIGHT_3, KEYWORD_SEARCH_WEIGHT_2, KEYWORD_SEARCH_WEIGHT_1, \
     KEYWORD_STR_SIMILARITY_THRESHOLD, KEYWORD_DIFF_SCORE_THRESHOLD
+from datetime import date
 
 
 class Media:
@@ -756,6 +757,9 @@ class Media:
             if meta_info.type != MediaType.TV and not meta_info.year:
                 file_media_info = self.__search_multi_tmdb(file_media_name=meta_info.get_name())
             else:
+                # 尝试判断年份为今年
+                if not meta_info.year:
+                    meta_info.year = date.today().year
                 if meta_info.type == MediaType.TV:
                     # 确定是电视
                     file_media_info = self.__search_tmdb(file_media_name=meta_info.get_name(),
@@ -784,8 +788,11 @@ class Media:
                     if not file_media_info and self._rmt_match_mode == MatchMode.NORMAL and not strict:
                         # 非严格模式下去掉年份和类型再查一次
                         file_media_info = self.__search_multi_tmdb(file_media_name=meta_info.get_name())
+            # 标题名称有修正测试
             if not file_media_info and modifiedname:
-                # 标题名称有修正测试
+                # 尝试判断年份为今年
+                if not meta_info.year:
+                    meta_info.year = date.today().year
                 if meta_info.type == MediaType.TV:
                     # 确定是电视
                     file_media_info = self.__search_tmdb(file_media_name=modifiedname,
