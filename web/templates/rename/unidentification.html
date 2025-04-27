@@ -100,7 +100,7 @@
                       <input class="form-check-input m-0 align-middle" name="unknow_record" value="{{ Path.id }}" type="checkbox">
                     </td>
                     <td>
-                      <a href='javascript:navmenu("mediafile?dir={{ Path.name.replace("\\", "/") }}")'>{{ Path.name }}</a>
+                      <a href='javascript:navmenu("mediafile?dir={{ Path.name.replace("\\", "/") | urlquote | urlquote }}")'>{{ Path.name }}</a>
                       {% else %}
                       <input class="form-check-input m-0 align-middle" name="unknow_record" value="{{ Path.id }}" type="checkbox" data-notexists="true">
                     </td>
@@ -159,7 +159,7 @@
                 {% for page in PageRange %}
                   <li class="page-item {% if page==CurrentPage %} active {% endif %}">
                     <a class="page-link"
-                       href="javascript:navmenu('unidentification?s={{ Search }}&page={{ page }}')">{{ page }}</a>
+                       href="javascript:navmenu('unidentification?s={{ Search }}&page={{ page }}&pagenum={{ PageNum }}')">{{ page }}</a>
                   </li>
                 {% endfor %}
                 <li class="page-item {% if CurrentPage >= TotalPage %} disabled {% endif %}">
@@ -184,15 +184,6 @@
     navmenu("unidentification?s=" + keyword + "&pagenum=" + pagenum);
   });
 
-  // 搜索按钮
-  $('#search_word').bind('keypress', function (event) {
-    if (event.keyCode == "13") {
-      const keyword = $("#search_word").val();
-      const pagenum = $('#pagenum_select').val();
-      navmenu("unidentification?s=" + keyword + "&pagenum=" + pagenum);
-    }
-  });
-
   // 上一页
   function go_pre_page(search, page) {
     const pagenum = $('#pagenum_select').val();
@@ -204,6 +195,20 @@
     const pagenum = $('#pagenum_select').val();
     navmenu("unidentification?s=" + search + "&page=" + (page + 1) + "&pagenum=" + pagenum);
   }
+
+  // 搜索功能
+  function gosearch(){
+    const keyword = $("#search_word").val();
+    const pagenum = $('#pagenum_select').val();
+    navmenu("unidentification?s=" + keyword + "&pagenum=" + pagenum);
+  }
+
+  var searchkeytimeout = null;
+  // 搜索按钮/延时动态搜索
+  $('#search_word').bind({
+    keypress:function (event) { if (event.keyCode == "13") { gosearch(); }},
+    input:function(event) { clearTimeout(searchkeytimeout); searchkeytimeout = setTimeout(gosearch, 500); }
+  });
   
   //显示弹出窗口
   function show_rename_modal(id, path, rmt_mode) {

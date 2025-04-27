@@ -52,6 +52,7 @@ class WebUtils:
         """
         获取最新版本号
         """
+        return None, None
         try:
             releases_update_only = Config().get_config("app").get("releases_update_only")
             version_res = RequestUtils(proxies=Config().get_proxies()).get_res(
@@ -65,7 +66,6 @@ class WebUtils:
                 return version, link
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
-        return None, None
 
     @staticmethod
     def get_mediainfo_from_id(mtype, mediaid, wait=False):

@@ -211,7 +211,6 @@ class WebAction:
             "get_season_episodes": self.__get_season_episodes,
             "get_user_menus": self.get_user_menus,
             "get_top_menus": self.get_top_menus,
-            "auth_user_level": self.auth_user_level,
             "update_downloader": self.__update_downloader,
             "del_downloader": self.__del_downloader,
             "check_downloader": self.__check_downloader,
@@ -735,7 +734,8 @@ class WebAction:
         """
         手工转移
         """
-        path = dest_dir = None
+        path = None
+        dest_dir = data.get("outpath") or None
         syncmod = ModuleConf.RMT_MODES.get(data.get("syncmod"))
         logid = data.get("logid")
         if logid:
@@ -743,7 +743,7 @@ class WebAction:
             if transinfo:
                 path = os.path.join(
                     transinfo.SOURCE_PATH, transinfo.SOURCE_FILENAME)
-                dest_dir = transinfo.DEST
+                dest_dir = dest_dir or transinfo.DEST
             else:
                 return {"retcode": -1, "retmsg": "未查询到转移日志记录"}
         else:
@@ -752,7 +752,7 @@ class WebAction:
                 inknowninfo = FileTransfer().get_unknown_info_by_id(unknown_id)
                 if inknowninfo:
                     path = inknowninfo.PATH
-                    dest_dir = inknowninfo.DEST
+                    dest_dir = dest_dir or inknowninfo.DEST
                 else:
                     return {"retcode": -1, "retmsg": "未查询到未识别记录"}
         if not dest_dir:
@@ -2112,18 +2112,13 @@ class WebAction:
             return {"code": -1}
         meta_info = MetaInfo(title=title, subtitle=subtitle)
         meta_info.size = float(size) * 1024 ** 3 if size else 0
-        match_flag, res_order, match_msg = \
-            Filter().check_torrent_filter(meta_info=meta_info,
-                                          filter_args={"rule": rulegroup},
-                                          donthave_original_language=True)
-        if match_flag:
-            # 重新查询TMDB以适配原始语言过滤
+        if not meta_info.original_language:
             media_info = Media().get_media_info(title=title)
             if media_info and media_info.original_language:
                 meta_info.original_language = media_info.original_language
-                match_flag, res_order, match_msg = \
-                Filter().check_torrent_filter(meta_info=meta_info,
-                                            filter_args={"rule": rulegroup})
+        match_flag, res_order, match_msg = \
+            Filter().check_torrent_filter(meta_info=meta_info,
+                                          filter_args={"rule": rulegroup})
         return {
             "code": 0,
             "flag": match_flag,
@@ -3787,9 +3782,13 @@ class WebAction:
             sync_mode = history.get("MODE")
             rmt_mode = ModuleConf.get_dictenum_key(
                 ModuleConf.RMT_MODES, sync_mode) if sync_mode else ""
+            isexists_source_path = os.path.exists(history.get("SOURCE_PATH")) if history.get("SOURCE_PATH") else True # 源路径文件或文件夹是否还存在
+            isexists_dest_path = os.path.exists(history.get("DEST_PATH")) if history.get("DEST_PATH") else True # 转移后路径文件或文件夹是否还存在
             history.update({
                 "SYNC_MODE": sync_mode,
-                "RMT_MODE": rmt_mode
+                "RMT_MODE": rmt_mode,
+                "ISEXISTS_SOURCE_PATH": isexists_source_path,
+                "ISEXISTS_DEST_PATH": isexists_dest_path
             })
             historys_list.append(history)
         TotalPage = floor(totalCount / PageNum) + 1
@@ -4777,21 +4776,6 @@ class WebAction:
             "code": 0,
             "menus": current_user.get_topmenus()
         }
-
-    @staticmethod
-    def auth_user_level(data=None):
-        """
-        用户认证
-        """
-        if data:
-            site = data.get("site")
-            params = data.get("params")
-        else:
-            site, params = None, {}
-        state, msg = User().check_user(site, params)
-        if state:
-            return {"code": 0, "msg": "认证成功"}
-        return {"code": 1, "msg": f"{msg or '认证失败，请检查合作站点账号是否正常！'}"}
 
     @staticmethod
     def __update_downloader(data):
