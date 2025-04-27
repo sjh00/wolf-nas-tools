@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import random
 import re
+import base64
 from urllib import parse
 
 import cn2an
@@ -615,3 +616,46 @@ class StringUtils:
         if re.search(pattern="^[0-9]+$", string=string):
             return True
         return False
+    
+    @staticmethod
+    def get_tid_by_url(url):
+        """
+        下载链接获取种子id
+        """
+        # 解析URL
+        parsed_url = parse.urlparse(url)
+
+        # 解析查询参数
+        params = parse.parse_qs(parsed_url.query)
+        if 'm-team' in url:
+            if not params.get('tid'):
+                return None
+
+            return params.get('tid')[0]
+        if 'yemapt' in url:
+            if not params.get('token'):
+                return None
+            token = params.get('token')[0]
+            decode_str = base64.b64decode(token).decode(encoding='utf-8')
+            tid = decode_str.split('\t')[-1]
+            return tid
+        
+        tid = re.findall(r'id=(\d+)', url)
+        if isinstance(tid, list):
+            return tid[0] if tid else None
+
+    @staticmethod
+    def replace_strings(text, replacements):
+        """
+        替换多个字符串
+        """
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        return text
+    
+    @staticmethod
+    def is_numeric(s):
+        """
+        判断是否为数字
+        """
+        return bool(re.match(r'^[-+]?[0-9]+(\.[0-9]+)?$', s))

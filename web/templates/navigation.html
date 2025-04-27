@@ -43,13 +43,13 @@
       background-size: cover;
       border: 0;
   }
-  .siteicon-rarbg {
-      background: url(../static/img/sites/rarbg.ico);
+  .siteicon-torrentgalaxy {
+      background: url(../static/img/sites/torrentgalaxy.png);
       background-size: cover;
       border: 0;
   }
-  .siteicon-torrentgalaxy {
-      background: url(../static/img/sites/torrentgalaxy.png);
+  .siteicon-butailing {
+      background: url(../static/img/sites/butailing.png);
       background-size: cover;
       border: 0;
   }
@@ -967,7 +967,7 @@
             <span class="dropzone-msg-desc">点击或者拖动种子文件到此处</span>
           </div>
         </form>
-        <textarea class="form-control mt-2" id="torrent_urls" rows="8" placeholder="https://xxxx，换行添加多个链接" aria-label=""></textarea>
+        <textarea class="form-control mt-2" id="torrent_urls" rows="8" placeholder="https://xxxx或magnet:?xt=xxxx，换行添加多个链接" aria-label=""></textarea>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-link link-secondary me-auto" data-bs-dismiss="modal">取消</button>
@@ -1173,9 +1173,6 @@
     DefaultTransferMode = '{{ SyncMod }}';
     DefaultPath = "{{ DefaultPath }}";
 
-    // TomSelect下拉框
-    init_tomselect();
-
     // Dropzone配置
     init_dropzone();
 
@@ -1185,9 +1182,6 @@
     {% if not TMDBFlag %}
       // 检查tmdb配置
       show_init_alert_modal();
-    {% elif current_user.level == 1 %}
-      // 用户认证
-      show_user_auth_modal();
     {% endif %}
 
   });
@@ -1234,7 +1228,6 @@
 <style>
   {{ CustomScriptCfg.css|safe or "" }}
 </style>
-
 <!-- 用户自定义JavaScript -->
 <script type="text/javascript">
   {{ CustomScriptCfg.javascript|safe or "" }}

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
+from urllib.parse import urljoin
 
 from lxml import etree
 
@@ -118,7 +119,7 @@ class NexusPhpSiteUserInfo(_ISiteUserInfo):
             if bonus_match and bonus_match.group(1).strip():
                 self.bonus = StringUtils.str_float(bonus_match.group(1))
                 return
-            bonus_match = re.search(r"[魔力值|\]][\[\]:：<>/a-zA-Z_\-=\"'\s#;]+\s*([\d,.]+|\"[\d,.]+\")[<>()&\s]",
+            bonus_match = re.search(r"[魔力值|\]][\[\]:：<>/a-zA-Z_\-=\"'\s#;]+\s*(\d+[\d.,]+|\"[\d,.]+\")[<>()&\s]",
                                     html_text,
                                     flags=re.S)
             if bonus_match and bonus_match.group(1).strip():
@@ -314,6 +315,16 @@ class NexusPhpSiteUserInfo(_ISiteUserInfo):
                     = f"ajax_getusertorrentlist.php"
                 self._torrent_seeding_params = {'userid': self.userid, 'type': 'seeding', 'csrf': csrf_text[0].strip()}
 
+        # 判断是否有其他做种页面
+        html_text = self._get_page_content(urljoin(self._base_url, self._torrent_seeding_page),
+                                    self._torrent_seeding_params,
+                                    self._torrent_seeding_headers)
+        html = etree.HTML(str(html_text).replace(r'\/', '/'))
+        if html:
+            seeding_url_text = html.xpath('//a[contains(@href,"usertorrentlist.php") '
+                                        'and contains(@href,"seeding")]/@href')
+            if seeding_url_text:
+                self._torrent_seeding_page = seeding_url_text[0].strip()
         # 分类做种模式
         # 临时屏蔽
         # seeding_url_text = html.xpath('//tr/td[text()="当前做种"]/following-sibling::td[1]'

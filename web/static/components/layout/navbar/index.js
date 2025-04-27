@@ -22,7 +22,7 @@ export class LayoutNavbar extends CustomElement {
     this.layout_appversion = "v3.0.0";
     this._active_name = "";
     this._update_appversion = "";
-    this._update_url = "https://github.com/NAStool/nas-tools/releases";
+    this._update_url = "https://github.com/linyuan0213/nas-tools";
     this._is_update = false;
     this._is_expand = false;
     this.classList.add("navbar","navbar-vertical","navbar-expand-lg","lit-navbar-fixed","lit-navbar","lit-navbar-hide-scrollbar");
@@ -72,32 +72,6 @@ export class LayoutNavbar extends CustomElement {
       document.querySelector("#main_bottom_menubar").classList.remove('d-none');
       document.querySelector("layout-searchbar").removeAttribute("hidden");
     }, 200);
-
-    // 检查更新
-    if (this.layout_userlevel > 1 && this.layout_useradmin === "1") {
-      this._check_new_version();
-    }
-  }
-
-  _check_new_version() {
-    ajax_post("version", {}, (ret) => {
-      if (ret.code === 0) {
-        let url = null;
-        switch (compareVersion(ret.version, this.layout_appversion)) {
-          case 1:
-            url = ret.url;
-            break;
-          case 2:
-            url = "https://github.com/NAStool/nas-tools/releases"
-            break;
-        }
-        if (url) {
-          this._update_url = url;
-          this._update_appversion = ret.version;
-          // this._is_update = true;
-        }
-      }
-    });
   }
 
   _get_page_from_url() {

@@ -95,13 +95,14 @@ class UserLogin(Resource):
             return {"code": 1, "success": False, "message": "用户名或密码错误"}
         # 缓存Token
         token = generate_access_token(username)
-        TokenCache.set(token, token)
+        apikey = Config().get_config("security").get("api_key")
+        TokenCache.set(apikey, token)
         return {
             "code": 0,
             "success": True,
             "data": {
                 "token": token,
-                "apikey": Config().get_config("security").get("api_key"),
+                "apikey": apikey,
                 "userinfo": {
                     "userid": user_info.id,
                     "username": user_info.username,
@@ -335,21 +336,6 @@ class SiteDelete(ClientResource):
         删除站点
         """
         return WebAction().api_action(cmd='del_site', data=self.parser.parse_args())
-
-
-@site.route('/cookie/update')
-class SiteUpdateCookie(ApiResource):
-    parser = reqparse.RequestParser()
-    parser.add_argument('site_id', type=int, help='更新站点ID', location='form')
-    parser.add_argument('site_cookie', type=str, help='Cookie', location='form')
-    parser.add_argument('site_ua', type=str, help='Ua', location='form')
-
-    @site.doc(parser=parser)
-    def post(self):
-        """
-        更新站点Cookie和Ua
-        """
-        return WebAction().api_action(cmd='update_site_cookie_ua', data=self.parser.parse_args())
 
 
 @site.route('/statistics/activity')
@@ -817,6 +803,15 @@ class TransferHistoryDelete(ClientResource):
         删除媒体整理历史记录
         """
         return WebAction().api_action(cmd='delete_history', data=self.parser.parse_args())
+
+
+@organization.route('/history/clear')
+class TransferHistoryClear(ClientResource):
+    def post(self):
+        """
+        删除媒体整理历史记录
+        """
+        return WebAction().api_action(cmd='clear_history')
 
 
 @organization.route('/unknown/list')
@@ -1656,6 +1651,7 @@ class BrushTaskUpdate(ClientResource):
     parser.add_argument('brushtask_dlcount', type=int, help='同时下载任务数', location='form')
     parser.add_argument('brushtask_peercount', type=int, help='做种人数限制', location='form')
     parser.add_argument('brushtask_seedtime', type=float, help='做种时间(小时)', location='form')
+    parser.add_argument('brushtask_hr_seedtime', type=float, help='H&R 做种时间(小时)', location='form')
     parser.add_argument('brushtask_seedratio', type=float, help='分享率', location='form')
     parser.add_argument('brushtask_seedsize', type=int, help='上传量(GB)', location='form')
     parser.add_argument('brushtask_dltime', type=float, help='下载耗时(小时)', location='form')

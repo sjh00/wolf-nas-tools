@@ -9,14 +9,17 @@ import shutil
 import signal
 import sqlite3
 import time
+import subprocess
 from math import floor
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
+
 
 import cn2an
 from flask_login import logout_user, current_user
 from werkzeug.security import generate_password_hash
 
+from app.helper.drissionpage_helper import DrissionPageHelper
 import log
 from app.brushtask import BrushTask
 from app.conf import SystemConfig, ModuleConf
@@ -24,7 +27,7 @@ from app.downloader import Downloader
 from app.filetransfer import FileTransfer
 from app.filter import Filter
 from app.helper import DbHelper, ProgressHelper, ThreadHelper, \
-    MetaHelper, DisplayHelper, WordsHelper
+    MetaHelper, WordsHelper, IndexerHelper
 from app.helper import RssHelper, PluginHelper
 from app.indexer import Indexer
 from app.media import Category, Media, Bangumi, DouBan, Scraper
@@ -48,6 +51,7 @@ from config import RMT_MEDIAEXT, RMT_SUBEXT, RMT_AUDIO_TRACK_EXT, Config
 from web.backend.search_torrents import search_medias_for_web, search_media_by_message
 from web.backend.user import User
 from web.backend.web_utils import WebUtils
+from web.cache import cache
 
 
 class WebAction:
@@ -70,6 +74,7 @@ class WebAction:
             "rename": self.__rename,
             "rename_udf": self.__rename_udf,
             "delete_history": self.delete_history,
+            "clear_history": self.clear_history,
             "version": self.__version,
             "update_site": self.__update_site,
             "get_site": self.__get_site,
@@ -187,7 +192,6 @@ class WebAction:
             "get_indexers": self.__get_indexers,
             "get_download_dirs": self.__get_download_dirs,
             "find_hardlinks": self.__find_hardlinks,
-            "update_sites_cookie_ua": self.__update_sites_cookie_ua,
             "update_site_cookie_ua": self.__update_site_cookie_ua,
             "set_site_captcha_code": self.__set_site_captcha_code,
             "update_torrent_remove_task": self.__update_torrent_remove_task,
@@ -232,6 +236,20 @@ class WebAction:
             "get_category_config": self.get_category_config,
             "get_system_processes": self.get_system_processes,
             "run_plugin_method": self.run_plugin_method,
+            "update_all_config": self.__update_all_config
+        }
+        # 远程命令响应
+        self._commands = {
+            "/ptr": {"func": TorrentRemover().auto_remove_torrents, "desc": "自动删种"},
+            "/ptt": {"func": Downloader().transfer, "desc": "下载文件转移"},
+            "/rst": {"func": Sync().transfer_sync, "desc": "目录同步"},
+            "/rss": {"func": Rss().rssdownload, "desc": "电影/电视剧订阅"},
+            "/ssa": {"func": Subscribe().subscribe_search_all, "desc": "订阅搜索"},
+            "/tbl": {"func": self.truncate_blacklist, "desc": "清理转移缓存"},
+            "/trh": {"func": self.truncate_rsshistory, "desc": "清理RSS缓存"},
+            "/utf": {"func": self.unidentification, "desc": "重新识别"},
+            "/udt": {"func": self.update_system, "desc": "系统更新"},
+            "/sta": {"func": self.user_statistics, "desc": "站点数据统计"}
         }
         # 远程命令响应
         self._commands = {
@@ -295,8 +313,6 @@ class WebAction:
         Scheduler().stop_service()
         # 停止监控
         Sync().stop_service()
-        # 关闭虚拟显示
-        DisplayHelper().stop_service()
         # 关闭刷流
         BrushTask().stop_service()
         # 关闭自定义订阅
@@ -307,13 +323,13 @@ class WebAction:
         Downloader().stop_service()
         # 关闭插件
         PluginManager().stop_service()
+        # 关闭浏览器标签页
+        DrissionPageHelper().close_all_tabs()
 
     @staticmethod
     def start_service():
         # 加载站点配置
         SiteConf()
-        # 启动虚拟显示
-        DisplayHelper()
         # 启动定时服务
         Scheduler()
         # 启动监控服务
@@ -341,16 +357,13 @@ class WebAction:
         # 关闭服务
         self.stop_service()
         # 重启进程
-        if os.name == "nt":
-            os.kill(os.getpid(), getattr(signal, "SIGKILL", signal.SIGTERM))
-        elif SystemUtils.is_synology():
-            os.system(
-                "ps -ef | grep -v grep | grep 'python run.py'|awk '{print $2}'|xargs kill -9")
+        script_path = os.path.join(os.getcwd(), 'restart-server.sh')
+        os.chmod(script_path, 0o755)
+        res = subprocess.run(['bash', script_path], cwd=os.getcwd())
+        if res.returncode == 0:
+            log.info("Nastool 重启成功...")
         else:
-            if SystemUtils.check_process('node'):
-                os.system("pm2 restart NAStool")
-            else:
-                os.system("pkill -f 'python3 run.py'")
+            log.info(f"Nastool 重启失败: {res.stderr.decode()}")
 
     def handle_message_job(self, msg, in_from=SearchType.OT, user_id=None, user_name=None):
         """
@@ -380,15 +393,18 @@ class WebAction:
 
         # 插件命令
         plugin_commands = PluginManager().get_plugin_commands()
+        msg_list = msg.split(" ")
         for command in plugin_commands:
-            if command.get("cmd") == msg:
+            if command.get("cmd") == msg_list[0]:
                 # 发送事件
-                EventManager().send_event(command.get("event"), command.get("data") or {})
+                event_data = command.get("data") or {"msg": msg_list[0] if len(msg_list) == 1 else msg_list[1]}
+                EventManager().send_event(command.get("event"), event_data)
                 # 消息回应
                 Message().send_channel_msg(
                     channel=in_from, title="正在运行 %s ..." % command.get("desc"), user_id=user_id)
                 return
 
+        cache.delete("search")
         # 站点搜索或者添加订阅
         ThreadHelper().start_thread(search_media_by_message,
                                     (msg, in_from, user_id, user_name))
@@ -417,6 +433,11 @@ class WebAction:
                                                       cfg_value, "http": "%s" % cfg_value}
             else:
                 cfg['app']['proxies'] = {"https": None, "http": None}
+            return cfg
+        # 索引器
+        if cfg_key == "jackett.indexers":
+            vals = cfg_value.split("\n")
+            cfg['jackett']['indexers'] = vals
             return cfg
         # 最大支持三层赋值
         keys = cfg_key.split(".")
@@ -519,6 +540,7 @@ class WebAction:
         """
         WEB搜索资源
         """
+        cache.delete("search")
         search_word = data.get("search_word")
         ident_flag = False if data.get("unident") else True
         filters = data.get("filters")
@@ -549,10 +571,16 @@ class WebAction:
         dl_setting = data.get("setting")
         results = Searcher().get_search_result_by_id(dl_id)
         for res in results:
+            enclosure = ''
+            # 处理m-tem下载链接
+            if ('m-team' in res.PAGEURL or 'yemapt' in res.PAGEURL) and res.ENCLOSURE is None:
+                enclosure = Downloader().get_download_url(res.PAGEURL)
+            else:
+                enclosure = res.ENCLOSURE
             media = Media().get_media_info(title=res.TORRENT_NAME, subtitle=res.DESCRIPTION)
             if not media:
                 continue
-            media.set_torrent_info(enclosure=res.ENCLOSURE,
+            media.set_torrent_info(enclosure=enclosure,
                                    size=res.SIZE,
                                    site=res.SITE,
                                    page_url=res.PAGEURL,
@@ -582,6 +610,9 @@ class WebAction:
         title = data.get("title")
         description = data.get("description")
         page_url = data.get("page_url")
+        # 处理m-tem下载链接
+        if ('m-team' in page_url or 'yemapt' in page_url) and (enclosure == 'None' or enclosure == ''):
+            enclosure = Downloader().get_download_url(page_url)
         size = data.get("size")
         seeders = data.get("seeders")
         uploadvolumefactor = data.get("uploadvolumefactor")
@@ -610,6 +641,7 @@ class WebAction:
             # 更新电影订阅状态
             Subscribe().update_subscribe(meta_info=media)
         return {"code": 0, "msg": "下载成功"}
+
 
     @staticmethod
     def __download_torrent(data):
@@ -649,20 +681,25 @@ class WebAction:
                 continue
             # 查询站点
             site_info = Sites().get_sites(siteurl=url)
-            if not site_info:
-                return {"code": -1, "msg": "根据链接地址未匹配到站点"}
-            # 下载种子文件，并读取信息
-            file_path, _, _, _, retmsg = Torrent().get_torrent_info(
-                url=url,
-                cookie=site_info.get("cookie"),
-                ua=site_info.get("ua"),
-                proxy=site_info.get("proxy")
-            )
-            if not file_path:
-                return {"code": -1, "msg": f"下载种子文件失败： {retmsg}"}
-            media_info = Media().get_media_info(title=os.path.basename(file_path))
-            if media_info:
-                media_info.site = "WEB"
+            if not url.startswith("magnet:"):
+                # 下载种子文件，并读取信息
+                file_path, _, _, _, retmsg = Torrent().get_torrent_info(
+                    url=url,
+                    cookie=site_info.get("cookie"),
+                    ua=site_info.get("ua"),
+                    proxy=site_info.get("proxy")
+                )
+                media_info = Media().get_media_info(title=os.path.basename(file_path))
+                if media_info:
+                    media_info.site = "WEB"
+                if not file_path:
+                    return {"code": -1, "msg": f"下载种子文件失败： {retmsg}"}
+
+            else:
+                media_info = MetaInfo('')
+                media_info.enclosure = url
+                file_path = None
+
             # 添加下载
             Downloader().download(media_info=media_info,
                                   download_dir=dl_dir,
@@ -1064,8 +1101,8 @@ class WebAction:
         """
         检查新版本
         """
-        version, url = WebUtils.get_latest_version()
-        if version:
+        version, url, flag = WebUtils.get_latest_version()
+        if flag:
             return {"code": 0, "version": version, "url": url}
         return {"code": -1, "version": "", "url": ""}
 
@@ -1138,8 +1175,8 @@ class WebAction:
         site_hr = False
         if tid:
             ret = Sites().get_sites(siteid=tid)
-            if ret.get("rssurl"):
-                site_attr = SiteConf().get_grap_conf(ret.get("rssurl"))
+            if ret.get("signurl"):
+                site_attr = SiteConf().get_grap_conf(ret.get("signurl"))
                 if site_attr.get("FREE"):
                     site_free = True
                 if site_attr.get("2XFREE"):
@@ -1193,39 +1230,8 @@ class WebAction:
         """
         更新
         """
-        # 升级
-        if SystemUtils.is_synology():
-            if SystemUtils.execute('/bin/ps -w -x | grep -v grep | grep -w "nastool update" | wc -l') == '0':
-                # 调用群晖套件内置命令升级
-                os.system('nastool update')
-                # 重启
-                self.restart_server()
-        else:
-            # 清除git代理
-            os.system("sudo git config --global --unset http.proxy")
-            os.system("sudo git config --global --unset https.proxy")
-            # 设置git代理
-            proxy = Config().get_proxies() or {}
-            http_proxy = proxy.get("http")
-            https_proxy = proxy.get("https")
-            if http_proxy or https_proxy:
-                os.system(
-                    f"sudo git config --global http.proxy {http_proxy or https_proxy}")
-                os.system(
-                    f"sudo git config --global https.proxy {https_proxy or http_proxy}")
-            # 清理
-            os.system("sudo git clean -dffx")
-            # 升级
-            branch = os.getenv("NASTOOL_VERSION", "master")
-            os.system(f"sudo git fetch --depth 1 origin {branch}")
-            os.system(f"sudo git reset --hard origin/{branch}")
-            os.system("sudo git submodule update --init --recursive")
-            # 安装依赖
-            os.system('sudo pip install -r /nas-tools/requirements.txt')
-            # 修复权限
-            os.system('sudo chown -R nt:nt /nas-tools')
-            # 重启
-            self.restart_server()
+        # 重启
+        self.restart_server()
         return {"code": 0}
 
     @staticmethod
@@ -1261,6 +1267,8 @@ class WebAction:
             if key == "test" and value:
                 config_test = True
                 continue
+            if key == "media.media_server" and value:
+                cache.delete("index")
             # 生效配置
             cfg = self.set_config_value(cfg, key, value)
 
@@ -1938,6 +1946,7 @@ class WebAction:
         brushtask_interval = data.get("brushtask_interval")
         brushtask_downloader = data.get("brushtask_downloader")
         brushtask_totalsize = data.get("brushtask_totalsize")
+        brushtask_time_range = data.get("brushtask_time_range")
         brushtask_state = data.get("brushtask_state")
         brushtask_rssurl = data.get("brushtask_rssurl")
         brushtask_label = data.get("brushtask_label")
@@ -1955,6 +1964,7 @@ class WebAction:
         brushtask_dlcount = data.get("brushtask_dlcount")
         brushtask_peercount = data.get("brushtask_peercount")
         brushtask_seedtime = data.get("brushtask_seedtime")
+        brushtask_hr_seedtime = data.get("brushtask_hr_seedtime")
         brushtask_seedratio = data.get("brushtask_seedratio")
         brushtask_seedsize = data.get("brushtask_seedsize")
         brushtask_dltime = data.get("brushtask_dltime")
@@ -1963,6 +1973,12 @@ class WebAction:
         brushtask_pubdate = data.get("brushtask_pubdate")
         brushtask_upspeed = data.get("brushtask_upspeed")
         brushtask_downspeed = data.get("brushtask_downspeed")
+        brushtask_pending_time = data.get("brushtask_pending_time")
+        brushtask_stopfree = 'Y' if data.get("brushtask_stopfree") else 'N'
+        brushtask_freespace = data.get("brushtask_freespace")
+        brushtask_mode = data.get("brushtask_mode")
+        brushtask_exclude_subscribe = 'Y' if data.get("brushtask_exclude_subscribe") else 'N'
+        brushtask_freestatus = 'Y' if data.get("brushtask_freestatus") else 'N'
         # 选种规则
         rss_rule = {
             "free": brushtask_free,
@@ -1974,16 +1990,26 @@ class WebAction:
             "peercount": brushtask_peercount,
             "pubdate": brushtask_pubdate,
             "upspeed": brushtask_upspeed,
-            "downspeed": brushtask_downspeed
+            "downspeed": brushtask_downspeed,
+            "exclude_subscribe": brushtask_exclude_subscribe
         }
         # 删除规则
         remove_rule = {
+            "mode": brushtask_mode,
             "time": brushtask_seedtime,
+            "hr_time": brushtask_hr_seedtime,
             "ratio": brushtask_seedratio,
             "uploadsize": brushtask_seedsize,
             "dltime": brushtask_dltime,
             "avg_upspeed": brushtask_avg_upspeed,
-            "iatime": brushtask_iatime
+            "iatime": brushtask_iatime,
+            "pending_time": brushtask_pending_time,
+            "freespace": brushtask_freespace,
+            "freestatus": brushtask_freestatus
+        }
+        # 停种规则
+        stop_rule = {
+            "stopfree": brushtask_stopfree
         }
         # 添加记录
         item = {
@@ -1994,6 +2020,7 @@ class WebAction:
             "interval": brushtask_interval,
             "downloader": brushtask_downloader,
             "seed_size": brushtask_totalsize,
+            "time_range": brushtask_time_range,
             "label": brushtask_label,
             "up_limit": brushtask_up_limit,
             "dl_limit": brushtask_dl_limit,
@@ -2002,6 +2029,7 @@ class WebAction:
             "state": brushtask_state,
             "rss_rule": rss_rule,
             "remove_rule": remove_rule,
+            "stop_rule": stop_rule,
             "sendmessage": brushtask_sendmessage
         }
         BrushTask().update_brushtask(brushtask_id, item)
@@ -2176,6 +2204,7 @@ class WebAction:
         :param data: {"days":累计时间}
         :return:
         """
+        cache.delete("statistics")
         if not data or "days" not in data or not isinstance(data["days"], int):
             return {"code": 1, "msg": "查询参数错误"}
 
@@ -2444,6 +2473,14 @@ class WebAction:
             return ""
         rule_filter_string = {"gt": ">", "lt": "<", "bw": ""}
         rule_htmls = []
+
+        if rules.get("exclude_subscribe"):
+            exclude_subscribe = rules.get("exclude_subscribe")
+            if exclude_subscribe == "Y":
+                rule_htmls.append('<span class="badge badge-outline text-green me-1 mb-1" title="排除订阅">排除订阅: 开</span>')
+            else:
+                rule_htmls.append('<span class="badge badge-outline text-green me-1 mb-1" title="排除订阅">排除订阅: 关</span>')
+
         if rules.get("size"):
             sizes = rules.get("size").split("#")
             if sizes[0]:
@@ -2499,6 +2536,11 @@ class WebAction:
                 rule_htmls.append(
                     '<span class="badge badge-outline text-blue me-1 mb-1" title="当前做种人数限制">做种人数: %s %s</span>'
                     % (rule_filter_string.get(peer_counts[0]), peer_counts[1]))
+
+        if rules.get("mode"):
+            rule_htmls.append(
+                '<span class="badge badge-outline text-red me-1 mb-1 text-wrap text-start" title="删种模式">删种模式: %s</span>'
+                % ("与" if rules.get("mode") == "and" else "或"))
         if rules.get("time"):
             times = rules.get("time").split("#")
             if times[0]:
@@ -2535,7 +2577,26 @@ class WebAction:
                 rule_htmls.append(
                     '<span class="badge badge-outline text-orange me-1 mb-1" title="未活动时间">未活动时间: %s %s小时</span>'
                     % (rule_filter_string.get(iatimes[0]), iatimes[1]))
+        if rules.get("freestatus"):
+            freestatus = rules.get("freestatus")
+            if freestatus == "Y":
+                rule_htmls.append('<span class="badge badge-outline text-green me-1 mb-1" title="Free 到期">Free 到期: 开</span>')
+            else:
+                rule_htmls.append('<span class="badge badge-outline text-green me-1 mb-1" title="Free 到期">Free 到期: 关</span>')
 
+        if rules.get("stopfree"):
+            stopfree = rules.get("stopfree")
+            if stopfree == "Y":
+                rule_htmls.append('<span class="badge badge-outline text-green me-1 mb-1" title="Free 到期">Free 到期: 开</span>')
+            else:
+                rule_htmls.append('<span class="badge badge-outline text-green me-1 mb-1" title="Free 到期">Free 到期: 关</span>')
+
+        if rules.get("freespace"):
+            freespace = rules.get("freespace").split("#")
+            if freespace[0]:
+                rule_htmls.append(
+                    '<span class="badge badge-outline text-blue me-1 mb-1" title="磁盘剩余空间">磁盘剩余空间: %s %sGB</span>'
+                    % (rule_filter_string.get(freespace[0]), freespace[1]))
         return "<br>".join(rule_htmls)
 
     @staticmethod
@@ -2604,6 +2665,7 @@ class WebAction:
         """
         开始媒体库同步
         """
+        cache.delete("index")
         librarys = data.get("librarys") or []
         SystemConfig().set(key=SystemConfigKey.SyncLibrary, value=librarys)
         ThreadHelper().start_thread(MediaServer().sync_mediaserver, ())
@@ -3523,7 +3585,7 @@ class WebAction:
             media_type = {"MOV": "电影", "TV": "电视剧", "ANI": "动漫"}.get(mtype)
             # 只需要部分种子标签
             labels = [label for label in str(item.NOTE).split("|")
-                      if label in ["官方", "官组", "中字", "国语", "特效", "特效字幕"]]
+                      if label in ["官方", "官组", "中字", "国语", "粤语", "国配", "特效", "特效字幕"]]
             # 种子信息
             torrent_item = {
                 "id": item.ID,
@@ -4316,29 +4378,6 @@ class WebAction:
                 return {"code": 1}
         return {"code": 0, "data": hardlinks}
 
-    @staticmethod
-    def __update_sites_cookie_ua(data):
-        """
-        更新所有站点的Cookie和UA
-        """
-        siteid = data.get("siteid")
-        username = data.get("username")
-        password = data.get("password")
-        twostepcode = data.get("two_step_code")
-        ocrflag = data.get("ocrflag")
-        # 保存设置
-        SystemConfig().set(key=SystemConfigKey.CookieUserInfo,
-                           value={
-                               "username": username,
-                               "password": password,
-                               "two_step_code": twostepcode
-                           })
-        retcode, messages = SiteCookie().update_sites_cookie_ua(siteid=siteid,
-                                                                username=username,
-                                                                password=password,
-                                                                twostepcode=twostepcode,
-                                                                ocrflag=ocrflag)
-        return {"code": retcode, "messages": messages}
 
     @staticmethod
     def __update_site_cookie_ua(data):
@@ -4461,6 +4500,11 @@ class WebAction:
         sort_on = data.get("sort_on")
         site_hash = data.get("site_hash")
         statistics = SiteUserInfo().get_site_user_statistics(sites=sites, encoding=encoding)
+        # 修复馒头站点显示
+        for item in statistics:
+            if 'm-team' in item.get('url'):
+                site_info = Sites().get_sites(siteurl=item.get('url'))
+                item['url'] = site_info.get('signurl')
         if sort_by and sort_on in ["asc", "desc"]:
             if sort_on == "asc":
                 statistics.sort(key=lambda x: x[sort_by])
@@ -4758,7 +4802,7 @@ class WebAction:
         # 查询最早加入PT站的时间, 如果不足一个月, 则隐藏刷流任务
         first_pt_site = SiteUserInfo().get_pt_site_min_join_date()
         if not first_pt_site or not StringUtils.is_one_month_ago(first_pt_site):
-            ignore.append('brushtask')
+            ignore.append('')
         # 获取可用菜单
         menus = current_user.get_usermenus(ignore=ignore)
         return {
@@ -4777,8 +4821,7 @@ class WebAction:
             "menus": current_user.get_topmenus()
         }
 
-    @staticmethod
-    def __update_downloader(data):
+    def __update_downloader(self, data):
         """
         更新下载器
         """
@@ -4889,6 +4932,7 @@ class WebAction:
         """
         强制刷新站点数据,并发送站点统计的消息
         """
+        cache.delete("statistics")
         # 强制刷新站点数据,并发送站点统计的消息
         SiteUserInfo().refresh_site_data_now()
 
@@ -4982,7 +5026,7 @@ class WebAction:
         user_plugins = SystemConfig().get(SystemConfigKey.UserInstalledPlugins) or []
         if module_id not in user_plugins:
             user_plugins.append(module_id)
-            PluginHelper.install(module_id)
+            # PluginHelper.install(module_id)
         # 保存配置
         SystemConfig().set(SystemConfigKey.UserInstalledPlugins, user_plugins)
         # 重新加载插件
@@ -5147,6 +5191,26 @@ class WebAction:
         result = PluginManager().run_plugin_method(pid=plugin_id, method=method, **data)
         return {"code": 0, "result": result}
 
+    @staticmethod
+    def __update_all_config(data):
+        """
+        设置系统设置（数据库）
+        """
+        conf = data.get("conf")
+        db = data.get("db")
+        if data.get('test'):
+            conf = data
+        if conf:
+            ret = WebAction().__update_config(conf)
+            if ret.get('code') == 1:
+                return ret
+        if db:
+            ret = WebAction().__set_system_config(db)
+            if ret.get('code') == 1:
+                return ret
+
+        return {"code": 0}
+
     def get_commands(self):
         """
         获取命令列表
@@ -5158,3 +5222,15 @@ class WebAction:
             "id": item.get("cmd"),
             "name": item.get("desc")
         } for item in PluginManager().get_plugin_commands()]
+
+
+    def clear_history(self):
+        """
+        删除识别记录
+        """
+        _filetransfer = FileTransfer()
+        # 删除记录
+        _filetransfer.delete_transfer()
+        # 删除该识别记录对应的转移记录
+        _filetransfer.truncate_transfer_blacklist()
+        return {"retcode": 0}

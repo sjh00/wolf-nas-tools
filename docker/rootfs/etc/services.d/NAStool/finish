@@ -1,4 +1,5 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
 
-pkill -f 'python3 run.py'
+cd ${WORKDIR} 
+sh ./stop-server.sh

@@ -2,17 +2,18 @@ import json
 import os
 import time
 
+import redis
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from werkzeug.security import generate_password_hash
 
+from app.utils.redis_store import RedisStore
 import log
 from app.conf import SystemConfig
 from app.helper import DbHelper, PluginHelper
 from app.plugins import PluginManager
 from app.media import Category
 from app.utils import ConfigLoadCache, CategoryLoadCache, ExceptionUtils, StringUtils
-from app.utils.commons import INSTANCES
 from app.utils.types import SystemConfigKey
 from config import Config
 from web.action import WebAction
@@ -58,6 +59,8 @@ def check_config():
         # 检查HTTPS
         ssl_cert = Config().get_config('app').get('ssl_cert')
         ssl_key = Config().get_config('app').get('ssl_key')
+        if os.environ.get('NT_PORT'):
+            web_port = os.environ.get('NT_PORT')
         if not ssl_cert or not ssl_key:
             log.info(f"未启用https，请使用 http://IP:{str(web_port)} 访问管理页面")
         else:
@@ -327,7 +330,7 @@ def update_config():
     try:
         tmdb_proxy = Config().get_config('laboratory').get("tmdb_proxy")
         if tmdb_proxy:
-            _config['app']['tmdb_domain'] = 'tmdb.nastool.org'
+            _config['app']['tmdb_domain'] = 'tmdb.nastool.cn'
             _config['laboratory'].pop("tmdb_proxy")
             overwrite_cofig = True
     except Exception as e:
@@ -337,7 +340,8 @@ def update_config():
     if overwrite_cofig:
         Config().save_config(_config)
 
-
+    # 清空索引器统计
+    _dbhelper.delete_all_indexer_statistics()
 class ConfigMonitor(FileSystemEventHandler):
     """
     配置文件变化响应
@@ -362,10 +366,6 @@ class ConfigMonitor(FileSystemEventHandler):
             time.sleep(1)
             # 重新加载配置
             Config().init_config()
-            # 重载singleton服务
-            for instance in INSTANCES.values():
-                if hasattr(instance, "init_config"):
-                    instance.init_config()
         # 正在使用的二级分类策略文件3秒内只能加载一次，配置文件加载时，二级分类策略文件不加载
         elif file_name == os.path.basename(Config().category_path) \
                 and not CategoryLoadCache.get(src_path) \
@@ -399,3 +399,13 @@ def stop_config_monitor():
             _observer.join()
     except Exception as err:
         print(str(err))
+
+
+def check_redis():
+    try:
+        redis_store = RedisStore()
+        redis_store.ping()
+        log.info("Redis 正在运行...")
+    except redis.exceptions.ConnectionError:
+        log.error("Redis 无法连接，请启动 Redis...")
+        exit(1)

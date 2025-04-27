@@ -230,6 +230,13 @@ class DbHelper:
         """
         self._db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).delete()
 
+    @DbPersist(_db)
+    def delete_transfer(self):
+        """
+        删除所有识别记录
+        """
+        self._db.query(TRANSFERHISTORY).delete()
+
     def get_transfer_unknown_paths(self):
         """
         查询未识别的记录列表
@@ -511,6 +518,20 @@ class DbHelper:
             {
                 "COOKIE": cookie,
                 "NOTE": json.dumps(note)
+            }
+        )
+        
+    @DbPersist(_db)
+    def update_site_rssurl(self, tid, rssurl):
+        """
+        更新站点rssurl
+        """
+        if not tid:
+            return
+
+        self._db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).update(
+            {
+                "RSSURL": rssurl
             }
         )
 
@@ -1610,7 +1631,9 @@ class DbHelper:
                 FREELEECH=item.get('free'),
                 RSS_RULE=str(item.get('rss_rule')),
                 REMOVE_RULE=str(item.get('remove_rule')),
+                STOP_RULE=str(item.get('stop_rule')),
                 SEED_SIZE=item.get('seed_size'),
+                TIME_RANGE=item.get('time_range'),
                 RSSURL=item.get('rssurl'),
                 INTEVAL=item.get('interval'),
                 DOWNLOADER=item.get('downloader'),
@@ -1635,7 +1658,9 @@ class DbHelper:
                     "FREELEECH": item.get('free'),
                     "RSS_RULE": str(item.get('rss_rule')),
                     "REMOVE_RULE": str(item.get('remove_rule')),
+                    "STOP_RULE": str(item.get('stop_rule')),
                     "SEED_SIZE": item.get('seed_size'),
+                    "TIME_RANGE": item.get('time_range'),
                     "RSSURL": item.get('rssurl'),
                     "INTEVAL": item.get('interval'),
                     "DOWNLOADER": item.get('downloader'),
@@ -1791,6 +1816,16 @@ class DbHelper:
         """
         if not enclosure:
             return None
+        if 'm-team' in enclosure:
+            tid = StringUtils.get_tid_by_url(enclosure)
+            mt_torrents = self._db.query(SITEBRUSHTORRENTS).filter(SITEBRUSHTORRENTS.ENCLOSURE.like("%m-team%")).all()
+            return list(filter(lambda torrent: StringUtils.get_tid_by_url(torrent.ENCLOSURE) == tid, mt_torrents))
+
+        if 'yemapt' in enclosure:
+            tid = StringUtils.get_tid_by_url(enclosure)
+            mt_torrents = self._db.query(SITEBRUSHTORRENTS).filter(SITEBRUSHTORRENTS.ENCLOSURE.like("%yemapt%")).all()
+            return list(filter(lambda torrent: StringUtils.get_tid_by_url(torrent.ENCLOSURE) == tid, mt_torrents))
+
         return self._db.query(SITEBRUSHTORRENTS).filter(SITEBRUSHTORRENTS.ENCLOSURE == enclosure).first()
 
     def is_brushtask_torrent_exists(self, brush_id, title, enclosure):
@@ -2274,6 +2309,8 @@ class DbHelper:
         if tmdbid and gtype:
             return self._db.query(CUSTOMWORDGROUPS).filter(CUSTOMWORDGROUPS.TMDBID == int(tmdbid),
                                                            CUSTOMWORDGROUPS.TYPE == int(gtype)).all()
+        if tmdbid:
+            return self._db.query(CUSTOMWORDGROUPS).filter(CUSTOMWORDGROUPS.TMDBID == int(tmdbid)).all()
         return self._db.query(CUSTOMWORDGROUPS).all()
 
     def is_custom_word_group_existed(self, tmdbid=None, gtype=None):
@@ -2618,7 +2655,14 @@ class DbHelper:
             DATE=time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
         ))
 
-    def get_indexer_statistics(self):
+    @DbPersist(_db)
+    def delete_all_indexer_statistics(self):
+        """
+        删除所有搜索的记录
+        """
+        self._db.query(INDEXERSTATISTICS).delete()
+
+    def get_indexer_statistics(self, client_id):
         """
         查询索引器统计
         """
@@ -2630,7 +2674,8 @@ class DbHelper:
             func.sum(case((INDEXERSTATISTICS.RESULT == 'Y', 1),
                           else_=0)).label("SUCCESS"),
             func.avg(INDEXERSTATISTICS.SECONDS).label("AVG"),
-        ).group_by(INDEXERSTATISTICS.INDEXER).all()
+        ).filter(INDEXERSTATISTICS.TYPE == client_id
+                 ).group_by(INDEXERSTATISTICS.INDEXER).all()
 
     @DbPersist(_db)
     def insert_plugin_history(self, plugin_id, key, value):
