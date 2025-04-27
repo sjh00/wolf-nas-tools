@@ -354,6 +354,25 @@ class FileTransfer:
         else:
             log.error("【Rmt】文件%s %s失败，错误码 %s" % (file_path, rmt_mode.value, str(retcode)))
         return retcode
+    
+    def __transfer_extra_dir(self, file_path, new_path, rmt_mode):
+        """
+        转移额外内容文件夹
+        :param file_path: 原路径
+        :param new_path: 新路径
+        :param rmt_mode: RmtMode转移方式
+        """
+        log.info("【Rmt】正在%s目录：%s 到 %s" % (rmt_mode.value, file_path, new_path))
+        # 复制
+        retcode = self.__transfer_dir_files(src_dir=file_path,
+                                            target_dir=new_path,
+                                            rmt_mode=rmt_mode,
+                                            bludir=False)
+        if retcode == 0:
+            log.info("【Rmt】文件 %s %s完成" % (file_path, rmt_mode.value))
+        else:
+            log.error("【Rmt】文件%s %s失败，错误码 %s" % (file_path, rmt_mode.value, str(retcode)))
+        return retcode
 
     def is_target_dir_path(self, path):
         """
@@ -561,6 +580,8 @@ class FileTransfer:
         error_message = ""
         # 蓝光原盘标识
         bluray_disk_dir = None
+        # 额外内容目录标识
+        extra_dir = None
 
         # 统一转化为列表
         if not files:
@@ -575,25 +596,31 @@ class FileTransfer:
                     file_list = [bluray_disk_dir]
                     log.info("【Rmt】当前为蓝光原盘文件夹：%s" % str(in_path))
                 else:
-                    if str(min_filesize) == "0":
-                        # 不限制大小
-                        now_filesize = 0
+                    # 判断是不是额外内容文件夹
+                    extra_dir = PathUtils.get_extras_dir(in_path)
+                    if extra_dir:
+                        file_list = [extra_dir]
+                        log.info("【Rmt】当前为额外内容文件夹：%s" % str(extra_dir))
                     else:
-                        # 未输入大小限制默认为配置大小限制
-                        now_filesize = self._min_filesize if not str(min_filesize).isdigit() else int(
-                            min_filesize) * 1024 * 1024
-                    # 查找目录下的文件
-                    file_list = PathUtils.get_dir_files(in_path=in_path,
-                                                        episode_format=episode[0],
-                                                        exts=RMT_MEDIAEXT,
-                                                        filesize=now_filesize)
-                    log.debug("【Rmt】文件清单：" + str(file_list))
-                    if len(file_list) == 0:
-                        log.warn("【Rmt】%s 目录下未找到媒体文件，当前最小文件大小限制为 %s"
-                                 % (in_path, StringUtils.str_filesize(now_filesize)))
-                        return __finish_transfer(False,
-                                                 "目录下未找到媒体文件，当前最小文件大小限制为 %s"
-                                                 % StringUtils.str_filesize(now_filesize))
+                        if str(min_filesize) == "0":
+                            # 不限制大小
+                            now_filesize = 0
+                        else:
+                            # 未输入大小限制默认为配置大小限制
+                            now_filesize = self._min_filesize if not str(min_filesize).isdigit() else int(
+                                min_filesize) * 1024 * 1024
+                        # 查找目录下的文件
+                        file_list = PathUtils.get_dir_files(in_path=in_path,
+                                                            episode_format=episode[0],
+                                                            exts=RMT_MEDIAEXT,
+                                                            filesize=now_filesize)
+                        log.debug("【Rmt】文件清单：" + str(file_list))
+                        if len(file_list) == 0:
+                            log.warn("【Rmt】%s 目录下未找到媒体文件，当前最小文件大小限制为 %s"
+                                    % (in_path, StringUtils.str_filesize(now_filesize)))
+                            return __finish_transfer(False,
+                                                    "目录下未找到媒体文件，当前最小文件大小限制为 %s"
+                                                    % StringUtils.str_filesize(now_filesize))
             # 传入的是个文件
             else:
                 if os.path.splitext(in_path)[-1].lower() not in RMT_MEDIAEXT:
@@ -605,9 +632,15 @@ class FileTransfer:
                     file_list = [bluray_disk_dir]
                     log.info("【Rmt】当前为蓝光原盘文件夹：%s" % bluray_disk_dir)
                 else:
-                    file_list = [in_path]
+                    # 判断是不是额外内容文件夹
+                    extra_dir = PathUtils.get_extras_dir(in_path)
+                    if extra_dir:
+                        file_list = [extra_dir]
+                        log.info("【Rmt】当前为额外内容文件夹：%s" % str(extra_dir))
+                    else:
+                        file_list = [in_path]
         else:
-            # 传入的是个文件列表，这些文失件是in_path下面的文件
+            # 传入的是个文件列表，这些文件是in_path下面的文件
             file_list = files
 
         #  过滤掉文件列表
@@ -663,6 +696,10 @@ class FileTransfer:
                     reg_path = bluray_disk_dir
                 else:
                     reg_path = file_item
+                # 判断是否额外内容
+                isextras = 'is_extras' in media.note and media.note['is_extras']
+                if isextras:
+                    media.org_string = file_name
                 # 未识别
                 if not media or not media.tmdb_info or not media.get_title_string():
                     log.warn("【Rmt】%s 无法识别媒体信息！" % file_name)
@@ -726,6 +763,13 @@ class FileTransfer:
                         log.warn("【Rmt】蓝光原盘目录已存在：%s" % ret_dir_path)
                         if udf_flag:
                             return __finish_transfer(False, "蓝光原盘目录已存在：%s" % ret_dir_path)
+                        failed_count += 1
+                        continue
+                    # 额外内容
+                    if extra_dir:
+                        log.warn("【Rmt】额外内容目录已存在：%s" % ret_dir_path)
+                        if udf_flag:
+                            return __finish_transfer(False, "额外内容目录已存在：%s" % ret_dir_path)
                         failed_count += 1
                         continue
                     # 文件存在
@@ -804,6 +848,20 @@ class FileTransfer:
                         if error_message not in alert_messages:
                             alert_messages.append(error_message)
                         continue
+                # 转移额外内容目录
+                elif extra_dir:
+                    ret = self.__transfer_extra_dir(file_item, ret_dir_path, rmt_mode)
+                    if ret != 0:
+                        success_flag = False
+                        error_message = "额外内容目录转移失败，错误码：%s" % ret
+                        self.progress.update(ptype=ProgressKey.FileTransfer, text=error_message)
+                        if udf_flag:
+                            return __finish_transfer(success_flag, error_message)
+                        failed_count += 1
+                        alert_count += 1
+                        if error_message not in alert_messages:
+                            alert_messages.append(error_message)
+                        continue
                 else:
                     # 开始转移文件
                     if not handler_flag:
@@ -846,13 +904,14 @@ class FileTransfer:
                 # 输出路径
                 out_path = new_file if not bluray_disk_dir else ret_dir_path
                 # 转移历史记录
-                self.dbhelper.insert_transfer_history(
-                    in_from=in_from,
-                    rmt_mode=rmt_mode,
-                    in_path=reg_path,
-                    out_path=out_path,
-                    dest=dist_path,
-                    media_info=media)
+                if not isextras:
+                    self.dbhelper.insert_transfer_history(
+                        in_from=in_from,
+                        rmt_mode=rmt_mode,
+                        in_path=reg_path,
+                        out_path=out_path,
+                        dest=dist_path,
+                        media_info=media)
                 # 未识别手动识别或历史记录重新识别的批处理模式
                 if isinstance(episode[1], bool) and episode[1]:
                     # 未识别手动识别，更改未识别记录为已处理
@@ -874,19 +933,20 @@ class FileTransfer:
                         message_medias[message_key].total_episodes += media.total_episodes
                         message_medias[message_key].size += media.size
                 # 生成nfo及poster
-                if bluray_disk_dir and media.type == MediaType.MOVIE:
-                    # 原盘文件的情况下 使用目录名称.nfo 生成
-                    self.scraper.gen_scraper_files(media=media,
-                                                   dir_path=ret_dir_path,
-                                                   file_name=os.path.basename(ret_dir_path),
-                                                   file_ext=file_ext,
-                                                   rmt_mode=rmt_mode)
-                else:
-                    self.scraper.gen_scraper_files(media=media,
-                                                   dir_path=ret_dir_path,
-                                                   file_name=os.path.basename(ret_file_path),
-                                                   file_ext=file_ext,
-                                                   rmt_mode=rmt_mode)
+                if not isextras:
+                    if bluray_disk_dir and media.type == MediaType.MOVIE:
+                        # 原盘文件的情况下 使用目录名称.nfo 生成
+                        self.scraper.gen_scraper_files(media=media,
+                                                    dir_path=ret_dir_path,
+                                                    file_name=os.path.basename(ret_dir_path),
+                                                    file_ext=file_ext,
+                                                    rmt_mode=rmt_mode)
+                    else:
+                        self.scraper.gen_scraper_files(media=media,
+                                                    dir_path=ret_dir_path,
+                                                    file_name=os.path.basename(ret_file_path),
+                                                    file_ext=file_ext,
+                                                    rmt_mode=rmt_mode)
                 # 更新进度
                 self.progress.update(ptype=ProgressKey.FileTransfer,
                                      value=round(total_count / len(Medias) * 100),
@@ -897,12 +957,13 @@ class FileTransfer:
                     sleep(round(random.uniform(0, 1), 1))
 
                 # 解发字幕下载事件
-                self.eventmanager.send_event(EventType.SubtitleDownload, {
-                    "media_info": media.to_dict(),
-                    "file": ret_file_path,
-                    "file_ext": os.path.splitext(file_item)[-1],
-                    "bluray": True if bluray_disk_dir else False
-                })
+                if not isextras:
+                    self.eventmanager.send_event(EventType.SubtitleDownload, {
+                        "media_info": media.to_dict(),
+                        "file": ret_file_path,
+                        "file_ext": os.path.splitext(file_item)[-1],
+                        "bluray": True if bluray_disk_dir else False
+                    })
                 # 解发转移完成事件
                 self.eventmanager.send_event(EventType.TransferFinished, {
                     "in_path": in_path,
@@ -979,7 +1040,7 @@ class FileTransfer:
                           media_dest,
                           media):
         """
-        判断媒体文件是否忆存在
+        判断媒体文件是否已存在
         :param media_dest: 媒体文件所在目录
         :param media: 已识别的媒体信息
         :return: 目录是否存在，目录路径，文件是否存在，文件路径
@@ -989,10 +1050,18 @@ class FileTransfer:
         file_exist_flag = False
         ret_dir_path = None
         ret_file_path = None
+        # 判断是否额外内容
+        isextras = 'is_extras' in media.note and media.note['is_extras']
+        if isextras:
+            extrafilename = os.path.splitext(media.org_string or "")[0]
         # 电影
         if media.type == MediaType.MOVIE:
             # 目录名称
             dir_name, file_name = self.get_moive_dest_path(media)
+            # 判断为额外内容时
+            if isextras:
+                dir_name = os.path.join(dir_name, 'extras')
+                file_name = extrafilename
             # 默认目录路径
             file_path = os.path.join(media_dest, dir_name)
             # 开启分类时目录路径
@@ -1024,6 +1093,10 @@ class FileTransfer:
         else:
             # 目录名称
             dir_name, season_name, file_name = self.get_tv_dest_path(media)
+            # 判断为额外内容时
+            if isextras:
+                season_name = 'extras'
+                file_name = extrafilename
             # 剧集目录
             if (media.type == MediaType.TV and self._tv_category_flag) or (
                     media.type == MediaType.ANIME and self._anime_category_flag):
@@ -1041,7 +1114,7 @@ class FileTransfer:
                     dir_exist_flag = True
                 # 处理集
                 episodes = media.get_episode_list()
-                if episodes:
+                if episodes or isextras:
                     # 集文件路径
                     file_path = os.path.join(season_dir, file_name)
                     # 返回文件路径

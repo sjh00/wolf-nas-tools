@@ -25,7 +25,7 @@ class MetaVideo(MetaBase):
     _effect = []
     # 正则式区
     _season_re = r"S(\d{2})|^S(\d{1,2})$|S(\d{1,2})E"
-    _episode_re = r"EP?(\d{2,4})$|^EP?(\d{1,4})$|^S\d{1,2}EP?(\d{1,4})$|S\d{2}EP?(\d{2,4})"
+    _episode_re = r"EP?(\d{2,4})$|^EP?(\d{1,4})$|^S\d{1,2}EP?(\d{1,4})$|S\d{2}E?P?(\d{2,4})"
     _part_re = r"(^PART[0-9ABI]{0,2}$|^CD[0-9]{0,2}$|^DVD[0-9]{0,2}$|^DISK[0-9]{0,2}$|^DISC[0-9]{0,2}$)"
     _roman_numerals = r"^(?=[MDCLXVI])M*(C[MD]|D?C{0,3})(X[CL]|L?X{0,3})(I[XV]|V?I{0,3})$"
     _source_re = r"^BLURAY$|^HDTV$|^UHDTV$|^HDDVD$|^WEBRIP$|^DVDRIP$|^BDRIP$|^BLU$|^WEB$|^BD$|^HDRip$"
@@ -54,7 +54,6 @@ class MetaVideo(MetaBase):
         super().__init__(title=title, subtitle=subtitle, fileflag=fileflag, onlyen=onlyen)
         if not title:
             return
-        original_title = title
         self._source = ""
         self._effect = []
         # 判断是否纯数字命名
@@ -82,6 +81,8 @@ class MetaVideo(MetaBase):
         title = re.sub(r'\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}', "", title)
         # 特殊制作组名称处理
         title = re.sub(r"(?<=[^a-zA-Z\d]blucook)#\d{1,5}", "", title, count=1, flags=re.IGNORECASE)
+        # 特殊后缀处理
+        title = re.sub(r"[\._]BONUS[\._]DISC|\.extras-\d+", "", title, count=1, flags=re.IGNORECASE)
         # 拆分tokens
         tokens = Tokens(title)
         self.tokens = tokens
@@ -126,7 +127,7 @@ class MetaVideo(MetaBase):
         # 提取原盘DIY
         if self.resource_type and "BluRay" in self.resource_type:
             if (self.subtitle and re.findall(r'D[Ii]Y', self.subtitle)) \
-                    or re.findall(r'-D[Ii]Y@', original_title):
+                    or re.findall(r'-D[Ii]Y@', self.org_string):
                 self.resource_type = f"{self.resource_type} DIY"
         # 解析副标题，只要季和集
         self.init_subtitle(self.org_string)
@@ -142,9 +143,9 @@ class MetaVideo(MetaBase):
         if self.part and self.part.upper() == "PART":
             self.part = None
         # 制作组/字幕组
-        self.resource_team = ReleaseGroupsMatcher().match(title=original_title) or None
+        self.resource_team = ReleaseGroupsMatcher().match(title=self.org_string) or None
         # 自定义占位符
-        self.customization = CustomizationMatcher().match(title=original_title) or None
+        self.customization = CustomizationMatcher().match(title=self.org_string) or None
 
     def __fix_name(self, name):
         if not name:
@@ -195,11 +196,19 @@ class MetaVideo(MetaBase):
                 if not self.cn_name:
                     # 去除名称种直接跟“第一季”“共三季”等词的情况
                     token = re.sub(r'[全共第][0-9一二三四五六七八九十]+季全?', '', token, re.IGNORECASE)
-                    self.cn_name = token
+                    if self.en_name:
+                        self.cn_name = "%s %s" % (self.en_name, token)
+                        self.en_name = '' # 判断英文应属于中文标题部分
+                    else:
+                        self.cn_name = token
                 elif not self._stop_cnname_flag:
                     if not re.search("%s" % self._name_no_chinese_re, token, flags=re.IGNORECASE) \
                             and not re.search("%s" % self._name_se_words, token, flags=re.IGNORECASE):
-                        self.cn_name = "%s %s" % (self.cn_name, token)
+                        if self.en_name:
+                            self.cn_name = "%s %s %s" % (self.en_name, self.cn_name, token)
+                            self.en_name = '' # 判断英文应属于中文标题部分
+                        else:
+                            self.cn_name = "%s %s" % (self.cn_name, token)
                     self._stop_cnname_flag = True
         else:
             is_roman_digit = re.search(self._roman_numerals, token)
@@ -432,7 +441,7 @@ class MetaVideo(MetaBase):
                     and self._last_token_type == "episode":
                 self.end_episode = int(token)
                 self.total_episodes = (self.end_episode - self.begin_episode) + 1
-                if self.fileflag and self.total_episodes > 2:
+                if re.search(r'[ \.\d]EP?\d{1,3}[ \.]\d{1,3}[ \.]',self.org_string,re.IGNORECASE) or (self.fileflag and self.total_episodes > 2):
                     self.end_episode = None
                     self.total_episodes = 1
                 self._continue_flag = False
@@ -459,6 +468,9 @@ class MetaVideo(MetaBase):
                 self.type = MediaType.TV
         elif token.upper() == "EPISODE":
             self._last_token_type = "EPISODE"
+        elif token.upper() == "OF":
+            self._last_token_type = "OF"
+            self._continue_flag = False
 
     def __init_resource_type(self, token):
         if not self.get_name():

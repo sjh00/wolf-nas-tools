@@ -12,8 +12,8 @@ from functools import wraps
 from math import floor
 from pathlib import Path
 from threading import Lock
-from urllib import parse
 from urllib.parse import unquote
+from markupsafe import Markup
 
 from flask import Flask, request, json, render_template, make_response, session, send_from_directory, send_file, \
     redirect, Response
@@ -21,6 +21,7 @@ from flask_compress import Compress
 from flask_login import LoginManager, login_user, login_required, current_user
 from flask_sock import Sock
 from icalendar import Calendar, Event, Alarm
+from simple_websocket import ConnectionClosed
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import log
@@ -215,7 +216,6 @@ def web():
     Indexers = Indexer().get_indexers()
     SearchSource = "douban" if Config().get_config("laboratory").get("use_douban_titles") else "tmdb"
     CustomScriptCfg = SystemConfig().get(SystemConfigKey.CustomScript)
-    CooperationSites = current_user.get_authsites()
     Menus = WebAction().get_user_menus().get("menus") or []
     Commands = WebAction().get_commands()
     return render_template('navigation.html',
@@ -232,7 +232,6 @@ def web():
                            Indexers=Indexers,
                            SearchSource=SearchSource,
                            CustomScriptCfg=CustomScriptCfg,
-                           CooperationSites=CooperationSites,
                            DefaultPath=DefaultPath,
                            Menus=Menus,
                            Commands=Commands)
@@ -1755,7 +1754,11 @@ def message_handler(ws):
     消息中心WebSocket
     """
     while True:
-        data = ws.receive()
+        try:
+            data = ws.receive(timeout=10)
+        except ConnectionClosed:
+            print("WebSocket连接已关闭！")
+            break
         if not data:
             continue
         try:
@@ -1820,3 +1823,9 @@ def str_filesize(size):
 @App.template_filter('hash')
 def md5_hash(text):
     return StringUtils.md5_hash(text)
+
+# URLQuote过滤器
+@App.template_filter('urlquote')
+def urlencode_filter(text):
+    text = urllib.parse.quote(text)
+    return Markup(text)

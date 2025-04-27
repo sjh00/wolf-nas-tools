@@ -8,6 +8,7 @@ from urllib import parse
 import cn2an
 import dateparser
 import dateutil.parser
+import zhconv
 
 from app.utils.exception_utils import ExceptionUtils
 from app.utils.types import MediaType
@@ -122,6 +123,34 @@ class StringUtils:
         return True
 
     @staticmethod
+    def is_eng_media_name_format(word):
+        """
+        判断是否是英文命名格式
+        """
+        pattern = r'^[a-zA-Z]+[a-zA-Z0-9\s._:@!@]*$'
+        return bool(re.match(pattern, word))
+
+    @staticmethod
+    def is_int_or_float(word):
+        """
+        判断是否是整型或浮点型的格式
+        """
+        if not word:
+            return None
+        pattern = r'^[-+]?\d+(\.\d+)?$'
+        return re.match(pattern, word) is not None
+
+    @staticmethod
+    def is_string_and_not_empty(word):
+        """
+        判断是否是字符串并且字符串是否为空
+        """
+        if isinstance(word, str) and word.strip():
+            return True
+        else:
+            return False
+
+    @staticmethod
     def xstr(s):
         """
         字符串None输出为空
@@ -163,7 +192,11 @@ class StringUtils:
         if not text:
             return 0.0
         try:
-            float_val = float(text.strip().replace(',', ''))
+            text = text.strip().replace(',', '')
+            if text:
+                float_val = float(text)
+            else:
+                float_val = 0.0
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
         return float_val
@@ -558,3 +591,27 @@ class StringUtils:
             return True
         else:
             return False
+
+    @staticmethod
+    def is_chinese_word(string: str, mode: int = 1):
+        """
+        判断是否包含中文
+        :param string 需要判断的字符
+        :param mode 模式 1匹配简体和繁体 2只匹配简体 3只匹配繁体
+        :return True or False
+        """
+        for ch in string:
+            if mode == 1:
+                if "\u4e00" <= ch <= "\u9FFF":
+                    return True
+            elif mode == 2:
+                if "\u4e00" <= ch <= "\u9FFF":
+                    if zhconv.convert(ch, "zh-cn") == ch:
+                        return True
+            elif mode == 3:
+                if "\u4e00" <= ch <= "\u9FFF":
+                    if zhconv.convert(ch, "zh-cn") != ch:
+                        return True
+        if re.search(pattern="^[0-9]+$", string=string):
+            return True
+        return False

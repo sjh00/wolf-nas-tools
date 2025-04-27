@@ -1,5 +1,5 @@
 import os
-
+import re
 
 class PathUtils:
 
@@ -153,3 +153,35 @@ class PathUtils:
         for lv in range(0, level):
             path = os.path.dirname(path)
         return path
+
+    @staticmethod
+    def is_extras(path:str):
+        """
+        判断是否额外内容目录或文件，是则返回True，否则返回False
+        """
+        if not path or not os.path.exists(path):
+            return False
+        dorf_namelower = os.path.basename(path).lower()
+        if os.path.isdir(path):
+            if re.match(r'.+?\bBONUS[\._ ]DISC\b|bonus$|extras$|extra$',dorf_namelower,re.I):
+                return True
+        elif re.match(r'.+?\bBONUS[\._ ]DISC\b|.+?\bSP?\d{1,2}\bextras\b\d{2,}|.+?\bextras-\d+\b',dorf_namelower,re.I):
+            return True
+        return False
+
+    @staticmethod
+    def get_extras_dir(path:str):
+        """
+        判断是否额外内容目录或目录内文件，是则返回额外内容目录，否则返回空
+        """
+        if not path or not os.path.exists(path):
+            return None
+        extradirpath = path
+        if not os.path.isdir(path):
+            extradirpath = os.path.dirname(path)
+        dorf_namelower = os.path.basename(extradirpath).lower()
+        
+        if re.match(r'.+?\bBONUS[\._ ]DISC\b|bonus$|extras$|extra$',dorf_namelower,re.I):
+            return extradirpath
+        
+        return None

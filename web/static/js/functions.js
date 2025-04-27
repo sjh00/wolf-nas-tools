@@ -24,8 +24,6 @@ let ProgressES;
 let LoggingSource = "";
 // 日志EventSource
 let LoggingES;
-// 是否存量消息刷新
-let OldMessageFlag = true;
 // 消息WebSocket
 let MessageWS;
 // 当前协议
@@ -33,6 +31,8 @@ let WSProtocol = "ws://";
 if (window.location.protocol === "https:") {
   WSProtocol = "wss://"
 }
+// 页面加载的时间
+let PageLoadedTime = new Date();
 
 
 /**
@@ -240,8 +240,17 @@ function logger_select(source) {
   start_logging();
 }
 
+// 停止消息服务
+function stop_message() {
+  if (MessageWS) {
+    MessageWS.close();
+    MessageWS = undefined;
+  }
+}
+
 // 连接消息服务
 function connect_message() {
+  stop_message();
   MessageWS = new ReconnectingWebSocket(WSProtocol + window.location.host + '/message');
   MessageWS.onmessage = function (event) {
     render_message(JSON.parse(event.data))
@@ -279,12 +288,14 @@ function render_message(ret) {
       // 滚动到顶部
       $(".offcanvas-body").animate({scrollTop: 0}, 300);
       // 浏览器消息提醒
-      if (!OldMessageFlag && !$("#offcanvasEnd").is(":hidden")) {
-        browserNotification(msg.title, msg.content);
+      if (!$("#offcanvasEnd").is(":hidden")) {
+        // 判断消息时间是否大于页面打开时间
+        let message_time = new Date(msg.time.replace(/-/g, '/'));
+        if (message_time > PageLoadedTime) {
+          browserNotification(msg.title, msg.content);
+        }
       }
     }
-    // 非旧消息
-    OldMessageFlag = false;
   }
   // 下一次处理
   if (lst_time) {
@@ -340,29 +351,6 @@ function show_init_alert_modal() {
   });
 }
 
-// 显示用户认证对话框
-function show_user_auth_modal() {
-  GlobalModalAbort = false;
-  $("#modal-user-auth").modal("show");
-}
-
-// 用户认证
-function user_auth() {
-  $("#user_auth_btn").text("认证中...").prop("disabled", true);
-  let siteid = $("#user_auth_site").val();
-  let params = input_select_GetVal(`user_auth_${siteid}_params`, `${siteid}_`);
-  ajax_post("auth_user_level", {site: siteid, params: params}, function (ret) {
-    GlobalModalAbort = true;
-    $("#modal-user-auth").modal("hide");
-    $("#user_auth_btn").prop("disabled", false).text("认证");
-    if (ret.code === 0) {
-      window.location.reload();
-    } else {
-      show_fail_modal(ret.msg);
-    }
-  }, true, false);
-}
-
 // 初始化tomselect
 function init_tomselect() {
   let el;
@@ -386,13 +374,6 @@ function init_tomselect() {
       },
     },
   }));
-}
-
-// TomSelect响应事件
-function switch_cooperation_sites(obj) {
-  let siteid = $(obj).val();
-  $(".user_auth_params").hide();
-  $(`#user_auth_${siteid}_params`).show();
 }
 
 // 停止刷新进度条
@@ -1319,6 +1300,9 @@ function show_download_modal(id, name, site = undefined, func = undefined, show_
     $("#search_download_btn").unbind("click").click(download_link);
   }
   // 清空
+  if (!TorrentDropZone) {
+    init_dropzone();
+  }
   TorrentDropZone.removeAllFiles();
 
   $("#modal-search-download").modal('show');
@@ -1535,8 +1519,9 @@ function show_manual_transfer_modal(manual_type, inpath, syncmod, media_type, un
     $('#rename_header').text("手动识别");
     $('#rename_path_div').show();
     $('#rename_inpath_div').hide();
-    $('#rename_outpath_div').hide();
+    $('#rename_outpath_div').show();
     $("#rename_path").val(inpath);
+    $("#rename_outpath").val('');
     $("#rename_syncmod_manual").val(syncmod);
     $("#unknown_id").val(unknown_id);
     $("#transferlog_id").val(transferlog_id);
