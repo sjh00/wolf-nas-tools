@@ -25,14 +25,15 @@ from app.media import Media
 from app.media.meta import MetaInfo
 from app.message import Message
 from app.sites import Sites, SiteConf
-from app.utils import StringUtils, ExceptionUtils
-from app.utils.commons import singleton
-from app.utils.types import BrushDeleteType
-from config import BRUSH_REMOVE_TORRENTS_INTERVAL, Config
+from app.utils import StringUtils, ExceptionUtils, JsonUtils
+from app.utils.types import BrushDeleteType, BrushStopType, MediaType
+
+from app.scheduler_service import SchedulerService
+from app.queue import scheduler_queue
+from app.utils import RedisStore
 
 
-@singleton
-class BrushTask(object):
+class BrushTask(metaclass=SingletonMeta):
     message = None
     sites = None
     siteconf = None
@@ -61,6 +62,10 @@ class BrushTask(object):
         self.siteconf = SiteConf()
         self.filter = Filter()
         self.downloader = Downloader()
+        self._language_options = [m.get('value') for m in ModuleConf.DISCOVER_FILTER_CONF.get(
+            "tmdb_movie").get("with_original_language").get("options")
+            if m.get('value') and m.get('value') != 'other']
+        self.redis_store = RedisStore()
         # 移除现有任务
         self.stop_service()
         # 读取刷流任务列表
@@ -684,27 +689,52 @@ class BrushTask(object):
             return True
 
         try:
-            if rss_rule.get("size"):
-                rule_sizes = rss_rule.get("size").split("#")
-                if rule_sizes[0]:
-                    if len(rule_sizes) > 1 and rule_sizes[1]:
-                        min_max_size = rule_sizes[1].split(',')
-                        min_size = min_max_size[0]
-                        if len(min_max_size) > 1:
-                            max_size = min_max_size[1]
-                        else:
-                            max_size = 0
-                        if rule_sizes[0] == "gt" and float(torrent_size) < float(min_size) * 1024 ** 3:
-                            return False
-                        if rule_sizes[0] == "lt" and float(torrent_size) > float(min_size) * 1024 ** 3:
-                            return False
-                        if rule_sizes[0] == "bw" and not float(min_size) * 1024 ** 3 < float(torrent_size) < float(
-                                max_size) * 1024 ** 3:
-                            return False
+            # 规则检查字典
+            rule_checks = {
+                "size": lambda rule_value: BrushTask.check_range_rule(torrent_size, rule_value, 1024 ** 3),
+                "include": lambda rule_value: re.search(rule_value, title, re.IGNORECASE),
+                "exclude": lambda rule_value: not re.search(rule_value, title, re.IGNORECASE),
+                "free": lambda rule_value: BrushTask._check_free_status(torrent_attr, rule_value),
+                "hr": lambda rule_value: not torrent_attr.get("hr"),
+                "peercount": lambda rule_value: BrushTask._check_peer_count(torrent_attr.get("peer_count"), rule_value),
+                "pubdate": lambda rule_value: BrushTask._check_pubdate(pubdate, torrent_attr, rule_value),
+                "exclude_subscribe": lambda rule_value: not BrushTask._check_subscribe_status(title, rule_value)
+            }
 
-            # 检查包含规则
-            if rss_rule.get("include"):
-                if not re.search(r"%s" % rss_rule.get("include"), title):
+            rule_original_language = rss_rule.get("original_language")
+            if rule_original_language:
+                meta_original_language = ''
+                # 识别种子名称，开始搜索TMDB以适配原始语言过滤
+                media_info = MetaInfo(title=title)
+                cache_info = self.media.get_cache_info(media_info)
+                if cache_info.get("id") and cache_info.get("original_language"):
+                    # 使用缓存信息
+                    meta_original_language = cache_info.get("original_language")
+                else:
+                    # 重新查询TMDB
+                    media_info = self.media.get_media_info(title=title)
+                    if media_info and media_info.original_language:
+                        meta_original_language = media_info.original_language
+                if meta_original_language:
+                    meta_original_language = meta_original_language.strip()
+                    if rule_original_language == 'other':
+                        if meta_original_language[:2] in self._language_options:
+                            return False
+                    elif rule_original_language[:2] != meta_original_language[:2]:
+                        return False
+                else:
+                    return False
+
+            # 遍历规则并进行检查
+            for rule, check_func in rule_checks.items():
+                rule_value = rss_rule.get(rule)
+                log.debug(f"检查字段: {rule}, 规则值: {rule_value}")
+                # 忽略规则为 "#"
+                if rule_value == "#" or rule_value == "N":
+                    log.debug(f"规则 {rule} 被设置为忽略 (#)，跳过检查")
+                    continue
+                if rule_value and not check_func(rule_value):
+                    log.debug(f"字段: {rule} 不符合规则")
                     return False
 
         except Exception as err:
