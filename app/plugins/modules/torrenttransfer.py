@@ -4,16 +4,20 @@ from datetime import datetime, timedelta
 from threading import Event
 
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from bencode import bdecode, bencode
 
 from app.downloader import Downloader
+from app.entities import torrent
+from app.entities.torrentstatus import TorrentStatus
 from app.media.meta import MetaInfo
 from app.plugins.modules._base import _IPluginModule
 from app.utils import Torrent
 from app.utils.types import DownloaderType
 from config import Config
+
+from app.scheduler_service import SchedulerService
+from app.queue import scheduler_queue
 
 
 class TorrentTransfer(_IPluginModule):
@@ -26,11 +30,11 @@ class TorrentTransfer(_IPluginModule):
     # 主题色
     module_color = "#272636"
     # 插件版本
-    module_version = "1.0"
+    module_version = "1.1"
     # 插件作者
-    module_author = "jxxghp"
+    module_author = "linyuan0213"
     # 作者主页
-    author_url = "https://github.com/jxxghp"
+    author_url = "https://github.com/linyuan0213"
     # 插件配置项ID前缀
     module_config_prefix = "torrenttransfer_"
     # 加载顺序
@@ -40,6 +44,7 @@ class TorrentTransfer(_IPluginModule):
 
     # 私有属性
     _scheduler = None
+    _jobstore = "plugin"
     downloader = None
     sites = None
     # 限速开关
@@ -290,9 +295,12 @@ class TorrentTransfer(_IPluginModule):
             self._nopaths = config.get("nopaths")
             self._autostart = config.get("autostart")
 
+        self._scheduler = SchedulerService()
         # 停止现有任务
         self.stop_service()
+        self.run_service()
 
+    def run_service(self):
         # 启动定时任务 & 立即运行一次
         if self.get_state() or self._onlyonce:
             # 检查配置
@@ -300,24 +308,37 @@ class TorrentTransfer(_IPluginModule):
                 self.error(f"源下载器种子文件保存路径不存在：{self._fromtorrentpath}")
                 return
             if isinstance(self._fromdownloader, list) and len(self._fromdownloader) > 1:
-                self.error(f"源下载器只能选择一个")
+                self.error("源下载器只能选择一个")
                 return
             if isinstance(self._todownloader, list) and len(self._todownloader) > 1:
-                self.error(f"目的下载器只能选择一个")
+                self.error("目的下载器只能选择一个")
                 return
             if self._fromdownloader == self._todownloader:
-                self.error(f"源下载器和目的下载器不能相同")
+                self.error("源下载器和目的下载器不能相同")
                 return
-            self._scheduler = BackgroundScheduler(timezone=Config().get_timezone())
             if self._cron:
                 self.info(f"移转做种服务启动，周期：{self._cron}")
-                self._scheduler.add_job(self.transfer,
-                                        CronTrigger.from_crontab(self._cron))
+                scheduler_queue.put({
+                        "func_str": "TorrentTransfer.transfer",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "TorrentTransfer.transfer_1",
+                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "jobstore": self._jobstore
+                    })
             if self._onlyonce:
-                self.info(f"移转做种服务启动，立即运行一次")
-                self._scheduler.add_job(self.transfer, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
-                                            seconds=3))
+                self.info("移转做种服务启动，立即运行一次")
+                scheduler_queue.put({
+                        "func_str": "TorrentTransfer.transfer",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "TorrentTransfer.transfer_once",
+                        "trigger": "date",
+                        "run_date": datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                                                                seconds=3),
+                        "jobstore": self._jobstore
+                    })
+
                 # 关闭一次性开关
                 self._onlyonce = False
                 self.update_config({
@@ -335,13 +356,18 @@ class TorrentTransfer(_IPluginModule):
                     "nopaths": self._nopaths,
                     "autostart": self._autostart
                 })
-            if self._scheduler.get_jobs():
-                if self._autostart:
-                    # 追加种子校验服务
-                    self._scheduler.add_job(self.check_recheck, 'interval', minutes=3)
-                # 启动服务
-                self._scheduler.print_jobs()
-                self._scheduler.start()
+
+            if self._autostart:
+                # 追加种子校验服务
+                scheduler_queue.put({
+                    "func_str": "TorrentTransfer.check_recheck",
+                    "type": 'plugin',
+                    "args": [],
+                    "job_id": "TorrentTransfer.check_recheck",
+                    "trigger": "interval",
+                    "minutes": 3,
+                    "jobstore": self._jobstore
+                })
 
     def get_state(self):
         return True if self._enable \
@@ -383,9 +409,9 @@ class TorrentTransfer(_IPluginModule):
                 self.info(f"移转服务停止")
                 return
             # 获取种子hash
-            hash_str = self.__get_hash(torrent, downloader_type)
+            hash_str = torrent.id
             # 获取保存路径
-            save_path = self.__get_save_path(torrent, downloader_type)
+            save_path = torrent.save_path
             if self._nopaths and save_path:
                 # 过滤不需要移转的路径
                 nopath_skip = False
@@ -397,7 +423,7 @@ class TorrentTransfer(_IPluginModule):
                 if nopath_skip:
                     continue
             # 获取种子标签
-            torrent_labels = self.__get_label(torrent, downloader_type)
+            torrent_labels = torrent.labels
             if torrent_labels and self._nolabels:
                 is_skip = False
                 for label in self._nolabels.split(','):
@@ -573,7 +599,7 @@ class TorrentTransfer(_IPluginModule):
             can_seeding_torrents = []
             for torrent in torrents:
                 # 获取种子hash
-                hash_str = self.__get_hash(torrent, downloader_type)
+                hash_str = torrent.id
                 if self.__can_seeding(torrent, downloader_type):
                     can_seeding_torrents.append(hash_str)
             if can_seeding_torrents:
@@ -590,49 +616,11 @@ class TorrentTransfer(_IPluginModule):
         self._is_recheck_running = False
 
     @staticmethod
-    def __get_hash(torrent, dl_type):
-        """
-        获取种子hash
-        """
-        try:
-            return torrent.get("hash") if dl_type == DownloaderType.QB else torrent.hashString
-        except Exception as e:
-            print(str(e))
-            return ""
-
-    @staticmethod
-    def __get_label(torrent, dl_type):
-        """
-        获取种子标签
-        """
-        try:
-            return torrent.get("tags") or [] if dl_type == DownloaderType.QB else torrent.labels or []
-        except Exception as e:
-            print(str(e))
-            return []
-
-    @staticmethod
-    def __get_save_path(torrent, dl_type):
-        """
-        获取种子保存路径
-        """
-        try:
-            return torrent.get("save_path") if dl_type == DownloaderType.QB else torrent.download_dir
-        except Exception as e:
-            print(str(e))
-            return ""
-
-    @staticmethod
-    def __can_seeding(torrent, dl_type):
+    def __can_seeding(torrent: torrent.Torrent):
         """
         判断种子是否可以做种并处于暂停状态
         """
-        try:
-            return torrent.get("state") == "pausedUP" and torrent.get("tracker") if dl_type == DownloaderType.QB \
-                else (torrent.status.stopped and torrent.percent_done == 1 and torrent.trackers)
-        except Exception as e:
-            print(str(e))
-            return False
+        return torrent.status in [TorrentStatus.Paused, TorrentStatus.Stopped] and torrent.progress >= 1
 
     @staticmethod
     def __convert_save_path(save_path, from_root, to_root):
@@ -662,12 +650,9 @@ class TorrentTransfer(_IPluginModule):
         退出插件
         """
         try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._event.set()
-                    self._scheduler.shutdown()
-                    self._event.clear()
-                self._scheduler = None
+            if self._scheduler and self._scheduler.SCHEDULER:
+                for job in self._scheduler.get_jobs(self._jobstore):
+                    if 'transfer' in job.name or 'check_recheck' in job.name:
+                        self._scheduler.remove_job(job.id, self._jobstore)
         except Exception as e:
             print(str(e))

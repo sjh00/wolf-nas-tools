@@ -2,10 +2,11 @@
 from datetime import datetime
 import os
 import re
+import json
 
 from lxml import etree
 
-from app.utils import SystemUtils
+from app.utils import SystemUtils, JsonUtils
 from config import RMT_SUBEXT
 
 
@@ -18,6 +19,18 @@ class SiteHelper:
         :param html_text:
         :return:
         """
+        if JsonUtils.is_valid_json(html_text):
+            json_data = json.loads(html_text)
+            message = json_data.get('message')
+            success = json_data.get('success')
+            error_message = json_data.get('errorMessage')
+
+            if message == 'SUCCESS' or success or (error_message and '已签' in error_message):
+                return True
+            return False
+        if "签到成功" in html_text:
+            return True
+
         html = etree.HTML(html_text)
         if not html:
             return False
@@ -36,6 +49,11 @@ class SiteHelper:
                 return True
         user_info_div = html.xpath('//div[@class="user-info-side"]')
         if user_info_div:
+            return True
+
+        # 朱雀
+        x_csrf_token = html.xpath("//head/meta[contains(@name, 'x-csrf-token')]")
+        if x_csrf_token:
             return True
 
         return False

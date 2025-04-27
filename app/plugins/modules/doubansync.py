@@ -4,7 +4,6 @@ from threading import Event, Lock
 from time import sleep
 
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
 from jinja2 import Template
 
 from app.downloader import Downloader
@@ -18,6 +17,9 @@ from app.utils import ExceptionUtils
 from app.utils.types import SearchType, RssType, EventType, MediaType
 from config import Config
 from web.backend.web_utils import WebUtils
+
+from app.scheduler_service import SchedulerService
+from app.queue import scheduler_queue
 
 lock = Lock()
 
@@ -63,6 +65,7 @@ class DoubanSync(_IPluginModule):
     _types = []
     _cookie = None
     _scheduler = None
+    _jobstore = 'plugin'
 
     def init_config(self, config: dict = None):
         self.douban = DouBan()
@@ -105,27 +108,50 @@ class DoubanSync(_IPluginModule):
             if self._types:
                 if isinstance(self._types, str):
                     self._types = self._types.split(',')
-
+        self._scheduler = SchedulerService()
         # 停止现有任务
         self.stop_service()
+        self.run_service()
 
         # 启动服务
+    def run_service(self):
         if self.get_state() or self._onlyonce:
-            self._scheduler = BackgroundScheduler(timezone=Config().get_timezone())
             if self._interval:
                 self.info(f"豆瓣全量同步服务启动，周期：{self._interval} 小时，类型：{self._types}，用户：{self._users}")
-                self._scheduler.add_job(self.sync, 'interval',
-                                        hours=self._interval)
+                scheduler_queue.put({
+                        "func_str": "DoubanSync.sync",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "DoubanSync.sync_1",
+                        "trigger": "interval",
+                        "hours": self._interval,
+                        "jobstore": self._jobstore
+                    })
+
             if self._rss_interval:
                 self.info(f"豆瓣近期动态同步服务启动，周期：{self._rss_interval} 秒，类型：{self._types}，用户：{self._users}")
-                self._scheduler.add_job(self.sync, 'interval',
-                                        seconds=self._rss_interval)
+                scheduler_queue.put({
+                        "func_str": "DoubanSync.sync",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "DoubanSync.sync_2",
+                        "trigger": "interval",
+                        "seconds": self._rss_interval,
+                        "jobstore": self._jobstore
+                    })
 
             if self._onlyonce:
                 self.info("豆瓣同步服务启动，立即运行一次")
-                self._scheduler.add_job(self.sync, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
-                                            seconds=3))
+                scheduler_queue.put({
+                        "func_str": "DoubanSync.sync",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "DoubanSync.sync_once",
+                        "trigger": "date",
+                        "run_date": datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                                                                seconds=3),
+                        "jobstore": self._jobstore
+                    })
 
                 # 关闭一次性开关
                 self._onlyonce = False
@@ -142,10 +168,6 @@ class DoubanSync(_IPluginModule):
                     "days": self._days,
                     "types": self._types
                 })
-            if self._scheduler.get_jobs():
-                # 启动服务
-                self._scheduler.print_jobs()
-                self._scheduler.start()
 
     def get_state(self):
         return self._enable \
@@ -395,7 +417,6 @@ class DoubanSync(_IPluginModule):
               $("#douban_history_" + id).remove();
             });
           }
-          
           // 同步方式切换
           function DoubanSync_sync_rss_change(obj){
             if ($(obj).val() == '1') {
@@ -433,13 +454,10 @@ class DoubanSync(_IPluginModule):
         停止服务
         """
         try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._event.set()
-                    self._scheduler.shutdown()
-                    self._event.clear()
-                self._scheduler = None
+            if self._scheduler and self._scheduler.SCHEDULER:
+                for job in self._scheduler.get_jobs(self._jobstore):
+                    if 'DoubanSync.sync' in job.name:
+                        self._scheduler.remove_job(job.id, self._jobstore)
         except Exception as e:
             print(str(e))
 
@@ -588,6 +606,9 @@ class DoubanSync(_IPluginModule):
             userinfo = self.douban.get_user_info(userid=user)
             if userinfo:
                 user_name = userinfo.get("name")
+            else:
+                self.warn(f"【DoubanSync】用户名获取失败，请检查豆瓣ID {user} 是否输入正确，或者检查当前网络是否可以访问豆瓣")
+                continue
 
             if self._sync_type != "1":
                 # 每页条数

@@ -1,5 +1,6 @@
 import json
 from threading import Lock
+import traceback
 
 import log
 from app.conf import SystemConfig
@@ -14,15 +15,14 @@ from app.plugins import EventManager
 from app.searcher import Searcher
 from app.sites import Sites
 from app.utils import Torrent
-from app.utils.commons import singleton
+from app.utils.commons import SingletonMeta
 from app.utils.types import MediaType, SearchType, EventType, SystemConfigKey, RssType
 from web.backend.web_utils import WebUtils
 
 lock = Lock()
 
 
-@singleton
-class Subscribe:
+class Subscribe(metaclass=SingletonMeta):
     dbhelper = None
     metahelper = None
     searcher = None
@@ -127,7 +127,7 @@ class Subscribe:
         download_setting = int(download_setting) if str(download_setting).replace("-", "").isdigit() else ""
         fuzzy_match = True if fuzzy_match else False
         if channel == RssType.Auto:
-            default_rss_setting = self.default_rss_setting_tv if mtype == MediaType.TV else self.default_rss_setting_mov
+            default_rss_setting = self.default_rss_setting_tv if mtype in [MediaType.TV, MediaType.ANIME] else self.default_rss_setting_mov
             if default_rss_setting:
                 default_restype = default_rss_setting.get('restype')
                 default_pix = default_rss_setting.get('pix')
@@ -180,7 +180,7 @@ class Subscribe:
                                                        cache=False)
             # 检查TMDB信息
             if not media_info or not media_info.tmdb_info:
-                return 1, "无法TMDB查询到媒体信息", None
+                return 1, "TMDB无法查询到媒体信息", None
             # 添加订阅
             if media_info.type != MediaType.MOVIE:
                 # 电视剧
@@ -188,7 +188,7 @@ class Subscribe:
                 if not season and str(mediaid).startswith("DB:"):
                     season = 1
                 if season:
-                    total_episode = self.media.get_tmdb_season_episodes_num(tv_info=media_info.tmdb_info,
+                    total_episode = total_ep if total_ep else self.media.get_tmdb_season_episodes_num(tv_info=media_info.tmdb_info,
                                                                             season=int(season))
                 else:
                     # 查询季及集信息
@@ -773,6 +773,7 @@ class Subscribe:
             except Exception as err:
                 self.dbhelper.update_rss_movie_state(rssid=rssid, state='R')
                 log.error(f"【Subscribe】电影 {name} 订阅搜索失败：{str(err)}")
+                log.debug(f"异常详细信息: {traceback.format_exc()}")
                 continue
 
     def subscribe_search_tv(self, rssid=None, state="D"):
@@ -910,6 +911,7 @@ class Subscribe:
                                                   seasoninfo=no_exists.get(media_info.tmdb_id))
             except Exception as err:
                 log.error(f"【Subscribe】电视剧 {name} 订阅搜索失败：{str(err)}")
+                log.debug(f"异常详细信息: {traceback.format_exc()}")
                 self.dbhelper.update_rss_tv_state(rssid=rssid, state='R')
                 continue
 
@@ -969,9 +971,9 @@ class Subscribe:
         """
         更新电视剧订阅缺失集数
         """
+        self.dbhelper.update_rss_tv_state(rssid=rssid, state='R')
         if not seasoninfo:
             return
-        self.dbhelper.update_rss_tv_state(rssid=rssid, state='R')
         for info in seasoninfo:
             if str(info.get("season")) == media_info.get_season_seq():
                 if info.get("episodes"):

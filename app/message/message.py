@@ -8,14 +8,13 @@ from app.conf import ModuleConf
 from app.helper import DbHelper, SubmoduleHelper
 from app.message.message_center import MessageCenter
 from app.utils import StringUtils, ExceptionUtils
-from app.utils.commons import singleton
+from app.utils.commons import SingletonMeta
 from app.utils.types import SearchType, MediaType
 from config import Config
 from web.backend.web_utils import WebUtils
 
 
-@singleton
-class Message(object):
+class Message(metaclass=SingletonMeta):
     dbhelper = None
     messagecenter = None
     _message_schemas = []
@@ -35,7 +34,6 @@ class Message(object):
     def init_config(self):
         self.dbhelper = DbHelper()
         self.messagecenter = MessageCenter()
-
         self._domain = Config().get_domain()
         # 停止旧服务
         if self._active_clients:
@@ -96,7 +94,7 @@ class Message(object):
         state, ret_msg = self.__build_class(ctype=ctype,
                                             conf=config).send_msg(title="测试",
                                                                   text="这是一条测试消息",
-                                                                  url="https://github.com/NAStool/nas-tools")
+                                                                  url="https://github.com/linyuan0213/nas-tools")
         if not state:
             log.error(f"【Message】{ctype} 发送测试消息失败：%s" % ret_msg)
         return state
@@ -604,7 +602,7 @@ class Message(object):
                     url=url
                 )
 
-    def send_plugin_message(self, title, text="", image=""):
+    def send_plugin_message(self, title, text="", image="", url=""):
         """
         发送插件消息
         """
@@ -619,6 +617,7 @@ class Message(object):
                     client=client,
                     title=title,
                     text=text,
+                    url=url,
                     image=image
                 )
 
@@ -730,3 +729,21 @@ class Message(object):
         )
         self.init_config()
         return ret
+
+    def send_brushtask_pause_message(self, title, text):
+        """
+        发送刷流暂停种子的消息
+        """
+        if not title or not text:
+            return
+        # 插入消息中心
+        self.messagecenter.insert_system_message(title=title, content=text)
+        # 发送消息
+        for client in self._active_clients:
+            if "brushtask_pause" in client.get("switchs"):
+                self.__sendmsg(
+                    client=client,
+                    title=title,
+                    text=text,
+                    url="brushtask"
+                )

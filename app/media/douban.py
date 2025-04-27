@@ -9,14 +9,13 @@ from app.media.doubanapi import DoubanApi, DoubanWeb
 from app.media.meta import MetaInfo
 from app.utils import ExceptionUtils, StringUtils
 from app.utils import RequestUtils
-from app.utils.commons import singleton
+from app.utils.commons import SingletonMeta
 from app.utils.types import MediaType
 
 lock = Lock()
 
 
-@singleton
-class DouBan:
+class DouBan(metaclass=SingletonMeta):
     cookie = None
     doubanapi = None
     doubanweb = None
@@ -147,7 +146,6 @@ class DouBan:
             web_info["id"] = web_info.get("url").split("/")[-2]
         return web_infos
 
-
     def get_douban_wish(self, dtype, userid, start, wait=False):
         """
         获取豆瓣想看列表数据
@@ -163,6 +161,7 @@ class DouBan:
         else:
             web_infos = self.doubanweb.wish(cookie=self.cookie, userid=userid, start=start)
         if not web_infos:
+            log.warn("【Douban】从豆瓣未获取任何数据，可能是当前网络错误，请检查当前设备网络是否可以访问豆瓣")
             return []
         for web_info in web_infos:
             web_info["id"] = web_info.get("url").split("/")[-2]
@@ -211,7 +210,7 @@ class DouBan:
             meta_info.tmdb_id = "DB:%s" % item.get("id")
             meta_info.douban_id = item.get("id")
             meta_info.overview = item.get("card_subtitle") or ""
-            meta_info.poster_path = item.get("cover_url").split('?')[0]
+            meta_info.poster_path = item.get("cover_url")
             rating = item.get("rating", {}) or {}
             meta_info.vote_average = rating.get("value")
             if meta_info not in ret_medias:

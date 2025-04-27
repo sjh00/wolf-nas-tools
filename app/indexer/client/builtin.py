@@ -1,16 +1,21 @@
 import copy
 import datetime
+from threading import Lock
 import time
 
+from app.helper.drissionpage_helper import DrissionPageHelper
 import log
 from app.conf import SystemConfig
-from app.helper import ProgressHelper, ChromeHelper, DbHelper
+from app.helper import IndexerHelper, IndexerConf, ProgressHelper, DbHelper
 from app.indexer.client._base import _IIndexClient
 from app.indexer.client._rarbg import Rarbg
-from app.indexer.client._render_spider import RenderSpider
 from app.indexer.client._spider import TorrentSpider
 from app.indexer.client._tnode import TNodeSpider
 from app.indexer.client._torrentleech import TorrentLeech
+from app.indexer.client._mteam import MteamSpider
+from app.indexer.client._fsm import FSMSpider
+from app.indexer.client._yemapt import YemaPTSpider
+from app.indexer.client._firefly import FireFlySpider
 from app.sites import Sites
 from app.utils import StringUtils
 from app.utils.types import SearchType, IndexerType, ProgressKey, SystemConfigKey
@@ -32,9 +37,7 @@ class BuiltinIndexer(_IIndexClient):
     progress = None
     sites = None
     dbhelper = None
-    user = None
-    chromehelper = None
-    systemconfig = None
+    lock = Lock()
 
     def __init__(self, config=None):
         super().__init__()
@@ -57,6 +60,9 @@ class BuiltinIndexer(_IIndexClient):
     def get_type(self):
         return self.client_type
 
+    def get_client_id(self):
+        return self.client_id
+
     def get_status(self):
         """
         检查连通性
@@ -64,50 +70,32 @@ class BuiltinIndexer(_IIndexClient):
         """
         return True
 
-    def get_indexer(self, url):
-        """
-        获取单个索引器配置
-        """
-        # 检查浏览器状态
-        chrome_ok = self.chromehelper.get_status()
-        site = self.sites.get_sites(siteurl=url)
-        if site:
-            return self.user.get_indexer(url=url,
-                                         siteid=site.get("id"),
-                                         cookie=site.get("cookie"),
-                                         ua=site.get("ua"),
-                                         name=site.get("name"),
-                                         rule=site.get("rule"),
-                                         pri=site.get('pri'),
-                                         public=False,
-                                         proxy=site.get("proxy"),
-                                         render=False if not chrome_ok else site.get("chrome"))
-        return None
-
-    def get_indexers(self, check=True, public=True):
+    def get_indexers(self, check=True, indexer_id=None, public=True):
         ret_indexers = []
-        _indexer_domains = []
         # 选中站点配置
-        indexer_sites = self.systemconfig.get(SystemConfigKey.UserIndexerSites) or []
+        indexer_sites = SystemConfig().get(SystemConfigKey.UserIndexerSites) or []
+        _indexer_domains = []
         # 检查浏览器状态
-        chrome_ok = self.chromehelper.get_status()
+        chrome_ok = DrissionPageHelper().get_status()
         # 私有站点
         for site in self.sites.get_sites():
             url = site.get("signurl") or site.get("rssurl")
             cookie = site.get("cookie")
-            if not url or not cookie:
+            headers = site.get("headers")
+            if (not url or not cookie) and not headers:
                 continue
             render = False if not chrome_ok else site.get("chrome")
-            indexer = self.user.get_indexer(url=url,
-                                            siteid=site.get("id"),
-                                            cookie=cookie,
-                                            ua=site.get("ua"),
-                                            name=site.get("name"),
-                                            rule=site.get("rule"),
-                                            pri=site.get('pri'),
-                                            public=False,
-                                            proxy=site.get("proxy"),
-                                            render=render)
+            indexer = IndexerHelper().get_indexer(url=url,
+                                                  siteid=site.get("id"),
+                                                  cookie=cookie,
+                                                  ua=site.get("ua"),
+                                                  headers=site.get("headers"),
+                                                  name=site.get("name"),
+                                                  rule=site.get("rule"),
+                                                  pri=site.get('pri'),
+                                                  public=False,
+                                                  proxy=site.get("proxy"),
+                                                  render=render)
             if indexer:
                 if check and (not indexer_sites or indexer.id not in indexer_sites):
                     continue
@@ -173,12 +161,19 @@ class BuiltinIndexer(_IIndexClient):
                 error_flag, result_array = Rarbg(indexer).search(
                     keyword=search_word,
                     imdb_id=match_media.imdb_id if match_media else None)
-            elif indexer.parser == "RenderSpider":
-                error_flag, result_array = RenderSpider(indexer).search(
-                    keyword=search_word,
-                    mtype=match_media.type if match_media and match_media.tmdb_info else None)
             elif indexer.parser == "TorrentLeech":
                 error_flag, result_array = TorrentLeech(indexer).search(keyword=search_word)
+            elif indexer.parser == "MteamSpider":
+                error_flag, result_array = MteamSpider(indexer).search(keyword=search_word,
+                                                                       mtype=match_media.type if match_media and match_media.tmdb_info else None)
+            elif indexer.parser == "FSMSpider":
+                error_flag, result_array = FSMSpider(indexer).search(keyword=search_word)
+            elif indexer.parser == "YemaPTSpider":
+                error_flag, result_array = YemaPTSpider(indexer).search(keyword=search_word,
+                                                                        mtype=match_media.type if match_media and match_media.tmdb_info else None)
+            elif indexer.parser == "FireFlySpider":
+                error_flag, result_array = FireFlySpider(indexer).search(keyword=search_word,
+                                                                        mtype=match_media.type if match_media and match_media.tmdb_info else None)
             else:
                 error_flag, result_array = self.__spider_search(
                     keyword=search_word,
@@ -191,20 +186,21 @@ class BuiltinIndexer(_IIndexClient):
         # 索引花费的时间
         seconds = round((datetime.datetime.now() - start_time).seconds, 1)
         # 索引统计
-        self.dbhelper.insert_indexer_statistics(indexer=indexer.name,
-                                                itype=self.client_id,
-                                                seconds=seconds,
-                                                result='N' if error_flag else 'Y')
-        # 返回结果
+        with self.lock:
+            self.dbhelper.insert_indexer_statistics(indexer=indexer.name,
+                                                    itype=self.client_id,
+                                                    seconds=seconds,
+                                                    result='N' if error_flag else 'Y')
+            # 返回结果
         if len(result_array) == 0:
-            log.warn(f"【{self.client_name}】{indexer.name} 未搜索到数据")
+            log.warn(f"【{self.client_name}】{indexer.name} 关键词 {key_word} 未搜索到数据")
             # 更新进度
-            self.progress.update(ptype=ProgressKey.Search, text=f"{indexer.name} 未搜索到数据")
+            self.progress.update(ptype=ProgressKey.Search, text=f"{indexer.name} 关键词 {key_word} 未搜索到数据")
             return []
         else:
-            log.warn(f"【{self.client_name}】{indexer.name} 返回数据：{len(result_array)}")
+            log.warn(f"【{self.client_name}】{indexer.name} 关键词 {key_word} 返回数据：{len(result_array)}")
             # 更新进度
-            self.progress.update(ptype=ProgressKey.Search, text=f"{indexer.name} 返回 {len(result_array)} 条数据")
+            self.progress.update(ptype=ProgressKey.Search, text=f"{indexer.name} 关键词 {key_word} 返回 {len(result_array)} 条数据")
             # 过滤
             return self.filter_search_results(result_array=result_array,
                                               order_seq=order_seq,
@@ -226,10 +222,7 @@ class BuiltinIndexer(_IIndexClient):
         # 计算耗时
         start_time = datetime.datetime.now()
 
-        if indexer.parser == "RenderSpider":
-            error_flag, result_array = RenderSpider(indexer).search(keyword=keyword,
-                                                                    page=page)
-        elif indexer.parser == "RarBg":
+        if indexer.parser == "RarBg":
             error_flag, result_array = Rarbg(indexer).search(keyword=keyword,
                                                              page=page)
         elif indexer.parser == "TNodeSpider":
@@ -238,6 +231,14 @@ class BuiltinIndexer(_IIndexClient):
         elif indexer.parser == "TorrentLeech":
             error_flag, result_array = TorrentLeech(indexer).search(keyword=keyword,
                                                                     page=page)
+        elif indexer.parser == "MteamSpider":
+            error_flag, result_array = MteamSpider(indexer).search(keyword=keyword, page=page)
+        elif indexer.parser == "FSMSpider":
+            error_flag, result_array = FSMSpider(indexer).search(keyword=keyword, page=page)
+        elif indexer.parser == "YemaPTSpider":
+            error_flag, result_array = YemaPTSpider(indexer).search(keyword=keyword, page=page)
+        elif indexer.parser == "FireFlySpider":
+            error_flag, result_array = FireFlySpider(indexer).search(keyword=keyword, page=page)
         else:
             error_flag, result_array = self.__spider_search(indexer=indexer,
                                                             page=page,
@@ -246,10 +247,11 @@ class BuiltinIndexer(_IIndexClient):
         seconds = round((datetime.datetime.now() - start_time).seconds, 1)
 
         # 索引统计
-        self.dbhelper.insert_indexer_statistics(indexer=indexer.name,
-                                                itype=self.client_id,
-                                                seconds=seconds,
-                                                result='N' if error_flag else 'Y')
+        with self.lock:
+            self.dbhelper.insert_indexer_statistics(indexer=indexer.name,
+                                                    itype=self.client_id,
+                                                    seconds=seconds,
+                                                    result='N' if error_flag else 'Y')
         return result_array
 
     @staticmethod
@@ -275,6 +277,7 @@ class BuiltinIndexer(_IIndexClient):
             sleep_count += 1
             time.sleep(1)
             if sleep_count > timeout:
+                spider.stop_spider()
                 break
         # 是否发生错误
         result_flag = spider.is_error

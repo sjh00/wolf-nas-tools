@@ -1,11 +1,18 @@
 import base64
 
 from app.utils import RequestUtils
+from config import Config
 
 
 class OcrHelper:
 
-    _ocr_b64_url = "https://nastool.org/captcha/base64"
+    ocr_server_host = Config().get_config("laboratory").get('ocr_server_host')
+    if ocr_server_host:
+        if ocr_server_host.endswith("/"):
+            ocr_server_host = ocr_server_host[:-1]
+        _ocr_b64_url = ocr_server_host + "/ocr/base64"
+    else:
+        _ocr_b64_url = None
 
     def get_captcha_text(self, image_url=None, image_b64=None, cookie=None, ua=None):
         """
@@ -15,6 +22,10 @@ class OcrHelper:
         :param cookie: 下载图片使用的cookie
         :param ua: 下载图片使用的ua
         """
+
+        if not self._ocr_b64_url:
+            return ""
+
         if image_url:
             ret = RequestUtils(headers=ua,
                                cookies=cookie).get_res(image_url)
@@ -27,7 +38,7 @@ class OcrHelper:
             return ""
         ret = RequestUtils(content_type="application/json").post_res(
             url=self._ocr_b64_url,
-            json={"base64_img": image_b64})
+            json={"image_b64": image_b64})
         if ret:
-            return ret.json().get("result")
+            return ret.json().get("res")
         return ""

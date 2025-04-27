@@ -42,6 +42,13 @@ class ModuleConf(object):
         "move": RmtMode.MOVE
     }
 
+    # 索引器
+    INDEXER_DICT = {
+        "prowlarr": IndexerType.PROWLARR,
+        "jackett": IndexerType.JACKETT,
+        "builtin": IndexerType.BUILTIN
+    }
+
     # 远程转移模式
     REMOTE_RMT_MODES = [RmtMode.RCLONE, RmtMode.RCLONECOPY, RmtMode.MINIO, RmtMode.MINIOCOPY]
 
@@ -485,6 +492,10 @@ class ModuleConf(object):
                 "name": "刷流删种",
                 "fuc_name": "brushtask_remove"
             },
+            "brushtask_pause": {
+                "name": "刷流种子暂停",
+                "fuc_name": "brushtask_pause"
+            },
             "auto_remove_torrents": {
                 "name": "自动删种",
                 "fuc_name": "auto_remove_torrents"
@@ -503,7 +514,7 @@ class ModuleConf(object):
             }
         }
     }
-
+    # ('Downloading', 'Uploading', 'Checking', 'Queued', 'Paused', 'Stopped', 'Pending', 'Error', 'Unknown'))
     # 自动删种配置
     TORRENTREMOVER_DICT = {
         "qbittorrent": {
@@ -511,25 +522,14 @@ class ModuleConf(object):
             "img_url": "../static/img/downloader/qbittorrent.png",
             "downloader_type": DownloaderType.QB,
             "torrent_state": {
-                "downloading": "正在下载_传输数据",
-                "stalledDL": "正在下载_未建立连接",
-                "uploading": "正在上传_传输数据",
-                "stalledUP": "正在上传_未建立连接",
-                "error": "暂停_发生错误",
-                "pausedDL": "暂停_下载未完成",
-                "pausedUP": "暂停_下载完成",
-                "missingFiles": "暂停_文件丢失",
-                "checkingDL": "检查中_下载未完成",
-                "checkingUP": "检查中_下载完成",
-                "checkingResumeData": "检查中_启动时恢复数据",
-                "forcedDL": "强制下载_忽略队列",
-                "queuedDL": "等待下载_排队",
-                "forcedUP": "强制上传_忽略队列",
-                "queuedUP": "等待上传_排队",
-                "allocating": "分配磁盘空间",
-                "metaDL": "获取元数据",
-                "moving": "移动文件",
-                "unknown": "未知状态",
+                "Downloading": "正在下载",
+                "Pending": "等待下载",
+                "Uploading": "正在上传",
+                "Error": "发生错误",
+                "Paused": "暂停",
+                "Checking": "检查中",
+                "Queued": "排队",
+                "Unknown": "未知状态",
             }
         },
         "transmission": {
@@ -537,13 +537,13 @@ class ModuleConf(object):
             "img_url": "../static/img/downloader/transmission.png",
             "downloader_type": DownloaderType.TR,
             "torrent_state": {
-                "downloading": "正在下载",
-                "seeding": "正在上传",
-                "download_pending": "等待下载_排队",
-                "seed_pending": "等待上传_排队",
-                "checking": "正在检查",
-                "check_pending": "等待检查_排队",
-                "stopped": "暂停",
+                "Uploading": "正在上传",
+                "Downloading": "正在下载",
+                "Pending": "等待",
+                "Checking": "正在检查",
+                "Queued": "排队",
+                "Stopped": "暂停",
+                "Unknown": "未知状态"
             }
         }
     }
@@ -672,6 +672,36 @@ class ModuleConf(object):
                     "placeholder": "password"
                 }
             }
+        },
+        "aria2": {
+            "name": "Aria2",
+            "img_url": "../static/img/downloader/aria2.png",
+            "color": "#B30100",
+            "monitor_enable": True,
+            "config": {
+                "host": {
+                    "id": "aria2_host",
+                    "required": True,
+                    "title": "IP地址",
+                    "tooltip": "配置IP地址，如为https则需要增加https://前缀",
+                    "type": "text",
+                    "placeholder": "127.0.0.1"
+                },
+                "port": {
+                    "id": "aria2_port",
+                    "required": True,
+                    "title": "端口",
+                    "type": "text",
+                    "placeholder": "6800"
+                },
+                "secret": {
+                    "id": "aria2_secret",
+                    "required": True,
+                    "title": "令牌",
+                    "type": "text",
+                    "placeholder": ""
+                }
+            }
         }
     }
 
@@ -798,7 +828,64 @@ class ModuleConf(object):
     }
 
     # 索引器
-    INDEXER_CONF = {}
+    INDEXER_CONF = {
+        "jackett": {
+            "name": "Jackett",
+            "img_url": "./static/img/indexer/jackett.png",
+            "background": "bg-black",
+            "test_command": "app.indexer.client.jackett|Jackett",
+            "config": {
+                "host": {
+                    "id": "jackett.host",
+                    "required": True,
+                    "title": "Jackett地址",
+                    "tooltip": "Jackett访问地址和端口，如为https需加https://前缀。注意需要先在Jackett中添加indexer，才能正常测试通过和使用",
+                    "type": "text",
+                    "placeholder": "http://127.0.0.1:9117"
+                },
+                "api_key": {
+                    "id": "jackett.api_key",
+                    "required": True,
+                    "title": "Api Key",
+                    "tooltip": "Jackett管理界面右上角复制API Key",
+                    "type": "text",
+                    "placeholder": ""
+                },
+                "password": {
+                    "id": "jackett.password",
+                    "required": False,
+                    "title": "密码",
+                    "tooltip": "Jackett管理界面中配置的Admin password，如未配置可为空",
+                    "type": "password",
+                    "placeholder": ""
+                }
+            }
+        },
+        "prowlarr": {
+            "name": "Prowlarr",
+            "img_url": "../static/img/indexer/prowlarr.png",
+            "background": "bg-orange",
+            "test_command": "app.indexer.client.prowlarr|Prowlarr",
+            "config": {
+                "host": {
+                    "id": "prowlarr.host",
+                    "required": True,
+                    "title": "Prowlarr地址",
+                    "tooltip": "Prowlarr访问地址和端口，如为https需加https://前缀。注意需要先在Prowlarr中添加搜刮器，同时勾选所有搜刮器后搜索一次，才能正常测试通过和使用",
+                    "type": "text",
+                    "placeholder": "http://127.0.0.1:9696"
+                },
+                "api_key": {
+                    "id": "prowlarr.api_key",
+                    "required": True,
+                    "title": "Api Key",
+                    "tooltip": "在Prowlarr->Settings->General->Security-> API Key中获取",
+                    "type": "text",
+                    "placeholder": ""
+                }
+            }
+        }
+    }
 
     # 发现过滤器
     DISCOVER_FILTER_CONF = {

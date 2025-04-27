@@ -153,17 +153,16 @@ export class LayoutSearchbar extends CustomElement {
                       aria-controls="offcanvasEnd">消息中心</a>
                     <a class="dropdown-item" href="javascript:show_logging_modal()" role="button">实时日志</a>
                     <div class="dropdown-divider"></div>
-                    ${["Docker", "Synology"].includes(this.layout_systemflag)
-                    ? html`
-                      <a href="javascript:restart()" class="dropdown-item">重启</a>`
-                    : nothing }
                   `
                 : nothing }
                 <a href="javascript:logout()" class="dropdown-item">
                   注销 <span class="text-muted mx-3">${this.layout_username}</span>
                 </a>
+                <a href="javascript:restart()" class="dropdown-item">
+                  重启
+                </a>
                 <div class="dropdown-divider"></div>
-                <a href="https://wiki.nastool.org" target="_blank" class="dropdown-item">帮助中心</a>
+                <a href="https://github.com/linyuan0213/nas-tools" target="_blank" class="dropdown-item">帮助中心</a>
               </div>
             </div>
           </div>

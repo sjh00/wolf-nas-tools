@@ -1,22 +1,27 @@
 import re
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta
 from threading import Event
 
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from jinja2 import Template
 from lxml import etree
 
 from app.downloader import Downloader
+from app.entities.torrent import Torrent
+from app.entities.torrentstatus import TorrentStatus
 from app.media.meta import MetaInfo
 from app.plugins.modules._base import _IPluginModule
 from app.plugins.modules.iyuu.iyuu_helper import IyuuHelper
 from app.sites import Sites
-from app.utils import RequestUtils
+from app.utils import RequestUtils, JsonUtils
 from app.utils.types import DownloaderType
-from config import Config
+from config import MT_URL, Config
+
+from app.scheduler_service import SchedulerService
+from app.queue import scheduler_queue
 
 
 class IYUUAutoSeed(_IPluginModule):
@@ -29,11 +34,11 @@ class IYUUAutoSeed(_IPluginModule):
     # 主题色
     module_color = "#F3B70B"
     # 插件版本
-    module_version = "1.0"
+    module_version = "1.1"
     # 插件作者
-    module_author = "jxxghp"
+    module_author = "linyuan0213"
     # 作者主页
-    author_url = "https://github.com/jxxghp"
+    author_url = "https://github.com/linyuan0213"
     # 插件配置项ID前缀
     module_config_prefix = "iyuuautoseed_"
     # 加载顺序
@@ -43,6 +48,7 @@ class IYUUAutoSeed(_IPluginModule):
 
     # 私有属性
     _scheduler = None
+    _jobstore = "plugin"
     downloader = None
     iyuuhelper = None
     sites = None
@@ -223,25 +229,41 @@ class IYUUAutoSeed(_IPluginModule):
             self._permanent_error_caches = config.get("permanent_error_caches") or []
             self._error_caches = [] if self._clearcache else config.get("error_caches") or []
             self._success_caches = [] if self._clearcache else config.get("success_caches") or []
+
+        self._scheduler = SchedulerService()
         # 停止现有任务
         self.stop_service()
+        self.run_service()
 
+    def run_service(self):
         # 启动定时任务 & 立即运行一次
         if self.get_state() or self._onlyonce:
             self.iyuuhelper = IyuuHelper(token=self._token)
-            self._scheduler = BackgroundScheduler(timezone=Config().get_timezone())
             if self._cron:
                 try:
-                    self._scheduler.add_job(self.auto_seed,
-                                            CronTrigger.from_crontab(self._cron))
+                    scheduler_queue.put({
+                        "func_str": "IYUUAutoSeed.auto_seed",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "IYUUAutoSeed.auto_seed_1",
+                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "jobstore": self._jobstore
+                    })
                     self.info(f"辅种服务启动，周期：{self._cron}")
                 except Exception as err:
                     self.error(f"运行周期格式不正确：{str(err)}")
             if self._onlyonce:
-                self.info(f"辅种服务启动，立即运行一次")
-                self._scheduler.add_job(self.auto_seed, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
-                                            seconds=3))
+                self.info("辅种服务启动，立即运行一次")
+                scheduler_queue.put({
+                        "func_str": "IYUUAutoSeed.auto_seed",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "IYUUAutoSeed.auto_seed_once",
+                        "trigger": "date",
+                        "run_date": datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                                                                seconds=3),
+                        "jobstore": self._jobstore
+                    })
                 # 关闭一次性开关
                 self._onlyonce = False
             if self._clearcache:
@@ -252,12 +274,16 @@ class IYUUAutoSeed(_IPluginModule):
                 # 保存配置
                 self.__update_config()
 
-            if self._scheduler.get_jobs():
-                # 追加种子校验服务
-                self._scheduler.add_job(self.check_recheck, 'interval', minutes=3)
-                # 启动服务
-                self._scheduler.print_jobs()
-                self._scheduler.start()
+            # 追加种子校验服务
+            scheduler_queue.put({
+                            "func_str": "IYUUAutoSeed.check_recheck",
+                            "type": 'plugin',
+                            "args": [],
+                            "job_id": "IYUUAutoSeed.check_recheck",
+                            "trigger": 'interval',
+                            "minutes": 3,
+                            "jobstore": self._jobstore
+                        })
 
     def get_state(self):
         return True if self._enable and self._cron and self._token and self._downloaders else False
@@ -352,7 +378,7 @@ class IYUUAutoSeed(_IPluginModule):
         state, msg = self.iyuuhelper.bind_site(site=site,
                                                passkey=passkey,
                                                uid=uid)
-        return {"code": 0 if state else 1, "msg": msg}
+        return {"code": 0 if state == [] else 1, "msg": msg}
 
     def __update_config(self):
         self.update_config({
@@ -393,7 +419,7 @@ class IYUUAutoSeed(_IPluginModule):
             # 下载器类型
             downloader_type = self.downloader.get_downloader_type(downloader_id=downloader)
             # 获取下载器中已完成的种子
-            torrents = self.downloader.get_completed_torrents(downloader_id=downloader)
+            torrents: list[Torrent] = self.downloader.get_completed_torrents(downloader_id=downloader)
             if torrents:
                 self.info(f"下载器 {downloader} 已完成种子数：{len(torrents)}")
             else:
@@ -405,13 +431,13 @@ class IYUUAutoSeed(_IPluginModule):
                     self.info(f"辅种服务停止")
                     return
                 # 获取种子hash
-                hash_str = self.__get_hash(torrent, downloader_type)
+                hash_str = torrent.id
                 if hash_str in self._error_caches or hash_str in self._permanent_error_caches:
                     self.info(f"种子 {hash_str} 辅种失败且已缓存，跳过 ...")
                     continue
-                save_path = self.__get_save_path(torrent, downloader_type)
+                save_path = torrent.save_path
                 # 获取种子标签
-                torrent_labels = self.__get_label(torrent, downloader_type)
+                torrent_labels = torrent.labels
                 if torrent_labels and self._nolabels:
                     is_skip = False
                     for label in self._nolabels.split(','):
@@ -470,17 +496,15 @@ class IYUUAutoSeed(_IPluginModule):
             if not recheck_torrents:
                 continue
             self.info(f"开始检查下载器 {downloader} 的校验任务 ...")
-            # 下载器类型
-            downloader_type = self.downloader.get_downloader_type(downloader_id=downloader)
             # 获取下载器中的种子
-            torrents = self.downloader.get_torrents(downloader_id=downloader,
+            torrents: list[Torrent] = self.downloader.get_torrents(downloader_id=downloader,
                                                     ids=recheck_torrents)
             if torrents:
                 can_seeding_torrents = []
                 for torrent in torrents:
                     # 获取种子hash
-                    hash_str = self.__get_hash(torrent, downloader_type)
-                    if self.__can_seeding(torrent, downloader_type):
+                    hash_str = torrent.id
+                    if self.__can_seeding(torrent):
                         can_seeding_torrents.append(hash_str)
                 if can_seeding_torrents:
                     self.info(f"共 {len(can_seeding_torrents)} 个任务校验完成，开始辅种 ...")
@@ -622,6 +646,8 @@ class IYUUAutoSeed(_IPluginModule):
         self.total += 1
         # 获取种子站点及下载地址模板
         site_url, download_page = self.iyuuhelper.get_torrent_url(seed.get("sid"))
+        if site_url and 'm-team' in site_url:
+            site_url = MT_URL
         if not site_url or not download_page:
             # 加入缓存
             self._error_caches.append(seed.get("info_hash"))
@@ -708,49 +734,11 @@ class IYUUAutoSeed(_IPluginModule):
             return True
 
     @staticmethod
-    def __get_hash(torrent, dl_type):
-        """
-        获取种子hash
-        """
-        try:
-            return torrent.get("hash") if dl_type == DownloaderType.QB else torrent.hashString
-        except Exception as e:
-            print(str(e))
-            return ""
-
-    @staticmethod
-    def __get_label(torrent, dl_type):
-        """
-        获取种子标签
-        """
-        try:
-            return torrent.get("tags") or [] if dl_type == DownloaderType.QB else torrent.labels or []
-        except Exception as e:
-            print(str(e))
-            return []
-
-    @staticmethod
-    def __can_seeding(torrent, dl_type):
+    def __can_seeding(torrent: Torrent):
         """
         判断种子是否可以做种并处于暂停状态
         """
-        try:
-            return torrent.get("state") == "pausedUP" if dl_type == DownloaderType.QB \
-                else (torrent.status.stopped and torrent.percent_done == 1)
-        except Exception as e:
-            print(str(e))
-            return False
-
-    @staticmethod
-    def __get_save_path(torrent, dl_type):
-        """
-        获取种子保存路径
-        """
-        try:
-            return torrent.get("save_path") if dl_type == DownloaderType.QB else torrent.download_dir
-        except Exception as e:
-            print(str(e))
-            return ""
+        return torrent.status in [TorrentStatus.Paused, TorrentStatus.Stopped] and torrent.progress >= 1
 
     def __get_download_url(self, seed, site, base_url):
         """
@@ -772,11 +760,14 @@ class IYUUAutoSeed(_IPluginModule):
                 return True
             if "totheglory.im" in url:
                 return True
+            if 'm-team' in url:
+                return True
             return False
 
         try:
             if __is_special_site(site.get('strict_url')):
                 # 从详情页面获取下载链接
+                site['download_page'] = base_url
                 return self.__get_torrent_url_from_page(seed=seed, site=site)
             else:
                 download_url = base_url.replace(
@@ -813,13 +804,35 @@ class IYUUAutoSeed(_IPluginModule):
         从详情页面获取下载链接
         """
         try:
-            page_url = f"{site.get('strict_url')}/details.php?id={seed.get('torrent_id')}&hit=1"
-            self.info(f"正在获取种子下载链接：{page_url} ...")
-            res = RequestUtils(
-                cookies=site.get("cookie"),
-                headers=site.get("ua"),
-                proxies=Config().get_proxies() if site.get("proxy") else None
-            ).get_res(url=page_url)
+            if 'm-team' in site.get('strict_url'):
+                page_url = f"{site.get('strict_url')}/{site.get('download_page')}"
+                self.info(f"正在获取种子下载链接：{page_url} ...")
+                headers = site.get('headers')
+                if JsonUtils.is_valid_json(headers):
+                    headers = json.loads(headers)
+                else:
+                    headers = {}
+                if headers.get("authorization"):
+                    headers.pop('authorization')
+                headers.update({
+                    'User-Agent': site.get("ua"),
+                    'contentType': 'application/json;charset=UTF-8'
+                    })
+                params = {"id": seed.get('torrent_id')}
+                res = RequestUtils(
+                        cookies=site.get("cookie"),
+                        headers=headers,
+                        proxies=Config().get_proxies() if site.get("proxy") else None
+                    ).post_res(url=page_url, data=params)
+
+            else:
+                page_url = f"{site.get('strict_url')}/details.php?id={seed.get('torrent_id')}&hit=1"
+                self.info(f"正在获取种子下载链接：{page_url} ...")
+                res = RequestUtils(
+                    cookies=site.get("cookie"),
+                    headers=site.get("ua"),
+                    proxies=Config().get_proxies() if site.get("proxy") else None
+                ).get_res(url=page_url)
             if res is not None and res.status_code in (200, 500):
                 if "charset=utf-8" in res.text or "charset=UTF-8" in res.text:
                     res.encoding = "UTF-8"
@@ -828,19 +841,26 @@ class IYUUAutoSeed(_IPluginModule):
                 if not res.text:
                     self.warn(f"获取种子下载链接失败，页面内容为空：{page_url}")
                     return None
-                # 使用xpath从页面中获取下载链接
-                html = etree.HTML(res.text)
-                for xpath in self._torrent_xpaths:
-                    download_url = html.xpath(xpath)
-                    if download_url:
-                        download_url = download_url[0]
+                if 'm-team' in site.get('strict_url'):
+                    json_data = res.json()
+                    if json_data.get('message') == 'SUCCESS':
+                        download_url = json_data.get('data')
                         self.info(f"获取种子下载链接成功：{download_url}")
-                        if not download_url.startswith("http"):
-                            if download_url.startswith("/"):
-                                download_url = f"{site.get('strict_url')}{download_url}"
-                            else:
-                                download_url = f"{site.get('strict_url')}/{download_url}"
                         return download_url
+                else:
+                    # 使用xpath从页面中获取下载链接
+                    html = etree.HTML(res.text)
+                    for xpath in self._torrent_xpaths:
+                        download_url = html.xpath(xpath)
+                        if download_url:
+                            download_url = download_url[0]
+                            self.info(f"获取种子下载链接成功：{download_url}")
+                            if not download_url.startswith("http"):
+                                if download_url.startswith("/"):
+                                    download_url = f"{site.get('strict_url')}{download_url}"
+                                else:
+                                    download_url = f"{site.get('strict_url')}/{download_url}"
+                            return download_url
                 self.warn(f"获取种子下载链接失败，未找到下载链接：{page_url}")
                 return None
             else:
@@ -855,12 +875,9 @@ class IYUUAutoSeed(_IPluginModule):
         退出插件
         """
         try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._event.set()
-                    self._scheduler.shutdown()
-                    self._event.clear()
-                self._scheduler = None
+            if self._scheduler and self._scheduler.SCHEDULER:
+                for job in self._scheduler.get_jobs(self._jobstore):
+                    if 'auto_seed' in job.name or 'check_recheck' in job.name:
+                        self._scheduler.remove_job(job.id, self._jobstore)
         except Exception as e:
             print(str(e))

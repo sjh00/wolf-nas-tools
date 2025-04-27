@@ -1,8 +1,11 @@
+import io
 import os
 import shutil
 import sys
 from threading import Lock
+from filelock import FileLock
 import ruamel.yaml
+import tempfile
 
 # 种子名/文件名要素分隔字符
 SPLIT_CHARS = r"\.|\s+|\(|\)|\[|]|-|\+|【|】|/|～|;|&|\||#|_|「|」|~|@"
@@ -38,6 +41,8 @@ RSS_CHECK_INTERVAL = 300
 RSS_REFRESH_TMDB_INTERVAL = 6
 # 刷流删除的检查时间间隔
 BRUSH_REMOVE_TORRENTS_INTERVAL = 300
+# 刷流免费过期的检查时间间隔
+BRUSH_STOP_TORRENTS_INTERVAL = 300
 # 定时清除未识别的缓存时间间隔（小时）
 META_DELETE_UNKNOWN_INTERVAL = 12
 # 定时刷新壁纸的间隔（小时）
@@ -77,6 +82,19 @@ XVFB_PATH = [
     "/usr/bin/Xvfb",
     "/usr/local/bin/Xvfb"
 ]
+
+# Chrome 路径
+if os.environ.get('FLASK_DEBUG') == "1":
+    CHROME_PATH = "/snap/bin/chromium"
+else:
+    CHROME_PATH = "/usr/lib/chromium/chromium"
+
+# redis 配置
+REDIS_HOST = "127.0.0.1"
+REDIS_PORT = "6379"
+
+# M-Team base url
+MT_URL = 'https://api.m-team.io'
 
 # 线程锁
 lock = Lock()
@@ -163,9 +181,24 @@ class Config(object):
 
     def save_config(self, new_cfg):
         self._config = new_cfg
-        with open(self._config_path, mode='w', encoding='utf-8') as sf:
-            yaml = ruamel.yaml.YAML()
-            return yaml.dump(new_cfg, sf)
+        yaml = ruamel.yaml.YAML()
+
+        # 检查数据是否可以正确序列化
+        try:
+            yaml.dump(new_cfg, io.StringIO())
+        except Exception as e:
+            raise ValueError(f"Invalid YAML data: {e}")
+
+        # 文件锁防止并发写入
+        lock_path = self._config_path + '.lock'
+        with FileLock(lock_path):
+            # 创建临时文件进行事务性写入
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False) as temp_file:
+                yaml.dump(new_cfg, temp_file)
+                temp_file_path = temp_file.name
+            
+            # 写入成功后用临时文件替换目标文件
+            shutil.move(temp_file_path, self._config_path)
 
     def get_config_path(self):
         return os.path.dirname(self._config_path)
