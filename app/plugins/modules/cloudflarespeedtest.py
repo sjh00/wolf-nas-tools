@@ -4,7 +4,6 @@ from pathlib import Path
 from threading import Event
 
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.plugins import EventManager, EventHandler
@@ -12,6 +11,9 @@ from app.plugins.modules._base import _IPluginModule
 from app.utils import SystemUtils, RequestUtils, IpUtils
 from app.utils.types import EventType
 from config import Config
+
+from app.scheduler_service import SchedulerService
+from app.queue import scheduler_queue
 
 
 class CloudflareSpeedTest(_IPluginModule):
@@ -24,7 +26,7 @@ class CloudflareSpeedTest(_IPluginModule):
     # 主题色
     module_color = "#F6821F"
     # 插件版本
-    module_version = "1.0"
+    module_version = "1.1"
     # 插件作者
     module_author = "thsrite"
     # 作者主页
@@ -41,6 +43,8 @@ class CloudflareSpeedTest(_IPluginModule):
     _customhosts = False
     _cf_ip = None
     _scheduler = None
+    _jobstore = "plugin"
+    _job_id = None
     _cron = None
     _onlyonce = False
     _ipv4 = False
@@ -202,31 +206,41 @@ class CloudflareSpeedTest(_IPluginModule):
             self._notify = config.get("notify")
             self._check = config.get("check")
 
+        self._scheduler = SchedulerService()
         # 停止现有任务
         self.stop_service()
+        self.run_service()
 
+    def run_service(self):
         # 启动定时任务 & 立即运行一次
         if self.get_state() or self._onlyonce:
-            self._scheduler = BackgroundScheduler(timezone=Config().get_timezone())
             if self._cron:
                 self.info(f"Cloudflare CDN优选服务启动，周期：{self._cron}")
-                self._scheduler.add_job(self.__cloudflareSpeedTest, CronTrigger.from_crontab(self._cron))
+                scheduler_queue.put({
+                        "func_str": "CloudflareSpeedTest.cloudflareSpeedTest",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "CloudflareSpeedTest.cloudflareSpeedTest_1",
+                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "jobstore": self._jobstore
+                    })
 
             if self._onlyonce:
-                self.info(f"Cloudflare CDN优选服务启动，立即运行一次")
-                self._scheduler.add_job(self.__cloudflareSpeedTest, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
-                                            seconds=3))
-                # 关闭一次性开关
+                self.info("Cloudflare CDN优选服务启动，立即运行一次")
+                scheduler_queue.put({
+                        "func_str": "CloudflareSpeedTest.cloudflareSpeedTest",
+                        "type": 'plugin',
+                        "args": [],
+                        "job_id": "CloudflareSpeedTest.cloudflareSpeedTest_once",
+                        "trigger": "date",
+                        "run_date": datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                                                                seconds=3),
+                        "jobstore": self._jobstore
+                    })
                 self._onlyonce = False
                 self.__update_config()
 
-            if self._cron or self._onlyonce:
-                # 启动服务
-                self._scheduler.print_jobs()
-                self._scheduler.start()
-
-    def __cloudflareSpeedTest(self):
+    def cloudflareSpeedTest(self):
         """
         CloudflareSpeedTest优选
         """
@@ -534,12 +548,9 @@ class CloudflareSpeedTest(_IPluginModule):
           退出插件
           """
         try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._event.set()
-                    self._scheduler.shutdown()
-                    self._event.clear()
-                self._scheduler = None
+            if self._scheduler and self._scheduler.SCHEDULER:
+                for job in self._scheduler.get_jobs(self._jobstore):
+                    if 'cloudflareSpeedTest' in job.name:
+                        self._scheduler.remove_job(job.id, self._jobstore)
         except Exception as e:
             print(str(e))

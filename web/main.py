@@ -7,13 +7,14 @@ import re
 import time
 import traceback
 import urllib
+import sys
 import xml.dom.minidom
 from functools import wraps
 from math import floor
 from pathlib import Path
 from threading import Lock
 from urllib.parse import unquote
-from markupsafe import Markup
+from redis import Redis
 
 from flask import Flask, request, json, render_template, make_response, session, send_from_directory, send_file, \
     redirect, Response
@@ -23,13 +24,15 @@ from flask_sock import Sock
 from icalendar import Calendar, Event, Alarm
 from simple_websocket import ConnectionClosed
 from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_session import Session
 
+from app.helper.drissionpage_helper import DrissionPageHelper
 import log
 from app.brushtask import BrushTask
 from app.conf import ModuleConf, SystemConfig
 from app.downloader import Downloader
 from app.filter import Filter
-from app.helper import SecurityHelper, MetaHelper, ChromeHelper, ThreadHelper
+from app.helper import SecurityHelper, MetaHelper, ThreadHelper
 from app.indexer import Indexer
 from app.media.meta import MetaInfo
 from app.mediaserver import MediaServer
@@ -41,8 +44,8 @@ from app.subscribe import Subscribe
 from app.sync import Sync
 from app.torrentremover import TorrentRemover
 from app.utils import DomUtils, SystemUtils, ExceptionUtils, StringUtils
-from app.utils.types import *
-from config import PT_TRANSFER_INTERVAL, Config, TMDB_API_DOMAINS
+from app.utils.types import SystemConfigKey, OsType, MediaServerType, EventType, SearchType, RssType, MediaType
+from config import PT_TRANSFER_INTERVAL, REDIS_HOST, REDIS_PORT, Config, TMDB_API_DOMAINS
 from web.action import WebAction
 from web.apiv1 import apiv1_bp
 from web.backend.WXBizMsgCrypt3 import WXBizMsgCrypt
@@ -50,6 +53,10 @@ from web.backend.user import User
 from web.backend.wallpaper import get_login_wallpaper
 from web.backend.web_utils import WebUtils
 from web.security import require_auth
+from web.cache import cache
+from app.db import init_db, update_db, init_data
+from initializer import check_redis, update_config, check_config
+from version import APP_VERSION
 
 # 配置文件锁
 ConfigLock = Lock()
@@ -60,11 +67,20 @@ App.wsgi_app = ProxyFix(App.wsgi_app)
 App.config['JSON_AS_ASCII'] = False
 App.config['JSON_SORT_KEYS'] = False
 App.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': 25}
+
 App.secret_key = os.urandom(24)
 App.permanent_session_lifetime = datetime.timedelta(days=30)
 
+# Session
+App.config['SESSION_TYPE'] = 'redis'
+App.config['SESSION_REDIS'] = Redis(host=REDIS_HOST, port=REDIS_PORT)
+Session(App)
+
 # Flask Socket
 Sock = Sock(App)
+
+# 缓存
+cache.init_app(App)
 
 # 启用压缩
 Compress(App)
@@ -84,6 +100,26 @@ App.register_blueprint(apiv1_bp, url_prefix="/api/v1")
 # fix Windows registry stuff
 mimetypes.add_type('application/javascript', '.js')
 mimetypes.add_type('text/css', '.css')
+
+# 初始化
+with App.app_context():
+    # 配置
+    log.console('NAStool 当前版本号：%s' % APP_VERSION)
+    # 数据库初始化
+    init_db()
+    # 数据库更新
+    update_db()
+    # 数据初始化
+    init_data()
+    # 升级配置文件
+    update_config()
+    # 检查配置文件
+    check_config()
+    # 检查Redis是否启动
+    check_redis()
+    log.console("开始启动服务...")
+    # 启动服务
+    WebAction.start_service()
 
 
 @App.after_request
@@ -131,7 +167,7 @@ def action_login_check(func):
 
 # 主页面
 @App.route('/', methods=['GET', 'POST'])
-def login():
+async def login():
     def redirect_to_navigation():
         """
         跳转到导航页面
@@ -199,7 +235,7 @@ def login():
 
 @App.route('/web', methods=['POST', 'GET'])
 @login_required
-def web():
+async def web():
     # 跳转页面
     GoPage = request.args.get("next") or ""
     # 判断当前的运营环境
@@ -214,7 +250,8 @@ def web():
     PixDict = ModuleConf.TORRENT_SEARCH_PARAMS.get("pix")
     SiteFavicons = Sites().get_site_favicon()
     Indexers = Indexer().get_indexers()
-    SearchSource = "douban" if Config().get_config("laboratory").get("use_douban_titles") else "tmdb"
+    SearchSource = "douban" if Config().get_config(
+        "laboratory").get("use_douban_titles") else "tmdb"
     CustomScriptCfg = SystemConfig().get(SystemConfigKey.CustomScript)
     Menus = WebAction().get_user_menus().get("menus") or []
     Commands = WebAction().get_commands()
@@ -239,8 +276,9 @@ def web():
 
 # 开始
 @App.route('/index', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='index')
 @login_required
-def index():
+async def index():
     # 媒体服务器类型
     MSType = Config().get_config('media').get('media_server')
     # 获取媒体数量
@@ -288,8 +326,9 @@ def index():
 
 # 资源搜索页面
 @App.route('/search', methods=['POST', 'GET'])
+@cache.cached(timeout=43200, key_prefix='search')
 @login_required
-def search():
+async def search():
     # 权限
     if current_user.is_authenticated:
         username = current_user.username
@@ -311,9 +350,10 @@ def search():
 # 电影订阅页面
 @App.route('/movie_rss', methods=['POST', 'GET'])
 @login_required
-def movie_rss():
+async def movie_rss():
     RssItems = WebAction().get_movie_rss_list().get("result")
-    RuleGroups = {str(group["id"]): group["name"] for group in Filter().get_rule_groups()}
+    RuleGroups = {str(group["id"]): group["name"]
+                  for group in Filter().get_rule_groups()}
     DownloadSettings = Downloader().get_download_setting()
     return render_template("rss/movie_rss.html",
                            Count=len(RssItems),
@@ -326,9 +366,10 @@ def movie_rss():
 # 电视剧订阅页面
 @App.route('/tv_rss', methods=['POST', 'GET'])
 @login_required
-def tv_rss():
+async def tv_rss():
     RssItems = WebAction().get_tv_rss_list().get("result")
-    RuleGroups = {str(group["id"]): group["name"] for group in Filter().get_rule_groups()}
+    RuleGroups = {str(group["id"]): group["name"]
+                  for group in Filter().get_rule_groups()}
     DownloadSettings = Downloader().get_download_setting()
     return render_template("rss/tv_rss.html",
                            Count=len(RssItems),
@@ -341,7 +382,7 @@ def tv_rss():
 # 订阅历史页面
 @App.route('/rss_history', methods=['POST', 'GET'])
 @login_required
-def rss_history():
+async def rss_history():
     mtype = request.args.get("t")
     RssHistory = WebAction().get_rss_history({"type": mtype}).get("result")
     return render_template("rss/rss_history.html",
@@ -353,8 +394,9 @@ def rss_history():
 
 # 订阅日历页面
 @App.route('/rss_calendar', methods=['POST', 'GET'])
+@cache.cached(timeout=300, key_prefix='rss_calendar')
 @login_required
-def rss_calendar():
+async def rss_calendar():
     Today = datetime.datetime.strftime(datetime.datetime.now(), '%Y-%m-%d')
     # 电影订阅
     RssMovieItems = WebAction().get_movie_rss_items().get("result")
@@ -369,11 +411,13 @@ def rss_calendar():
 # 站点维护页面
 @App.route('/site', methods=['POST', 'GET'])
 @login_required
-def sites():
+async def sites():
     CfgSites = Sites().get_sites()
-    RuleGroups = {str(group["id"]): group["name"] for group in Filter().get_rule_groups()}
-    DownloadSettings = {did: attr["name"] for did, attr in Downloader().get_download_setting().items()}
-    ChromeOk = ChromeHelper().get_status()
+    RuleGroups = {str(group["id"]): group["name"]
+                  for group in Filter().get_rule_groups()}
+    DownloadSettings = {did: attr["name"] for did,
+                        attr in Downloader().get_download_setting().items()}
+    ChromeOk = DrissionPageHelper().get_status()
     CookieCloudCfg = SystemConfig().get(SystemConfigKey.CookieCloud)
     CookieUserInfoCfg = SystemConfig().get(SystemConfigKey.CookieUserInfo)
     return render_template("site/site.html",
@@ -388,8 +432,9 @@ def sites():
 # 站点列表页面
 @App.route('/sitelist', methods=['POST', 'GET'])
 @login_required
-def sitelist():
-    IndexerSites = Indexer().get_indexer_dict(check=False)
+async def sitelist():
+    # IndexerSites = Indexer().get_indexers(check=False)
+    IndexerSites = Indexer().get_builtin_indexers(check=False)
     return render_template("site/sitelist.html",
                            Sites=IndexerSites,
                            Count=len(IndexerSites))
@@ -400,12 +445,13 @@ def sitelist():
 def open_app():
     return render_template("openapp.html")
 
-
 # 站点资源页面
+
+
 @App.route('/resources', methods=['POST', 'GET'])
 @login_required
-def resources():
-    site_domain = request.args.get("site")
+async def resources():
+    site_id = request.args.get("site")
     site_name = request.args.get("title")
     page = request.args.get("page") or 0
     keyword = request.args.get("keyword")
@@ -428,7 +474,7 @@ def resources():
 # 推荐页面
 @App.route('/recommend', methods=['POST', 'GET'])
 @login_required
-def recommend():
+async def recommend():
     Type = request.args.get("type") or ""
     SubType = request.args.get("subtype") or ""
     Title = request.args.get("title") or ""
@@ -440,7 +486,8 @@ def recommend():
     Keyword = request.args.get("keyword") or ""
     Source = request.args.get("source") or ""
     FilterKey = request.args.get("filter") or ""
-    Params = json.loads(request.args.get("params")) if request.args.get("params") else {}
+    Params = json.loads(request.args.get("params")
+                        ) if request.args.get("params") else {}
     return render_template("discovery/recommend.html",
                            Type=Type,
                            SubType=SubType,
@@ -453,22 +500,25 @@ def recommend():
                            Keyword=Keyword,
                            Source=Source,
                            Filter=FilterKey,
-                           FilterConf=ModuleConf.DISCOVER_FILTER_CONF.get(FilterKey) if FilterKey else {},
+                           FilterConf=ModuleConf.DISCOVER_FILTER_CONF.get(
+                               FilterKey) if FilterKey else {},
                            Params=Params)
 
 
 # 推荐页面
 @App.route('/ranking', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='ranking')
 @login_required
-def ranking():
+async def ranking():
     return render_template("discovery/ranking.html",
                            DiscoveryType="RANKING")
 
 
 # 豆瓣电影
 @App.route('/douban_movie', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='douban_movie')
 @login_required
-def douban_movie():
+async def douban_movie():
     return render_template("discovery/recommend.html",
                            Type="DOUBANTAG",
                            SubType="MOV",
@@ -479,8 +529,9 @@ def douban_movie():
 
 # 豆瓣电视剧
 @App.route('/douban_tv', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='douban_tv')
 @login_required
-def douban_tv():
+async def douban_tv():
     return render_template("discovery/recommend.html",
                            Type="DOUBANTAG",
                            SubType="TV",
@@ -490,8 +541,9 @@ def douban_tv():
 
 
 @App.route('/tmdb_movie', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='tmdb_movie')
 @login_required
-def tmdb_movie():
+async def tmdb_movie():
     return render_template("discovery/recommend.html",
                            Type="DISCOVER",
                            SubType="MOV",
@@ -501,8 +553,9 @@ def tmdb_movie():
 
 
 @App.route('/tmdb_tv', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='tmdb_tv')
 @login_required
-def tmdb_tv():
+async def tmdb_tv():
     return render_template("discovery/recommend.html",
                            Type="DISCOVER",
                            SubType="TV",
@@ -513,8 +566,9 @@ def tmdb_tv():
 
 # Bangumi每日放送
 @App.route('/bangumi', methods=['POST', 'GET'])
+@cache.cached(timeout=600, key_prefix='bangumi')
 @login_required
-def discovery_bangumi():
+async def discovery_bangumi():
     return render_template("discovery/ranking.html",
                            DiscoveryType="BANGUMI")
 
@@ -522,7 +576,7 @@ def discovery_bangumi():
 # 媒体详情页面
 @App.route('/media_detail', methods=['POST', 'GET'])
 @login_required
-def media_detail():
+async def media_detail():
     TmdbId = request.args.get("id")
     Type = request.args.get("type")
     return render_template("discovery/mediainfo.html",
@@ -533,7 +587,7 @@ def media_detail():
 # 演职人员页面
 @App.route('/discovery_person', methods=['POST', 'GET'])
 @login_required
-def discovery_person():
+async def discovery_person():
     TmdbId = request.args.get("tmdbid")
     Title = request.args.get("title")
     SubTitle = request.args.get("subtitle")
@@ -550,7 +604,7 @@ def discovery_person():
 # 正在下载页面
 @App.route('/downloading', methods=['POST', 'GET'])
 @login_required
-def downloading():
+async def downloading():
     DispTorrents = WebAction().get_downloading().get("result")
     return render_template("download/downloading.html",
                            DownloadCount=len(DispTorrents),
@@ -560,7 +614,7 @@ def downloading():
 # 近期下载页面
 @App.route('/downloaded', methods=['POST', 'GET'])
 @login_required
-def downloaded():
+async def downloaded():
     CurrentPage = request.args.get("page") or 1
     return render_template("discovery/recommend.html",
                            Type='DOWNLOADED',
@@ -570,7 +624,7 @@ def downloaded():
 
 @App.route('/torrent_remove', methods=['POST', 'GET'])
 @login_required
-def torrent_remove():
+async def torrent_remove():
     Downloaders = Downloader().get_downloader_conf_simple()
     TorrentRemoveTasks = TorrentRemover().get_torrent_remove_tasks()
     return render_template("download/torrent_remove.html",
@@ -582,8 +636,9 @@ def torrent_remove():
 
 # 数据统计页面
 @App.route('/statistics', methods=['POST', 'GET'])
+@cache.cached(timeout=43200, key_prefix='statistics')
 @login_required
-def statistics():
+async def statistics():
     # 刷新单个site
     refresh_site = request.args.getlist("refresh_site")
     # 强制刷新所有
@@ -600,7 +655,8 @@ def statistics():
     SiteRatios = []
     SiteErrs = {}
     # 站点上传下载
-    SiteData = SiteUserInfo().get_site_data(specify_sites=refresh_site, force=refresh_force)
+    SiteData = SiteUserInfo().get_site_data(
+        specify_sites=refresh_site, force=refresh_force)
     if isinstance(SiteData, dict):
         for name, data in SiteData.items():
             if not data:
@@ -633,7 +689,8 @@ def statistics():
     #    days=2)
 
     # 站点用户数据
-    SiteUserStatistics = WebAction().get_site_user_statistics({"encoding": "DICT"}).get("data")
+    SiteUserStatistics = WebAction().get_site_user_statistics(
+        {"encoding": "DICT"}).get("data")
 
     return render_template("site/statistics.html",
                            TotalDownload=TotalDownload,
@@ -651,7 +708,7 @@ def statistics():
 # 刷流任务页面
 @App.route('/brushtask', methods=['POST', 'GET'])
 @login_required
-def brushtask():
+async def brushtask():
     # 站点列表
     CfgSites = Sites().get_sites(brush=True)
     # 下载器列表
@@ -668,7 +725,7 @@ def brushtask():
 # 服务页面
 @App.route('/service', methods=['POST', 'GET'])
 @login_required
-def service():
+async def service():
     # 所有规则组
     RuleGroups = Filter().get_rule_groups()
     # 所有同步目录
@@ -695,8 +752,8 @@ def service():
     if "subscribe_search_all" in Services:
         search_rss_interval = pt.get('search_rss_interval')
         if str(search_rss_interval).isdigit():
-            if int(search_rss_interval) < 6:
-                search_rss_interval = 6
+            if int(search_rss_interval) < 2:
+                search_rss_interval = 2
             tim_rsssearch = str(int(search_rss_interval)) + " 小时"
             rss_search_state = 'ON'
         else:
@@ -745,7 +802,7 @@ def service():
 # 历史记录页面
 @App.route('/history', methods=['POST', 'GET'])
 @login_required
-def history():
+async def history():
     pagenum = request.args.get("pagenum")
     if pagenum:
         pagenum = int(pagenum)
@@ -753,11 +810,8 @@ def history():
         pagenum = 30
     keyword = request.args.get("s") or ""
     current_page = request.args.get("page")
-    if current_page:
-        current_page = int(current_page)
-    else:
-        current_page = 1
-    Result = WebAction().get_transfer_history({"keyword": keyword, "page": current_page, "pagenum": pagenum})
+    Result = WebAction().get_transfer_history(
+        {"keyword": keyword, "page": current_page, "pagenum": pagenum})
     PageRange = WebUtils.get_page_range(current_page=Result.get("currentPage"),
                                         total_page=Result.get("totalPage"))
 
@@ -775,7 +829,7 @@ def history():
 # TMDB缓存页面
 @App.route('/tmdbcache', methods=['POST', 'GET'])
 @login_required
-def tmdbcache():
+async def tmdbcache():
     page_num = request.args.get("pagenum")
     if page_num:
         page_num = int(page_num)
@@ -787,9 +841,8 @@ def tmdbcache():
     current_page = request.args.get("page")
     if current_page:
         current_page = int(current_page)
-    else:
-        current_page = 1
-    total_count, tmdb_caches = MetaHelper().dump_meta_data(search=search_str, page=current_page, num=page_num)
+    total_count, tmdb_caches = MetaHelper().dump_meta_data(
+        search_str, current_page, page_num)
     total_page = floor(total_count / page_num) + 1
     page_range = WebUtils.get_page_range(current_page=current_page,
                                          total_page=total_page)
@@ -808,7 +861,7 @@ def tmdbcache():
 # 手工识别页面
 @App.route('/unidentification', methods=['POST', 'GET'])
 @login_required
-def unidentification():
+async def unidentification():
     pagenum = request.args.get("pagenum")
     if pagenum:
         pagenum = int(pagenum)
@@ -816,11 +869,8 @@ def unidentification():
         pagenum = 30
     keyword = request.args.get("s") or ""
     current_page = request.args.get("page")
-    if current_page:
-        current_page = int(current_page)
-    else:
-        current_page = 1
-    Result = WebAction().get_unknown_list_by_page({"keyword": keyword, "page": current_page, "pagenum": pagenum})
+    Result = WebAction().get_unknown_list_by_page(
+        {"keyword": keyword, "page": current_page, "pagenum": pagenum})
     PageRange = WebUtils.get_page_range(current_page=Result.get("currentPage"),
                                         total_page=Result.get("totalPage"))
     return render_template("rename/unidentification.html",
@@ -837,7 +887,7 @@ def unidentification():
 # 文件管理页面
 @App.route('/mediafile', methods=['POST', 'GET'])
 @login_required
-def mediafile():
+async def mediafile():
     media_default_path = Config().get_config('media').get('media_default_path')
     if media_default_path:
         DirD = media_default_path
@@ -859,7 +909,7 @@ def mediafile():
 # 基础设置页面
 @App.route('/basic', methods=['POST', 'GET'])
 @login_required
-def basic():
+async def basic():
     proxy = Config().get_config('app').get("proxies", {}).get("http")
     if proxy:
         proxy = proxy.replace("http://", "")
@@ -880,7 +930,7 @@ def basic():
 # 自定义识别词设置页面
 @App.route('/customwords', methods=['POST', 'GET'])
 @login_required
-def customwords():
+async def customwords():
     groups = WebAction().get_customwords().get("result")
     return render_template("setting/customwords.html",
                            Groups=groups,
@@ -890,7 +940,7 @@ def customwords():
 # 目录同步页面
 @App.route('/directorysync', methods=['POST', 'GET'])
 @login_required
-def directorysync():
+async def directorysync():
     RmtModeDict = WebAction().get_rmt_modes()
     SyncPaths = Sync().get_sync_path_conf()
     return render_template("setting/directorysync.html",
@@ -902,7 +952,7 @@ def directorysync():
 # 下载器页面
 @App.route('/downloader', methods=['POST', 'GET'])
 @login_required
-def downloader():
+async def downloader():
     DefaultDownloader = Downloader().default_downloader_id
     Downloaders = Downloader().get_downloader_conf()
     DownloadersCount = len(Downloaders)
@@ -924,7 +974,7 @@ def downloader():
 # 下载设置页面
 @App.route('/download_setting', methods=['POST', 'GET'])
 @login_required
-def download_setting():
+async def download_setting():
     DefaultDownloadSetting = Downloader().default_download_setting_id
     Downloaders = Downloader().get_downloader_conf_simple()
     DownloadSetting = Downloader().get_download_setting()
@@ -938,9 +988,9 @@ def download_setting():
 # 索引器页面
 @App.route('/indexer', methods=['POST', 'GET'])
 @login_required
-def indexer():
+async def indexer():
     # 只有选中的索引器才搜索
-    indexers = Indexer().get_indexers(check=False)
+    indexers = Indexer().get_builtin_indexers(check=False)
     private_count = len([item.id for item in indexers if not item.public])
     public_count = len([item.id for item in indexers if item.public])
     indexer_sites = SystemConfig().get(SystemConfigKey.UserIndexerSites)
@@ -956,7 +1006,7 @@ def indexer():
 # 媒体库页面
 @App.route('/library', methods=['POST', 'GET'])
 @login_required
-def library():
+async def library():
     return render_template("setting/library.html",
                            Config=Config().get_config())
 
@@ -964,7 +1014,7 @@ def library():
 # 媒体服务器页面
 @App.route('/mediaserver', methods=['POST', 'GET'])
 @login_required
-def mediaserver():
+async def mediaserver():
     return render_template("setting/mediaserver.html",
                            Config=Config().get_config(),
                            MediaServerConf=ModuleConf.MEDIASERVER_CONF)
@@ -973,7 +1023,7 @@ def mediaserver():
 # 通知消息页面
 @App.route('/notification', methods=['POST', 'GET'])
 @login_required
-def notification():
+async def notification():
     MessageClients = Message().get_message_client_info()
     Channels = ModuleConf.MESSAGE_CONF.get("client")
     Switchs = ModuleConf.MESSAGE_CONF.get("switch")
@@ -987,7 +1037,7 @@ def notification():
 # 用户管理页面
 @App.route('/users', methods=['POST', 'GET'])
 @login_required
-def users():
+async def users():
     Users = WebAction().get_users().get("result")
     TopMenus = WebAction().get_top_menus().get("menus")
     return render_template("setting/users.html",
@@ -999,7 +1049,7 @@ def users():
 # 过滤规则设置页面
 @App.route('/filterrule', methods=['POST', 'GET'])
 @login_required
-def filterrule():
+async def filterrule():
     result = WebAction().get_filterrules()
     return render_template("setting/filterrule.html",
                            Count=len(result.get("ruleGroups")),
@@ -1010,11 +1060,13 @@ def filterrule():
 # 自定义订阅页面
 @App.route('/user_rss', methods=['POST', 'GET'])
 @login_required
-def user_rss():
+async def user_rss():
     Tasks = RssChecker().get_rsstask_info()
     RssParsers = RssChecker().get_userrss_parser()
-    RuleGroups = {str(group["id"]): group["name"] for group in Filter().get_rule_groups()}
-    DownloadSettings = {did: attr["name"] for did, attr in Downloader().get_download_setting().items()}
+    RuleGroups = {str(group["id"]): group["name"]
+                  for group in Filter().get_rule_groups()}
+    DownloadSettings = {did: attr["name"] for did,
+                        attr in Downloader().get_download_setting().items()}
     RestypeDict = ModuleConf.TORRENT_SEARCH_PARAMS.get("restype")
     PixDict = ModuleConf.TORRENT_SEARCH_PARAMS.get("pix")
     return render_template("rss/user_rss.html",
@@ -1030,7 +1082,7 @@ def user_rss():
 # RSS解析器页面
 @App.route('/rss_parser', methods=['POST', 'GET'])
 @login_required
-def rss_parser():
+async def rss_parser():
     RssParsers = RssChecker().get_userrss_parser()
     return render_template("rss/rss_parser.html",
                            RssParsers=RssParsers,
@@ -1040,7 +1092,7 @@ def rss_parser():
 # 插件页面
 @App.route('/plugin', methods=['POST', 'GET'])
 @login_required
-def plugin():
+async def plugin():
     Plugins = WebAction().get_plugins_conf().get("result")
     return render_template("setting/plugin.html",
                            Plugins=Plugins,
@@ -1133,7 +1185,8 @@ def wechat():
             return "NAStool微信交互服务正常！<br>微信回调配置步聚：<br>1、在微信企业应用接收消息设置页面生成Token和EncodingAESKey并填入设置->消息通知->微信对应项，打开微信交互开关。<br>2、保存并重启本工具，保存并重启本工具，保存并重启本工具。<br>3、在微信企业应用接收消息设置页面输入此地址：http(s)://IP:PORT/wechat（IP、PORT替换为本工具的外网访问地址及端口，需要有公网IP并做好端口转发，最好有域名）。"
         sVerifyEchoStr = request.args.get("echostr")
         log.info("收到微信验证请求: echostr= %s" % sVerifyEchoStr)
-        ret, sEchoStr = wxcpt.VerifyURL(sVerifyMsgSig, sVerifyTimeStamp, sVerifyNonce, sVerifyEchoStr)
+        ret, sEchoStr = wxcpt.VerifyURL(
+            sVerifyMsgSig, sVerifyTimeStamp, sVerifyNonce, sVerifyEchoStr)
         if ret != 0:
             log.error("微信请求验证失败 VerifyURL ret: %s" % str(ret))
         # 验证URL成功，将sEchoStr返回给企业号
@@ -1142,7 +1195,8 @@ def wechat():
         try:
             sReqData = request.data
             log.debug("收到微信请求：%s" % str(sReqData))
-            ret, sMsg = wxcpt.DecryptMsg(sReqData, sVerifyMsgSig, sVerifyTimeStamp, sVerifyNonce)
+            ret, sMsg = wxcpt.DecryptMsg(
+                sReqData, sVerifyMsgSig, sVerifyTimeStamp, sVerifyNonce)
             if ret != 0:
                 log.error("解密微信消息失败 DecryptMsg ret = %s" % str(ret))
                 return make_response("ok", 200)
@@ -1186,7 +1240,8 @@ def wechat():
                 # 校验用户有权限执行交互命令
                 if conf.get("adminUser") and not any(
                         user_id == admin_user for admin_user in str(conf.get("adminUser")).split(";")):
-                    Message().send_channel_msg(channel=SearchType.WX, title="用户无权限执行菜单命令", user_id=user_id)
+                    Message().send_channel_msg(channel=SearchType.WX,
+                                               title="用户无权限执行菜单命令", user_id=user_id)
                     return make_response(content, 200)
                 # 事件消息
                 event_key = DomUtils.tag_value(root_node, "EventKey")
@@ -1208,7 +1263,8 @@ def wechat():
             return make_response(content, 200)
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
-            log.error("微信消息处理发生错误：%s - %s" % (str(err), traceback.format_exc()))
+            log.error("微信消息处理发生错误：%s - %s" %
+                      (str(err), traceback.format_exc()))
             return make_response("ok", 200)
 
 
@@ -1222,9 +1278,11 @@ def plex_webhook():
     request_json = json.loads(request.form.get('payload', {}))
     log.debug("收到Plex Webhook报文：%s" % str(request_json))
     # 事件类型
-    event_match = request_json.get("event") in ["media.play", "media.stop", "library.new"]
+    event_match = request_json.get(
+        "event") in ["media.play", "media.stop", "library.new"]
     # 媒体类型
-    type_match = request_json.get("Metadata", {}).get("type") in ["movie", "episode", "show"]
+    type_match = request_json.get("Metadata", {}).get("type") in [
+        "movie", "episode", "show"]
     # 是否直播
     is_live = request_json.get("Metadata", {}).get("live") == "1"
     # 如果事件类型匹配,媒体类型匹配,不是直播
@@ -1318,7 +1376,8 @@ def telegram():
         # 获取用户名
         user_name = message.get("from", {}).get("username")
         if text:
-            log.info(f"收到Telegram消息：userid={user_id}, username={user_name}, text={text}")
+            log.info(
+                f"收到Telegram消息：userid={user_id}, username={user_name}, text={text}")
             # 检查权限
             if text.startswith("/"):
                 if str(user_id) not in interactive_client.get("client").get_admin():
@@ -1358,19 +1417,22 @@ def synology():
         return 'NAStool未启用Synology Chat交互'
     msg_data = request.form
     if not SecurityHelper().check_synology_ip(request.remote_addr):
-        log.error("收到来自 %s 的非法Synology Chat消息：%s" % (request.remote_addr, msg_data))
+        log.error("收到来自 %s 的非法Synology Chat消息：%s" %
+                  (request.remote_addr, msg_data))
         return '不允许的IP地址请求'
     if msg_data:
         token = msg_data.get("token")
         if not interactive_client.get("client").check_token(token):
-            log.error("收到来自 %s 的非法Synology Chat消息：token校验不通过！" % request.remote_addr)
+            log.error("收到来自 %s 的非法Synology Chat消息：token校验不通过！" %
+                      request.remote_addr)
             return 'token校验不通过'
         text = msg_data.get("text")
         user_id = int(msg_data.get("user_id"))
         # 获取用户名
         user_name = msg_data.get("username")
         if text:
-            log.info(f"收到Synology Chat消息：userid={user_id}, username={user_name}, text={text}")
+            log.info(
+                f"收到Synology Chat消息：userid={user_id}, username={user_name}, text={text}")
             WebAction().handle_message_job(msg=text,
                                            in_from=SearchType.SYNOLOGY,
                                            user_id=user_id,
@@ -1496,7 +1558,8 @@ def slack():
             username = msg_json.get("user", {}).get("name")
         elif msg_json.get("type") == "event_callback":
             userid = msg_json.get('event', {}).get('user')
-            text = re.sub(r"<@[0-9A-Z]+>", "", msg_json.get("event", {}).get("text"), flags=re.IGNORECASE).strip()
+            text = re.sub(r"<@[0-9A-Z]+>", "", msg_json.get("event",
+                          {}).get("text"), flags=re.IGNORECASE).strip()
             username = ""
         elif msg_json.get("type") == "shortcut":
             userid = msg_json.get("user", {}).get("id")
@@ -1504,7 +1567,8 @@ def slack():
             username = msg_json.get("user", {}).get("username")
         else:
             return "Error"
-        log.info(f"收到Slack消息：userid={userid}, username={username}, text={text}")
+        log.info(
+            f"收到Slack消息：userid={userid}, username={username}, text={text}")
         WebAction().handle_message_job(msg=text,
                                        in_from=SearchType.SLACK,
                                        user_id=userid,
@@ -1515,7 +1579,7 @@ def slack():
 # Jellyseerr Overseerr订阅接口
 @App.route('/subscribe', methods=['POST'])
 @require_auth
-def subscribe():
+async def subscribe():
     """
     {
         "notification_type": "{{notification_type}}",
@@ -1560,14 +1624,15 @@ def subscribe():
     if notification_type not in ["MEDIA_APPROVED", "MEDIA_AUTO_APPROVED"]:
         return make_response("ok", 200)
     subject = req_json.get("subject")
-    media_type = MediaType.MOVIE if req_json.get("media", {}).get("media_type") == "movie" else MediaType.TV
+    media_type = MediaType.MOVIE if req_json.get("media", {}).get(
+        "media_type") == "movie" else MediaType.TV
     tmdbId = req_json.get("media", {}).get("tmdbId")
     if not media_type or not tmdbId or not subject:
         return make_response("请求参数不正确！", 500)
     # 添加订阅
     code = 0
     msg = "ok"
-    meta_info = MetaInfo(title=subject, mtype=media_type)
+    meta_info = MetaInfo(title=subject, mtype=media_type, tmdb_id=tmdbId)
     user_name = req_json.get("request", {}).get("requestedBy_username")
     if media_type == MediaType.MOVIE:
         code, msg, _ = Subscribe().add_rss_subscribe(mtype=media_type,
@@ -1581,7 +1646,8 @@ def subscribe():
         seasons = []
         for extra in req_json.get("extra", []):
             if extra.get("name") == "Requested Seasons":
-                seasons = [int(str(sea).strip()) for sea in extra.get("value").split(", ") if str(sea).isdigit()]
+                seasons = [int(str(sea).strip()) for sea in extra.get(
+                    "value").split(", ") if str(sea).isdigit()]
                 break
         for season in seasons:
             code, msg, _ = Subscribe().add_rss_subscribe(mtype=media_type,
@@ -1601,7 +1667,7 @@ def subscribe():
 # 备份配置文件
 @App.route('/backup', methods=['POST'])
 @login_required
-def backup():
+async def backup():
     """
     备份用户设置文件
     :return: 备份文件.zip_file
@@ -1615,7 +1681,7 @@ def backup():
 # 上传文件到服务器
 @App.route('/upload', methods=['POST'])
 @login_required
-def upload():
+async def upload():
     try:
         files = request.files['file']
         temp_path = Config().get_temp_path()
@@ -1712,7 +1778,8 @@ def stream_logging():
                     logs = list(log.LOG_QUEUE)[-log.LOG_INDEX:]
                     log.LOG_INDEX = 0
                     if _source:
-                        logs = [lg for lg in logs if lg.get("source") == _source]
+                        logs = [lg for lg in logs if lg.get(
+                            "source") == _source]
                 else:
                     logs = []
                 time.sleep(1)
@@ -1824,8 +1891,12 @@ def str_filesize(size):
 def md5_hash(text):
     return StringUtils.md5_hash(text)
 
-# URLQuote过滤器
-@App.template_filter('urlquote')
-def urlencode_filter(text):
-    text = urllib.parse.quote(text)
-    return Markup(text)
+
+# 健康检查
+@App.route('/healthcheck', methods=['GET'])
+def healthcheck():
+    return {
+            "code": 0,
+            "success": True,
+            "data": {}
+    }

@@ -17,7 +17,7 @@ from app.media.meta import MetaInfo
 from app.message import Message
 from app.plugins import EventManager
 from app.utils import EpisodeFormat, PathUtils, StringUtils, SystemUtils, ExceptionUtils, NumberUtils
-from app.utils.commons import singleton
+from app.utils.commons import SingletonMeta
 from app.utils.types import MediaType, SyncType, RmtMode, EventType, ProgressKey, MovieTypes
 from config import RMT_AUDIO_TRACK_EXT, RMT_SUBEXT, RMT_MEDIAEXT, RMT_FAVTYPE, RMT_MIN_FILESIZE, DEFAULT_MOVIE_FORMAT, \
     DEFAULT_TV_FORMAT, Config
@@ -25,8 +25,7 @@ from config import RMT_AUDIO_TRACK_EXT, RMT_SUBEXT, RMT_MEDIAEXT, RMT_FAVTYPE, R
 lock = Lock()
 
 
-@singleton
-class FileTransfer:
+class FileTransfer(metaclass=SingletonMeta):
     media = None
     message = None
     category = None
@@ -1198,7 +1197,7 @@ class FileTransfer:
                     continue
                 files = PathUtils.get_dir_files(dest_path, RMT_MEDIAEXT)
                 for file in files:
-                    file_meta_info = MetaInfo(os.path.basename(file))
+                    file_meta_info = MetaInfo(title=os.path.basename(file))
                     if not file_meta_info.get_season_list() or not file_meta_info.get_episode_list():
                         continue
                     if file_meta_info.get_name() != meta_info.title:
@@ -1406,6 +1405,12 @@ class FileTransfer:
         删除转移历史记录
         """
         return self.dbhelper.delete_transfer_log_by_id(logid=logid)
+
+    def delete_transfer(self):
+        """
+        删除转移历史记录
+        """
+        return self.dbhelper.delete_transfer()
 
     def delete_transfer_unknown(self, tid):
         """

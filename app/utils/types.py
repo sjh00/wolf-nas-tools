@@ -80,6 +80,15 @@ class BrushDeleteType(Enum):
     DLTIME = "下载耗时"
     AVGUPSPEED = "平均上传速度"
     IATIME = "未活动时间"
+    PENDINGTIME = "等待时间"
+    HRSEEDTIME = "H&R 做种时间"
+    FREESPACE = "磁盘剩余空间"
+    FREEEND = "Free 到期"
+
+
+class BrushStopType(Enum):
+    FREEEND = "Free 到期"
+    NOTSTOP = "不暂停"
 
 
 # 站点框架
@@ -95,6 +104,11 @@ class SiteSchema(Enum):
     TorrentLeech = "TorrentLeech"
     FileList = "FileList"
     TNode = "TNode"
+    Mteam = "M-Team"
+    HHCLUB = "HHCLUB"
+    FSM = "FSM"
+    YemaPT = "YemaPT"
+    FireFly = "FireFly"
 
 
 # 可监听事件
@@ -139,6 +153,10 @@ class EventType(Enum):
     RefreshMediaServer = "refresh.mediaserver"
     # 站点签到
     SiteSignin = "site.signin"
+    # Cookie同步
+    CookieSync = "cookie.sync"
+    # 微信登录
+    WeworkLogin = "wework.login"
 
 
 # 系统配置Key字典
@@ -151,8 +169,6 @@ class SystemConfigKey(Enum):
     CookieCloud = "CookieCloud"
     # 自定义JS/CSS
     CustomScript = "CustomScript"
-    # 用户认证参数
-    UserSiteAuthParams = "UserSiteAuthParams"
     # 默认下载器
     DefaultDownloader = "DefaultDownloader"
     # 默认下载设置

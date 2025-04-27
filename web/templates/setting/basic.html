@@ -237,22 +237,6 @@
                   </select>
                 </div>
               </div>
-              <div class="col-lg">
-                <div class="mb-3">
-                  <label class="form-label">二级分类策略 <span class="form-help"
-                                                               title="启用二级分类后会在电影/电视剧/动漫媒体库目录下按二级分类名建立子目录；此处配置分类的策略名，保存后会自动生成默认配置；如不需要启动分类，则该项配置为空"
-                                                               data-bs-toggle="tooltip">?</span></label>
-                  <div class="input-group input-group-flat">
-                    <input type="text" value="{{ Config.media.category or '' }}" class="form-control" id="media.category"
-                           placeholder="留空不启用二级分类" autocomplete="off" name="category_name">
-                    <span class="input-group-text">
-                      <a href="javascript:show_category_config_modal()" class="link-secondary" title="编辑二级分类策略" data-bs-toggle="tooltip">
-                        {{ SVG.edit() }}
-                      </a>
-                    </span>
-                  </div>
-                </div>
-              </div>
             </div>
             <div class="row">
               <div class="col-lg">
@@ -277,11 +261,29 @@
               </div>
               <div class="col-lg">
                 <div class="mb-3">
+                  <label class="form-label">二级分类策略 <span class="form-help"
+                                                               title="启用二级分类后会在电影/电视剧/动漫媒体库目录下按二级分类名建立子目录；此处配置分类的策略名，保存后会自动生成默认配置；如不需要启动分类，则该项配置为空"
+                                                               data-bs-toggle="tooltip">?</span></label>
+                  <div class="input-group input-group-flat">
+                    <input type="text" value="{{ Config.media.category or '' }}" class="form-control" id="media.category"
+                           placeholder="留空不启用二级分类" autocomplete="off" name="category_name">
+                    <span class="input-group-text">
+                      <a href="javascript:show_category_config_modal()" class="link-secondary" title="编辑二级分类策略" data-bs-toggle="tooltip">
+                        {{ SVG.edit() }}
+                      </a>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="col-lg">
+                <div class="mb-3">
                   <label class="form-label">OpenAI API Url <span class="form-help"
-                                                                        title="自定义openai请求地址（请注意格式，请求地址需带有请求头且最后没有/号），不填默认使用https://api.openai.com"
+                                                                        title="自定义openai请求地址（请注意格式，请求地址需带有请求头，以及例如/v1的版本号，并且最后没有/号），不填默认使用https://api.openai.com/v1。兼容非标准api的gemini，可填写https://generativelanguage.googleapis.com/v1beta/openai"
                                                                         data-bs-toggle="tooltip">?</span></label>
                   <input type="text" value="{% if Config.openai %}{{ Config.openai.api_url or '' }}{% endif %}" class="form-control"
-                         id="openai.api_url" placeholder="https://api.openai.com" autocomplete="off">
+                         id="openai.api_url" placeholder="https://api.openai.com/v1" autocomplete="off">
                 </div>
               </div>
               <div class="col-lg">
@@ -291,6 +293,15 @@
                                                                         data-bs-toggle="tooltip">?</span></label>
                   <input type="text" value="{% if Config.openai %}{{ Config.openai.api_key or '' }}{% endif %}" class="form-control"
                          id="openai.api_key" placeholder="sk-xxx" autocomplete="off">
+                </div>
+              </div>
+              <div class="col-lg">
+                <div class="mb-3">
+                  <label class="form-label">OpenAI Model <span class="form-help"
+                                                                        title="GPT 模型，默认gpt-3.5-turbo"
+                                                                        data-bs-toggle="tooltip">?</span></label>
+                  <input type="text" value="{% if Config.openai %}{{ Config.openai.api_model or '' }}{% endif %}" class="form-control"
+                         id="openai.api_model" placeholder="gpt-3.5-turbo" autocomplete="off">
                 </div>
               </div>
             </div>
@@ -450,7 +461,7 @@
               <div class="col-lg">
                 <div class="mb-3">
                   <label class="form-label">订阅搜索周期(小时) <span class="form-help"
-                                                                   title="定时对电影/电视剧订阅进行站点存量资源检索下载，用于对RSS订阅进行查漏补缺。以小时为单位，最小间隔为6小时，设置小于6小时时将强制设定为6小时。该项会对站点造成压力，应尽量通过维护站点RSS实现订阅追新，如非必要请不要开启"
+                                                                   title="定时对电影/电视剧订阅进行站点存量资源检索下载，用于对RSS订阅进行查漏补缺。以小时为单位，最小间隔为2小时，设置小于2小时时将强制设定为2小时。该项会对站点造成压力，应尽量通过维护站点RSS实现订阅追新，如非必要请不要开启"
                                                                    data-bs-toggle="tooltip">?</span></label>
                   <input type="text" value="{{ Config.pt.search_rss_interval or '' }}" class="form-control"
                          id="pt.search_rss_interval" placeholder="留空关闭订阅定时搜索" autocomplete="off">
@@ -616,6 +627,7 @@
           </div>
           <div class="card-body">
             <div class="row">
+
               <div class="col-12 col-xl-3">
                 <div class="mb-3">
                   <label class="form-check form-switch">
@@ -678,16 +690,48 @@
               <div class="col-12 col-xl-3">
                 <div class="mb-3">
                   <label class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="laboratory.search_en_title" {% if
-                      Config.laboratory and Config.laboratory.search_en_title %}checked{% endif %}>
-                    <span class="form-check-label">搜索优先使用英文名 <span class="form-help"
-                                                                            title="开启后对于精确搜索场景将会优先使用英文名搜索，否则优先使用中文名搜索"
+                    <input class="form-check-input" type="checkbox" id="laboratory.search_multi_language" {% if
+                      Config.laboratory and Config.laboratory.search_multi_language %}checked{% endif %}>
+                    <span class="form-check-label">多语言搜索 <span class="form-help"
+                                                                            title="开启后能够提高搜索准确率，机器性能低建议关闭"
                                                                             data-bs-toggle="tooltip">?</span>
                     </span>
                   </label>
                 </div>
               </div>
+              <div class="col-12 col-xl-3">
+                <div class="mb-3">
+                  <label class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="laboratory.show_more_sites" {% if
+                      Config.laboratory and Config.laboratory.show_more_sites %}checked{% endif %}>
+                    <span class="form-check-label">展示更多站点 <span class="form-help"
+                                                                            title="开启后会展示BT站点"
+                                                                            data-bs-toggle="tooltip">?</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+          </div>
+          <div class="row">
+            <div class="col-12 col-lg">
+              <div class="mb-2">
+                <label class="form-label">验证码识别服务器 <span class="form-help"
+                                                           title="识别网站验证码 配置格式示例：http://127.0.0.1:9300"
+                                                           data-bs-toggle="tooltip">?</span></label>
+                <input type="text" value="{{ Config.laboratory.ocr_server_host or '' }}" class="form-control" id="laboratory.ocr_server_host"
+                       placeholder="http://127.0.0.1:9300" autocomplete="off">
+              </div>
             </div>
+            <div class="col-12 col-lg">
+              <div class="mb-2">
+                <label class="form-label">网页自动化服务器 <span class="form-help"
+                                                           title="识别网站验证码 配置格式示例：http://127.0.0.1:9850"
+                                                           data-bs-toggle="tooltip">?</span></label>
+                <input type="text" value="{{ Config.laboratory.chrome_server_host or '' }}" class="form-control" id="laboratory.chrome_server_host"
+                       placeholder="http://127.0.0.1:9850" autocomplete="off">
+              </div>
+            </div>
+          </div>
           </div>
           <div class="card-footer">
             <div class="row align-items-center">

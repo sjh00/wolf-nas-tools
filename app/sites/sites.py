@@ -1,16 +1,16 @@
 import json
 from datetime import datetime
+from time import sleep
 
 import log
-from app.helper import ChromeHelper, SiteHelper, DbHelper
+from app.helper import SiteHelper, DbHelper, DrissionPageHelper
 from app.message import Message
 from app.sites.site_limiter import SiteRateLimiter
-from app.utils import RequestUtils, StringUtils
-from app.utils.commons import singleton
-from config import Config
+from app.utils import RequestUtils, StringUtils, JsonUtils
+from app.utils.commons import SingletonMeta
+from config import MT_URL, Config
 
 
-@singleton
 class Sites:
     message = None
     dbhelper = None
@@ -61,11 +61,14 @@ class Sites:
             site_signurl = site.SIGNURL
             site_cookie = site.COOKIE
             site_uses = site.INCLUDE or ''
+            site_headers = site_note.get('headers')
             uses = []
             if site_uses:
                 rss_enable = True if "D" in site_uses and site_rssurl else False
-                brush_enable = True if "S" in site_uses and site_rssurl and site_cookie else False
-                statistic_enable = True if "T" in site_uses and (site_rssurl or site_signurl) and site_cookie else False
+                brush_enable = True if "S" in site_uses and site_rssurl and (
+                    site_cookie or site_headers) else False
+                statistic_enable = True if "T" in site_uses and (
+                    site_rssurl or site_signurl) and (site_cookie or site_headers) else False
                 uses.append("D") if rss_enable else None
                 uses.append("S") if brush_enable else None
                 uses.append("T") if statistic_enable else None
@@ -81,6 +84,12 @@ class Sites:
                     site_withinhour = 0
             else:
                 site_withinhour = 0
+            strict_url = ''
+            if 'm-team' in site_signurl or (site_rssurl and 'm-team' in site_rssurl):
+                strict_url = MT_URL
+            else:
+                strict_url = StringUtils.get_base_url(site_signurl or site_rssurl)
+
             site_info = {
                 "id": site.ID,
                 "name": site.NAME,
@@ -94,7 +103,8 @@ class Sites:
                 "brush_enable": brush_enable,
                 "statistic_enable": statistic_enable,
                 "uses": uses,
-                "ua": site_note.get("ua"),
+                "ua": site_note.get("ua") or Config().get_ua(),
+                "headers": site_note.get("headers"),
                 "parse": True if site_note.get("parse") == "Y" else False,
                 "unread_msg_notify": True if site_note.get("message") == "Y" else False,
                 "chrome": True if site_note.get("chrome") == "Y" else False,
@@ -104,12 +114,16 @@ class Sites:
                 "limit_interval": site_note.get("limit_interval"),
                 "limit_count": site_note.get("limit_count"),
                 "limit_seconds": site_note.get("limit_seconds"),
-                "strict_url": StringUtils.get_base_url(site_signurl or site_rssurl)
+                "strict_url": strict_url
             }
             # 以ID存储
             self._siteByIds[site.ID] = site_info
             # 以域名存储
-            site_strict_url = StringUtils.get_url_domain(site.SIGNURL or site.RSSURL)
+            if 'm-team' in site_signurl or (site_rssurl and 'm-team' in site_rssurl):
+                site_strict_url = StringUtils.get_url_domain(MT_URL)
+            else:
+                site_strict_url = StringUtils.get_url_domain(
+                    site.SIGNURL or site.RSSURL)
             if site_strict_url:
                 self._siteByUrls[site_strict_url] = site_info
             # 初始化站点限速器
@@ -128,7 +142,8 @@ class Sites:
         """
         加载图标到内存
         """
-        self._site_favicons = {site.SITE: site.FAVICON for site in self.dbhelper.get_site_favicons()}
+        self._site_favicons = {
+            site.SITE: site.FAVICON for site in self.dbhelper.get_site_favicons()}
 
     def get_sites(self,
                   siteid=None,
@@ -143,6 +158,8 @@ class Sites:
         if siteid:
             return self._siteByIds.get(int(siteid)) or {}
         if siteurl:
+            if 'm-team' in siteurl:
+                siteurl = MT_URL
             return self._siteByUrls.get(StringUtils.get_url_domain(siteurl)) or {}
 
         ret_sites = []
@@ -266,28 +283,45 @@ class Sites:
         if not site_info:
             return False, "站点不存在", 0
         site_cookie = site_info.get("cookie")
-        if not site_cookie:
-            return False, "未配置站点Cookie", 0
+        headers = site_info.get("headers")
+        if not site_cookie and not headers:
+            return False, "未配置站点Cookie或headers", 0
+
+        if JsonUtils.is_valid_json(headers):
+            headers = json.loads(headers)
+        else:
+            headers = {}
         ua = site_info.get("ua") or Config().get_ua()
-        site_url = StringUtils.get_base_url(site_info.get("signurl") or site_info.get("rssurl"))
+        headers.update({'User-Agent': ua})
+        site_url = StringUtils.get_base_url(
+            site_info.get("signurl") or site_info.get("rssurl"))
         if not site_url:
             return False, "未配置站点地址", 0
         # 站点特殊处理...
+        if 'm-team' in site_url:
+            site_url = MT_URL
+
         if '1ptba' in site_url:
             site_url = site_url + '/index.php'
-        chrome = ChromeHelper()
-        if site_info.get("chrome") and chrome.get_status():
+
+        if 'fsm' in site_url:
+            site_url = site_url + '/api/Users/infos'
+
+        if 'yemapt' in site_url:
+            site_url = site_url + '/api/user/profile'
+
+        if 'star-space' in site_url:
+            site_url = site_url + '/p_index/index.php'
+
+        if site_info.get("chrome"):
             # 计时
+            chrome = DrissionPageHelper()
             start_time = datetime.now()
-            if not chrome.visit(url=site_url, ua=ua, cookie=site_cookie, proxy=site_info.get("proxy")):
-                return False, "Chrome模拟访问失败", 0
-            # 循环检测是否过cf
-            cloudflare = chrome.pass_cloudflare()
-            seconds = int((datetime.now() - start_time).microseconds / 1000)
-            if not cloudflare:
-                return False, "跳转站点失败", seconds
+
+            html_text = chrome.get_page_html(url=site_url, cookies=site_cookie)
+
+            seconds = round((datetime.now() - start_time).total_seconds(), 3)
             # 判断是否已签到
-            html_text = chrome.get_html()
             if not html_text:
                 return False, "获取站点源码失败", 0
             if SiteHelper.is_logged_in(html_text):
@@ -297,11 +331,20 @@ class Sites:
         else:
             # 计时
             start_time = datetime.now()
-            res = RequestUtils(cookies=site_cookie,
-                               headers=ua,
-                               proxies=Config().get_proxies() if site_info.get("proxy") else None
-                               ).get_res(url=site_url)
-            seconds = int((datetime.now() - start_time).microseconds / 1000)
+            # m-team处理
+            if 'm-team' in site_url:
+                if headers.get("authorization"):
+                    headers.pop('authorization')
+                url = site_url + '/api/member/profile'
+                res = RequestUtils(headers=headers,
+                                   proxies=Config().get_proxies() if site_info.get("proxy") else None
+                                   ).post_res(url=url, data={})
+            else:
+                res = RequestUtils(cookies=site_cookie,
+                                   headers=headers,
+                                   proxies=Config().get_proxies() if site_info.get("proxy") else None
+                                   ).get_res(url=site_url)
+            seconds = round((datetime.now() - start_time).total_seconds(), 3)
             if res and res.status_code == 200:
                 if not SiteHelper.is_logged_in(res.text):
                     return False, "Cookie失效", seconds
@@ -370,3 +413,20 @@ class Sites:
                                                   ua=ua)
         self.init_config()
         return ret
+
+    def update_site_note(self, siteid, note):
+        """
+        更新站点 note
+        """
+        ret = self.dbhelper.update_config_site_note(tid=siteid, note=note)
+        self.init_config()
+        return ret
+
+    def get_site_note_by_id(self, siteid):
+        """
+        根据站点id获取站点配置
+        """
+        sites = self.dbhelper.get_site_by_id(tid=siteid)
+        if sites:
+            site_note = self.__get_site_note_items(sites[0].NOTE)
+            return site_note

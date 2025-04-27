@@ -14,10 +14,16 @@ _Engine = create_engine(
     echo=False,
     poolclass=QueuePool,
     pool_pre_ping=True,
-    pool_size=100,
+    pool_size=200,
     pool_recycle=60 * 10,
-    max_overflow=0
+    max_overflow=10,
+    connect_args={'timeout': 30}
 )
+
+# 启用 WAL 模式
+with _Engine.connect() as conn:
+    conn.execute(text("PRAGMA journal_mode=WAL;"))
+
 _Session = scoped_session(sessionmaker(bind=_Engine,
                                        autoflush=True,
                                        autocommit=False,

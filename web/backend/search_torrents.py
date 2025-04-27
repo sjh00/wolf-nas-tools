@@ -1,5 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os.path
 import re
+from time import sleep
+import zhconv
 
 import log
 from app.downloader import Downloader
@@ -44,6 +47,8 @@ def search_medias_for_web(content, ident_flag=True, filters=None, tmdbid=None, m
     _process.start(ProgressKey.Search)
     # 识别媒体
     media_info = None
+    search_name_list = []
+    max_workers = 1
     if ident_flag:
 
         # 有TMDBID或豆瓣ID
@@ -89,18 +94,23 @@ def search_medias_for_web(content, ident_flag=True, filters=None, tmdbid=None, m
                     en_title = _media.get_tmdb_en_title(media_info)
                     if en_title:
                         search_en_name = en_title
-            # 两次搜索名称
-            second_search_name = None
-            if Config().get_config("laboratory").get("search_en_title"):
-                if search_en_name:
-                    first_search_name = search_en_name
-                    second_search_name = search_cn_name
-                else:
-                    first_search_name = search_cn_name
-            else:
-                first_search_name = search_cn_name
-                if search_en_name:
-                    second_search_name = search_en_name
+
+            # 繁体中文
+            search_zhtw_name = _media.get_tmdb_zhtw_title(media_info)
+
+            # 多语言搜索
+            search_name_list.append(search_cn_name)
+            search_name_list.append(search_en_name)
+            # 开启多语言搜索
+            if Config().get_config("laboratory").get("search_multi_language"):
+                # 简体中文和繁体中文是否相同
+                if search_zhtw_name != search_cn_name:
+                    search_name_list.append(search_zhtw_name)
+                if media_info.original_language != 'cn' and search_en_name != media_info.original_title:
+                    search_name_list.append(media_info.original_title)
+                max_workers = len(search_name_list)
+            # 去除空元素
+            search_name_list = list(filter(None, search_name_list))
 
             filter_args = {"season": search_season,
                            "episode": search_episode,
@@ -111,8 +121,7 @@ def search_medias_for_web(content, ident_flag=True, filters=None, tmdbid=None, m
             log.info(f"【Web】{content} 未从TMDB匹配到媒体信息，将使用快速搜索...")
             ident_flag = False
             media_info = None
-            first_search_name = key_word
-            second_search_name = None
+            search_name_list.append(key_word)
             filter_args = {
                 "season": season_num,
                 "episode": episode_num,
@@ -120,8 +129,7 @@ def search_medias_for_web(content, ident_flag=True, filters=None, tmdbid=None, m
             }
     # 快速搜索
     else:
-        first_search_name = key_word
-        second_search_name = None
+        search_name_list.append(key_word)
         filter_args = {
             "season": season_num,
             "episode": episode_num,
@@ -131,25 +139,36 @@ def search_medias_for_web(content, ident_flag=True, filters=None, tmdbid=None, m
     if filters:
         filter_args.update(filters)
     # 开始搜索
-    log.info("【Web】开始搜索 %s ..." % content)
-    media_list = _searcher.search_medias(key_word=first_search_name,
-                                         filter_args=filter_args,
-                                         match_media=media_info,
-                                         in_from=SearchType.WEB)
-    # 使用第二名称重新搜索
-    if ident_flag \
-            and len(media_list) == 0 \
-            and second_search_name \
-            and second_search_name != first_search_name:
-        _process.start(ProgressKey.Search)
-        _process.update(ptype=ProgressKey.Search,
-                        text="%s 未搜索到资源,尝试通过 %s 重新搜索 ..." % (
-                            first_search_name, second_search_name))
-        log.info("【Searcher】%s 未搜索到资源,尝试通过 %s 重新搜索 ..." % (first_search_name, second_search_name))
-        media_list = _searcher.search_medias(key_word=second_search_name,
-                                             filter_args=filter_args,
-                                             match_media=media_info,
-                                             in_from=SearchType.WEB)
+    log.info("【Web】开始通过 %s 搜索 ..." % search_name_list)
+
+    # 多线程
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    all_task = []
+    for search_name in search_name_list:
+        task = executor.submit(_searcher.search_medias,
+                                search_name,
+                                filter_args,
+                                media_info,
+                                SearchType.WEB
+                            )
+        all_task.append(task)
+        sleep(0.5)
+    media_list = []
+    for future in as_completed(all_task):
+        result = future.result()
+        if result:
+            media_list = media_list + result
+
+    # 根据 org_string 去重列表
+    unique_media_list = []
+    media_seen = set()
+    for d in media_list:
+        org_string = StringUtils.md5_hash(f'{d.org_string}{d.site}{d.description or ""}')
+        if org_string not in media_seen:
+            unique_media_list.append(d)
+            media_seen.add(org_string)
+    media_list = unique_media_list
+
     # 清空缓存结果
     _searcher.delete_all_search_torrents()
     # 结束进度

@@ -7,13 +7,12 @@ from app.conf import SystemConfig
 from app.helper import SubmoduleHelper
 from app.plugins.event_manager import EventManager
 from app.utils import SystemUtils, PathUtils, ImageUtils
-from app.utils.commons import singleton
+from app.utils.commons import SingletonMeta
 from app.utils.types import SystemConfigKey
 from config import Config
 
 
-@singleton
-class PluginManager:
+class PluginManager(metaclass=SingletonMeta):
     """
     插件管理器
     """
@@ -133,6 +132,12 @@ class PluginManager:
             return getattr(self._running_plugins[pid], method)(*args, **kwargs)
         except Exception as err:
             print(str(err), traceback.format_exc())
+
+    def get_running_plugin_ids(self):
+        """
+        获取所有运行态插件ID
+        """
+        return list(self._running_plugins.keys())
 
     def reload_plugin(self, pid):
         """
@@ -332,3 +337,13 @@ class PluginManager:
         if not hasattr(self._running_plugins[pid], method):
             return None
         return getattr(self._running_plugins[pid], method)(*args, **kwargs)
+
+    def get_plugin_method(self, pid, method):
+        """
+        获取插件方法
+        """
+        if not self._running_plugins.get(pid):
+            return None
+        if not hasattr(self._running_plugins[pid], method):
+            return None
+        return getattr(self._running_plugins[pid], method)

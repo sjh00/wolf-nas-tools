@@ -1,27 +1,28 @@
+from concurrent.futures import ThreadPoolExecutor
+import copy
 import re
-import time
+import json
 from datetime import datetime, timedelta
-from multiprocessing.dummy import Pool as ThreadPool
-from multiprocessing.pool import ThreadPool
 from threading import Event
+from time import time
 
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
 from lxml import etree
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as es
-from selenium.webdriver.support.wait import WebDriverWait
 
-from app.helper import ChromeHelper, SubmoduleHelper, SiteHelper
+from app.helper import SubmoduleHelper, SiteHelper
 from app.helper.cloudflare_helper import under_challenge
+from app.helper.drissionpage_helper import DrissionPageHelper
 from app.message import Message
 from app.plugins import EventHandler, EventManager
 from app.plugins.modules._base import _IPluginModule
 from app.sites.siteconf import SiteConf
 from app.sites.sites import Sites
-from app.utils import RequestUtils, ExceptionUtils, StringUtils, SchedulerUtils
+from app.utils import RequestUtils, ExceptionUtils, StringUtils, JsonUtils
 from app.utils.types import EventType
-from config import Config
+from config import MT_URL, Config
+
+from app.scheduler_service import SchedulerService
+from app.queue import scheduler_queue
 
 
 class AutoSignIn(_IPluginModule):
@@ -50,7 +51,8 @@ class AutoSignIn(_IPluginModule):
     eventmanager = None
     siteconf = None
     _scheduler = None
-
+    _jobstore = "plugin"
+    _job_id = None
     # 设置开关
     _enabled = False
     # 任务执行间隔
@@ -193,6 +195,21 @@ class AutoSignIn(_IPluginModule):
                     ]
                 ]
             },
+            {
+                'type': 'details',
+                'summary': '仿真站点',
+                'tooltip': '只有选中的站点才会开启仿真',
+                'content': [
+                    # 同一行
+                    [
+                        {
+                            'id': 'emulate_sites',
+                            'type': 'form-selectgroup',
+                            'content': sites
+                        },
+                    ]
+                ]
+            },
         ]
 
     def init_config(self, config=None):
@@ -210,11 +227,16 @@ class AutoSignIn(_IPluginModule):
             self._queue_cnt = config.get("queue_cnt")
             self._onlyonce = config.get("onlyonce")
             self._clean = config.get("clean")
-            self._auto_cf = config.get("auto_cf")
+            self._emulate_sites = config.get("emulate_sites") or []
+
+        # 定时服务
+        self._scheduler = SchedulerService()
 
         # 停止现有任务
         self.stop_service()
+        self.run_service()
 
+    def run_service(self):
         # 启动服务
         if self._enabled or self._onlyonce:
             # 加载模块
@@ -222,19 +244,23 @@ class AutoSignIn(_IPluginModule):
                                                                   filter_func=lambda _, obj: hasattr(obj, 'match'))
             self.debug(f"加载站点签到：{self._site_schema}")
 
-            # 定时服务
-            self._scheduler = BackgroundScheduler(timezone=Config().get_timezone())
-
             # 清理缓存即今日历史
             if self._clean:
                 self.delete_history(key=datetime.today().strftime('%Y-%m-%d'))
 
             # 运行一次
             if self._onlyonce:
-                self.info(f"签到服务启动，立即运行一次")
-                self._scheduler.add_job(self.sign_in, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
-                                            seconds=3))
+                self.info("签到服务启动，立即运行一次")
+                scheduler_queue.put({
+                    "func_str": "AutoSignIn.sign_in",
+                    "type": 'plugin',
+                    "args": [],
+                    "job_id": "AutoSignIn.sign_in_once",
+                    "trigger": "date",
+                    "run_date": datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                            seconds=3),
+                    "jobstore": self._jobstore
+                })
 
             if self._onlyonce or self._clean:
                 # 关闭一次性开关|清理缓存开关
@@ -250,21 +276,21 @@ class AutoSignIn(_IPluginModule):
                     "onlyonce": self._onlyonce,
                     "queue_cnt": self._queue_cnt,
                     "clean": self._clean,
-                    "auto_cf": self._auto_cf
+                    "emulate_sites": self._emulate_sites
                 })
 
             # 周期运行
             if self._cron:
-                self.info(f"定时签到服务启动，周期：{self._cron}")
-                SchedulerUtils.start_job(scheduler=self._scheduler,
-                                         func=self.sign_in,
-                                         func_desc="自动签到",
-                                         cron=str(self._cron))
-
-            # 启动任务
-            if self._scheduler.get_jobs():
-                self._scheduler.print_jobs()
-                self._scheduler.start()
+                self._job_id = self.info(f"定时签到服务启动，周期：{self._cron}")
+                scheduler_queue.put({
+                    "func_str": "AutoSignIn.sign_in",
+                    "func_desc": "自动签到",
+                    "type": 'plugin',
+                    "args": [],
+                    "job_id": "AutoSignIn.sign_in_2",
+                    "cron": str(self._cron),
+                    "jobstore": self._jobstore
+                })
 
     @staticmethod
     def get_command():
@@ -304,9 +330,11 @@ class AutoSignIn(_IPluginModule):
             # 今天已签到站点
             already_sign_sites = today_history['sign']
             # 今日未签站点
-            no_sign_sites = [site_id for site_id in self._sign_sites if site_id not in already_sign_sites]
+            no_sign_sites = [
+                site_id for site_id in self._sign_sites if site_id not in already_sign_sites]
             # 签到站点 = 需要重签+今日未签+特殊站点
-            sign_sites = list(set(retry_sites + no_sign_sites + self._special_sites))
+            sign_sites = list(
+                set(retry_sites + no_sign_sites + self._special_sites))
             if sign_sites:
                 self.info(f"今日 {today} 已签到，开始重签重试站点、特殊站点、未签站点")
             else:
@@ -314,14 +342,21 @@ class AutoSignIn(_IPluginModule):
                 return
 
         # 查询签到站点
-        sign_sites = Sites().get_sites(siteids=sign_sites)
+        emulate_sites = set(self._emulate_sites).intersection(set(sign_sites))
+        sign_sites = copy.deepcopy(Sites().get_sites(siteids=sign_sites))
         if not sign_sites:
             self.info("没有可签到站点，停止运行")
             return
+        new_sign_sites = []
+        for site in sign_sites:
+            if str(site.get("id")) in emulate_sites:
+                site['chrome'] = True
+            new_sign_sites.append(site)
 
+        sign_sites = new_sign_sites
         # 执行签到
         self.info("开始执行签到任务")
-        with ThreadPool(min(len(sign_sites), int(self._queue_cnt) if self._queue_cnt else 10)) as p:
+        with ThreadPoolExecutor(min(len(sign_sites), int(self._queue_cnt) if self._queue_cnt else 10)) as p:
             status = p.map(self.signin_site, sign_sites)
 
         if status:
@@ -342,8 +377,11 @@ class AutoSignIn(_IPluginModule):
             # 失败｜错误
             failed_msg = []
 
-            sites = {site.get('name'): site.get("id") for site in Sites().get_site_dict()}
+            sites = {site.get('name'): site.get("id")
+                     for site in Sites().get_site_dict()}
             for s in status:
+                if not s:
+                    continue
                 # 记录本次命中重试关键词的站点
                 if self._retry_keyword:
                     site_names = re.findall(r'【(.*?)】', s)
@@ -352,7 +390,8 @@ class AutoSignIn(_IPluginModule):
                         match = re.search(self._retry_keyword, s)
                         if match:
                             if site_id:
-                                self.debug(f"站点 {site_names[0]} 命中重试关键词 {self._retry_keyword}")
+                                self.debug(
+                                    f"站点 {site_names[0]} 命中重试关键词 {self._retry_keyword}")
                                 retry_sites.append(str(site_id))
                                 # 命中的站点
                                 retry_msg.append(s)
@@ -389,38 +428,29 @@ class AutoSignIn(_IPluginModule):
                                         "retry": retry_sites
                                     })
 
-            # 触发CF优选
-            if self._auto_cf and len(retry_sites) >= int(self._auto_cf):
-                # 获取自定义Hosts插件、CF优选插件，判断是否触发优选
-                customHosts = self.get_config("CustomHosts")
-                cloudflarespeedtest = self.get_config("CloudflareSpeedTest")
-                if customHosts and customHosts.get("enable") and cloudflarespeedtest and cloudflarespeedtest.get(
-                        "cf_ip"):
-                    self.info(f"命中重试数量 {len(retry_sites)}，开始触发优选IP插件")
-                    self.eventmanager.send_event(EventType.PluginReload,
-                                                 {
-                                                     "plugin_id": "CloudflareSpeedTest"
-                                                 })
-                else:
-                    self.info(f"命中重试数量 {len(retry_sites)}，优选IP插件未正确配置，停止触发优选IP")
             # 发送通知
             if self._notify:
                 # 签到详细信息 登录成功、签到成功、已签到、仿真签到成功、失败--命中重试
-                signin_message = login_success_msg + sign_success_msg + already_sign_msg + fz_sign_msg + failed_msg
+                signin_message = login_success_msg + sign_success_msg + \
+                    already_sign_msg + fz_sign_msg + failed_msg
                 if len(retry_msg) > 0:
                     signin_message.append("——————命中重试—————")
                     signin_message += retry_msg
                 Message().send_site_signin_message(signin_message)
 
-                next_run_time = self._scheduler.get_jobs()[0].next_run_time.strftime('%Y-%m-%d %H:%M:%S')
-                # 签到汇总信息
-                self.send_message(title="【自动签到任务完成】",
-                                  text=f"本次签到数量: {len(sign_sites)} \n"
-                                       f"命中重试数量: {len(retry_sites) if self._retry_keyword else 0} \n"
-                                       f"强制签到数量: {len(self._special_sites)} \n"
-                                       f"下次签到数量: {len(set(retry_sites + self._special_sites))} \n"
-                                       f"下次签到时间: {next_run_time} \n"
-                                       f"详见签到消息")
+                if self._scheduler and self._scheduler.SCHEDULER:
+                    for job in self._scheduler.get_jobs():
+                        if 'signin' in job.name:
+                            next_run_time = job.next_run_time.strftime(
+                                '%Y-%m-%d %H:%M:%S')
+                            # 签到汇总信息
+                            self.send_message(title="【自动签到任务完成】",
+                                              text=f"本次签到数量: {len(sign_sites)} \n"
+                                              f"命中重试数量: {len(retry_sites) if self._retry_keyword else 0} \n"
+                                              f"强制签到数量: {len(self._special_sites)} \n"
+                                              f"下次签到数量: {len(set(retry_sites + self._special_sites))} \n"
+                                              f"下次签到时间: {next_run_time} \n"
+                                              f"详见签到消息")
         else:
             self.error("站点签到任务失败！")
 
@@ -461,29 +491,27 @@ class AutoSignIn(_IPluginModule):
             site_url = site_info.get("signurl")
             site_cookie = site_info.get("cookie")
             ua = site_info.get("ua")
-            if not site_url or not site_cookie:
-                self.warn("未配置 %s 的站点地址或Cookie，无法签到" % str(site))
+            headers = site_info.get("headers")
+            if (not site_url or not site_cookie) and not headers:
+                self.warn("未配置 %s 的Cookie或请求头，无法签到" % str(site))
                 return ""
-            chrome = ChromeHelper()
+            if JsonUtils.is_valid_json(headers):
+                headers = json.loads(headers)
+            else:
+                headers = {}
+            chrome = DrissionPageHelper()
             if site_info.get("chrome") and chrome.get_status():
                 # 首页
                 self.info("开始站点仿真签到：%s" % site)
                 home_url = StringUtils.get_base_url(site_url)
                 if "1ptba" in home_url:
                     home_url = f"{home_url}/index.php"
-                if not chrome.visit(url=home_url, ua=ua, cookie=site_cookie, proxy=site_info.get("proxy")):
+
+                html_text = chrome.get_page_html(url=home_url, cookies=site_cookie)
+
+                if not html_text:
                     self.warn("%s 无法打开网站" % site)
                     return f"【{site}】仿真签到失败，无法打开网站！"
-                # 循环检测是否过cf
-                cloudflare = chrome.pass_cloudflare()
-                if not cloudflare:
-                    self.warn("%s 跳转站点失败" % site)
-                    return f"【{site}】仿真签到失败，跳转站点失败！"
-                # 判断是否已签到
-                html_text = chrome.get_html()
-                if not html_text:
-                    self.warn("%s 获取站点源码失败" % site)
-                    return f"【{site}】仿真签到失败，获取站点源码失败！"
                 # 查找签到按钮
                 html = etree.HTML(html_text)
                 xpath_str = None
@@ -504,39 +532,57 @@ class AutoSignIn(_IPluginModule):
                         return f"【{site}】模拟登录失败！"
                 # 开始仿真
                 try:
-                    checkin_obj = WebDriverWait(driver=chrome.browser, timeout=6).until(
-                        es.element_to_be_clickable((By.XPATH, xpath_str)))
-                    if checkin_obj:
-                        checkin_obj.click()
-                        # 检测是否过cf
-                        time.sleep(3)
-                        if under_challenge(chrome.get_html()):
-                            cloudflare = chrome.pass_cloudflare()
-                            if not cloudflare:
-                                self.info("%s 仿真签到失败，无法通过Cloudflare" % site)
-                                return f"【{site}】仿真签到失败，无法通过Cloudflare！"
+                    html_text = chrome.get_page_html(url=home_url,
+                            cookies=site_cookie,
+                            click_xpath=f'xpath:{xpath_str}')
 
-                        # 判断是否已签到   [签到已得125, 补签卡: 0]
-                        if re.search(r'已签|签到已得', chrome.get_html(), re.IGNORECASE):
-                            return f"【{site}】签到成功"
+                    if not html_text:
+                        self.info("%s 仿真签到失败，无法通过Cloudflare" % site)
+                        return f"【{site}】仿真签到失败，无法通过Cloudflare！"
+
+                    # 判断是否已签到   [签到已得125, 补签卡: 0]
+                    if re.search(r'已签|签到已得', html_text, re.IGNORECASE):
                         self.info("%s 仿真签到成功" % site)
                         return f"【{site}】仿真签到成功"
+
+                    if re.search(r'完成两步验证', html_text, re.IGNORECASE):
+                        self.warn("%s 仿真签到失败，需要两步验证" % site)
+                        return f"【{site}】仿真签到失败，需要两步验证"
                 except Exception as e:
                     ExceptionUtils.exception_traceback(e)
                     self.warn("%s 仿真签到失败：%s" % (site, str(e)))
                     return f"【{site}】签到失败！"
             # 模拟登录
             else:
-                if site_url.find("attendance.php") != -1:
+                if site_url.find("attendance.php") != -1 or site_url.find("checkIn") != -1:
                     checkin_text = "签到"
                 else:
                     checkin_text = "模拟登录"
                 self.info(f"开始站点{checkin_text}：{site}")
                 # 访问链接
-                res = RequestUtils(cookies=site_cookie,
-                                   headers=ua,
-                                   proxies=Config().get_proxies() if site_info.get("proxy") else None
-                                   ).get_res(url=site_url)
+                # m-team处理
+                if 'm-team' in site_url:
+                    url = f"{MT_URL}/api/member/updateLastBrowse"
+                    headers.update({
+                        "accept": "application/json, text/plain, */*",
+                        "content-type": "application/json",
+                        "user-agent": ua,
+                        "ts": str(int(time()))
+                    })
+                    if headers.get('x-api-key'):
+                        headers.pop("x-api-key")
+                    if not headers.get("authorization"):
+                        self.warn(f"{site} 请填写请求头 authorization 参数")
+                        return f"【{site}】{site} 请填写请求头 authorization 参数！"
+                    res = RequestUtils(headers=headers,
+                                       proxies=Config().get_proxies() if site_info.get("proxy") else None
+                                       ).post_res(url=url)
+                else:
+                    headers.update({'User-Agent': ua})
+                    res = RequestUtils(cookies=site_cookie,
+                                       headers=headers,
+                                       proxies=Config().get_proxies() if site_info.get("proxy") else None
+                                       ).get_res(url=site_url)
                 if res and res.status_code in [200, 500, 403]:
                     if not SiteHelper.is_logged_in(res.text):
                         if under_challenge(res.text):
@@ -548,6 +594,9 @@ class AutoSignIn(_IPluginModule):
                         self.warn(f"{site} {checkin_text}失败，{msg}")
                         return f"【{site}】{checkin_text}失败，{msg}！"
                     else:
+                        if re.search(r'完成两步验证', res.text, re.IGNORECASE):
+                            self.warn("%s 签到失败，需要两步验证" % site)
+                            return f"【{site}】签到失败，需要两步验证"
                         self.info(f"{site} {checkin_text}成功")
                         return f"【{site}】{checkin_text}成功"
                 elif res is not None:
@@ -566,13 +615,10 @@ class AutoSignIn(_IPluginModule):
         退出插件
         """
         try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._event.set()
-                    self._scheduler.shutdown()
-                    self._event.clear()
-                self._scheduler = None
+            if self._scheduler and self._scheduler.SCHEDULER:
+                for job in self._scheduler.get_jobs():
+                    if 'signin' in job.name:
+                        self._scheduler.remove_job(job.id)
         except Exception as e:
             print(str(e))
 

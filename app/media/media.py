@@ -187,7 +187,7 @@ class Media:
         if search_type == MediaType.MOVIE:
             year_range = [first_media_year]
             if first_media_year:
-                year_range.append(str(int(first_media_year) + 1))
+                # year_range.append(str(int(first_media_year) + 1))
                 year_range.append(str(int(first_media_year) - 1))
             for year in year_range:
                 log.debug(
@@ -1013,8 +1013,8 @@ class Media:
                         if not parent_info.get_name() or not parent_info.year:
                             parent_parent_info = MetaInfo(parent_parent_name)
                             parent_info.type = parent_parent_info.type if parent_parent_info.type and parent_info.type != MediaType.TV else parent_info.type
-                            parent_info.cn_name = parent_parent_info.cn_name if parent_parent_info.cn_name else parent_info.cn_name
-                            parent_info.en_name = parent_parent_info.en_name if parent_parent_info.en_name else parent_info.en_name
+                            parent_info.cn_name = parent_info.cn_name if parent_info.cn_name else parent_parent_info.cn_name
+                            parent_info.en_name = parent_info.en_name if parent_info.en_name else parent_parent_info.en_name
                             parent_info.year = parent_parent_info.year if parent_parent_info.year else parent_info.year
                             parent_info.begin_season = NumberUtils.max_ele(parent_info.begin_season,
                                                                             parent_parent_info.begin_season)
@@ -1978,6 +1978,18 @@ class Media:
                                      chinese=False)
         if en_info:
             return en_info.get("title") if media_info.type == MediaType.MOVIE else en_info.get("name")
+        return None
+
+    def get_tmdb_zhtw_title(self, media_info):
+        """
+        获取TMDB的繁体中文名称
+        """
+        zhtw_info = self.get_tmdb_info(mtype=media_info.type,
+                                     tmdbid=media_info.tmdb_id,
+                                     language="zh-TW",
+                                     chinese=False)
+        if zhtw_info:
+            return zhtw_info.get("title") if media_info.type == MediaType.MOVIE else zhtw_info.get("name")
         return None
 
     def get_episode_title(self, media_info, language=None):

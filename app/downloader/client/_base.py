@@ -83,6 +83,15 @@ class _IDownloadClient(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def set_torrents_tag(self, ids, tags):
+        """
+        设置种子标签
+        :param ids: 种子ID列表
+        :param tags: 种子标签列表
+        """
+        pass
+
+    @abstractmethod
     def get_transfer_task(self, tag, match_path=None):
         """
         获取需要转移的种子列表
@@ -184,5 +193,12 @@ class _IDownloadClient(metaclass=ABCMeta):
     def recheck_torrents(self, ids):
         """
         下载控制：重新校验
+        """
+        pass
+    
+    @abstractmethod
+    def get_free_space(self, path: str):
+        """
+        获取剩余空间
         """
         pass

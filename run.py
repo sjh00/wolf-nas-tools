@@ -2,6 +2,10 @@ import os
 import signal
 import sys
 import warnings
+import hashlib
+import random
+
+from config_monitor import stop_config_monitor, start_config_monitor
 
 warnings.filterwarnings('ignore')
 
@@ -28,10 +32,6 @@ from config import Config
 import log
 from web.action import WebAction
 from web.main import App
-from app.db import init_db, update_db, init_data
-from app.helper import init_chrome
-from initializer import update_config, check_config,  start_config_monitor, stop_config_monitor
-from version import APP_VERSION
 
 
 def sigal_handler(num, stack):
@@ -70,7 +70,6 @@ def get_run_config(forcev4=False):
         _web_port = int(app_conf.get('web_port')) if str(app_conf.get('web_port', '')).isdigit() else 3000
         _ssl_cert = app_conf.get('ssl_cert')
         _ssl_key = app_conf.get('ssl_key')
-        _ssl_key = app_conf.get('ssl_key')
         _debug = True if app_conf.get("debug") else False
 
     app_arg = dict(host=_web_host, port=_web_port, debug=_debug, threaded=True, use_reloader=False)
@@ -83,39 +82,14 @@ def get_run_config(forcev4=False):
 signal.signal(signal.SIGINT, sigal_handler)
 signal.signal(signal.SIGTERM, sigal_handler)
 
-
-def init_system():
-    # 配置
-    log.console('NAStool 当前版本号：%s' % APP_VERSION)
-    # 数据库初始化
-    init_db()
-    # 数据库更新
-    update_db()
-    # 数据初始化
-    init_data()
-    # 升级配置文件
-    update_config()
-    # 检查配置文件
-    check_config()
-
-
-def start_service():
-    log.console("开始启动服务...")
-    # 启动服务
-    WebAction.start_service()
-    # 监听配置文件变化
-    start_config_monitor()
-
-
-# 系统初始化
-init_system()
-
-# 启动服务
-start_service()
-
+# 调试用
+if os.environ.get('FLASK_DEBUG') == "1":
+    os.environ['SERVER_INSTANCE'] = hashlib.md5(str(random.random()).encode()).hexdigest()
 
 # 本地运行
 if __name__ == '__main__':
+    # 兼容本地环境
+    os.environ['SERVER_INSTANCE'] = hashlib.md5(str(random.random()).encode()).hexdigest()
     # Windows启动托盘
     if is_windows_exe:
         homepage = Config().get_config('app').get('domain')
@@ -126,17 +100,14 @@ if __name__ == '__main__':
         sys.stdout = NullWriter()
         sys.stderr = NullWriter()
 
-
         def traystart():
             TrayIcon(homepage, log_path)
-
 
         if len(os.popen("tasklist| findstr %s" % os.path.basename(sys.executable), 'r').read().splitlines()) <= 2:
             p1 = threading.Thread(target=traystart, daemon=True)
             p1.start()
 
-    # 初始化浏览器驱动
-    init_chrome()
-
+    # 监听配置文件变化
+    start_config_monitor()
     # Flask启动
     App.run(**get_run_config(is_windows_exe))
