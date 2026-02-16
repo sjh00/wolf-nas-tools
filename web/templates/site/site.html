@@ -42,6 +42,7 @@
             <span class="badge badge-pill bg-teal"><small>{{ Site.pri }}</small></span>
             <a href="{% if Site.signurl %}{{ Site.signurl }}{% else %}javascript:void(0){% endif %}"
             {% if Site.signurl %}target="_blank" {% endif %} class="ms-1">
+            <span class="avatar avatar-xs me-1 siteicon-{{ Site.name|hash }}" style="width: 1.5rem; height: 1.5rem;"></span>
               <strong>{{ Site.name }}</strong>
               </a>
           </h3>
@@ -280,6 +281,15 @@
             </div>
           </div>
           <div class="col-lg-4">
+              <label class="form-label required">下载器添加站点标签 <span class="form-help"
+                  title="开启后推送种子到下载器会添加站点标签" data-bs-toggle="tooltip">?</span></label>
+              <select class="form-select" id="site_tag">
+                <option value="Y" selected>是</option>
+                <option value="N">否</option>
+              </select>
+            </div>
+          </div>
+          <div class="col-lg-8">
             <div class="mb-3">
             <label class="form-label">User-Agent <span class="form-help"
                   title="站点签到/数据获取/搜索请求时使用的User-Agent，为空则使用基础配置中User-Agent设置" data-bs-toggle="tooltip">?</span></label>
@@ -437,6 +447,7 @@
     $("#site_parse").val('Y');
     $("#site_subtitle").val('N');
     $("#site_withinhour").val(0);
+    $("#site_tag").val('Y');
     $("#site_unread_msg_notify").val('Y');
     $("#sitelimit_interval").val('');
     $("#sitelimit_count").val('');
@@ -487,6 +498,11 @@
           $("#site_subtitle").val("Y");
         } else {
           $("#site_subtitle").val("N");
+        }
+        if (ret.site.tag) {
+          $("#site_tag").val("Y");
+        } else {
+          $("#site_tag").val("N");
         }
         if (ret.site.unread_msg_notify) {
           $("#site_unread_msg_notify").val("Y");
@@ -572,6 +588,7 @@
     if( !withinhour ) {
       withinhour = 0;
     }
+    let tag = $("#site_tag").val();
     // 流控规则
     let limit_interval = $("#sitelimit_interval").val();
     if (limit_interval && isNaN(limit_interval)) {
@@ -613,6 +630,7 @@
         "message": site_unread_msg_notify,
         "subtitle": subtitle,
         "withinhour": withinhour,
+        "tag": tag,
         "limit_interval": limit_interval,
         "limit_count": limit_count,
         "limit_seconds": limit_seconds
