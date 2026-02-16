@@ -4,9 +4,10 @@ import time
 import pytz
 
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor
 
 import log
-from app.helper import MetaHelper, ThreadHelper, SubmoduleHelper
+from app.helper import ThreadHelper, SubmoduleHelper
 from app.mediaserver import MediaServer
 from app.rss import Rss
 from app.sites import SiteUserInfo
@@ -37,6 +38,7 @@ class Scheduler(metaclass=SingletonMeta):
     _lock = Lock()
 
     def __init__(self):
+        self.thread_pool = ThreadPoolExecutor(max_workers=5)
         self.init_config()
 
     def init_config(self):
@@ -143,16 +145,6 @@ class Scheduler(metaclass=SingletonMeta):
                     })
                     log.info("媒体库同步服务启动")
 
-        # 元数据定时保存
-        scheduler_queue.put({
-            "func_str": "MetaHelper.save_meta_data",
-                        "args": [],
-                        "trigger": "interval",
-                        "job_id": "MetaHelper.save_meta_data",
-                        "seconds": METAINFO_SAVE_INTERVAL,
-                        "jobstore": self._jobstore
-        })
-
         # 定时把队列中的监控文件转移走
         scheduler_queue.put({
             "func_str": "Sync.transfer_mon_files",
@@ -183,16 +175,6 @@ class Scheduler(metaclass=SingletonMeta):
                         "jobstore": self._jobstore
         })
 
-        # 定时清除未识别的缓存
-        scheduler_queue.put({
-            "func_str": "MetaHelper.delete_unknown_meta",
-                        "args": [],
-                        "job_id": "MetaHelper.delete_unknown_meta",
-                        "trigger": "interval",
-                        "hours": META_DELETE_UNKNOWN_INTERVAL,
-                        "jobstore": self._jobstore
-        })
-
         # 定时刷新壁纸
         scheduler_queue.put({
             "func_str": "get_login_wallpaper",
@@ -207,47 +189,68 @@ class Scheduler(metaclass=SingletonMeta):
         ThreadHelper().start_thread(self.add_task, ())
 
     def add_task(self):
+        """处理任务队列"""
         while True:
             data = scheduler_queue.get()
             if not data:
-                time.sleep(5)
+                time.sleep(0.5)  # 更短的等待时间
                 continue
 
-            job = None
-            func_str = data.get('func_str')
-            try:
-                if data.get('func_desc'):
-                    if data.get('type') == 'plugin':
-                        func = ReflectUtils.get_plugin_method(
-                            data.get('func_str'))
-                    else:
-                        func = ReflectUtils.get_func_by_str(
-                            __name__, data.get('func_str'))
-                    job = SchedulerUtils.start_job(scheduler=self.scheduler.SCHEDULER,
-                                                   func=func,
-                                                   job_id=data.get('job_id'),
-                                                   func_desc=data.get(
-                                                       'func_desc'),
-                                                   cron=data.get('cron'),
-                                                   next_run_time=data.get('next_run_time'))
-                else:
-                    if data.get('type') == 'plugin':
-                        func = ReflectUtils.get_plugin_method(
-                            data.get('func_str'))
-                        data.pop("func_str")
-                        data.pop("type")
-                    else:
-                        func = ReflectUtils.get_func_by_str(
-                            __name__, data.get('func_str'))
-                        data.pop("func_str")
+            # 使用预先创建的线程池处理任务
+            self.thread_pool.submit(self._process_single_task, data)
 
-                    job = self.scheduler.start_job({
-                        "func": func,
-                        **data
-                    })
+    def _process_single_task(self, data):
+        """处理单个任务"""
+        job = None
+        func_str = data.get('func_str')
+        try:
+            if data.get('func_desc'):
+                if data.get('type') == 'plugin':
+                    func = ReflectUtils.get_plugin_method(data.get('func_str'))
+                else:
+                    func = ReflectUtils.get_func_by_str(__name__, data.get('func_str'))
+                
+                job = SchedulerUtils.start_job(
+                    scheduler=self.scheduler.SCHEDULER,
+                    func=func,
+                    job_id=data.get('job_id'),
+                    func_desc=data.get('func_desc'),
+                    cron=data.get('cron'),
+                    next_run_time=data.get('next_run_time')
+                )
+            else:
+                if data.get('type') == 'plugin':
+                    func = ReflectUtils.get_plugin_method(data.get('func_str'))
+                    data.pop("func_str")
+                    data.pop("type")
+                else:
+                    func = ReflectUtils.get_func_by_str(__name__, data.get('func_str'))
+                    data.pop("func_str")
+
+                job = self.scheduler.start_job({
+                    "func": func,
+                    **data
+                })
+            
+            if job:
                 log.info(f'【System】成功添加任务 {job.id}: {job}')
-            except Exception as err:
-                log.error(f"【System】添加任务失败：{func_str} {str(err)}")
+            else:
+                log.error(f'【System】添加任务失败: {func_str} - 未知错误')
+                
+        except Exception as err:
+            log.error(f"【System】添加任务失败：{func_str} {str(err)}")
+            # 失败任务重试
+            self._retry_failed_task(data)
+
+    def _retry_failed_task(self, data, max_retries=3):
+        """失败任务重试机制"""
+        retries = getattr(data, '_retries', 0)
+        if retries < max_retries:
+            setattr(data, '_retries', retries + 1)
+            log.warn(f"准备重试任务 {data.get('job_id')}, 重试次数: {retries + 1}")
+            scheduler_queue.put(data)
+        else:
+            log.error(f"任务 {data.get('job_id')} 已达到最大重试次数 {max_retries}")
 
     def stop_service(self):
         self.scheduler.stop_service()

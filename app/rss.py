@@ -8,7 +8,6 @@ from app.filter import Filter
 from app.helper import DbHelper, RssHelper
 from app.media import Media
 from app.media.meta import MetaInfo
-from app.message import Message
 from app.sites import Sites, SiteConf
 from app.subscribe import Subscribe
 from app.utils import ExceptionUtils, Torrent, JsonUtils
@@ -28,7 +27,6 @@ class Rss(metaclass=SingletonMeta):
     dbhelper = None
     rsshelper = None
     subscribe = None
-    message = None
 
     def __init__(self):
         self.init_config()
@@ -42,7 +40,6 @@ class Rss(metaclass=SingletonMeta):
         self.dbhelper = DbHelper()
         self.rsshelper = RssHelper()
         self.subscribe = Subscribe()
-        self.message = Message()
 
     def rssdownload(self):
         """
@@ -129,8 +126,6 @@ class Rss(metaclass=SingletonMeta):
                 site_proxy = site_info.get("proxy")
                 # 使用的规则
                 site_fliter_rule = site_info.get("rule")
-                # 限定订阅的小时数
-                site_withinhour = site_info.get("withinhour")
                 # 开始下载RSS
                 log.info(f"【Rss】正在处理：{site_name}")
                 if site_info.get("pri"):
@@ -157,10 +152,6 @@ class Rss(metaclass=SingletonMeta):
                     try:
                         # 种子名
                         title = article.get('title')
-                        # 检查种子发布日期是否在要求时间内
-                        if not self.rsshelper.is_rss_inhour(article.get('pubdate'), site_withinhour):
-                            log.info(f"【Rss】{title} 超出限定发布时限，跳过")
-                            continue
                         # 种子链接
                         enclosure = article.get('enclosure')
                         # 种子页面
@@ -173,30 +164,25 @@ class Rss(metaclass=SingletonMeta):
                         if self.rsshelper.is_rssd_by_enclosure(enclosure):
                             log.info(f"【Rss】{title} 已成功订阅过")
                             continue
-                        # 识别种子名称，开始搜索TMDB
-                        media_info = MetaInfo(title=title)
-                        cache_info = self.media.get_cache_info(media_info)
-                        if cache_info.get("id") and cache_info.get("original_language"):
-                            # 使用缓存信息
-                            media_info.tmdb_id = cache_info.get("id")
-                            media_info.type = cache_info.get("type")
-                            media_info.title = cache_info.get("title")
-                            media_info.year = cache_info.get("year")
-                            media_info.original_language = cache_info.get("original_language")
-                        else:
-                            # 重新查询TMDB
-                            media_info = self.media.get_media_info(title=title)
-                            if not media_info:
-                                log.warn(f"【Rss】{title} 无法识别出媒体信息！")
-                                continue
-                            elif not media_info.tmdb_info:
-                                log.info(f"【Rss】{title} 识别为 {media_info.get_name()} 未匹配到TMDB媒体信息")
+                        # 重新查询TMDB
+                        media_info = self.media.get_media_info(title=title)
+                        if not media_info:
+                            log.warn(f"【Rss】{title} 无法识别出媒体信息！")
+                            continue
+                        elif not media_info.tmdb_info:
+                            log.info(f"【Rss】{title} 识别为 {media_info.get_name()} 未匹配到TMDB媒体信息")
                         # 大小及种子页面
                         media_info.set_torrent_info(size=size,
                                                     page_url=page_url,
                                                     site=site_name,
                                                     site_order=site_order,
                                                     enclosure=enclosure)
+                        # 检查是否已在下载历史中存在（防止与searcher模块重复下载）
+                        if media_info.tmdb_id:
+                            season_episode = media_info.get_season_episode_string()
+                            if self.dbhelper.is_exists_download_history_by_tmdb(media_info.tmdb_id, season_episode):
+                                log.info(f"【Rss】{title} 已在下载历史中存在，跳过下载")
+                                continue
                         # 检查种子是否匹配订阅，返回匹配到的订阅ID、是否洗版、总集数、上传因子、下载因子
                         match_flag, match_msg, match_info = self.check_torrent_rss(
                             media_info=media_info,

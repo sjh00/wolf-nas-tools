@@ -93,30 +93,6 @@ def update_config():
         _config['security']['api_key'] = StringUtils.generate_random_str(32)
         overwrite_cofig = True
 
-    # 字幕兼容旧配置
-    try:
-        subtitle = Config().get_config('subtitle') or {}
-        if subtitle:
-            if subtitle.get("server") == "opensubtitles":
-                PluginManager().save_plugin_config(pid="OpenSubtitles",
-                                                   conf={
-                                                       "enable": subtitle.get("opensubtitles", {}).get("enable")
-                                                   })
-            else:
-                chinesesubfinder = subtitle.get("chinesesubfinder", {})
-                PluginManager().save_plugin_config(pid="ChineseSubFinder", conf={
-                    "host": chinesesubfinder.get("host"),
-                    "api_key": chinesesubfinder.get("api_key"),
-                    "local_path": chinesesubfinder.get("local_path"),
-                    "remote_path": chinesesubfinder.get("remote_path")
-                })
-            # 删除旧配置
-            _config.pop("subtitle")
-            overwrite_cofig = True
-
-    except Exception as e:
-        ExceptionUtils.exception_traceback(e)
-
     # 自定义制作组/字幕组兼容旧配置
     try:
         custom_release_groups = (Config().get_config('laboratory') or {}).get('release_groups')
@@ -400,6 +376,12 @@ def stop_config_monitor():
     except Exception as err:
         print(str(err))
 
+def update_sites_data():
+    try:
+        Config().update_sites_data()
+        log.info("站点资源数据已更新...")
+    except redis.exceptions.ConnectionError:
+        log.error("站点资源更新失败 ..")
 
 def check_redis():
     try:
@@ -409,3 +391,27 @@ def check_redis():
     except redis.exceptions.ConnectionError:
         log.error("Redis 无法连接，请启动 Redis...")
         exit(1)
+
+
+def update_rss_state():
+    """
+    初始化时更新所有RSS订阅状态为R
+    """
+    try:
+        dbhelper = DbHelper()
+        # 执行SQL脚本更新RSS状态
+        sql_file = os.path.join(os.path.dirname(__file__), "scripts", "sqls", "update_rss_state.sql")
+        if os.path.exists(sql_file):
+            with open(sql_file, 'r', encoding='utf-8') as f:
+                sql_content = f.read()
+                # 分割SQL语句并分别执行
+                sql_statements = [stmt.strip() for stmt in sql_content.split(';') if stmt.strip()]
+                for sql in sql_statements:
+                    if sql:
+                        dbhelper.excute(sql)
+                log.info("【Initialize】RSS订阅状态已更新为正在订阅")
+        else:
+            log.warn("【Initialize】RSS状态更新SQL文件不存在")
+    except Exception as e:
+        log.error(f"【Initialize】更新RSS状态失败：{str(e)}")
+        ExceptionUtils.exception_traceback(e)
