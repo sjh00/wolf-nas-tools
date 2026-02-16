@@ -94,7 +94,13 @@ class SiteConf(metaclass=SingletonMeta):
         self.init_config()
 
     def init_config(self):
-        self.user = User()
+        try:
+            with open(os.path.join(Config().get_config_path(),
+                                   "sites.dat"),
+                      "rb") as f:
+                self._RSS_SITE_GRAP_CONF = pickle.load(f).get("conf")
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
 
     def get_checkin_conf(self):
         return self._SITE_CHECKIN_XPATH
@@ -107,8 +113,8 @@ class SiteConf(metaclass=SingletonMeta):
 
     def get_grap_conf(self, url=None):
         if not url:
-            return self.user.get_brush_conf()
-        for k, v in self.user.get_brush_conf().items():
+            return self._RSS_SITE_GRAP_CONF
+        for k, v in self._RSS_SITE_GRAP_CONF.items():
             if StringUtils.url_equal(k, url):
                 return v
         return {}

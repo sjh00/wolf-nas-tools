@@ -1525,6 +1525,23 @@ class DbHelper:
         else:
             return False
 
+    def is_exists_download_history_by_tmdb(self, tmdb_id, season_episode):
+        """
+        查询下载历史是否存在，根据TMDB ID和季集信息
+        """
+        if not tmdb_id:
+            return False
+            
+        query = self._db.query(DOWNLOADHISTORY).filter(
+            DOWNLOADHISTORY.TMDBID == tmdb_id
+        )
+        
+        if season_episode:
+            query = query.filter(DOWNLOADHISTORY.SE == season_episode)
+            
+        count = query.count()
+        return count > 0
+
     @DbPersist(_db)
     def insert_download_history(self, media_info, downloader, download_id, save_dir):
         """
@@ -2720,3 +2737,68 @@ class DbHelper:
         """
         self._db.query(PLUGINHISTORY).filter(PLUGINHISTORY.PLUGIN_ID == plugin_id,
                                              PLUGINHISTORY.KEY == key).delete()
+
+    def is_tmdb_blacklisted(self, tmdb_id, media_type=None):
+        """
+        检查TMDB ID是否在黑名单中
+        """
+        if not tmdb_id:
+            return False
+        if media_type:
+            count = self._db.query(TMDBBLACKLIST).filter(
+                TMDBBLACKLIST.TMDB_ID == str(tmdb_id),
+                TMDBBLACKLIST.MEDIA_TYPE == media_type
+            ).count()
+        else:
+            count = self._db.query(TMDBBLACKLIST).filter(
+                TMDBBLACKLIST.TMDB_ID == str(tmdb_id)
+            ).count()
+        return count > 0
+
+    def get_tmdb_blacklist(self):
+        """
+        获取所有TMDB黑名单记录
+        """
+        return self._db.query(TMDBBLACKLIST).all()
+
+    @DbPersist(_db)
+    def insert_tmdb_blacklist(self, tmdb_id, title=None, year=None, 
+                             media_type=None, poster_path=None, backdrop_path=None, note=None):
+        """
+        添加到TMDB黑名单
+        """
+        if not tmdb_id or self.is_tmdb_blacklisted(tmdb_id, media_type):
+            return
+        self._db.insert(TMDBBLACKLIST(
+            TMDB_ID=str(tmdb_id),
+            TITLE=title,
+            YEAR=year,
+            MEDIA_TYPE=media_type,
+            POSTER_PATH=poster_path,
+            BACKDROP_PATH=backdrop_path,
+            NOTE=note
+        ))
+
+    @DbPersist(_db)
+    def delete_tmdb_blacklist(self, tmdb_id, media_type=None):
+        """
+        从TMDB黑名单删除
+        """
+        if not tmdb_id:
+            return
+        if media_type:
+            self._db.query(TMDBBLACKLIST).filter(
+                TMDBBLACKLIST.TMDB_ID == str(tmdb_id),
+                TMDBBLACKLIST.MEDIA_TYPE == media_type
+            ).delete()
+        else:
+            self._db.query(TMDBBLACKLIST).filter(
+                TMDBBLACKLIST.TMDB_ID == str(tmdb_id)
+            ).delete()
+
+    @DbPersist(_db)
+    def clear_tmdb_blacklist(self):
+        """
+        清空所有TMDB黑名单记录
+        """
+        self._db.query(TMDBBLACKLIST).delete()

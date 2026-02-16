@@ -19,7 +19,9 @@ import cn2an
 from flask_login import logout_user, current_user
 from werkzeug.security import generate_password_hash
 
+from app.helper import tmdb_blacklist_helper
 from app.helper.drissionpage_helper import DrissionPageHelper
+from app.helper.tmdb_blacklist_helper import TmdbBlacklistHelper
 import log
 from app.brushtask import BrushTask
 from app.conf import SystemConfig, ModuleConf
@@ -27,7 +29,7 @@ from app.downloader import Downloader
 from app.filetransfer import FileTransfer
 from app.filter import Filter
 from app.helper import DbHelper, ProgressHelper, ThreadHelper, \
-    MetaHelper, WordsHelper, IndexerHelper
+     WordsHelper, IndexerHelper
 from app.helper import RssHelper, PluginHelper
 from app.indexer import Indexer
 from app.media import Category, Media, Bangumi, DouBan, Scraper
@@ -97,10 +99,8 @@ class WebAction:
             "test_connection": self.__test_connection,
             "user_manager": self.__user_manager,
             "refresh_rss": self.__refresh_rss,
-            "delete_tmdb_cache": self.__delete_tmdb_cache,
             "movie_calendar_data": self.__movie_calendar_data,
             "tv_calendar_data": self.__tv_calendar_data,
-            "modify_tmdb_cache": self.__modify_tmdb_cache,
             "rss_detail": self.__rss_detail,
             "truncate_blacklist": self.truncate_blacklist,
             "truncate_rsshistory": self.truncate_rsshistory,
@@ -123,7 +123,6 @@ class WebAction:
             "get_recommend": self.get_recommend,
             "get_downloaded": self.get_downloaded,
             "get_site_seeding_info": self.__get_site_seeding_info,
-            "clear_tmdb_cache": self.__clear_tmdb_cache,
             "check_site_attr": self.__check_site_attr,
             "refresh_process": self.refresh_process,
             "restory_backup": self.__restory_backup,
@@ -236,7 +235,10 @@ class WebAction:
             "get_category_config": self.get_category_config,
             "get_system_processes": self.get_system_processes,
             "run_plugin_method": self.run_plugin_method,
-            "update_all_config": self.__update_all_config
+            "update_all_config": self.__update_all_config,
+            "add_tmdb_blacklist": self.__add_tmdb_blacklist,
+            "delete_tmdb_blacklist": self.__delete_tmdb_blacklist,
+            "clear_tmdb_blacklist": self.__clear_tmdb_blacklist
         }
         # 远程命令响应
         self._commands = {
@@ -689,12 +691,14 @@ class WebAction:
                     ua=site_info.get("ua"),
                     proxy=site_info.get("proxy")
                 )
-                media_info = Media().get_media_info(title=os.path.basename(file_path))
-                if media_info:
-                    media_info.site = "WEB"
+
                 if not file_path:
                     return {"code": -1, "msg": f"下载种子文件失败： {retmsg}"}
 
+                media_info = Media().get_media_info(title=os.path.basename(file_path))
+                if media_info:
+                    media_info.site = "WEB"
+            
             else:
                 media_info = MetaInfo('')
                 media_info.enclosure = url
@@ -1274,6 +1278,7 @@ class WebAction:
 
         # 保存配置
         if not config_test:
+            cfg.pop("test", None)
             Config().save_config(cfg)
 
         return {"code": 0}
@@ -1749,12 +1754,32 @@ class WebAction:
         }
 
     @staticmethod
-    def __delete_tmdb_cache(data):
+    def __add_tmdb_blacklist(data):
         """
         删除tmdb缓存
         """
-        if MetaHelper().delete_meta_data(data.get("cache_key")):
-            MetaHelper().save_meta_data()
+        tmdb_blacklist_helper = TmdbBlacklistHelper()
+        tmdb_id = data.get("tmdb_id")
+        media_type = data.get("media_type")
+        if not tmdb_blacklist_helper.is_blacklisted(tmdb_id, media_type):
+            tmdb_blacklist_helper.add_to_blacklist(tmdb_id=tmdb_id, media_type=media_type)
+        return {"code": 0}
+
+    @staticmethod
+    def __delete_tmdb_blacklist(data):
+        tmdb_blacklist_helper = TmdbBlacklistHelper()
+        tmdb_id = data.get("tmdb_id")
+        media_type = data.get("media_type")
+        if tmdb_blacklist_helper.is_blacklisted(tmdb_id, media_type):
+            tmdb_blacklist_helper.remove_from_blacklist(tmdb_id=tmdb_id, media_type=media_type)
+        return {"code": 0}
+    
+    
+    @staticmethod
+    def __clear_tmdb_blacklist(data):
+        tmdb_blacklist_helper = TmdbBlacklistHelper()
+        if tmdb_blacklist_helper.get_blacklist():
+            tmdb_blacklist_helper.clear_blacklist()
         return {"code": 0}
 
     @staticmethod
@@ -1907,15 +1932,6 @@ class WebAction:
             rssdetail = list(rssdetail.values())[0]
             rssdetail["type"] = "TV"
         return {"code": 0, "detail": rssdetail}
-
-    @staticmethod
-    def __modify_tmdb_cache(data):
-        """
-        修改TMDB缓存的标题
-        """
-        if MetaHelper().modify_meta_data(data.get("key"), data.get("title")):
-            MetaHelper().save_meta_data(force=True)
-        return {"code": 0}
 
     @staticmethod
     def truncate_blacklist():
@@ -2598,19 +2614,6 @@ class WebAction:
                     '<span class="badge badge-outline text-blue me-1 mb-1" title="磁盘剩余空间">磁盘剩余空间: %s %sGB</span>'
                     % (rule_filter_string.get(freespace[0]), freespace[1]))
         return "<br>".join(rule_htmls)
-
-    @staticmethod
-    def __clear_tmdb_cache():
-        """
-        清空TMDB缓存
-        """
-        try:
-            MetaHelper().clear_meta_data()
-            os.remove(MetaHelper().get_meta_data_path())
-        except Exception as e:
-            ExceptionUtils.exception_traceback(e)
-            return {"code": 0, "msg": str(e)}
-        return {"code": 0}
 
     @staticmethod
     def __check_site_attr(data):

@@ -358,7 +358,7 @@ class Downloader(metaclass=SingletonMeta):
                     url=url,
                     cookie=cookie,
                     ua=site_info.get("ua"),
-                    referer=page_url if site_info.get("referer") else None,
+                    referer=page_url if not site_info.get("referer") else site_info.get("referer"),
                     proxy=proxy if proxy is not None else site_info.get("proxy")
                 )
 
@@ -404,16 +404,10 @@ class Downloader(metaclass=SingletonMeta):
             # 下载设置中的分类
             category = download_attr.get("category")
 
-            # 添加hr tag
-            hr_tag = []
-            if torrent_attr and torrent_attr.get('hr'):
-                hr_tag = ['HR']
-
             # 合并TAG
             tags = download_attr.get("tags")
             if tags:
                 tags = str(tags).split(";")
-                tags.extend(hr_tag)
                 if tag:
                     if isinstance(tag, list):
                         tags.extend(tag)
@@ -423,11 +417,25 @@ class Downloader(metaclass=SingletonMeta):
                 if tag:
                     if isinstance(tag, list):
                         tags = tag
-                        tags.extend(hr_tag)
                     else:
                         tags = [tag]
-                        tags.extend(hr_tag)
 
+            # 添加hr 标签
+            if torrent_attr and torrent_attr.get('hr'):
+                tags.append("HR")
+            # 添加站点标签
+            if site_info and site_info.get("tag"):
+                tags.append(site_info.get("tag"))
+            
+            # 排序
+            # 自定义排序：NASTOOL第一，site_info.get("tag")第二，其他按升序
+            site_tag = site_info.get("tag") if site_info else None
+            if tags:
+                tags.sort(key=lambda x: (
+                    0 if x == "NASTOOL" else 
+                    1 if x == site_tag else 
+                    2, x  # 添加x作为第二排序键，确保相同优先级的标签按字母顺序排序
+                ))
             # 暂停
             if is_paused is None:
                 is_paused = StringUtils.to_bool(download_attr.get("is_paused"))
