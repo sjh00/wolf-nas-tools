@@ -12,7 +12,7 @@ from typing import Any
 
 import ruamel.yaml
 from filelock import FileLock
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from app.core.root_path import get_project_root
@@ -40,7 +40,7 @@ def _load_dotenv(path: str | None = None) -> bool:
 
 def _resolve_config_path() -> str:
     """解析运行时配置文件路径，按优先级：环境变量 > data/config.yaml > 有效默认值（从 config/ 模板复制）。"""
-    candidate = os.environ.get("NEXUS_MEDIA_CONFIG", "")
+    candidate = os.environ.get("WOLFNAS_CONFIG", "") or os.environ.get("NEXUS_MEDIA_CONFIG", "")
     if candidate and os.path.exists(candidate):
         return candidate
     if candidate:
@@ -222,7 +222,7 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
 
     @staticmethod
     def _load_yaml() -> dict[str, Any]:
-        config_path = os.environ.get("NEXUS_MEDIA_CONFIG", "")
+        config_path = os.environ.get("WOLFNAS_CONFIG", "") or os.environ.get("NEXUS_MEDIA_CONFIG", "")
         if not config_path or not os.path.exists(config_path):
             return {}
         try:
@@ -247,8 +247,12 @@ class AppSettings(BaseSettings):
         env_nested_delimiter="__",
     )
 
-    nexus_media_config: str = ""
-    nexus_media_data: str = ""
+    wolfnas_config: str = Field(
+        default="", validation_alias=AliasChoices("WOLFNAS_CONFIG", "NEXUS_MEDIA_CONFIG")
+    )
+    wolfnas_data: str = Field(
+        default="", validation_alias=AliasChoices("WOLFNAS_DATA", "NEXUS_MEDIA_DATA")
+    )
     tz: str = "Asia/Shanghai"
 
     app: AppConfig = Field(default_factory=AppConfig)
@@ -288,7 +292,7 @@ class AppSettings(BaseSettings):
 
     def get(self, node: str | None = None) -> Any:
         """读取配置节点；node=None 时返回全部字典"""
-        data = self.model_dump(exclude={"nexus_media_config", "tz"}, exclude_none=False)
+        data = self.model_dump(exclude={"wolfnas_config", "tz"}, exclude_none=False)
         if not node:
             return data
         return data.get(node, {})
@@ -333,7 +337,7 @@ class AppSettings(BaseSettings):
         return config
 
     def _config_path(self) -> str:
-        return self.nexus_media_config or os.environ.get("NEXUS_MEDIA_CONFIG", "")
+        return self.wolfnas_config or os.environ.get("WOLFNAS_CONFIG", "") or os.environ.get("NEXUS_MEDIA_CONFIG", "")
 
     @property
     def config_path(self) -> str:
@@ -345,7 +349,7 @@ class AppSettings(BaseSettings):
 
     @property
     def data_path(self) -> str:
-        path = self.nexus_media_data or os.environ.get("NEXUS_MEDIA_DATA", "")
+        path = self.wolfnas_data or os.environ.get("WOLFNAS_DATA", "") or os.environ.get("NEXUS_MEDIA_DATA", "")
         if path:
             abs_path = os.path.abspath(path)
             os.makedirs(abs_path, exist_ok=True)
@@ -357,7 +361,7 @@ class AppSettings(BaseSettings):
 
 def _init_config_file() -> str:
     config_path = _resolve_config_path()
-    os.environ.setdefault("NEXUS_MEDIA_CONFIG", config_path)
+    os.environ.setdefault("WOLFNAS_CONFIG", config_path)
     return config_path
 
 
