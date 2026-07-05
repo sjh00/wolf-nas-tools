@@ -41,7 +41,13 @@ def init_name(info, token):
     if StringUtils.is_chinese(token):
         info._last_token_type = "cnname"
         if not info.cn_name:
-            info.cn_name = token
+            if info.en_name:
+                # 如果 en_name 已有值（标题前有英文片段），
+                # 则将其前置并入中文标题（"英文片名 中文片名"）
+                info.cn_name = f"{info.en_name} {token}"
+                info.en_name = ""
+            else:
+                info.cn_name = token
         elif not info._stop_cnname_flag:
             # 已有名称较长时不再追加，避免把外传名+主系列名拼接
             if len(info.cn_name) >= 15:
