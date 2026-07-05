@@ -122,6 +122,8 @@ def fix_name(info, name):
         return name
     name = re.sub(rf"{_name_nostring_re}", "", name, flags=re.IGNORECASE).strip()
     name = re.sub(r"\s+", " ", name)
+    # 移除 BONUS.DISC / .extras-N 等花絮后缀
+    name = re.sub(r"[\._]BONUS[\._]DISC|\.extras-\d+", "", name, count=1, flags=re.IGNORECASE).strip()
     if (
         name.isdigit()
         and int(name) < 1800

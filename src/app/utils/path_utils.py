@@ -4,6 +4,7 @@ PathUtils - 路径相关纯函数工具
 """
 
 import os
+import re
 
 from app.core.root_path import get_project_root
 from app.core.settings import settings
@@ -193,3 +194,45 @@ class PathUtils:
         for _lv in range(level):
             path = os.path.dirname(path)
         return path
+
+    @staticmethod
+    def is_extras(path: str) -> bool:
+        """
+        判断是否为额外内容/花絮目录或文件。
+        匹配 BONUS.DISC、behind the scenes、deleted scenes、interviews、
+        samples、shorts、featurettes、clips 等模式。
+        """
+        basedir = os.path.basename(path)
+        if re.search(
+            r".+?[\._ ]BONUS[\._ ]DISC"
+            r"|behind the scenes$"
+            r"|deleted scenes$"
+            r"|interviews$"
+            r"|scenes$"
+            r"|samples$"
+            r"|shorts$"
+            r"|featurettes$"
+            r"|clips$",
+            basedir,
+            re.IGNORECASE,
+        ):
+            return True
+        if re.search(
+            r".+?[\._ ]BONUS[\._ ]DISC[\._ ]"
+            r"|.+?SP?\d{1,2}\.extras\.\d{2,}"
+            r"|.+?\.extras-\d+\.",
+            os.path.basename(path),
+            re.IGNORECASE,
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def get_extras_dir(path: str) -> str | None:
+        """如果路径在花絮目录内，返回花絮目录路径。"""
+        parent_dir = os.path.dirname(path)
+        if PathUtils.is_extras(path):
+            return path
+        if PathUtils.is_extras(parent_dir):
+            return parent_dir
+        return None
