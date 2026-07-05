@@ -140,7 +140,7 @@ class ConfigRepository(BaseRepository):
         interval: int,
         enabled: int,
         samedata: int,
-        only_nexus_media: int,
+        only_wolf_nas: int,
         downloader: str,
         config: dict,
         note: str | None = None,
@@ -154,7 +154,7 @@ class ConfigRepository(BaseRepository):
             interval: 间隔
             enabled: 是否启用
             samedata: 相同数据处理
-            only_nexus_media: 仅WolfNas
+            only_wolf_nas: 仅WolfNas
             downloader: 下载器
             config: 配置
             note: 备注
@@ -167,7 +167,7 @@ class ConfigRepository(BaseRepository):
                     INTERVAL=int(interval),
                     ENABLED=int(enabled),
                     SAMEDATA=int(samedata),
-                    ONLY_NEXUS_MEDIA=int(only_nexus_media),
+                    ONLY_WOLF_NAS=int(only_wolf_nas),
                     DOWNLOADER=downloader,
                     CONFIG=JsonUtils.dumps(config),
                     NOTE=note,
@@ -183,7 +183,7 @@ class ConfigRepository(BaseRepository):
         enabled: int,
         dtype: str,
         transfer: int,
-        only_nexus_media: int,
+        only_wolf_nas: int,
         match_path: int,
         rmt_mode: str,
         config: str,
@@ -198,7 +198,7 @@ class ConfigRepository(BaseRepository):
             enabled: 是否启用
             dtype: 类型
             transfer: 是否转移
-            only_nexus_media: 仅WolfNas
+            only_wolf_nas: 仅WolfNas
             match_path: 匹配路径
             rmt_mode: 转移模式
             config: 配置
@@ -212,7 +212,7 @@ class ConfigRepository(BaseRepository):
                         "ENABLED": int(enabled),
                         "TYPE": dtype,
                         "TRANSFER": int(transfer),
-                        "ONLY_NEXUS_MEDIA": int(only_nexus_media),
+                        "ONLY_WOLF_NAS": int(only_wolf_nas),
                         "MATCH_PATH": int(match_path),
                         "RMT_MODE": rmt_mode,
                         "CONFIG": config,
@@ -226,7 +226,7 @@ class ConfigRepository(BaseRepository):
                         ENABLED=int(enabled),
                         TYPE=dtype,
                         TRANSFER=int(transfer),
-                        ONLY_NEXUS_MEDIA=int(only_nexus_media),
+                        ONLY_WOLF_NAS=int(only_wolf_nas),
                         MATCH_PATH=int(match_path),
                         RMT_MODE=rmt_mode,
                         CONFIG=config,
@@ -250,7 +250,7 @@ class ConfigRepository(BaseRepository):
         self,
         did: int | None = None,
         transfer: int | None = None,
-        only_nexus_media: int | None = None,
+        only_wolf_nas: int | None = None,
         enabled: int | None = None,
         match_path: int | None = None,
     ) -> None:
@@ -260,7 +260,7 @@ class ConfigRepository(BaseRepository):
         Args:
             did: 下载器ID
             transfer: 是否转移
-            only_nexus_media: 仅WolfNas
+            only_wolf_nas: 仅WolfNas
             enabled: 是否启用
             match_path: 匹配路径
         """
@@ -269,9 +269,9 @@ class ConfigRepository(BaseRepository):
         with self.session() as db:
             if transfer is not None:
                 db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update({"TRANSFER": int(transfer)})
-            elif only_nexus_media is not None:
+            elif only_wolf_nas is not None:
                 db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update(
-                    {"ONLY_NEXUS_MEDIA": int(only_nexus_media)}
+                    {"ONLY_WOLF_NAS": int(only_wolf_nas)}
                 )
             elif match_path is not None:
                 db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update({"MATCH_PATH": int(match_path)})

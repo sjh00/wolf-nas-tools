@@ -76,14 +76,14 @@ class DownloadClientFactory:
             name = downloader_conf.NAME
             enabled = downloader_conf.ENABLED
             transfer = downloader_conf.TRANSFER
-            only_nexus_media = downloader_conf.ONLY_NEXUS_MEDIA
+            only_wolf_nas = downloader_conf.ONLY_WOLF_NAS
             match_path = downloader_conf.MATCH_PATH
             rmt_mode = str(downloader_conf.RMT_MODE or "")
             rmt_mode_name = rmt_mode
 
             if str(transfer or ""):
                 log_content = ""
-                if str(only_nexus_media or ""):
+                if str(only_wolf_nas or ""):
                     log_content += "启用标签隔离，"
                 if str(match_path or ""):
                     log_content += "启用目录隔离，"
@@ -104,7 +104,7 @@ class DownloadClientFactory:
                 "type": dtype,
                 "enabled": enabled,
                 "transfer": transfer,
-                "only_nexus_media": only_nexus_media,
+                "only_wolf_nas": only_wolf_nas,
                 "match_path": match_path,
                 "rmt_mode": rmt_mode,
                 "rmt_mode_name": rmt_mode_name,

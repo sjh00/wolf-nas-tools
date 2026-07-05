@@ -19,7 +19,7 @@ class DOWNLOADER(Base):
     ENABLED: Mapped[int] = mapped_column(Integer, index=True)
     TYPE: Mapped[str] = mapped_column(String(255), index=True)
     TRANSFER: Mapped[int] = mapped_column(Integer)
-    ONLY_NEXUS_MEDIA: Mapped[int] = mapped_column(Integer)
+    ONLY_WOLF_NAS: Mapped[int] = mapped_column(Integer)
     MATCH_PATH: Mapped[int] = mapped_column(Integer)
     RMT_MODE: Mapped[str] = mapped_column(String(255))
     CONFIG: Mapped[str] = mapped_column(Text)

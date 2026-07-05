@@ -80,9 +80,9 @@ class DownloadMonitor:
                 downloader_conf = self._client_factory.get_downloader_conf(did)
                 if not downloader_conf:
                     continue
-                only_nexus_media = downloader_conf.get("only_nexus_media")
+                only_wolf_nas = downloader_conf.get("only_wolf_nas")
                 match_path = downloader_conf.get("match_path")
-                tag = PT_TAG if only_nexus_media else None
+                tag = PT_TAG if only_wolf_nas else None
                 trans_tasks = client.get_transfer_task(tag=tag, match_path=match_path)
                 for task in trans_tasks:
                     if task.get("id"):
@@ -118,9 +118,9 @@ class DownloadMonitor:
         if not downloader_conf:
             return
 
-        only_nexus_media = downloader_conf.get("only_nexus_media")
+        only_wolf_nas = downloader_conf.get("only_wolf_nas")
         match_path = downloader_conf.get("match_path")
-        tag = PT_TAG if only_nexus_media else None
+        tag = PT_TAG if only_wolf_nas else None
 
         previous_ids = self._last_snapshot.get(did, set())
         if not previous_ids:

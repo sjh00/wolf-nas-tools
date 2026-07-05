@@ -51,7 +51,7 @@ class TestDownloadMonitor:
         ]
         factory.get_client.return_value = mock_client
         factory.get_downloader_conf.return_value = {
-            "only_nexus_media": False,
+            "only_wolf_nas": False,
             "match_path": False,
         }
 
@@ -63,7 +63,7 @@ class TestDownloadMonitor:
         m, factory, _ = monitor
         factory.get_client.return_value = None
         factory.get_downloader_conf.return_value = {
-            "only_nexus_media": False,
+            "only_wolf_nas": False,
             "match_path": False,
         }
         m._warmup()
@@ -77,7 +77,7 @@ class TestDownloadMonitor:
             {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"], "name": "movie"}
         ]
         factory.get_client.return_value = mock_client
-        factory.get_downloader_conf.return_value = {"name": "QB", "only_nexus_media": True}
+        factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
 
         m._check_downloader("qb1")
 
@@ -96,7 +96,7 @@ class TestDownloadMonitor:
         mock_client = MagicMock()
         mock_client.get_transfer_task.return_value = [{"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"]}]
         factory.get_client.return_value = mock_client
-        factory.get_downloader_conf.return_value = {"name": "QB", "only_nexus_media": True}
+        factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
 
         m._check_downloader("qb1")
         bus.publish.assert_not_called()
@@ -142,7 +142,7 @@ class TestDownloadMonitor:
             {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"], "name": "movie"}
         ]
         factory.get_client.return_value = mock_client
-        factory.get_downloader_conf.return_value = {"name": "QB", "only_nexus_media": True}
+        factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
 
         m._check_downloader("qb1")
 
@@ -168,7 +168,7 @@ class TestDownloadMonitor:
             [{"id": "task2", "path": "/dl/new.mkv", "tags": ["NEXUS_MEDIA"]}],
         ]
         factory.get_client.return_value = mock_client
-        factory.get_downloader_conf.return_value = {"name": "QB", "only_nexus_media": True}
+        factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
 
         m._check_downloader("qb1")
 
@@ -192,7 +192,7 @@ class TestDownloadMonitor:
             {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"]},
         ]
         factory.get_client.return_value = mock_client
-        factory.get_downloader_conf.return_value = {"name": "QB", "only_nexus_media": True}
+        factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
 
         m._check_downloader("qb1")
 

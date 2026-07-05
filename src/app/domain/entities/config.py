@@ -72,7 +72,7 @@ class DownloaderEntity:
     type: str
     config: str
     transfer: str
-    only_nexus_media: bool
+    only_wolf_nas: bool
     match_path: bool
     enabled: bool
 
@@ -86,7 +86,7 @@ class DownloaderEntity:
             type=orm_model.TYPE or "",
             config=orm_model.CONFIG or "",
             transfer=orm_model.TRANSFER or "",
-            only_nexus_media=bool(orm_model.ONLY_NEXUS_MEDIA),
+            only_wolf_nas=bool(orm_model.ONLY_WOLF_NAS),
             match_path=bool(orm_model.MATCH_PATH),
             enabled=bool(orm_model.ENABLED),
         )
@@ -108,7 +108,7 @@ class DownloaderEntity:
             "type": self.type,
             "config": self.config,
             "transfer": self.transfer,
-            "only_nexus_media": self.only_nexus_media,
+            "only_wolf_nas": self.only_wolf_nas,
             "match_path": self.match_path,
             "enabled": self.enabled,
         }
@@ -313,8 +313,8 @@ class TorrentRemoveTaskEntity:
         samedata = data.get("samedata")
         if not str(samedata).isdigit() or int(samedata or 0) not in (0, 1):
             errors.append("处理辅种参数不合法")
-        only_nexus_media = data.get("only_nexus_media")
-        if not str(only_nexus_media).isdigit() or int(only_nexus_media or 0) not in (0, 1):
+        only_wolf_nas = data.get("only_wolf_nas")
+        if not str(only_wolf_nas).isdigit() or int(only_wolf_nas or 0) not in (0, 1):
             errors.append("仅处理NEXUS_MEDIA添加种子参数不合法")
         ratio = data.get("ratio") or 0
         if not str(ratio).replace(".", "").isdigit():

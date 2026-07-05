@@ -43,7 +43,7 @@ class TorrentRemoverActionEngine:
         downloader_id = task.get("downloader")
         config = task.get("config") or {}
         config["samedata"] = task.get("samedata")
-        config["only_nexus_media"] = task.get("only_nexus_media")
+        config["only_wolf_nas"] = task.get("only_wolf_nas")
         torrents = downloader.get_remove_torrents(downloader_id=downloader_id, config=config)
         log.info(f"[TorrentRemover]自动删种任务：{task.get('name')} 获取符合处理条件种子数 {len(torrents)}")
 
@@ -118,7 +118,7 @@ class TorrentRemoverService:
                 "downloader": downloader_id,
                 "downloader_name": downloader_name,
                 "downloader_type": downloader_type,
-                "only_nexus_media": task.ONLY_NEXUS_MEDIA,
+                "only_wolf_nas": task.ONLY_WOLF_NAS,
                 "samedata": task.SAMEDATA,
                 "action": task.ACTION,
                 "config": JsonUtils.loads(str(config)) if str(config) else {},
@@ -208,7 +208,7 @@ class TorrentRemoverService:
         interval = int(data.get("interval") or 0)
         enabled = int(data.get("enabled") or 0)
         samedata = int(data.get("samedata") or 0)
-        only_nexus_media = int(data.get("only_nexus_media") or 0)
+        only_wolf_nas = int(data.get("only_wolf_nas") or 0)
         ratio = round(float(data.get("ratio") or 0), 2)
         seeding_time = int(data.get("seeding_time") or 0)
         upload_avs = int(data.get("upload_avs") or 0)
@@ -248,7 +248,7 @@ class TorrentRemoverService:
             interval=interval,
             enabled=enabled,
             samedata=samedata,
-            only_nexus_media=only_nexus_media,
+            only_wolf_nas=only_wolf_nas,
             downloader=downloader_id,
             config=config,
         )
@@ -268,7 +268,7 @@ class TorrentRemoverService:
             raise ResourceNotFoundError("任务不存在")
         config = task.get("config") or {}
         config["samedata"] = task.get("samedata")
-        config["only_nexus_media"] = task.get("only_nexus_media")
+        config["only_wolf_nas"] = task.get("only_wolf_nas")
         return self._downloader.get_remove_torrents(downloader_id=task.get("downloader"), config=config)
 
     def stop_service(self):
