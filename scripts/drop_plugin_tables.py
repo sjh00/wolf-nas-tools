@@ -6,7 +6,7 @@ from sqlalchemy import text
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_root, "src"))
 
-os.environ["NEXUS_MEDIA_CONFIG"] = os.path.join(_root, "config", "config.yaml")
+os.environ["WOLFNAS_CONFIG"] = os.path.join(_root, "config", "config.yaml")
 
 from app.db.engine import get_engine  # noqa: E402
 
