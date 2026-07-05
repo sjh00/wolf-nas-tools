@@ -8,12 +8,14 @@ from app.db.repositories.subscribe_repo_adapter import SubscribeTvRepositoryAdap
 from app.domain.entities.rss import SubscribeState
 from app.events import Event, on_event
 from app.events.constants import (
+    MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE,
     MEDIA_EPISODE_TRANSFERRED,
     RSS_AUTO_SUBSCRIBE_REQUESTED,
     SUBSCRIBE_ADD,
     SUBSCRIBE_FINISHED,
 )
 from app.events.payloads import (
+    ManualDownloadSubscribeUpdatePayload,
     MediaEpisodeTransferredPayload,
     RssAutoSubscribeRequestedPayload,
     SubscribeAddPayload,
@@ -31,6 +33,18 @@ def handle_subscribe_finished(event: Event) -> None:
     if not isinstance(payload, SubscribeFinishedPayload):
         payload = SubscribeFinishedPayload(**payload)
     log.info(f"[Event]订阅完成: rssid={payload.rssid}")
+
+
+@on_event(MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE)
+def handle_manual_download_subscribe_update(event: Event) -> None:
+    """手动下载完成后反查并更新订阅状态"""
+    payload = event.payload
+    if not isinstance(payload, ManualDownloadSubscribeUpdatePayload):
+        payload = ManualDownloadSubscribeUpdatePayload(**payload)
+    log.info(
+        f"[Event]手动下载订阅更新: searching subscribe for "
+        f"{payload.media_info.get('title') or payload.media_info.get('org_string')}"
+    )
 
 
 @on_event(SUBSCRIBE_ADD)

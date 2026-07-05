@@ -9,7 +9,7 @@ from app.events import register_modules
 from app.events.bridge import PluginBridge
 from app.events.bus import EventBus
 from app.events.config import EVENT_HANDLER_MODULES
-from app.events.constants import DOWNLOAD_FAILED, DOWNLOAD_STARTED, SUBSCRIBE_FINISHED
+from app.events.constants import DOWNLOAD_FAILED, DOWNLOAD_STARTED, MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE, SUBSCRIBE_FINISHED
 from app.events.decorators import auto_register
 from app.events.middleware import ErrorHandlingMiddleware, LoggingMiddleware
 from app.events.registry import EventHandlerRegistry
@@ -72,6 +72,7 @@ def build_infrastructure() -> InfrastructureObjects:
         async_event_types={
             DOWNLOAD_STARTED,
             DOWNLOAD_FAILED,
+            MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE,
             SUBSCRIBE_FINISHED,
         },
         middleware=[
