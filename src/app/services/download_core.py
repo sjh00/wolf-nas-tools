@@ -255,7 +255,7 @@ class DownloadCore:
         if not _client:
             return []
         config["filter_tags"] = []
-        if config.get("only_nexus_media"):
+        if config.get("only_wolf_nas"):
             config["filter_tags"] = config["tags"] + [PT_TAG]
         else:
             config["filter_tags"] = config["tags"]
@@ -283,11 +283,11 @@ class DownloadCore:
         if not downloader_id:
             downloader_id = self._client_factory.default_downloader_id
         downloader_conf = self._client_factory.get_downloader_conf(downloader_id)
-        only_nexus_media = downloader_conf.get("only_nexus_media") if downloader_conf else None
+        only_wolf_nas = downloader_conf.get("only_wolf_nas") if downloader_conf else None
         _client = self._client_factory.get_client(downloader_id)
         if not _client:
             return []
-        tag = [PT_TAG] if only_nexus_media else None
+        tag = [PT_TAG] if only_wolf_nas else None
         try:
             return _client.get_downloading_progress(tag=tag, ids=ids) or []
         except (ServiceError, RepositoryError, DomainError):
@@ -460,7 +460,7 @@ class DownloadCore:
     # ---------- 下载器 CRUD ----------
 
     def update_downloader(
-        self, did, name, enabled, dtype, transfer, only_nexus_media, match_path, rmt_mode, config, download_dir
+        self, did, name, enabled, dtype, transfer, only_wolf_nas, match_path, rmt_mode, config, download_dir
     ):
         ret = self._downloader_repo.update_downloader(
             did=did,
@@ -468,7 +468,7 @@ class DownloadCore:
             enabled=enabled,
             dtype=dtype,
             transfer=transfer,
-            only_nexus_media=only_nexus_media,
+            only_wolf_nas=only_wolf_nas,
             match_path=match_path,
             rmt_mode=rmt_mode,
             config=config,
@@ -482,9 +482,9 @@ class DownloadCore:
         self._client_factory._refresh()
         return ret
 
-    def check_downloader(self, did=None, transfer=None, only_nexus_media=None, enabled=None, match_path=None):
+    def check_downloader(self, did=None, transfer=None, only_wolf_nas=None, enabled=None, match_path=None):
         ret = self._downloader_repo.check_downloader(
-            did=did, transfer=transfer, only_nexus_media=only_nexus_media, enabled=enabled, match_path=match_path
+            did=did, transfer=transfer, only_wolf_nas=only_wolf_nas, enabled=enabled, match_path=match_path
         )
         self._client_factory._refresh()
         return ret
