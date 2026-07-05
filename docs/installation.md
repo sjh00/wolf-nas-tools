@@ -2,7 +2,7 @@
 
 ## Docker Compose 安装（推荐）
 
-前后端分离部署，包含 Nexus Media 后端、前端 Web UI、Redis、OCR 和 Chrome 服务。
+前后端分离部署，包含 WolfNas 后端、前端 Web UI、Redis、OCR 和 Chrome 服务。
 
 ### 1. 创建 docker-compose.yml
 

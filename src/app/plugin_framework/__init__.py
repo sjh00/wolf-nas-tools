@@ -1,5 +1,5 @@
 """
-Nexus Media Plugin Framework v2
+WolfNas Plugin Framework v2
 """
 
 from .hook_system import HookSystem
