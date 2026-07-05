@@ -5,7 +5,7 @@ import tempfile
 
 # 必须在导入任何项目模块之前设置 — 使用临时文件避免污染仓库
 _test_config = os.path.join(tempfile.gettempdir(), "nexus_media_test_config.yaml")
-os.environ["NEXUS_MEDIA_CONFIG"] = _test_config
+os.environ["WOLFNAS_CONFIG"] = _test_config
 os.environ["DATABASE__TYPE"] = "sqlite"
 
 import pytest  # noqa: E402
