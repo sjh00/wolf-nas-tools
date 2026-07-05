@@ -55,6 +55,27 @@ class TmdbLookup(BaseLookup):
                 episode=parsed.episode,
                 strict=strict,
             )
+        # 4. Fallback: 数字序号前缀剥离（"01 Movie Title" → "Movie Title"）
+        if not result:
+            for name in [parsed.title_cn, parsed.title_en]:
+                if not name:
+                    continue
+                space_idx = name.find(" ")
+                if space_idx > 0 and name[:space_idx].isdigit():
+                    stripped = name[space_idx + 1 :]
+                    log.debug(f"[Meta]标题含数字序号前缀，剥离后重试：{stripped}")
+                    result = self._lookup_tmdb(
+                        name=stripped,
+                        search_type=search_type,
+                        first_year=parsed.year,
+                        media_year=parsed.year,
+                        season_number=parsed.season,
+                        episode=parsed.episode,
+                        strict=strict,
+                    )
+                    if result:
+                        break
+
         if not result:
             if language:
                 self.client.set_language()
