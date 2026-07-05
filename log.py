@@ -7,7 +7,8 @@ import time
 import inspect
 from collections import deque
 from html import escape
-from loguru import logger
+from typing import Optional, Dict
+from loguru import logger as _loguru_logger
 
 from config import Config
 
@@ -18,79 +19,95 @@ lock = threading.Lock()
 LOG_QUEUE = deque(maxlen=200)
 LOG_INDEX = 0
 
+_loguru_logger_lock = threading.Lock()
+_loguru_configured = False
 
-class InterceptHandler(logging.Handler):
-    def emit(self, record):
-        # Get corresponding Loguru level if it exists
+
+def _configure_loguru():
+    global _loguru_configured
+    if _loguru_configured:
+        return
+    
+    with _loguru_configured_lock:
+        if _loguru_configured:
+            return
+        
         try:
-            level = logger.level(record.levelname).name
-        except ValueError:
-            level = record.levelno
-
-        # Find caller from where originated the logged message
-        frame, depth = logging.currentframe(), 1
-        while frame.f_code.co_filename == logging.__file__ or frame.f_code.co_filename == __file__:
-            frame = frame.f_back
-            depth += 1
-
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
-
-
-class Logger:
-    logger = None
-    __instance = {}
-    __config = None
-
-    def __init__(self, module):
-        self.logger = logger
-        self.__config = Config()
-        logtype = self.__config.get_config('app').get('logtype') or "console"
-        loglevel = self.__config.get_config('app').get('loglevel') or "info"
-        handlers = []
-        self.logger.level(loglevel.upper())
-        if logtype == "server":
-            logserver = self.__config.get_config('app').get('logserver', '').split(':')
-            if logserver:
-                logip = logserver[0]
-                if len(logserver) > 1:
-                    logport = int(logserver[1] or '514')
-                else:
-                    logport = 514
-
-                handler = {
+            app_config = Config().get_config('app')
+            logtype = app_config.get('logtype') or "console"
+            loglevel = app_config.get('loglevel') or "info"
+            
+            handlers = []
+            _loguru_logger.level(loglevel.upper())
+            
+            if logtype == "server":
+                logserver = app_config.get('logserver', '').split(':')
+                if logserver:
+                    logip = logserver[0]
+                    logport = int(logserver[1]) if len(logserver) > 1 else 514
+                    handlers.append({
                         "sink": f"tcp://{logip}:{logport}",
                         "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} |{level:8}| {file} : {module}.{function}:{line:4} | - {message}",
                         "colorize": False
-                    }
-                handlers.append(handler)
-
-        elif logtype == "file":
-            # 记录日志到文件
-            logpath = os.environ.get('NASTOOL_LOG') or self.__config.get_config('app').get('logpath') or ""
-            if logpath:
-                if not os.path.exists(logpath):
-                    os.makedirs(logpath)
-
-                handler = {
-                        "sink": os.path.join(logpath, module + ".log"),
+                    })
+            elif logtype == "file":
+                logpath = os.environ.get('NASTOOL_LOG') or app_config.get('logpath') or ""
+                if logpath:
+                    if not os.path.exists(logpath):
+                        os.makedirs(logpath)
+                    handlers.append({
+                        "sink": os.path.join(logpath, "nastools.log"),
                         "rotation": "5 MB",
                         "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} |{level:8}| {file} : {module}.{function}:{line:4} | - {message}",
                         "colorize": False,
                         "retention": "5 days"
-                    }
-                handlers.append(handler)
-        # 记录日志到终端
-        handler = {
-            "sink": sys.stderr,
-            "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} |<lvl>{level:8}</>| {file} : {module}.{function}:{line:4} | - <lvl>{message}</>",
-            "colorize": True
-        }
-        handlers.append(handler)
-        logger.configure(handlers=handlers)
-        logging.basicConfig(handlers=[InterceptHandler()], level=0)
+                    })
+            
+            handlers.append({
+                "sink": sys.stderr,
+                "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} |<lvl>{level:8}</>| {file} : {module}.{function}:{line:4} | - <lvl>{message}</>",
+                "colorize": True
+            })
+            
+            _loguru_logger.configure(handlers=handlers)
+            _loguru_logger.add(
+                sys.stderr,
+                format="{time:YYYY-MM-DD HH:mm:ss.SSS} |<lvl>{level:8}</>| {file} : {module}.{function}:{line:4} | - <lvl>{message}</>",
+                colorize=True
+            )
+            
+            logging.basicConfig(handlers=[InterceptHandler()], level=0)
+            _loguru_configured = True
+        except Exception:
+            pass
+
+
+_loguru_configured_lock = threading.Lock()
+
+
+class InterceptHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            level = _loguru_logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = logging.currentframe(), 1
+        while frame.f_code.co_filename == logging.__file__ or frame.f_code.co_filename == __file__:
+            frame = frame.f_back
+            depth += 1
+        _loguru_logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
+class Logger:
+    logger = None
+    __instance: Dict[str, 'Logger'] = {}
+
+    def __init__(self, module: str):
+        _configure_loguru()
+        self.logger = _loguru_logger
 
     @staticmethod
-    def get_instance(module):
+    def get_instance(module: Optional[str] = None) -> 'Logger':
         if not module:
             module = "run"
         if Logger.__instance.get(module):
@@ -117,7 +134,7 @@ def __append_log_queue(level, text):
         LOG_INDEX += 1
 
 
-def debug(text, module=None):
+def debug(text: str, module: Optional[str] = None):
     frame, depth = inspect.currentframe(), 0
     while frame and (depth == 0 or frame.f_code.co_filename == __file__):
         frame = frame.f_back
@@ -125,7 +142,7 @@ def debug(text, module=None):
     return Logger.get_instance(module).logger.opt(depth=depth).debug(text)
 
 
-def info(text, module=None):
+def info(text: str, module: Optional[str] = None):
     frame, depth = inspect.currentframe(), 0
     while frame and (depth == 0 or frame.f_code.co_filename == __file__):
         frame = frame.f_back
@@ -134,7 +151,7 @@ def info(text, module=None):
     return Logger.get_instance(module).logger.opt(depth=depth).info(text)
 
 
-def error(text, module=None):
+def error(text: str, module: Optional[str] = None):
     frame, depth = inspect.currentframe(), 0
     while frame and (depth == 0 or frame.f_code.co_filename == __file__):
         frame = frame.f_back
@@ -143,7 +160,7 @@ def error(text, module=None):
     return Logger.get_instance(module).logger.opt(depth=depth).error(text)
 
 
-def warn(text, module=None):
+def warn(text: str, module: Optional[str] = None):
     frame, depth = inspect.currentframe(), 0
     while frame and (depth == 0 or frame.f_code.co_filename == __file__):
         frame = frame.f_back

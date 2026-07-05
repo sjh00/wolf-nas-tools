@@ -1,3 +1,113 @@
+from enum import Enum
+from typing import Dict, List, Any
+
+# 媒体文件后缀
+class MediaExt:
+    VIDEO: List[str] = ['.mp4', '.mkv', '.ts', '.iso',
+                        '.rmvb', '.avi', '.mov', '.mpeg',
+                        '.mpg', '.wmv', '.3gp', '.asf',
+                        '.m4v', '.flv', '.m2ts', '.strm',
+                        '.tp']
+    SUBTITLE: List[str] = ['.srt', '.ass', '.ssa']
+    AUDIO_TRACK: List[str] = ['.mka']
+
+# 路径配置
+class PathConfig:
+    WEBDRIVER: Dict[str, str] = {
+        "Docker": "/usr/lib/chromium/chromedriver",
+        "Synology": "/var/packages/NASTool/target/bin/chromedriver"
+    }
+    XVFB: List[str] = ["/usr/bin/Xvfb", "/usr/local/bin/Xvfb"]
+    CHROME: str = "/snap/bin/chromium" if os.environ.get('FLASK_DEBUG') == "1" else "/usr/lib/chromium/chromium"
+
+# API配置
+class ApiConfig:
+    FANART_MOVIE: str = 'https://webservice.fanart.tv/v3/movies/%s?api_key=d2d31f9ecabea050fc7d68aa3146015f'
+    FANART_TV: str = 'https://webservice.fanart.tv/v3/tv/%s?api_key=d2d31f9ecabea050fc7d68aa3146015f'
+    DEFAULT_TMDB_IMAGE: str = 'https://s3.bmp.ovh/imgs/2022/07/10/77ef9500c851935b.webp'
+    TMDB_DOMAINS: List[str] = ['api.themoviedb.org', 'api.tmdb.org', 'tmdb.nastool.org', 't.nastool.workers.dev']
+    TMDB_IMAGE_DOMAIN: str = 'image.tmdb.org'
+    MT_URL: str = 'https://api.m-team.io'
+    SITES_DATA_URL: str = "https://api.github.com/repos/linyuan0213/nas-tools-sites/releases/latest"
+
+# 间隔配置（秒）
+class IntervalConfig:
+    AUTO_REMOVE_TORRENTS: int = 1800
+    PT_TRANSFER: int = 300
+    METAINFO_SAVE: int = 600
+    SYNC_TRANSFER: int = 60
+    RSS_CHECK: int = 300
+    RSS_REFRESH_TMDB: int = 6
+    BRUSH_REMOVE_TORRENTS: int = 300
+    BRUSH_STOP_TORRENTS: int = 300
+    META_DELETE_UNKNOWN: int = 12
+    REFRESH_WALLPAPER: int = 1
+
+# 搜索权重配置
+class SearchWeight:
+    LEVEL_1: List[float] = [10, 3, 2, 0.5, 0.5]
+    LEVEL_2: List[float] = [10, 2, 1]
+    LEVEL_3: List[float] = [10, 2]
+    STR_SIMILARITY_THRESHOLD: float = 0.2
+    DIFF_SCORE_THRESHOLD: int = 30
+    BLACKLIST: List[str] = ['中字', '韩语', '双字', '中英', '日语', '双语', '国粤', 'HD', 'BD', '中日', '粤语', '完全版',
+                            '法语', '西班牙语', 'HRHDTVAC3264', '未删减版', '未删减', '国语', '字幕组', '人人影视', 'www66ystv',
+                            '人人影视制作', '英语', 'www6vhaotv', '无删减版', '完成版', '德意']
+
+# 默认配置
+class DefaultConfig:
+    SPLIT_CHARS: str = r"\.|\s+|\(|\)|\[|]|-|\+|【|】|/|～|;|&|\||#|_|「|」|~|@"
+    DEFAULT_UA: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36"
+    RMT_FAVTYPE: str = '精选'
+    ANIME_GENREIDS: List[str] = ['16']
+    RMT_MIN_FILESIZE: int = 150 * 1024 * 1024
+    PT_TAG: str = "NASTOOL"
+    DEFAULT_MOVIE_FORMAT: str = '{title} ({year})/{title} ({year})-{part} - {videoFormat}'
+    DEFAULT_TV_FORMAT: str = '{title} ({year})/Season {season}/{title} - {season_episode}-{part} - 第 {episode} 集'
+    REDIS_HOST: str = "127.0.0.1"
+    REDIS_PORT: str = "6379"
+
+# 向后兼容的别名（不推荐使用，仅为兼容旧代码）
+SPLIT_CHARS = DefaultConfig.SPLIT_CHARS
+DEFAULT_UA = DefaultConfig.DEFAULT_UA
+RMT_FAVTYPE = DefaultConfig.RMT_FAVTYPE
+RMT_MEDIAEXT = MediaExt.VIDEO
+RMT_SUBEXT = MediaExt.SUBTITLE
+RMT_AUDIO_TRACK_EXT = MediaExt.AUDIO_TRACK
+ANIME_GENREIDS = DefaultConfig.ANIME_GENREIDS
+RMT_MIN_FILESIZE = DefaultConfig.RMT_MIN_FILESIZE
+AUTO_REMOVE_TORRENTS_INTERVAL = IntervalConfig.AUTO_REMOVE_TORRENTS
+PT_TRANSFER_INTERVAL = IntervalConfig.PT_TRANSFER
+METAINFO_SAVE_INTERVAL = IntervalConfig.METAINFO_SAVE
+SYNC_TRANSFER_INTERVAL = IntervalConfig.SYNC_TRANSFER
+RSS_CHECK_INTERVAL = IntervalConfig.RSS_CHECK
+RSS_REFRESH_TMDB_INTERVAL = IntervalConfig.RSS_REFRESH_TMDB
+BRUSH_REMOVE_TORRENTS_INTERVAL = IntervalConfig.BRUSH_REMOVE_TORRENTS
+BRUSH_STOP_TORRENTS_INTERVAL = IntervalConfig.BRUSH_STOP_TORRENTS
+META_DELETE_UNKNOWN_INTERVAL = IntervalConfig.META_DELETE_UNKNOWN
+REFRESH_WALLPAPER_INTERVAL = IntervalConfig.REFRESH_WALLPAPER
+FANART_MOVIE_API_URL = ApiConfig.FANART_MOVIE
+FANART_TV_API_URL = ApiConfig.FANART_TV
+DEFAULT_TMDB_IMAGE = ApiConfig.DEFAULT_TMDB_IMAGE
+TMDB_API_DOMAINS = ApiConfig.TMDB_DOMAINS
+TMDB_IMAGE_DOMAIN = ApiConfig.TMDB_IMAGE_DOMAIN
+PT_TAG = DefaultConfig.PT_TAG
+DEFAULT_MOVIE_FORMAT = DefaultConfig.DEFAULT_MOVIE_FORMAT
+DEFAULT_TV_FORMAT = DefaultConfig.DEFAULT_TV_FORMAT
+KEYWORD_SEARCH_WEIGHT_1 = SearchWeight.LEVEL_1
+KEYWORD_SEARCH_WEIGHT_2 = SearchWeight.LEVEL_2
+KEYWORD_SEARCH_WEIGHT_3 = SearchWeight.LEVEL_3
+KEYWORD_STR_SIMILARITY_THRESHOLD = SearchWeight.STR_SIMILARITY_THRESHOLD
+KEYWORD_DIFF_SCORE_THRESHOLD = SearchWeight.DIFF_SCORE_THRESHOLD
+KEYWORD_BLACKLIST = SearchWeight.BLACKLIST
+WEBDRIVER_PATH = PathConfig.WEBDRIVER
+XVFB_PATH = PathConfig.XVFB
+CHROME_PATH = PathConfig.CHROME
+REDIS_HOST = DefaultConfig.REDIS_HOST
+REDIS_PORT = DefaultConfig.REDIS_PORT
+MT_URL = ApiConfig.MT_URL
+SITES_DATA_URL = ApiConfig.SITES_DATA_URL
+
 import io
 import os
 import shutil
@@ -8,98 +118,6 @@ from threading import Lock
 from filelock import FileLock
 import ruamel.yaml
 import tempfile
-
-# 种子名/文件名要素分隔字符
-SPLIT_CHARS = r"\.|\s+|\(|\)|\[|]|-|\+|【|】|/|～|;|&|\||#|_|「|」|~|@"
-# 默认User-Agent
-DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36"
-# 收藏了的媒体的目录名，名字可以改，在Emby中点击红星则会自动将电影转移到此分类下，需要在Emby Webhook中配置用户行为通知
-RMT_FAVTYPE = '精选'
-# 支持的媒体文件后缀格式
-RMT_MEDIAEXT = ['.mp4', '.mkv', '.ts', '.iso',
-                '.rmvb', '.avi', '.mov', '.mpeg',
-                '.mpg', '.wmv', '.3gp', '.asf',
-                '.m4v', '.flv', '.m2ts', '.strm',
-                '.tp']
-# 支持的字幕文件后缀格式
-RMT_SUBEXT = ['.srt', '.ass', '.ssa']
-# 支持的音轨文件后缀格式
-RMT_AUDIO_TRACK_EXT = ['.mka']
-# 电视剧动漫的分类genre_ids
-ANIME_GENREIDS = ['16']
-# 默认过滤的文件大小，150M
-RMT_MIN_FILESIZE = 150 * 1024 * 1024
-# 删种检查时间间隔
-AUTO_REMOVE_TORRENTS_INTERVAL = 1800
-# 下载文件转移检查时间间隔，
-PT_TRANSFER_INTERVAL = 300
-# TMDB信息缓存定时保存时间
-METAINFO_SAVE_INTERVAL = 600
-# SYNC目录同步聚合转移时间
-SYNC_TRANSFER_INTERVAL = 60
-# RSS队列中处理时间间隔
-RSS_CHECK_INTERVAL = 300
-# 刷新订阅TMDB数据的时间间隔（小时）
-RSS_REFRESH_TMDB_INTERVAL = 6
-# 刷流删除的检查时间间隔
-BRUSH_REMOVE_TORRENTS_INTERVAL = 300
-# 刷流免费过期的检查时间间隔
-BRUSH_STOP_TORRENTS_INTERVAL = 300
-# 定时清除未识别的缓存时间间隔（小时）
-META_DELETE_UNKNOWN_INTERVAL = 12
-# 定时刷新壁纸的间隔（小时）
-REFRESH_WALLPAPER_INTERVAL = 1
-# fanart的api，用于拉取封面图片
-FANART_MOVIE_API_URL = 'https://webservice.fanart.tv/v3/movies/%s?api_key=d2d31f9ecabea050fc7d68aa3146015f'
-FANART_TV_API_URL = 'https://webservice.fanart.tv/v3/tv/%s?api_key=d2d31f9ecabea050fc7d68aa3146015f'
-# 默认背景图地址
-DEFAULT_TMDB_IMAGE = 'https://s3.bmp.ovh/imgs/2022/07/10/77ef9500c851935b.webp'
-# TMDB域名地址
-TMDB_API_DOMAINS = ['api.themoviedb.org', 'api.tmdb.org', 'tmdb.nastool.org', 't.nastool.workers.dev']
-TMDB_IMAGE_DOMAIN = 'image.tmdb.org'
-# 添加下载时增加的标签，开始只监控NAStool添加的下载时有效
-PT_TAG = "NASTOOL"
-# 电影默认命名格式
-DEFAULT_MOVIE_FORMAT = '{title} ({year})/{title} ({year})-{part} - {videoFormat}'
-# 电视剧默认命名格式
-DEFAULT_TV_FORMAT = '{title} ({year})/Season {season}/{title} - {season_episode}-{part} - 第 {episode} 集'
-# 辅助识别参数
-KEYWORD_SEARCH_WEIGHT_1 = [10, 3, 2, 0.5, 0.5]
-KEYWORD_SEARCH_WEIGHT_2 = [10, 2, 1]
-KEYWORD_SEARCH_WEIGHT_3 = [10, 2]
-KEYWORD_STR_SIMILARITY_THRESHOLD = 0.2
-KEYWORD_DIFF_SCORE_THRESHOLD = 30
-KEYWORD_BLACKLIST = ['中字', '韩语', '双字', '中英', '日语', '双语', '国粤', 'HD', 'BD', '中日', '粤语', '完全版',
-                     '法语', '西班牙语', 'HRHDTVAC3264', '未删减版', '未删减', '国语', '字幕组', '人人影视', 'www66ystv',
-                     '人人影视制作', '英语', 'www6vhaotv', '无删减版', '完成版', '德意']
-
-# WebDriver路径
-WEBDRIVER_PATH = {
-    "Docker": "/usr/lib/chromium/chromedriver",
-    "Synology": "/var/packages/NASTool/target/bin/chromedriver"
-}
-
-# Xvfb虚拟显示路程
-XVFB_PATH = [
-    "/usr/bin/Xvfb",
-    "/usr/local/bin/Xvfb"
-]
-
-# Chrome 路径
-if os.environ.get('FLASK_DEBUG') == "1":
-    CHROME_PATH = "/snap/bin/chromium"
-else:
-    CHROME_PATH = "/usr/lib/chromium/chromium"
-
-# redis 配置
-REDIS_HOST = "127.0.0.1"
-REDIS_PORT = "6379"
-
-# M-Team base url
-MT_URL = 'https://api.m-team.io'
-
-# sites.dat github
-SITES_DATA_URL = "https://api.github.com/repos/linyuan0213/nas-tools-sites/releases/latest"
 
 # 线程锁
 lock = Lock()
