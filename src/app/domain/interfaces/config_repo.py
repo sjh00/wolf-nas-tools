@@ -108,7 +108,16 @@ class IFilterRuleRepository(Protocol):
         """根据规则组ID获取规则列表"""
         ...
 
-    def insert(self, group_id: int, name: str, include: str, exclude: str, note: str, priority: int = 0) -> None:
+    def insert(
+        self,
+        group_id: int,
+        name: str,
+        include: str,
+        exclude: str,
+        note: str,
+        priority: int = 0,
+        original_language: str = "",
+    ) -> None:
         """插入过滤规则"""
         ...
 

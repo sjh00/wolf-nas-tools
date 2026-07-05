@@ -254,7 +254,16 @@ class FilterRuleRepositoryAdapter(IFilterRuleRepository):
             return []
         return [entity for entity in [FilterRuleEntity.from_orm(r) for r in rows] if entity is not None]
 
-    def insert(self, group_id: int, name: str, include: str, exclude: str, note: str, priority: int = 0) -> None:
+    def insert(
+        self,
+        group_id: int,
+        name: str,
+        include: str,
+        exclude: str,
+        note: str,
+        priority: int = 0,
+        original_language: str = "",
+    ) -> None:
         item = {
             "group": group_id,
             "name": name,
@@ -263,6 +272,7 @@ class FilterRuleRepositoryAdapter(IFilterRuleRepository):
             "exclude": exclude,
             "size": None,
             "free": note,
+            "original_language": original_language,
         }
         self._repo.insert_filter_rule(item)
 

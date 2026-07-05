@@ -29,6 +29,7 @@ class CONFIGFILTERRULES(Base):
     EXCLUDE: Mapped[str] = mapped_column(Text)
     SIZE_LIMIT: Mapped[str] = mapped_column(String(255))
     NOTE: Mapped[str] = mapped_column(Text, default="")
+    ORIGINAL_LANGUAGE: Mapped[str] = mapped_column(Text, default="")
 
 
 class CONFIGRSSPARSER(Base):

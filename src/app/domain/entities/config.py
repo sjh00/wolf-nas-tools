@@ -171,6 +171,7 @@ class FilterRuleEntity:
     priority: int
     create_time: str | None
     update_time: str | None
+    original_language: str = ""
 
     @classmethod
     def from_orm(cls, orm_model) -> Optional["FilterRuleEntity"]:
@@ -186,6 +187,7 @@ class FilterRuleEntity:
             priority=int(orm_model.PRIORITY or 0),
             create_time=None,
             update_time=None,
+            original_language=getattr(orm_model, "ORIGINAL_LANGUAGE", "") or "",
         )
 
     _ORM_FIELD_MAP = {}
@@ -209,6 +211,7 @@ class FilterRuleEntity:
             "priority": self.priority,
             "create_time": self.create_time,
             "update_time": self.update_time,
+            "original_language": self.original_language,
         }
 
 
