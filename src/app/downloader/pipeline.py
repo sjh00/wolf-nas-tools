@@ -17,9 +17,10 @@ from typing import Any
 import log
 from app.core.constants import PT_TAG
 from app.db.repositories.indexer_site_config_repo_adapter import IndexerSiteConfigRepositoryAdapter
+from app.domain.enums import SearchType
 from app.events import Event
-from app.events.constants import DOWNLOAD_FAILED, DOWNLOAD_STARTED
-from app.events.payloads import DownloadFailedPayload, DownloadStartedPayload
+from app.events.constants import DOWNLOAD_FAILED, DOWNLOAD_STARTED, MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE
+from app.events.payloads import DownloadFailedPayload, DownloadStartedPayload, ManualDownloadSubscribeUpdatePayload
 from app.infrastructure.thread import ThreadExecutor
 from app.sites.torrent import Torrent
 from app.utils import StringUtils
@@ -416,6 +417,17 @@ class DownloadPipeline:
             )
         except Exception as e:
             log.warn(f"[Pipeline]写入下载历史失败（任务已提交至下载器）: {e}")
+
+        # 手动下载完成 → 触发订阅回写事件（电影走 finish / over_edition 分支）
+        if in_from == SearchType.OT and media_info.tmdb_id:
+            self._event_bus.publish(
+                Event(
+                    event_type=MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE,
+                    payload=ManualDownloadSubscribeUpdatePayload(
+                        media_info=media_info.to_dict(),
+                    ),
+                )
+            )
 
         if page_url and subtitle_dir and site_info and site_info.get("subtitle"):
 

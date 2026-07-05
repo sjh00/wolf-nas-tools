@@ -100,6 +100,17 @@ class SubscribeFinishedPayload:
 
 
 @dataclass(frozen=True)
+class ManualDownloadSubscribeUpdatePayload:
+    """手动下载完成后请求订阅回写的事件负载。
+
+    当用户从 Web 手动添加种子下载成功后，由下载流水线发出；
+    由订阅事件 handler 反查订阅并按"洗版/普通"分别更新订阅状态。
+    """
+
+    media_info: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class SubscribeAddPayload:
     """订阅添加事件负载"""
 
