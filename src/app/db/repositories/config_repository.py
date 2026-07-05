@@ -665,6 +665,7 @@ class ConfigRepository(BaseRepository):
                         "EXCLUDE": item.get("exclude"),
                         "SIZE_LIMIT": item.get("size"),
                         "NOTE": item.get("free"),
+                        "ORIGINAL_LANGUAGE": item.get("original_language"),
                     }
                 )
             else:
@@ -677,6 +678,7 @@ class ConfigRepository(BaseRepository):
                         EXCLUDE=item.get("exclude"),
                         SIZE_LIMIT=item.get("size"),
                         NOTE=item.get("free"),
+                        ORIGINAL_LANGUAGE=item.get("original_language"),
                     )
                 )
 
