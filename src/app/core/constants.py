@@ -155,3 +155,7 @@ EPISODE_MAPPER_SEASON_GAP_DAYS = 90
 EPISODE_MAPPER_SEASON_GAP_FORCE_DAYS = 180
 EPISODE_MAPPER_MIN_BLOCK_LENGTH = 20
 EPISODE_MAPPER_MIN_TOTAL_EPISODES = 30
+
+# 过滤规则“指定原始语言”可选语言集合（与前端 language_dict 对齐）
+# 规则中填 "other" 表示“不在以下集合内的语言”
+FILTER_LANGUAGE_OPTIONS = {"zh", "en", "ja", "ko", "fr", "de", "ru", "hi"}
