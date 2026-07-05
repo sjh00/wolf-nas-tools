@@ -1,7 +1,7 @@
-# Nexus Media 项目指南
+# WolfNas 项目指南
 
 ## 项目概述
-Nexus Media 自动化工具，用于媒体管理、种子索引和下载编排。
+WolfNas 自动化工具，用于媒体管理、种子索引和下载编排。
 - **后端**: Python 3.11+, FastAPI, SQLAlchemy, Alembic
 - **前端**: 独立仓库 [nexus-media-web](https://github.com/linyuan0213/nexus-media-web)，Vue 3 + Vite + Naive UI + Tailwind CSS
 - **数据库**: SQLite (默认) 或 MySQL/PostgreSQL，通过 `src/app/db/database_factory.py` 配置

@@ -68,7 +68,7 @@ class SubscribeCalendarService:
         lines = [
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
-            "PRODID:-//Nexus Media//Subscription Calendar//EN",
+            "PRODID:-//WolfNas//Subscription Calendar//EN",
             "CALSCALE:GREGORIAN",
             "METHOD:PUBLISH",
         ]

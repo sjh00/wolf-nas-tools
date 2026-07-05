@@ -1,4 +1,4 @@
-# Nexus Media 后端 Dockerfile
+# WolfNas 后端 Dockerfile
 # 纯后端构建，前端由独立服务提供
 
 FROM python:3.14-slim-trixie AS builder
@@ -12,7 +12,7 @@ RUN apt-get update \
     gcc libffi-dev libxml2-dev libxslt1-dev libssl-dev libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /nexus-media
+WORKDIR /wolfnas
 COPY pyproject.toml uv.lock ./
 COPY src ./src
 COPY alembic ./alembic
@@ -61,7 +61,7 @@ ENV S6_SERVICES_GRACETIME=30000 \
     PGID=0 \
     UMASK=000 \
     NEXUS_PORT=3000 \
-    WORKDIR="/nexus-media"
+    WORKDIR="/wolfnas"
 
 RUN groupadd -r -g 911 nexus \
     && useradd -r -g nexus -d ${HOME} -s /bin/bash -u 911 nexus \
@@ -71,7 +71,7 @@ RUN groupadd -r -g 911 nexus \
 WORKDIR ${WORKDIR}
 
 COPY --chown=nexus:nexus . ${WORKDIR}/
-COPY --from=builder --chown=nexus:nexus /nexus-media/.venv ${WORKDIR}/.venv
+COPY --from=builder --chown=nexus:nexus /wolfnas/.venv ${WORKDIR}/.venv
 
 RUN chmod +x \
     ${WORKDIR}/start-prod.sh \

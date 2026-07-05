@@ -1,5 +1,5 @@
 name: 🐛 Bug 报告
-description: 报告问题以帮助我们改进 Nexus Media
+description: 报告问题以帮助我们改进 WolfNas
 title: 'Bug: '
 labels: ['bug']
 
@@ -27,7 +27,7 @@ body:
     id: version
     attributes:
       label: 版本号
-      description: 你使用的 Nexus Media 版本
+      description: 你使用的 WolfNas 版本
       placeholder: v3.8.0
     validations:
       required: true

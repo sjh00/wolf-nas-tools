@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nexus Media 启动入口 — Granian 异步服务器
+"""WolfNas 启动入口 — Granian 异步服务器
 
 用法:
     python run.py                    # 生产模式
@@ -30,7 +30,7 @@ def main():
         if a.startswith("-w"):
             workers = int(a.split("=", 1)[-1] if "=" in a else sys.argv[sys.argv.index(a) + 1])
 
-    log.console("Nexus Media FastAPI 启动中...")
+    log.console("WolfNas FastAPI 启动中...")
     log.console(f"模式: {'dev' if dev else 'prod'}, workers={workers}")
     log.console(f"当前版本号：{APP_VERSION}")
 

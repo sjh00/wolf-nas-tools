@@ -235,7 +235,7 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
 
 class AppSettings(BaseSettings):
     """
-    Nexus Media 统一配置（pydantic-settings）
+    WolfNas 统一配置（pydantic-settings）
     支持环境变量、.env 文件和 config.yaml，优先级：环境变量 > .env > config.yaml
     """
 

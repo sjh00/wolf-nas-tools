@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "linyuan0213",
   "author_url": "https://github.com/linyuan0213/nexus-media",
-  "description": "为 Nexus Media 添加 rTorrent 下载器支持",
+  "description": "为 WolfNas 添加 rTorrent 下载器支持",
   "category": "download",
   "tags": [
     "下载器",

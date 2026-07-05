@@ -1,6 +1,6 @@
 # 插件配置指南
 
-Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本章将详细介绍各个插件的使用方法。
+WolfNas 提供了丰富的插件系统，可以扩展系统的功能。本章将详细介绍各个插件的使用方法。
 
 插件市场路径：`/plugin/market`
 已安装插件路径：`/plugin/installed`
@@ -9,7 +9,7 @@ Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本�
 
 ### 自动签到插件
 
-自动签到插件是 Nexus Media 中用于自动执行PT站点签到的重要功能，可以帮助用户保持站点活跃度，避免因长时间不登录而被清理账号。
+自动签到插件是 WolfNas 中用于自动执行PT站点签到的重要功能，可以帮助用户保持站点活跃度，避免因长时间不登录而被清理账号。
 
 #### 功能概述
 
@@ -21,15 +21,15 @@ Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本�
 
 #### 前置准备
 
-##### 1. 安装Nexus Media Chrome容器
+##### 1. 安装WolfNas Chrome容器
 
-自动签到需要浏览器仿真功能，需要安装Nexus Media Chrome容器：
+自动签到需要浏览器仿真功能，需要安装WolfNas Chrome容器：
 
 1. 在docker-compose.yml中添加chrome服务配置：
    ```yaml
    chrome:
-     image: linyuan0213/Nexus Media Chrome:latest
-     container_name: Nexus Media Chrome
+     image: linyuan0213/WolfNas Chrome:latest
+     container_name: WolfNas Chrome
      shm_size: 2g # 共享内存大小
      volumes:
        - ./data:/var/lib/chromium/user_data
@@ -46,16 +46,16 @@ Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本�
 
 3. 验证容器运行状态：
    ```bash
-   docker ps | grep Nexus Media Chrome
+   docker ps | grep WolfNas Chrome
    ```
 
 ##### 2. 配置网页自动化服务器
 
-在 Nexus Media 中配置网页自动化服务器：
+在 WolfNas 中配置网页自动化服务器：
 
 1. 进入 **基础设置**（`/system/basic`） → **实验室** → **网页自动化服务器**
 2. 填写配置参数：
-   - **服务器地址**: 填写Nexus Media Chrome容器的访问地址，如 `http://192.168.1.151:9850`
+   - **服务器地址**: 填写WolfNas Chrome容器的访问地址，如 `http://192.168.1.151:9850`
    - 确保地址可访问，端口9850是DrissionPage服务的默认端口
 
 ##### 3. 安装CookieCloud浏览器插件
@@ -93,13 +93,13 @@ Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本�
 
 1. 点击CookieCloud插件的同步按钮
 2. 确认Cookie数据已成功上传到云端
-3. 在 Nexus Media 中配置CookieCloud参数
+3. 在 WolfNas 中配置CookieCloud参数
 
 #### 插件配置
 
 ##### CookieCloud同步插件配置
 
-在 Nexus Media 中配置CookieCloud同步：
+在 WolfNas 中配置CookieCloud同步：
 
 1. 进入 **已安装插件**（`/plugin/installed`） → **CookieCloud同步**
 2. 填写配置参数：
@@ -113,7 +113,7 @@ Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本�
 
 ##### 自动签到插件配置
 
-在 Nexus Media 中配置自动签到：
+在 WolfNas 中配置自动签到：
 
 1. 进入 **已安装插件**（`/plugin/installed`） → **站点自动签到**
 2. 填写配置参数：
@@ -158,7 +158,7 @@ Nexus Media 提供了丰富的插件系统，可以扩展系统的功能。本�
 A: 需要重新同步Cookie：
 1. 在浏览器中重新登录网站
 2. 在CookieCloud插件中重新同步
-3. 在 Nexus Media 中执行CookieCloud同步
+3. 在 WolfNas 中执行CookieCloud同步
 
 ##### Q: 站点被Cloudflare防护，无法签到
 A: 需要开启仿真功能：
