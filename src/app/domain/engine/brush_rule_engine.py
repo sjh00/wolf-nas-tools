@@ -19,6 +19,7 @@ import dateutil
 import pytz
 
 import log
+from app.core.constants import FILTER_LANGUAGE_OPTIONS
 from app.domain.enums import BrushDeleteType, BrushStopType, SwitchState
 from app.domain.mediatypes import MediaType
 from app.utils import ExceptionUtils, StringUtils
@@ -118,6 +119,7 @@ class BrushRuleEngine:
                 "peercount": lambda rv: cls.check_range_rule(torrent_attr.get("peer_count"), rv),
                 "pubdate": lambda rv: cls._check_pubdate(pubdate, torrent_attr, rv),
                 "exclude_subscribe": lambda rv: not cls._check_subscribe_status(media_info, rss_movies, rss_tvs, rv),
+                "original_language": lambda rv: cls._check_original_language(media_info, rv),
             }
 
             for rule, check_func in rule_checks.items():
@@ -156,6 +158,30 @@ class BrushRuleEngine:
             pubdate_hours = (datetime.now(pytz.utc) - pubdate).total_seconds() / 3600
             return cls.check_range_rule(pubdate_hours, rule_value, multiplier=1)
         return True
+
+    @staticmethod
+    def _check_original_language(media_info: Any, rule_value: str) -> bool:
+        """
+        检查种子的 TMDB 原始语言是否符合规则。
+
+        守卫语义（与 FilterRuleEngine.check_rules 的 original_language 判断保持一致）：
+        - rule_value 为空（含 None / ""）→ 视为忽略该规则，return True
+        - media_info 为空或无 original_language 字段 → 信息缺失不阻断，return True
+        - rule_value == "other" → 原始语言不在 FILTER_LANGUAGE_OPTIONS 内才算命中
+        - 其他 → 比较前两位字符
+        兼容老刷流任务 RSS_RULE JSON 缺 original_language 键：rss_rule.get 返回 None → 跳过
+        """
+        if not rule_value:
+            return True
+        if not media_info:
+            return True
+        lang = getattr(media_info, "original_language", None)
+        if not lang:
+            return True
+        lang = lang.strip()
+        if rule_value == "other":
+            return lang[:2] not in FILTER_LANGUAGE_OPTIONS
+        return rule_value[:2] == lang[:2]
 
     @staticmethod
     def _check_subscribe_status(
@@ -380,6 +406,7 @@ class BrushRuleEngine:
         "peercount": "做种人数不符合",
         "pubdate": "发布时间不符合",
         "exclude_subscribe": "已订阅",
+        "original_language": "原始语言不符合",
     }
 
     @classmethod
@@ -413,6 +440,7 @@ class BrushRuleEngine:
                 "peercount": lambda rv: cls.check_range_rule(torrent_attr.get("peer_count"), rv),
                 "pubdate": lambda rv: cls._check_pubdate(pubdate, torrent_attr, rv),
                 "exclude_subscribe": lambda rv: not cls._check_subscribe_status(media_info, rss_movies, rss_tvs, rv),
+                "original_language": lambda rv: cls._check_original_language(media_info, rv),
             }
 
             for rule, check_func in rule_checks.items():
