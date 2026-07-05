@@ -314,7 +314,7 @@ class DownloadPipeline:
 
         if downloader_id:
             downloader_conf = self._client_factory.get_downloader_conf(downloader_id)
-            if downloader_conf and downloader_conf.get("only_nexus_media") and PT_TAG not in tags:
+            if downloader_conf and downloader_conf.get("only_wolf_nas") and PT_TAG not in tags:
                 tags.append(PT_TAG)
 
         if tags:

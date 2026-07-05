@@ -63,3 +63,4 @@ static/avatars/*
 # Environment
 .env
 config/*.pid
+deps_win.txt

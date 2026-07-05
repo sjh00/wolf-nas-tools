@@ -20,7 +20,7 @@ class DownloaderEntity:
     enabled: bool
     type: str
     transfer: bool
-    only_nexus_media: bool
+    only_wolf_nas: bool
     match_path: bool
     rmt_mode: str
     config: str  # JSON配置字符串
@@ -42,9 +42,9 @@ class DownloaderEntity:
         return self.match_path
 
     @property
-    def is_nexus_media_only(self) -> bool:
+    def is_wolf_nas_only(self) -> bool:
         """是否只处理本系统添加的种子"""
-        return self.only_nexus_media
+        return self.only_wolf_nas
 
     @property
     def parsed_config(self) -> dict[str, Any]:
@@ -76,7 +76,7 @@ class DownloaderEntity:
             enabled=bool(orm_model.ENABLED),
             type=orm_model.TYPE or "",
             transfer=bool(orm_model.TRANSFER),
-            only_nexus_media=bool(orm_model.ONLY_NEXUS_MEDIA),
+            only_wolf_nas=bool(getattr(orm_model, "ONLY_WOLF_NAS", 0) or getattr(orm_model, "ONLY_NEXUS_MEDIA", 0)),
             match_path=bool(orm_model.MATCH_PATH),
             rmt_mode=orm_model.RMT_MODE or "",
             config=orm_model.CONFIG or "{}",
@@ -91,7 +91,8 @@ class DownloaderEntity:
             "enabled": self.enabled,
             "type": self.type,
             "transfer": self.transfer,
-            "only_nexus_media": self.only_nexus_media,
+            "only_wolf_nas": self.only_wolf_nas,
+            "only_nexus_media": self.only_wolf_nas,
             "match_path": self.match_path,
             "rmt_mode": self.rmt_mode,
             "config": self.config,

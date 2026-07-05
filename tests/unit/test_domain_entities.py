@@ -515,7 +515,7 @@ class TestTorrentRemoveTaskEntity:
         assert entity.action_display == "未知"
 
     def test_validate_params_valid(self):
-        data = {"name": "test", "action": 2, "interval": 60, "enabled": 1, "samedata": 0, "only_nexus_media": 1}
+        data = {"name": "test", "action": 2, "interval": 60, "enabled": 1, "samedata": 0, "only_wolf_nas": 1}
         errors = TorrentRemoveTaskEntity.validate_params(data)
         assert errors == []
 

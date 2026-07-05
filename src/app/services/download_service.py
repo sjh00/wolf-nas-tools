@@ -338,7 +338,7 @@ class DownloadService:
             except Exception:
                 downloader_name = did
 
-            # 批量查询这些任务的进度（直接调用客户端，绕过 only_nexus_media 标签过滤）
+            # 批量查询这些任务的进度（直接调用客户端，绕过 only_wolf_nas 标签过滤）
             ids = [t.download_id for t in tasks if t.download_id]
             _client = self._downloader.get_downloader(did)
             if not _client:
