@@ -48,6 +48,7 @@ class AddFilterRuleRequest(BaseModel):
     rule_exclude: str | None = None
     rule_sizelimit: str | None = None
     rule_free: str | None = None
+    rule_original_language: str | None = None
 
 
 class IdRequest(BaseModel):
@@ -73,6 +74,7 @@ class RuleTestRequest(BaseModel):
     subtitle: str | None = None
     size: str | None = None
     rulegroup: str | None = None
+    original_language: str | None = None
 
 
 class SetDefaultFilterGroupRequest(BaseModel):
@@ -115,6 +117,7 @@ def add_filterrule(
         "exclude": req.rule_exclude,
         "size": req.rule_sizelimit,
         "free": req.rule_free,
+        "original_language": req.rule_original_language,
     }
     filter_service.add_filter_rule(ruleid=req.rule_id, item=item)
     return success()
@@ -185,7 +188,11 @@ def rule_test(
     if not title:
         return fail(code=-1)
     match_flag, text, order = filter_service.test_rule(
-        title=title, subtitle=req.subtitle, size=req.size, rulegroup=req.rulegroup
+        title=title,
+        subtitle=req.subtitle,
+        size=req.size,
+        rulegroup=req.rulegroup,
+        original_language=req.original_language,
     )
     return success(data={"flag": match_flag, "text": text, "order": order})
 
