@@ -35,6 +35,10 @@ def init_name(info, token):
         info._continue_flag = False
         info._stop_name_flag = True
         return
+    if token.upper() == "OF":
+        info._last_token_type = "OF"
+        info._continue_flag = False
+        return
     if token in _name_se_words:
         info._last_token_type = "name_se_words"
         return
