@@ -8,6 +8,7 @@
 import re
 
 import log
+from app.core.constants import FILTER_LANGUAGE_OPTIONS
 from app.core.module_config import ModuleConf
 from app.domain.mediatypes import MediaType
 from app.media import ReleaseGroupsMatcher
@@ -167,6 +168,18 @@ class IndexerFilterEngine:
             try:
                 rule_match = True
                 order_seq = 100 - int(filter_info.get("pri", 0))
+
+                # 原始语言（守卫：rule 填了 + meta 有 original_language 才阻断，否则跳过该规则）
+                rule_original_language = filter_info.get("original_language")
+                if rule_original_language and rule_match:
+                    meta_original_language = getattr(meta_info, "original_language", None)
+                    if meta_original_language:
+                        meta_original_language = meta_original_language.strip()
+                        if rule_original_language == "other":
+                            if meta_original_language[:2] in FILTER_LANGUAGE_OPTIONS:
+                                rule_match = False
+                        elif rule_original_language[:2] != meta_original_language[:2]:
+                            rule_match = False
 
                 # 必须包括的项
                 includes = filter_info.get("include")

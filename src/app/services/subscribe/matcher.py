@@ -210,6 +210,7 @@ class SubscribeMatcher:
                             "size": None,
                             "free": e.note,
                             "pri": e.priority,
+                            "original_language": e.original_language or "",
                         }
                     )
                 match_filter_flag, res_order, rule_name = self._filter.check_rules(

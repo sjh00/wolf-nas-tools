@@ -80,6 +80,7 @@ class ResultFilter:
                         "size": None,
                         "free": e.note,
                         "pri": e.priority,
+                        "original_language": e.original_language or "",
                     }
                 )
 
