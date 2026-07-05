@@ -115,3 +115,41 @@ class TestCRCNotEpisode:
         )
         assert result.begin_episode == 13
         assert result.end_episode is None
+
+
+class TestSeasonEndingProtection:
+    """修正媒体元数据识别将作品名中的 Season 误去除（对应 sjh00 26e7bde4，已由 v4 覆盖）"""
+
+    def test_the_long_season_movie(self):
+        """标题以 Season 结尾的年份不应剥离 Season（The Long Season 2017 → 电影）"""
+        result = parse_video_title("The Long Season 2017 2160p WEB-DL H265 AAC-XXX")
+        assert result.en_name == "The Long Season"
+        assert result.year == "2017"
+        assert result.type == MediaType.MOVIE
+
+    def test_cherry_season_tv(self):
+        """标题以 Season 结尾，随后 S01 应正确识别为电视剧"""
+        result = parse_video_title("Cherry Season S01 2014 2160p WEB-DL H265 AAC-XXX")
+        assert result.en_name == "Cherry Season"
+        assert result.year == "2014"
+        assert result.begin_season == 1
+        assert result.type == MediaType.TV
+
+
+class TestChineseTitleEnMerge:
+    """中文标题前的英文片段应并入 cn_name 而非独立为 en_name（3de1b8dc）"""
+
+    def test_en_prefix_merged_into_cn(self):
+        """'Movie Name 电影名 S01' → cn_name='Movie Name 电影名', en_name=''"""
+        result = parse_video_title("Movie Name 电影名 S01 1080p WEB-DL")
+        assert result.cn_name == "Movie Name 电影名"
+        assert result.en_name == ""
+        assert result.begin_season == 1
+        assert result.type == MediaType.TV
+
+    def test_chinese_only_unaffected(self):
+        """纯中文标题（无英文前缀）保持原有 cn_name 不变"""
+        result = parse_video_title("特效电影名称 第一季 2023 S01 1080p")
+        assert result.cn_name == "特效电影名称"
+        assert result.en_name is None
+        assert result.begin_season == 1
