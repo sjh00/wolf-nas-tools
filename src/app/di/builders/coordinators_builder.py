@@ -9,6 +9,7 @@ from app.media import MediaCache
 from app.services.rss_processor import RssHelper
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.handlers import (
+    build_manual_download_subscribe_handler,
     build_rss_auto_subscribe_handler,
     build_subscribe_add_search_handler,
 )
@@ -141,6 +142,8 @@ def build_coordinators(
 
     # 注册 RSS 自动订阅事件处理器
     build_rss_auto_subscribe_handler(subscribe_service)
+    # 注册手动下载后自动更新订阅状态的事件处理器
+    build_manual_download_subscribe_handler(subscribe_service)
     # 注册订阅添加/更新后自动触发队列搜索的事件处理器
     build_subscribe_add_search_handler(queue_strategy, thread_executor)
 

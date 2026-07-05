@@ -6,6 +6,7 @@
 import log
 from app.db.repositories.subscribe_repo_adapter import SubscribeTvRepositoryAdapter
 from app.domain.entities.rss import SubscribeState
+from app.domain.mediatypes import MediaType
 from app.events import Event, on_event
 from app.events.constants import (
     MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE,
@@ -35,16 +36,59 @@ def handle_subscribe_finished(event: Event) -> None:
     log.info(f"[Event]订阅完成: rssid={payload.rssid}")
 
 
-@on_event(MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE)
-def handle_manual_download_subscribe_update(event: Event) -> None:
-    """手动下载完成后反查并更新订阅状态"""
-    payload = event.payload
-    if not isinstance(payload, ManualDownloadSubscribeUpdatePayload):
-        payload = ManualDownloadSubscribeUpdatePayload(**payload)
-    log.info(
-        f"[Event]手动下载订阅更新: searching subscribe for "
-        f"{payload.media_info.get('title') or payload.media_info.get('org_string')}"
-    )
+def build_manual_download_subscribe_handler(subscribe_service: SubscribeService):
+    """构造手动下载后自动订阅更新事件处理器并注册。"""
+
+    @on_event(MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE)
+    def handle_manual_download_subscribe_update(event: Event) -> None:
+        """手动下载完成后反查并更新订阅状态（仅电影走 finish/over_edition）。"""
+        payload = event.payload
+        if not isinstance(payload, ManualDownloadSubscribeUpdatePayload):
+            payload = ManualDownloadSubscribeUpdatePayload(**payload)
+
+        media_info = payload.media_info
+        title = media_info.get("title") or media_info.get("org_string")
+        if not title:
+            return
+
+        mtype_str = media_info.get("type")
+        if not mtype_str:
+            log.warn("[Event]手动下载订阅更新: media_info 缺少 type 字段，跳过")
+            return
+
+        mtype = MediaType.from_string(mtype_str) if isinstance(mtype_str, str) else mtype_str
+        year = media_info.get("year")
+        season = media_info.get("season")
+        tmdbid = media_info.get("tmdb_id")
+
+        rssid = subscribe_service.get_subscribe_id(
+            mtype=mtype,
+            title=title,
+            year=year,
+            season=str(season) if season else None,
+            tmdbid=tmdbid,
+        )
+        if not rssid:
+            log.info(f"[Event]未找到订阅: {title}")
+            return
+
+        if mtype == MediaType.MOVIE:
+            rss_info = subscribe_service.get_subscribe_movies(rid=rssid)
+            if not rss_info:
+                log.info(f"[Event]未找到电影订阅: rssid={rssid}")
+                return
+            if rss_info.get("over_edition"):
+                subscribe_service.update_subscribe_over_edition(
+                    rtype=MediaType.MOVIE, rssid=rssid, media=media_info
+                )
+                log.info(f"[Event]电影 {title} 更新为 over_edition 状态")
+            else:
+                subscribe_service.finish_rss_subscribe(rssid=rssid, media=media_info)
+                log.info(f"[Event]电影 {title} 订阅已完成")
+        else:
+            log.info(f"[Event]电视剧订阅更新暂只标记（TODO）: rssid={rssid}")
+
+    return handle_manual_download_subscribe_update
 
 
 @on_event(SUBSCRIBE_ADD)
