@@ -1,6 +1,6 @@
-# Nexus Media 后端架构文档
+# WolfNas 后端架构文档
 
-> 本文档描述 Nexus Media 后端（`backend/`）的整体架构、模块分层、数据流和关键设计模式。
+> 本文档描述 WolfNas 后端（`backend/`）的整体架构、模块分层、数据流和关键设计模式。
 >
 > 技术栈：Python 3.11+ + FastAPI + SQLAlchemy + Alembic + APScheduler
 
@@ -385,7 +385,7 @@ TMDBCache           # TMDB API 响应缓存（Redis）
 
 ## 7. 站点引擎 (`app/sites/`)
 
-站点引擎是 Nexus Media 的核心差异化能力，通过 **声明式 JSON 站点定义** 消除散落在代码中的 `"if m-team in url"` 硬编码逻辑。
+站点引擎是 WolfNas 的核心差异化能力，通过 **声明式 JSON 站点定义** 消除散落在代码中的 `"if m-team in url"` 硬编码逻辑。
 
 ```
 app/sites/

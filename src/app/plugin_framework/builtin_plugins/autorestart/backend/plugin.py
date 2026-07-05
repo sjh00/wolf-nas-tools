@@ -1,6 +1,6 @@
 """
 AutoRestart Plugin v2
-定时自动重启 Nexus Media 服务
+定时自动重启 WolfNas 服务
 """
 
 import os
@@ -81,7 +81,7 @@ class AutoRestartPlugin:
         if notify:
             self.ctx.notify(
                 title="[系统重启通知]",
-                text=f"Nexus Media将在 {delay} 秒后重启\n时间：{now}",
+                text=f"WolfNas将在 {delay} 秒后重启\n时间：{now}",
             )
 
         if delay > 0:
@@ -98,5 +98,5 @@ class AutoRestartPlugin:
             if notify:
                 self.ctx.notify(
                     title="[系统重启失败]",
-                    text=f"Nexus Media重启失败：{e}\n时间：{now}",
+                    text=f"WolfNas重启失败：{e}\n时间：{now}",
                 )

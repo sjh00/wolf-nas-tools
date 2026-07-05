@@ -118,8 +118,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Nexus Media API",
-    description="Nexus Media FastAPI 路由",
+    title="WolfNas API",
+    description="WolfNas FastAPI 路由",
     version=version.APP_VERSION,
     lifespan=lifespan,
     docs_url=None,
@@ -207,7 +207,7 @@ def root():
     """根路径欢迎页面"""
     return JSONResponse(
         content={
-            "app": "Nexus Media",
+            "app": "WolfNas",
             "version": version.APP_VERSION,
             "message": "服务运行中，请通过前端页面访问或查看 /docs 获取 API 文档",
         }

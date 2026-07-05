@@ -1,4 +1,4 @@
-name: Nexus Media Docker
+name: WolfNas Docker
 
 on:
   workflow_dispatch:
@@ -71,7 +71,7 @@ jobs:
 
           CONTENT=$(awk '/^## v'"$VERSION"' /{flag=1;next}/^## v/{flag=0}flag' docs/changelog.md)
           if [ -z "$CONTENT" ]; then
-            CONTENT="Nexus Media $GITHUB_REF_NAME 已发布。"
+            CONTENT="WolfNas $GITHUB_REF_NAME 已发布。"
           fi
 
           {
@@ -83,7 +83,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Nexus Media ${{ steps.extract.outputs.tag }}
+          name: WolfNas ${{ steps.extract.outputs.tag }}
           body: ${{ steps.extract.outputs.notes }}
           generate_release_notes: false
         env:
@@ -96,7 +96,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           format: html
           message: |
-            <b>Nexus Media ${{ steps.extract.outputs.tag }} 已发布</b>
+            <b>WolfNas ${{ steps.extract.outputs.tag }} 已发布</b>
 
             <pre>${{ steps.extract.outputs.notes }}</pre>
 

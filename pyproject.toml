@@ -9,9 +9,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [project]
-name = "nexus-media"
+name = "wolfnas"
 version = "4.2.1"
-description = "Nexus Media"
+description = "WolfNas"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

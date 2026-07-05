@@ -1,5 +1,5 @@
 """
-Nexus Media 统一异常体系
+WolfNas 统一异常体系
 
 层次结构：
     NexusError (基类)

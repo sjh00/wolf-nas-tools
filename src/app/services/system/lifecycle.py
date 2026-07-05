@@ -247,10 +247,10 @@ class SystemLifecycleService:
             ["bash", script_path], cwd=os.getcwd(), capture_output=True
         )
         if res.returncode == 0:
-            log.info("Nexus Media 重启成功...")
+            log.info("WolfNas 重启成功...")
         else:
             stderr = res.stderr.decode(errors="replace") if res.stderr else "未知错误"
-            log.error(f"Nexus Media 重启失败: {stderr}")
+            log.error(f"WolfNas 重启失败: {stderr}")
 
 
 def start_service(system_lifecycle_service: SystemLifecycleService) -> None:
