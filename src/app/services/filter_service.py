@@ -523,11 +523,22 @@ class FilterService:
         return base64.b64encode(JsonUtils.dumps(rule_json).encode("utf-8")).decode("utf-8")
 
     def test_rule(
-        self, title: str, subtitle: str | None, size: str | None, rulegroup: str | None
+        self,
+        title: str,
+        subtitle: str | None,
+        size: str | None,
+        rulegroup: str | None,
+        original_language: str | None = None,
     ) -> tuple[bool, str, int]:
-        """测试规则是否匹配给定标题"""
+        """测试规则是否匹配给定标题
+
+        :param original_language: 可选，前端显式传入的种子原始语言，避免规则测试时
+            因为没有 TMDB 识别结果而导致 original_language 规则无法生效。
+        """
         mi = meta_info(title=title, subtitle=subtitle)
         mi.size = int(float(size) * 1024**3) if size else 0
+        if original_language:
+            mi.original_language = original_language
         match_flag, res_order, match_msg = self.check_torrent_filter(meta_info=mi, filter_args={"rule": rulegroup})
         text = "匹配" if match_flag else "未匹配"
         order = 100 - res_order if res_order else 0
