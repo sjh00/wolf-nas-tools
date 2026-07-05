@@ -1,5 +1,7 @@
 """RSS Feed 轮询策略 — 从站点 RSS Feed 收集资源并匹配订阅."""
 
+from datetime import datetime
+
 import log
 from app.core.exceptions import (
     DownloadError,
@@ -150,7 +152,24 @@ class RssFeedStrategy:
                 continue
 
             log.info(f"[RssFeedStrategy] {site_name} 获取数据：{len(rss_articles)}")
+            # 站点级 RSS 限定小时配置（来自 site.note.withinhour），仅订阅最近 N 小时内发布的种子
+            site_note = site_info.get("note") or {}
+            site_withinhour_raw = site_note.get("withinhour")
+            try:
+                site_withinhour = int(site_withinhour_raw) if site_withinhour_raw else 0
+            except (TypeError, ValueError):
+                site_withinhour = 0
+            now_ts = int(datetime.now().timestamp())
+            skipped_by_hour = 0
             for article in rss_articles:
+                # 站点开了限定小时且种子发布时间超出窗口 → 跳过（刷流不受此限制）
+                if site_withinhour > 0 and article.get("pubdate"):
+                    try:
+                        if int(now_ts - int(article.get("pubdate"))) > site_withinhour * 3600:
+                            skipped_by_hour += 1
+                            continue
+                    except (TypeError, ValueError):
+                        pass
                 all_articles.append(
                     {
                         "article": article,
@@ -166,6 +185,10 @@ class RssFeedStrategy:
                         "site_proxy": site_info.get("proxy"),
                         "site_filter_rule": site_info.get("rule"),
                     }
+                )
+            if skipped_by_hour > 0:
+                log.info(
+                    f"[RssFeedStrategy] {site_name} 因限定小时 {site_withinhour}h 跳过 {skipped_by_hour} 条种子"
                 )
 
         if not all_articles:
