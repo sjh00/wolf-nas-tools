@@ -591,15 +591,19 @@ class FileTransferService:
                     season_episode=season_episode,
                 )
 
-                self._history.insert_transfer_history(
-                    in_from=in_from,
-                    rmt_mode=operation,
-                    in_path=reg_path,
-                    out_path=out_path or "",
-                    dest=dist_path,
-                    media_info=media_dto,
-                    dst_backend=dst_backend.id if hasattr(dst_backend, "id") else (dst_backend or "local"),
-                )
+                # BONUS/花絮内容：跳过转移历史、NFO/海报、字幕下载
+                isextras = media.type != MediaType.ANIME and PathUtils.is_extras(file_item)
+
+                if not isextras:
+                    self._history.insert_transfer_history(
+                        in_from=in_from,
+                        rmt_mode=operation,
+                        in_path=reg_path,
+                        out_path=out_path or "",
+                        dest=dist_path,
+                        media_info=media_dto,
+                        dst_backend=dst_backend.id if hasattr(dst_backend, "id") else (dst_backend or "local"),
+                    )
 
                 if isinstance(episode[1], bool) and episode[1]:
                     self._history.update_transfer_unknown_state(file_item)
@@ -616,15 +620,17 @@ class FileTransferService:
                         message_medias[message_key].total_episodes += media.total_episodes
                         message_medias[message_key].size += media.size
 
-                self.scraper.gen_scraper_files(
-                    media=media,
-                    dir_path=ret_dir_path,
-                    file_name=os.path.basename(ret_file_path or ret_dir_path or ""),
-                    file_ext=file_ext,
-                    dst_backend=dst_backend,
-                )
+                if not isextras:
+                    self.scraper.gen_scraper_files(
+                        media=media,
+                        dir_path=ret_dir_path,
+                        file_name=os.path.basename(ret_file_path or ret_dir_path or ""),
+                        file_ext=file_ext,
+                        dst_backend=dst_backend,
+                    )
 
-                self._publish_subtitle_download(media, ret_file_path, file_ext, bool(bluray_disk_dir))
+                if not isextras:
+                    self._publish_subtitle_download(media, ret_file_path, file_ext, bool(bluray_disk_dir))
                 self._publish_transfer_finished(in_path, file_item, out_path, dist_path, media)
                 # TV/动漫单集转移完成事件（驱动订阅进度更新）
                 if media.type in (MediaType.TV, MediaType.ANIME) and media.get_episode_list():
