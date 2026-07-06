@@ -64,3 +64,4 @@ static/avatars/*
 .env
 config/*.pid
 deps_win.txt
+third_party/
