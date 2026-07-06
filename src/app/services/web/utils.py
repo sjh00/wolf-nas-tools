@@ -63,10 +63,10 @@ class WebUtils:
             proxies = get_proxies()
             proxy_url = proxies.get("http") if proxies else None
             version_res = HttpClient(config=HttpClientConfig(proxy_url=proxy_url)).get(
-                "https://api.github.com/repos/linyuan0213/nexus-media/releases/latest"
+                "https://api.github.com/repos/sjh00/wolf-nas-tools/releases/latest"
             )
             commit_res = HttpClient(config=HttpClientConfig(proxy_url=proxy_url)).get(
-                "https://api.github.com/repos/linyuan0213/nexus-media/commits/master"
+                "https://api.github.com/repos/sjh00/wolf-nas-tools/commits/master"
             )
             ver_json = version_res.json()
             commit_json = commit_res.json()

@@ -79,7 +79,7 @@ body:
     attributes:
       label: 相关日志或截图
       description: |
-        后端问题请提供日志（Docker: `docker logs nexus-media`）；
+        后端问题请提供日志（Docker: `docker logs wolfnas`）；
         前端问题请提供浏览器控制台报错和截图；
         部署问题请提供 docker compose 配置（脱敏后）。
       render: shell

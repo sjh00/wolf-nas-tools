@@ -39,7 +39,7 @@ class TestQbittorrentSync:
                 "hash1": {
                     "name": "movie.mkv",
                     "state": "uploading",
-                    "tags": "NEXUS_MEDIA",
+                    "tags": "WOLFNAS",
                     "save_path": "/downloads",
                     "content_path": "/downloads/movie.mkv",
                     "total_size": 1000,
@@ -55,7 +55,7 @@ class TestQbittorrentSync:
         assert not error
         assert len(torrents) == 1
         assert torrents[0].id == "hash1"
-        assert torrents[0].labels == ["NEXUS_MEDIA"]
+        assert torrents[0].labels == ["WOLFNAS"]
         assert qb._sync_rid == 1
 
     def test_get_torrents_sync_filter_by_tag(self, client):
@@ -65,12 +65,12 @@ class TestQbittorrentSync:
             "rid": 2,
             "full_update": True,
             "torrents": {
-                "hash1": {"name": "a.mkv", "state": "uploading", "tags": "NEXUS_MEDIA"},
+                "hash1": {"name": "a.mkv", "state": "uploading", "tags": "WOLFNAS"},
                 "hash2": {"name": "b.mkv", "state": "uploading", "tags": "other"},
             },
         }
 
-        torrents, error = qb.get_torrents(status="completed", tag="NEXUS_MEDIA")
+        torrents, error = qb.get_torrents(status="completed", tag="WOLFNAS")
 
         assert not error
         assert len(torrents) == 1
@@ -79,12 +79,12 @@ class TestQbittorrentSync:
     def test_get_torrents_sync_incremental_update(self, client):
         """增量更新合并到本地快照."""
         qb, mock_qbc = client
-        qb._sync_torrents = {"hash1": {"name": "old.mkv", "state": "uploading", "tags": "NEXUS_MEDIA"}}
+        qb._sync_torrents = {"hash1": {"name": "old.mkv", "state": "uploading", "tags": "WOLFNAS"}}
         qb._sync_rid = 1
         mock_qbc.sync_maindata.return_value = {
             "rid": 2,
             "full_update": False,
-            "torrents": {"hash2": {"name": "new.mkv", "state": "uploading", "tags": "NEXUS_MEDIA"}},
+            "torrents": {"hash2": {"name": "new.mkv", "state": "uploading", "tags": "WOLFNAS"}},
             "torrents_removed": ["hash1"],
         }
 
@@ -98,12 +98,12 @@ class TestQbittorrentSync:
     def test_get_torrents_sync_incremental_update_preserves_name(self, client):
         """增量更新未携带 name 时，保留本地快照中的 name."""
         qb, mock_qbc = client
-        qb._sync_torrents = {"hash1": {"name": "movie.mkv", "state": "uploading", "tags": "NEXUS_MEDIA"}}
+        qb._sync_torrents = {"hash1": {"name": "movie.mkv", "state": "uploading", "tags": "WOLFNAS"}}
         qb._sync_rid = 1
         mock_qbc.sync_maindata.return_value = {
             "rid": 2,
             "full_update": False,
-            "torrents": {"hash1": {"state": "uploading", "tags": "NEXUS_MEDIA,已整理"}},
+            "torrents": {"hash1": {"state": "uploading", "tags": "WOLFNAS,已整理"}},
         }
 
         torrents, error = qb.get_torrents(status="completed")
@@ -112,7 +112,7 @@ class TestQbittorrentSync:
         assert len(torrents) == 1
         assert torrents[0].id == "hash1"
         assert torrents[0].name == "movie.mkv"
-        assert torrents[0].labels == ["NEXUS_MEDIA", "已整理"]
+        assert torrents[0].labels == ["WOLFNAS", "已整理"]
 
     def test_get_torrents_sync_excludes_incomplete_states(self, client):
         """sync 结果排除非已完成状态."""
@@ -141,7 +141,7 @@ class TestQbittorrentSync:
         mock_torrent.name = "movie.mkv"
         mock_torrent.size = 1000
         mock_torrent.state = "uploading"
-        mock_torrent.tags = "NEXUS_MEDIA"
+        mock_torrent.tags = "WOLFNAS"
         mock_torrent.save_path = "/downloads"
         mock_torrent.content_path = "/downloads/movie.mkv"
         mock_torrent.progress = 1.0
@@ -151,7 +151,7 @@ class TestQbittorrentSync:
         mock_torrent.tracker = ""
         mock_qbc.torrents_info.return_value = [mock_torrent]
 
-        with patch.object(qb, "torrent_properties", return_value=MagicMock(id="hash1", labels=["NEXUS_MEDIA"])):
+        with patch.object(qb, "torrent_properties", return_value=MagicMock(id="hash1", labels=["WOLFNAS"])):
             torrents, error = qb.get_torrents(status="completed")
 
         assert not error
@@ -168,7 +168,7 @@ class TestQbittorrentSync:
                 "hash1": {
                     "name": "movie.mkv",
                     "state": "uploading",
-                    "tags": "NEXUS_MEDIA",
+                    "tags": "WOLFNAS",
                     "save_path": "/downloads",
                     "content_path": "/downloads/movie.mkv",
                     "total_size": 1000,
@@ -179,7 +179,7 @@ class TestQbittorrentSync:
             },
         }
 
-        tasks = qb.get_transfer_task(tag="NEXUS_MEDIA")
+        tasks = qb.get_transfer_task(tag="WOLFNAS")
 
         assert len(tasks) == 1
         assert tasks[0]["id"] == "hash1"

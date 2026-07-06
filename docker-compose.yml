@@ -1,5 +1,5 @@
 x-backend-common: &backend-common
-  image: linyuan0213/nexus-media:latest
+  image: sjh00/wolf-nas:latest
   ports:
     - 3000:8080
   volumes:
@@ -21,7 +21,7 @@ x-backend-common: &backend-common
     start_period: 40s
 
 x-migration-common: &migration-common
-  image: linyuan0213/nexus-media:latest
+  image: sjh00/wolf-nas:latest
   volumes:
     - ./data:/data
   entrypoint: ["/wolfnas/.venv/bin/alembic"]
@@ -46,7 +46,7 @@ x-env-db-common: &env-db-common
 
 services:
   frontend:
-    image: linyuan0213/nexus-media-web:latest
+    image: sjh00/wolf-nas-web:latest
     ports:
       - 8080:8080
     restart: always
@@ -200,7 +200,7 @@ services:
   # OCR / Chrome（仅完整模式）
   ocr:
     profiles: ["full-mysql", "full-postgresql"]
-    image: linyuan0213/nexus-media-ocr:latest
+    image: sjh00/wolf-nas-ocr:latest
     container_name: wolfnas-ocr
     ports:
       - 9300:9300
@@ -210,7 +210,7 @@ services:
 
   chrome:
     profiles: ["full-mysql", "full-postgresql"]
-    image: linyuan0213/nexus-media-chrome:latest
+    image: sjh00/wolf-nas-chrome:latest
     container_name: wolfnas-chrome
     shm_size: 2g
     environment:

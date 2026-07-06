@@ -35,8 +35,8 @@ my_plugin/
   "id": "my_plugin",
   "name": "我的插件",
   "version": "1.0.0",
-  "author": "linyuan0213",
-  "author_url": "https://github.com/linyuan0213",
+  "author": "sjh00",
+  "author_url": "https://github.com/sjh00",
   "description": "插件功能描述",
   "category": "media",
   "tags": ["标签1", "标签2"],
@@ -528,7 +528,7 @@ self.ctx.debug("调试信息")
 
 1. 修改 `backend/plugin.py` 后，在前端点击「重载」按钮热重载
 2. 或重启 WolfNas 服务
-3. 查看日志：`logs/nexus-media.log` 或前端插件日志面板
+3. 查看日志：`logs/wolfnas.log` 或前端插件日志面板
 
 ### 前端调试
 
@@ -655,7 +655,7 @@ export default function(host) {
   "id": "demo",
   "name": "Demo 插件",
   "version": "1.0.0",
-  "author": "linyuan0213",
+  "author": "sjh00",
   "description": "演示插件开发",
   "category": "tool",
   "icon": "lucide:zap",

@@ -157,7 +157,7 @@ class SystemUtils:
             src = os.path.normpath(src)
             dest = dest.replace("\\", "/")
             retcode = subprocess.run(  # nosec
-                ["rclone", "moveto", src, f"NEXUS_MEDIA:{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
+                ["rclone", "moveto", src, f"WOLFNAS:{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
             ).returncode
             return retcode, ""
         except Exception as err:
@@ -173,7 +173,7 @@ class SystemUtils:
             src = os.path.normpath(src)
             dest = dest.replace("\\", "/")
             retcode = subprocess.run(  # nosec
-                ["rclone", "copyto", src, f"NEXUS_MEDIA:{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
+                ["rclone", "copyto", src, f"WOLFNAS:{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
             ).returncode
             return retcode, ""
         except Exception as err:
@@ -191,7 +191,7 @@ class SystemUtils:
             if dest.startswith("/"):
                 dest = dest[1:]
             retcode = subprocess.run(  # nosec
-                ["mc", "mv", "--recursive", src, f"NEXUS_MEDIA/{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
+                ["mc", "mv", "--recursive", src, f"WOLFNAS/{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
             ).returncode
             return retcode, ""
         except Exception as err:
@@ -209,7 +209,7 @@ class SystemUtils:
             if dest.startswith("/"):
                 dest = dest[1:]
             retcode = subprocess.run(  # nosec
-                ["mc", "cp", "--recursive", src, f"NEXUS_MEDIA/{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
+                ["mc", "cp", "--recursive", src, f"WOLFNAS/{dest}"], startupinfo=SystemUtils.__get_hidden_shell()
             ).returncode
             return retcode, ""
         except Exception as err:

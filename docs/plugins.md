@@ -28,7 +28,7 @@ WolfNas 提供了丰富的插件系统，可以扩展系统的功能。本章将
 1. 在docker-compose.yml中添加chrome服务配置：
    ```yaml
    chrome:
-     image: linyuan0213/WolfNas Chrome:latest
+     image: WolfNas Chrome:latest
      container_name: WolfNas Chrome
      shm_size: 2g # 共享内存大小
      volumes:

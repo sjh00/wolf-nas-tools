@@ -1,7 +1,7 @@
 # WolfNas - 多功能媒体库管理工具
 
-[![CI](https://github.com/linyuan0213/nexus-media/actions/workflows/ci.yml/badge.svg)](https://github.com/linyuan0213/nexus-media/actions/workflows/ci.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/linyuan0213/nexus-media)](https://hub.docker.com/r/linyuan0213/nexus-media)
+[![CI](https://github.com/sjh00/wolf-nas-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/sjh00/wolf-nas-tools/actions/workflows/ci.yml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/sjh00/wolf-nas-tools)](https://hub.docker.com/r/sjh00/wolf-nas-tools)
 [![Telegram Group](https://img.shields.io/badge/Telegram-Group-blue)](https://t.me/+UxUIoJMmH2YwYWE1)
 
 WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、资源下载、文件整理和订阅管理等功能，适合PT用户和影视爱好者使用。
@@ -45,8 +45,8 @@ WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、
 - **插件系统**：可扩展的功能插件
 
 ## 支持站点
-- 站点适配需求请在[nexus-media-sites项目](https://github.com/linyuan0213/nexus-media-sites)提issues
-- 如需新增站点支持，请在[nexus-media-sites项目](https://github.com/linyuan0213/nexus-media-sites)提issues
+- 站点适配需求请在[wolf-nas-tools项目](https://github.com/sjh00/wolf-nas-tools)提issues
+- 如需新增站点支持，请在[wolf-nas-tools项目](https://github.com/sjh00/wolf-nas-tools)提issues
 
 ## 贡献指南
 
@@ -54,7 +54,7 @@ WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、
 - [架构文档](docs/architecture.md) — 后端模块分层与数据流
 
 ## 支持与帮助
-- 问题反馈: [GitHub Issues](https://github.com/linyuan0213/nexus-media/issues)
+- 问题反馈: [GitHub Issues](https://github.com/sjh00/wolf-nas-tools/issues)
 - 交流群组: [Telegram群组](https://t.me/+UxUIoJMmH2YwYWE1)
 - 文档贡献: 欢迎提交 Pull Request 改进文档
 

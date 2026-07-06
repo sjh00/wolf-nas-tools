@@ -29,7 +29,7 @@ class RcloneStorageBackend(StorageBackend):
     def __init__(self, config: StorageConfig) -> None:
         super().__init__(config)
         self._rc_url = (getattr(config, "rc_url", "") or "http://localhost:5572").rstrip("/")
-        self._remote = getattr(config, "remote_name", "NEXUS_MEDIA")
+        self._remote = getattr(config, "remote_name", "WOLFNAS")
         username = getattr(config, "rc_user", "")
         password = getattr(config, "rc_pass", "")
         auth = httpx.BasicAuth(username, password) if username else None

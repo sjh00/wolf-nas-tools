@@ -1,7 +1,7 @@
 """
 站点配置远程更新服务
 
-从 nexus-media-sites 仓库 release 自动拉取最新站点配置，
+从 wolf-nas-sites 仓库 release 自动拉取最新站点配置，
 解压到用户配置目录的 sites/ 子目录，实现站点配置热更新。
 """
 
@@ -22,7 +22,7 @@ from app.utils.config_tools import get_proxies
 class SiteConfigUpdater:
     """站点配置更新器"""
 
-    _RELEASE_API_URL = "https://api.github.com/repos/linyuan0213/nexus-media-sites/releases/latest"
+    _RELEASE_API_URL = "https://api.github.com/repos/sjh00/wolf-nas-tools/releases/latest"
     _ASSET_NAME = "sites-config.zip"
     _VERSION_FILE = "version"
     _REQUIRED_SUBDIRS = ("api", "html", "schema")
@@ -69,7 +69,7 @@ class SiteConfigUpdater:
                 return asset.get("browser_download_url")
         tag = release_info.get("tag_name", "")
         if tag:
-            return f"https://github.com/linyuan0213/nexus-media-sites/releases/download/{tag}/{self._ASSET_NAME}"
+            return f"https://github.com/sjh00/wolf-nas-tools/releases/download/{tag}/{self._ASSET_NAME}"
         return None
 
     @staticmethod
