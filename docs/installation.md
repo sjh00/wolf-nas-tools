@@ -13,9 +13,9 @@ services:
     ports:
       - 3000:8080
     restart: always
-    container_name: nexus-media-web
+    container_name: wolfnas-web
     networks:
-      - nexus-media-network
+      - wolfnas-network
     depends_on:
       - backend
 
@@ -32,10 +32,10 @@ services:
       - UMASK=000
       - NEXUS_PORT=3000
     restart: always
-    hostname: nexus-media
-    container_name: nexus-media
+    hostname: wolfnas
+    container_name: wolfnas
     networks:
-      - nexus-media-network
+      - wolfnas-network
     healthcheck:
       test: "wget -qO- http://localhost:3000/health || exit 1"
       interval: 30s
@@ -47,27 +47,27 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: nexus-media-redis
+    container_name: wolfnas-redis
     volumes:
       - ./data/redis_data:/data
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf
     command: redis-server /usr/local/etc/redis/redis.conf
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
 
   ocr:
     image: linyuan0213/nexus-media-ocr:latest
-    container_name: nexus-media-ocr
+    container_name: wolfnas-ocr
     ports:
       - 9300:9300
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
 
   chrome:
     image: linyuan0213/nexus-media-chrome:latest
-    container_name: nexus-media-chrome
+    container_name: wolfnas-chrome
     shm_size: 2g
     environment:
       - VNC_PASSWORD=password
@@ -78,12 +78,12 @@ services:
       - 6080:6080
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
 
 networks:
-  nexus-media-network:
+  wolfnas-network:
     driver: bridge
-    name: nexus-media-network
+    name: wolfnas-network
 ```
 
 ### 2. 启动服务
@@ -101,8 +101,8 @@ docker compose up -d
 
 ```bash
 docker run -d \
-  --name nexus-media \
-  --hostname nexus-media \
+  --name wolfnas \
+  --hostname wolfnas \
   -p 3001:3000 \
   -v $(pwd)/config:/config \
   -v /你的媒体目录:/media \
