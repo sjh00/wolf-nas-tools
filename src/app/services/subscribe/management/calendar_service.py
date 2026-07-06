@@ -73,7 +73,7 @@ class SubscribeCalendarService:
             "METHOD:PUBLISH",
         ]
         for event in events:
-            uid = f"{event.get('id')}-{event.get('rssid', '0')}@nexus-media"
+            uid = f"{event.get('id')}-{event.get('rssid', '0')}@wolfnas"
             start = _format_ics_date(str(event.get("start") or ""))
             if not start:
                 continue

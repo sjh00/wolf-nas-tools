@@ -600,6 +600,6 @@
 
 ## 历史版本
 
-完整版本历史请查看[GitHub发布页面](https://github.com/linyuan0213/nexus-media/releases)
+完整版本历史请查看[GitHub发布页面](https://github.com/sjh00/wolf-nas-tools/releases)
 
 > 注意：建议始终使用最新版本以获得最佳体验和安全更新

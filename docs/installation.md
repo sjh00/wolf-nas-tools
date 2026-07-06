@@ -9,7 +9,7 @@
 ```yaml
 services:
   frontend:
-    image: linyuan0213/nexus-media-web:latest
+    image: sjh00/wolf-nas-web:latest
     ports:
       - 3000:8080
     restart: always
@@ -20,7 +20,7 @@ services:
       - backend
 
   backend:
-    image: linyuan0213/nexus-media:latest
+    image: sjh00/wolf-nas:latest
     ports:
       - 3001:3000
     volumes:
@@ -57,7 +57,7 @@ services:
       - wolfnas-network
 
   ocr:
-    image: linyuan0213/nexus-media-ocr:latest
+    image: sjh00/wolf-nas-ocr:latest
     container_name: wolfnas-ocr
     ports:
       - 9300:9300
@@ -66,7 +66,7 @@ services:
       - wolfnas-network
 
   chrome:
-    image: linyuan0213/nexus-media-chrome:latest
+    image: sjh00/wolf-nas-chrome:latest
     container_name: wolfnas-chrome
     shm_size: 2g
     environment:
@@ -109,7 +109,7 @@ docker run -d \
   -e PUID=0 \
   -e PGID=0 \
   -e UMASK=000 \
-  linyuan0213/nexus-media:latest
+  sjh00/wolf-nas:latest
 ```
 
 ## 环境变量说明
@@ -127,7 +127,7 @@ docker run -d \
 | 容器路径 | 说明 |
 |----------|------|
 | `/config` | 配置文件、数据库、插件数据 |
-| `/nexus-media` | 应用代码目录 |
+| `/wolfnas` | 应用代码目录 |
 | `/media` | 媒体目录（需自行映射） |
 
 ## 首次使用

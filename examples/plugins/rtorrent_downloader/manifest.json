@@ -3,8 +3,8 @@
   "id": "rtorrent_downloader",
   "name": "rTorrent 下载器",
   "version": "1.0.0",
-  "author": "linyuan0213",
-  "author_url": "https://github.com/linyuan0213/nexus-media",
+  "author": "sjh00",
+  "author_url": "https://github.com/sjh00/wolf-nas-tools",
   "description": "为 WolfNas 添加 rTorrent 下载器支持",
   "category": "download",
   "tags": [

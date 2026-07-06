@@ -315,7 +315,7 @@ class TorrentRemoveTaskEntity:
             errors.append("处理辅种参数不合法")
         only_wolf_nas = data.get("only_wolf_nas")
         if not str(only_wolf_nas).isdigit() or int(only_wolf_nas or 0) not in (0, 1):
-            errors.append("仅处理NEXUS_MEDIA添加种子参数不合法")
+            errors.append("仅处理WolfNas添加种子参数不合法")
         ratio = data.get("ratio") or 0
         if not str(ratio).replace(".", "").isdigit():
             errors.append("分享率参数不合法")

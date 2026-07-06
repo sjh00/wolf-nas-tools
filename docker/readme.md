@@ -60,23 +60,23 @@ docker compose --profile app-only up -d
 
 ```bash
 docker run -d \
-  --name nexus-media \
-  --hostname nexus-media \
+  --name wolfnas \
+  --hostname wolfnas \
   -p 3001:3000 \
   -v $(pwd)/data:/data \
   -v /你的媒体目录:/media \
   -e PUID=0 \
   -e PGID=0 \
   -e UMASK=000 \
-  linyuan0213/nexus-media:latest
+  sjh00/wolf-nas:latest
 ```
 
 **docker-compose**
 
 ```yaml
 services:
-  nexus-media:
-    image: linyuan0213/nexus-media:latest
+  wolfnas:
+    image: sjh00/wolf-nas:latest
     ports:
       - 3001:3000
     volumes:
@@ -88,8 +88,8 @@ services:
       - UMASK=000
       - NEXUS_PORT=3000
     restart: always
-    hostname: nexus-media
-    container_name: nexus-media
+    hostname: wolfnas
+    container_name: wolfnas
 ```
 
 ## 环境变量

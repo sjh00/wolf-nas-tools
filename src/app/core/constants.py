@@ -100,7 +100,7 @@ TMDB_IMAGE_SIZE = {
 }
 
 # 添加下载时增加的标签
-PT_TAG = "NEXUS_MEDIA"
+PT_TAG = "WOLFNAS"
 
 # 电影默认命名格式
 DEFAULT_MOVIE_FORMAT = "{title} ({year})/{title} ({year})-{part} - {videoFormat}"
@@ -148,7 +148,7 @@ KEYWORD_BLACKLIST = [
 MT_URL = "https://api.m-team.io"
 
 # sites.dat github
-SITES_DATA_URL = "https://api.github.com/repos/linyuan0213/nexus-media-sites/releases/latest"
+SITES_DATA_URL = "https://api.github.com/repos/sjh00/wolf-nas-tools/releases/latest"
 
 # EpisodeMapper 阈值配置
 EPISODE_MAPPER_SEASON_GAP_DAYS = 90

@@ -147,7 +147,7 @@ user_agent: "Mozilla/5.0"   # 需与Cookie同时配置
 
 ## 自动更新
 
-容器启动时会自动检查 `nexus-media-sites` 仓库的最新 release：
+容器启动时会自动检查 `wolf-nas-tools` 仓库的最新 release：
 - 发现新版本时自动下载并替换本地配置
 - 更新失败时保留当前配置，不影响正常使用
 
