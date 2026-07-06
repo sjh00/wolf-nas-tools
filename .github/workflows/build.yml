@@ -49,10 +49,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/nexus-media:latest
-            ${{ secrets.DOCKER_USERNAME }}/nexus-media:${{ env.app_version }}
-            ghcr.io/${{ github.repository_owner }}/nexus-media:latest
-            ghcr.io/${{ github.repository_owner }}/nexus-media:${{ env.app_version }}
+            ${{ secrets.DOCKER_USERNAME }}/wolfnas:latest
+            ${{ secrets.DOCKER_USERNAME }}/wolfnas:${{ env.app_version }}
+            ghcr.io/${{ github.repository_owner }}/wolfnas:latest
+            ghcr.io/${{ github.repository_owner }}/wolfnas:${{ env.app_version }}
 
   release:
     runs-on: ubuntu-latest
@@ -100,5 +100,5 @@ jobs:
 
             <pre>${{ steps.extract.outputs.notes }}</pre>
 
-            📦 Docker: <code>docker pull linyuan0213/nexus-media:${{ steps.extract.outputs.version }}</code>
+            📦 Docker: <code>docker pull sjh00/wolf-nas-tools:${{ steps.extract.outputs.version }}</code>
             🔗 <a href="https://github.com/${{ github.repository }}/releases/tag/${{ steps.extract.outputs.tag }}">查看 Release</a>
