@@ -74,7 +74,7 @@ class TestDownloadMonitor:
 
         mock_client = MagicMock()
         mock_client.get_transfer_task.return_value = [
-            {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"], "name": "movie"}
+            {"id": "task1", "path": "/dl/movie.mkv", "tags": ["WOLFNAS"], "name": "movie"}
         ]
         factory.get_client.return_value = mock_client
         factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
@@ -94,7 +94,7 @@ class TestDownloadMonitor:
         m._processed_ids.add("qb1:task1")
 
         mock_client = MagicMock()
-        mock_client.get_transfer_task.return_value = [{"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"]}]
+        mock_client.get_transfer_task.return_value = [{"id": "task1", "path": "/dl/movie.mkv", "tags": ["WOLFNAS"]}]
         factory.get_client.return_value = mock_client
         factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
 
@@ -139,7 +139,7 @@ class TestDownloadMonitor:
 
         mock_client = MagicMock()
         mock_client.get_transfer_task.return_value = [
-            {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"], "name": "movie"}
+            {"id": "task1", "path": "/dl/movie.mkv", "tags": ["WOLFNAS"], "name": "movie"}
         ]
         factory.get_client.return_value = mock_client
         factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
@@ -149,7 +149,7 @@ class TestDownloadMonitor:
         assert m._last_snapshot["qb1"] == {"task1"}
         bus.publish.assert_called_once()
         assert mock_client.get_transfer_task.call_args_list == [
-            (({"tag": "NEXUS_MEDIA", "match_path": None}),),
+            (({"tag": "WOLFNAS", "match_path": None}),),
         ]
 
     def test_check_downloader_incremental_only_new_tasks(self, monitor):
@@ -161,11 +161,11 @@ class TestDownloadMonitor:
         mock_client.get_transfer_task.side_effect = [
             # 第一次返回全部候选 id
             [
-                {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"]},
-                {"id": "task2", "path": "/dl/new.mkv", "tags": ["NEXUS_MEDIA"]},
+                {"id": "task1", "path": "/dl/movie.mkv", "tags": ["WOLFNAS"]},
+                {"id": "task2", "path": "/dl/new.mkv", "tags": ["WOLFNAS"]},
             ],
             # 第二次只返回新增任务详情
-            [{"id": "task2", "path": "/dl/new.mkv", "tags": ["NEXUS_MEDIA"]}],
+            [{"id": "task2", "path": "/dl/new.mkv", "tags": ["WOLFNAS"]}],
         ]
         factory.get_client.return_value = mock_client
         factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
@@ -179,7 +179,7 @@ class TestDownloadMonitor:
         assert mock_client.get_transfer_task.call_count == 2
         assert mock_client.get_transfer_task.call_args == (
             (),
-            {"tag": "NEXUS_MEDIA", "match_path": None, "ids": ["task2"]},
+            {"tag": "WOLFNAS", "match_path": None, "ids": ["task2"]},
         )
 
     def test_check_downloader_no_new_tasks(self, monitor):
@@ -189,7 +189,7 @@ class TestDownloadMonitor:
 
         mock_client = MagicMock()
         mock_client.get_transfer_task.return_value = [
-            {"id": "task1", "path": "/dl/movie.mkv", "tags": ["NEXUS_MEDIA"]},
+            {"id": "task1", "path": "/dl/movie.mkv", "tags": ["WOLFNAS"]},
         ]
         factory.get_client.return_value = mock_client
         factory.get_downloader_conf.return_value = {"name": "QB", "only_wolf_nas": True}
@@ -198,7 +198,7 @@ class TestDownloadMonitor:
 
         assert m._last_snapshot["qb1"] == {"task1"}
         bus.publish.assert_not_called()
-        mock_client.get_transfer_task.assert_called_once_with(tag="NEXUS_MEDIA", match_path=None)
+        mock_client.get_transfer_task.assert_called_once_with(tag="WOLFNAS", match_path=None)
 
     def test_emit_new_tasks_filters_processed(self, monitor):
         """_emit_new_tasks 不会重复发布已处理任务."""
