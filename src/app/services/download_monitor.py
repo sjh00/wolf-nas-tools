@@ -135,6 +135,7 @@ class DownloadMonitor:
         current_ids = {str(task.get("id")) for task in all_tasks if task.get("id")}
         new_ids = current_ids - previous_ids
         self._last_snapshot[did] = current_ids
+        self._prune_processed(did, current_ids)
 
         if not new_ids:
             return
@@ -160,6 +161,17 @@ class DownloadMonitor:
     def _make_id(self, downloader_id: str, task_id: str) -> str:
         """生成唯一任务标识."""
         return f"{downloader_id}:{task_id}"
+
+    def _prune_processed(self, downloader_id: str, current_ids: set[str]) -> None:
+        """移除已不在下载器中的已处理 ID，避免内存无限增长."""
+        prefix = f"{downloader_id}:"
+        stale = {
+            uid
+            for uid in self._processed_ids
+            if uid.startswith(prefix) and uid[len(prefix) :] not in current_ids
+        }
+        if stale:
+            self._processed_ids -= stale
 
     def _publish_completed(self, downloader_id: str, task_id: str, task_path: str, task: dict) -> None:
         """发布 download.completed 事件."""

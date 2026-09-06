@@ -123,15 +123,23 @@ class PathUtils:
     @staticmethod
     def is_invalid_path(path):
         """
-        判断是否不能处理的路径
+        判断是否不能处理的路径（回收站、隐藏目录、群晖 @eaDir 等）
+        统一为正斜杠后再匹配，兼容 Windows 反斜杠路径。
         """
         if not path:
             return True
-        return bool(
-            path.find("/@Recycle/") != -1
-            or path.find("/#recycle/") != -1
-            or path.find("/.") != -1
-            or path.find("/@eaDir") != -1
+        # 统一分隔符；前后补 / 以便匹配段边界（如目录名本身为 @Recycle）
+        normalized = path.replace("\\", "/")
+        if not normalized.startswith("/"):
+            normalized = "/" + normalized
+        if not normalized.endswith("/"):
+            normalized = normalized + "/"
+        return (
+            "/@Recycle/" in normalized
+            or "/#recycle/" in normalized
+            or "/@eaDir/" in normalized
+            or "/@eaDir" in normalized.rstrip("/")  # 路径以 @eaDir 结尾
+            or "/." in normalized  # 隐藏目录段（/.xxx/）
         )
 
     @staticmethod

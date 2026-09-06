@@ -49,7 +49,7 @@ class StringUtils:
         """
         将数字转换为时间描述
         """
-        if not isinstance(time_sec, int) or not isinstance(time_sec, float):
+        if not isinstance(time_sec, (int, float)):
             try:
                 time_sec = float(time_sec)
             except Exception as e:
@@ -69,10 +69,12 @@ class StringUtils:
         """
         判断是否含有中文
         """
+        if word is None:
+            return False
         if isinstance(word, list):
-            word = " ".join(word)
+            word = " ".join(str(x) for x in word if x is not None)
         chn = re.compile(r"[\u4e00-\u9fff]")
-        return bool(chn.search(word))
+        return bool(chn.search(str(word)))
 
     @staticmethod
     def is_japanese(word):
@@ -89,6 +91,8 @@ class StringUtils:
         """
         判断是否全是中文
         """
+        if not word:
+            return False
         for ch in word:
             if ch == " ":
                 continue

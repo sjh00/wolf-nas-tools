@@ -308,12 +308,13 @@ class BrushRepository(BaseRepository):
         if not ids:
             return
         with self.session() as db:
+            # ids 元素: (size_str, task_id, download_id)
             conditions = [
                 and_(cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == task_id, SITEBRUSHTORRENTS.DOWNLOAD_ID == download_id)
                 for _, task_id, download_id in ids
             ]
             case_stmt = case(
-                *[(cond, torrent_size) for (_, torrent_size), cond in zip(ids, conditions)],
+                *[(cond, size_str) for (size_str, _task_id, _download_id), cond in zip(ids, conditions)],
                 else_=SITEBRUSHTORRENTS.TORRENT_SIZE,
             )
             db.query(SITEBRUSHTORRENTS).filter(or_(*conditions)).update(

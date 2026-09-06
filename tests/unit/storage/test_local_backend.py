@@ -154,7 +154,13 @@ class TestLocalStorageBackend:
         src = tmp_path / "src.txt"
         src.write_text("symlink")
         dst = tmp_path / "dst.txt"
-        backend.softlink(str(src), str(dst))
+        try:
+            backend.softlink(str(src), str(dst))
+        except OSError as e:
+            # Windows 创建符号链接需要管理员或开发者模式（WinError 1314）
+            if os.name == "nt" and getattr(e, "winerror", None) == 1314:
+                pytest.skip("Windows 创建符号链接需要特权")
+            raise
         assert dst.is_symlink()
         assert os.readlink(dst) == str(src)
 
