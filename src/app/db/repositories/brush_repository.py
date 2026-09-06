@@ -6,7 +6,7 @@ Handles brush task and torrent related database operations.
 import time
 from typing import Any
 
-from sqlalchemy import Integer, and_, case, cast, func, or_
+from sqlalchemy import BigInteger, Integer, and_, cast, func, or_
 
 from app.db.models import BRUSHEVENTLOG, CONFIGSITE, SITEBRUSHRULE, SITEBRUSHTASK, SITEBRUSHTORRENTS
 from app.db.repositories.base_repository import BaseRepository
@@ -111,10 +111,12 @@ class BrushRepository(BaseRepository):
             if brush_id:
                 return db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).first()
             else:
+                # LEFT JOIN：站点被删除或 ID 不匹配时任务仍须返回，
+                # 否则重启后 load_brushtasks 查不到该任务（新建任务丢失）
                 return (
                     db.query(SITEBRUSHTASK)
-                    .join(CONFIGSITE, cast(SITEBRUSHTASK.SITE, Integer) == CONFIGSITE.ID)
-                    .order_by(cast(CONFIGSITE.PRI, Integer).asc())
+                    .outerjoin(CONFIGSITE, cast(SITEBRUSHTASK.SITE, Integer) == CONFIGSITE.ID)
+                    .order_by(func.coalesce(cast(CONFIGSITE.PRI, Integer), 999999))
                     .all()
                 )
 
@@ -126,7 +128,7 @@ class BrushRepository(BaseRepository):
             return 0
         with self.session() as db:
             ret = (
-                db.query(func.sum(cast(SITEBRUSHTORRENTS.TORRENT_SIZE, Integer)))
+                db.query(func.sum(cast(SITEBRUSHTORRENTS.TORRENT_SIZE, BigInteger)))
                 .filter(
                     cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == brush_id,
                     SITEBRUSHTORRENTS.DOWNLOAD_ID != "0",
@@ -136,6 +138,11 @@ class BrushRepository(BaseRepository):
                 .first()
             )
             return ret[0] or 0 if ret else 0
+
+    def update_brushtask_site(self, brush_id: int, site_id: str) -> None:
+        """修正刷流任务站点标识为 DB 主键 id（历史配置 id 数据迁移）."""
+        with self.session() as db:
+            db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).update({"SITE": site_id})
 
     def update_brushtask_state(self, state: str, tid: int | None = None) -> None:
         """
@@ -272,7 +279,14 @@ class BrushRepository(BaseRepository):
         if not enclosure:
             return None
         with self.session() as db:
-            return db.query(SITEBRUSHTORRENTS).filter(enclosure == SITEBRUSHTORRENTS.ENCLOSURE).first()
+            return (
+                db.query(SITEBRUSHTORRENTS)
+                .filter(
+                    enclosure == SITEBRUSHTORRENTS.ENCLOSURE,
+                    SITEBRUSHTORRENTS.DOWNLOAD_ID != "0",
+                )
+                .first()
+            )
 
     def get_brushtask_torrents_by_domain(self, domain: str) -> list[SITEBRUSHTORRENTS]:
         """
@@ -281,7 +295,14 @@ class BrushRepository(BaseRepository):
         if not domain:
             return []
         with self.session() as db:
-            return db.query(SITEBRUSHTORRENTS).filter(SITEBRUSHTORRENTS.ENCLOSURE.like(f"%{domain}%")).all()
+            return (
+                db.query(SITEBRUSHTORRENTS)
+                .filter(
+                    SITEBRUSHTORRENTS.ENCLOSURE.like(f"%{domain}%"),
+                    SITEBRUSHTORRENTS.DOWNLOAD_ID != "0",
+                )
+                .all()
+            )
 
     def is_brushtask_torrent_exists(self, brush_id: int | None, title: str, enclosure: str) -> bool:
         """
@@ -296,6 +317,7 @@ class BrushRepository(BaseRepository):
                     cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == brush_id,
                     title == SITEBRUSHTORRENTS.TORRENT_NAME,
                     enclosure == SITEBRUSHTORRENTS.ENCLOSURE,
+                    SITEBRUSHTORRENTS.DOWNLOAD_ID != "0",
                 )
                 .count()
             )
@@ -303,7 +325,8 @@ class BrushRepository(BaseRepository):
 
     def update_brushtask_torrent_state(self, ids: list) -> None:
         """
-        更新刷流种子的状态
+        更新刷流种子的状态（删除后标记为已删除：DOWNLOAD_ID 置 0）
+        ids: list of (task_id, download_id) 或 (stat, task_id, download_id)
         """
         if not ids:
             return
@@ -311,7 +334,7 @@ class BrushRepository(BaseRepository):
             # ids 元素: (size_str, task_id, download_id)
             conditions = [
                 and_(cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == task_id, SITEBRUSHTORRENTS.DOWNLOAD_ID == download_id)
-                for _, task_id, download_id in ids
+                for task_id, download_id in [(x[1], x[2]) for x in ids]
             ]
             case_stmt = case(
                 *[(cond, size_str) for (size_str, _task_id, _download_id), cond in zip(ids, conditions)],

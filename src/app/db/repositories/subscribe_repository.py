@@ -198,6 +198,7 @@ class SubscribeRepository(BaseRepository):
         filter_rule: int | str | None = None,
         filter_include: str | None = None,
         filter_exclude: str | None = None,
+        filter_free: bool | None = None,
         save_path: str | None = None,
         download_setting: int = -1,
         fuzzy_match: int = 0,
@@ -247,7 +248,7 @@ class SubscribeRepository(BaseRepository):
                     NAME=media_info.title,
                     YEAR=media_info.year,
                     TMDBID=media_info.tmdb_id,
-                    IMAGE=media_info.get_message_image(),
+                    IMAGE=media_info.get_poster_image(),
                     RSS_SITES=JsonUtils.dumps(rss_sites),
                     SEARCH_SITES=JsonUtils.dumps(search_sites),
                     OVER_EDITION=over_edition,
@@ -258,6 +259,7 @@ class SubscribeRepository(BaseRepository):
                     FILTER_TEAM=filter_team,
                     FILTER_INCLUDE=filter_include,
                     FILTER_EXCLUDE=filter_exclude,
+                    FILTER_FREE=None if filter_free is None else int(filter_free),
                     SAVE_PATH=save_path,
                     DOWNLOAD_SETTING=download_setting,
                     FUZZY_MATCH=fuzzy_match,
@@ -293,6 +295,7 @@ class SubscribeRepository(BaseRepository):
             "filter_team": "FILTER_TEAM",
             "filter_include": "FILTER_INCLUDE",
             "filter_exclude": "FILTER_EXCLUDE",
+            "filter_free": "FILTER_FREE",
             "save_path": "SAVE_PATH",
             "download_setting": "DOWNLOAD_SETTING",
             "fuzzy_match": "FUZZY_MATCH",
@@ -301,34 +304,17 @@ class SubscribeRepository(BaseRepository):
             "note": "NOTE",
             "keyword": "KEYWORD",
         }
-        defaults = {
-            "year": "",
-            "keyword": "",
-            "tmdbid": "",
-            "image": "",
-            "rss_sites": "",
-            "search_sites": "",
-            "filter_restype": "",
-            "filter_pix": "",
-            "filter_rule": 0,
-            "filter_team": "",
-            "filter_include": "",
-            "filter_exclude": "",
-            "save_path": "",
-            "desc": "",
-            "note": "",
-            "over_edition": 0,
-            "download_setting": -1,
-            "fuzzy_match": 0,
-        }
         for k, v in kwargs.items():
             col = field_map.get(k)
             if col is None:
                 continue
-            if v is None and k in defaults:
-                v = defaults[k]
+            if v is None:
+                # None = 不更新该字段，保留原值
+                continue
             if k in ("rss_sites", "search_sites") and isinstance(v, list):
                 update_fields[col] = JsonUtils.dumps(v)
+            elif k == "filter_free":
+                update_fields[col] = None if v is None else (1 if v else 0)
             else:
                 update_fields[col] = v
         if not update_fields:
@@ -472,6 +458,7 @@ class SubscribeRepository(BaseRepository):
         filter_rule: int | str | None = None,
         filter_include: str | None = None,
         filter_exclude: str | None = None,
+        filter_free: bool | None = None,
         save_path: str | None = None,
         download_setting: int = -1,
         total_ep: int | str | None = None,
@@ -540,7 +527,7 @@ class SubscribeRepository(BaseRepository):
                     YEAR=media_info.year,
                     SEASON=season_str,
                     TMDBID=media_info.tmdb_id,
-                    IMAGE=media_info.get_message_image(),
+                    IMAGE=media_info.get_poster_image(),
                     RSS_SITES=JsonUtils.dumps(rss_sites),
                     SEARCH_SITES=JsonUtils.dumps(search_sites),
                     OVER_EDITION=over_edition,
@@ -551,6 +538,7 @@ class SubscribeRepository(BaseRepository):
                     FILTER_TEAM=filter_team,
                     FILTER_INCLUDE=filter_include,
                     FILTER_EXCLUDE=filter_exclude,
+                    FILTER_FREE=None if filter_free is None else int(filter_free),
                     SAVE_PATH=save_path,
                     DOWNLOAD_SETTING=download_setting,
                     FUZZY_MATCH=fuzzy_match,
@@ -591,6 +579,7 @@ class SubscribeRepository(BaseRepository):
             "filter_team": "FILTER_TEAM",
             "filter_include": "FILTER_INCLUDE",
             "filter_exclude": "FILTER_EXCLUDE",
+            "filter_free": "FILTER_FREE",
             "save_path": "SAVE_PATH",
             "download_setting": "DOWNLOAD_SETTING",
             "fuzzy_match": "FUZZY_MATCH",
@@ -603,39 +592,17 @@ class SubscribeRepository(BaseRepository):
             "note": "NOTE",
             "keyword": "KEYWORD",
         }
-        defaults = {
-            "year": "",
-            "season": "",
-            "keyword": "",
-            "tmdbid": "",
-            "image": "",
-            "rss_sites": "",
-            "search_sites": "",
-            "filter_restype": "",
-            "filter_pix": "",
-            "filter_rule": 0,
-            "filter_team": "",
-            "filter_include": "",
-            "filter_exclude": "",
-            "save_path": "",
-            "desc": "",
-            "note": "",
-            "over_edition": 0,
-            "download_setting": -1,
-            "fuzzy_match": 0,
-            "total_ep": 0,
-            "current_ep": 0,
-            "total": 0,
-            "lack": 0,
-        }
         for k, v in kwargs.items():
             col = field_map.get(k)
             if col is None:
                 continue
-            if v is None and k in defaults:
-                v = defaults[k]
+            if v is None:
+                # None = 不更新该字段，保留原值（避免编辑时意外清空站点/集数等配置）
+                continue
             if k in ("rss_sites", "search_sites") and isinstance(v, list):
                 update_fields[col] = JsonUtils.dumps(v)
+            elif k == "filter_free":
+                update_fields[col] = None if v is None else (1 if v else 0)
             else:
                 update_fields[col] = v
         if not update_fields:
@@ -660,9 +627,13 @@ class SubscribeRepository(BaseRepository):
         if not lack_episodes:
             lack = 0
             episodes: list[str] = []
+            new_current_ep: int | None = None
         else:
             lack = len(lack_episodes)
             episodes = [str(epi) for epi in lack_episodes]
+            # current_ep 语义 = 首个待下载集 → 缺失集最小值（转移/刷新后同步推进）
+            nums = [int(e) for e in lack_episodes if str(e).isdigit()]
+            new_current_ep = min(nums) if nums else None
         with self.session() as db:
             if rssid:
                 # 内联 update_rss_tv_episodes，确保与 LACK 更新在同一事务
@@ -675,11 +646,34 @@ class SubscribeRepository(BaseRepository):
                     )
                 else:
                     db.add(SubscribeTvEpisodes(RSSID=rssid, EPISODES=",".join(episodes)))
-                db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update({"LACK": lack})
+                update_fields: dict = {"LACK": lack}
+                if new_current_ep is not None:
+                    update_fields["CURRENT_EP"] = new_current_ep
+                db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update(update_fields)
             else:
+                update_fields = {"LACK": lack}
+                if new_current_ep is not None:
+                    update_fields["CURRENT_EP"] = new_current_ep
                 db.query(SubscribeTvs).filter(
                     title == SubscribeTvs.NAME, str(year) == SubscribeTvs.YEAR, season == SubscribeTvs.SEASON
-                ).update({"LACK": lack})
+                ).update(update_fields)
+
+    def update_rss_tv_total(self, rssid: int, total_ep: int, lack_episodes: list | None = None) -> None:
+        """更新电视剧总集数（TMDB 集数增加时同步），同时可选更新缺失集"""
+        if not rssid:
+            return
+        lack = len(lack_episodes) if lack_episodes else 0
+        episodes_str = ",".join(str(e) for e in lack_episodes) if lack_episodes else ""
+        with self.session() as db:
+            db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update(
+                {"TOTAL_EP": total_ep, "TOTAL": total_ep, "LACK": lack}
+            )
+            if rssid:
+                existing = db.query(SubscribeTvEpisodes).filter(int(rssid) == SubscribeTvEpisodes.RSSID).first()
+                if existing:
+                    existing.EPISODES = episodes_str
+                else:
+                    db.add(SubscribeTvEpisodes(RSSID=str(rssid), EPISODES=episodes_str))
 
     def delete_rss_tv(
         self, title: str | None = None, season: str | None = None, rssid: int | None = None, tmdbid: str | None = None

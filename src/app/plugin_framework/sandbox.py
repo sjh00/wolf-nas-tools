@@ -14,7 +14,9 @@ from typing import Any
 import log
 from app.core.exceptions import PluginError
 from app.message import Message
+from app.plugin_framework import api_registry
 from app.plugin_framework.context import PluginContext
+from app.plugin_framework.dependency_manager import PluginDependencyManager
 from app.plugin_framework.registry import PluginRegistry
 
 
@@ -43,6 +45,9 @@ class PluginSandbox:
         indexer_helper: Any | None = None,
         agent_service: Any | None = None,
         filetransfer_service: Any | None = None,
+        site_service: Any | None = None,
+        event_bus: Any | None = None,
+        app_context: Any | None = None,
     ):
         self._instances: dict[str, Any] = {}
         self._registry = plugin_registry
@@ -62,6 +67,9 @@ class PluginSandbox:
         self._indexer_helper = indexer_helper
         self._agent_service = agent_service
         self._filetransfer_service = filetransfer_service
+        self._site_service = site_service
+        self._event_bus = event_bus
+        self._app_context = app_context
 
     @staticmethod
     def _filter_kwargs(plugin_class: Any, deps: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +140,19 @@ class PluginSandbox:
             log.info(f"[Sandbox] 插件未启用，跳过加载: {plugin_id}")
             return False
 
+        # 加载前安装 manifest 声明的依赖（缺失时才安装，幂等）
+        deps = manifest.backend.dependencies
+        if deps:
+            ok, err = PluginDependencyManager.install_dependencies(dependencies=deps, plugin_id=plugin_id)
+            if not ok:
+                log.error(f"[Sandbox] 插件 {plugin_id} 依赖安装失败: {err}")
+                if self._plugin_log_repo is not None:
+                    try:
+                        self._plugin_log_repo.insert(plugin_id, "ERROR", f"依赖安装失败: {err}")
+                    except Exception:  # noqa: S110 - 日志写入失败不影响主流程
+                        pass
+                return False
+
         try:
             plugin_path = self._get_plugin_path(plugin_id)
             if not plugin_path:
@@ -188,10 +209,19 @@ class PluginSandbox:
                 "agent_service": self._agent_service,
                 "sync": self._sync_engine,
                 "filetransfer": self._filetransfer_service,
+                "site_service": self._site_service,
+                "event_bus": self._event_bus,
+                "app_context": self._app_context,
             }
             instance = plugin_class(ctx, **self._filter_kwargs(plugin_class, deps))
 
             self._instances[plugin_id] = instance
+
+            # 注册 manifest 声明的事件钩子
+            hooks = getattr(manifest.backend, "hooks", None) or []
+            for event in hooks:
+                if event:
+                    self._hook_system.register(event, plugin_id)
 
             # 调用生命周期方法
             if hasattr(instance, "on_enable"):
@@ -219,6 +249,12 @@ class PluginSandbox:
 
             self._instances.pop(plugin_id, None)
             self._cleanup_modules(plugin_id)
+
+            # 注销该插件的所有事件钩子
+            self._hook_system.unregister_all(plugin_id)
+
+            # 注销该插件的所有自定义 API 与公开回调
+            api_registry.unregister_plugin_all(plugin_id)
 
             # 自动注销该插件的所有消息命令
             self._message.clear_plugin_commands(plugin_id)

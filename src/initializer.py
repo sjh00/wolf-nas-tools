@@ -4,6 +4,7 @@ import log
 from app.core.root_path import get_script_path
 from app.core.settings import settings
 from app.core.system_config import SystemConfig
+from app.db.repositories.apikey_repo_adapter import APIKeyLogRepositoryAdapter, APIKeyRepositoryAdapter
 from app.db.repositories.config_repo_adapter import FilterGroupRepositoryAdapter
 from app.db.repositories.indexer_site_config_repo_adapter import IndexerSiteConfigRepositoryAdapter
 from app.db.repositories.site_repo_adapter import SiteRepositoryAdapter
@@ -11,6 +12,8 @@ from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.db.sql_adapter import adapt_sql_for_engine
 from app.domain.enums import SystemConfigKey
 from app.infrastructure.cache_system.events import init_event_bridge
+from app.infrastructure.redis import RedisStore
+from app.services.apikey_service import APIKeyService
 from app.services.category_init import CategoryInitializer
 from app.services.rbac_init import init_admin_user
 from app.services.rbac_init import init_rbac_system as rbac_init
@@ -18,15 +21,12 @@ from app.utils import ExceptionUtils
 
 
 def init_default_filters():
-    """首次启动时从 init_filter.sql 导入默认过滤规则"""
+    """启动时从 init_filter.sql 导入/补齐默认过滤规则（幂等：INSERT OR IGNORE 仅补新规则，不覆盖已有）"""
     sql_file = os.path.join(get_script_path(), "init_filter.sql")
     if not os.path.exists(sql_file):
         return
     try:
         repo = FilterGroupRepositoryAdapter()
-        groups = repo.get_config_filter_group()
-        if groups:
-            return
         with open(sql_file, encoding="utf-8") as f:
             for stmt in f.read().split(";\n"):
                 stmt = stmt.strip()
@@ -152,7 +152,7 @@ def update_config(indexer_statistics_repo=None):
     try:
         if "ptrefresh_date_cron" not in _config.get("pt", {}):
             _config.setdefault("pt", {})
-            _config["pt"]["ptrefresh_date_cron"] = "6"
+            _config["pt"]["ptrefresh_date_cron"] = "00:05"
             overwrite_config = True
     except Exception as e:
         ExceptionUtils.exception_traceback(e)
@@ -173,7 +173,6 @@ def update_config(indexer_statistics_repo=None):
 
 def check_redis():
     """检查 Redis 状态，仅记录日志，不阻塞启动"""
-    from app.infrastructure.redis import RedisStore
 
     try:
         redis_store = RedisStore()
@@ -192,9 +191,6 @@ def init_message_webhook_apikey(apikey_service=None):
     """
     try:
         if apikey_service is None:
-            from app.db.repositories.apikey_repo_adapter import APIKeyLogRepositoryAdapter, APIKeyRepositoryAdapter
-            from app.services.apikey_service import APIKeyService
-
             apikey_service = APIKeyService(
                 key_repo=APIKeyRepositoryAdapter(),
                 log_repo=APIKeyLogRepositoryAdapter(),

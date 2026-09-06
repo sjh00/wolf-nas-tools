@@ -9,7 +9,7 @@ from lxml import etree
 from PIL import Image
 
 import log
-from app.infrastructure.chrome import ChromeClient
+from app.infrastructure.chrome import BrowserSession
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient, HttpClientError
 from app.infrastructure.http.config import HttpClientConfig
@@ -19,13 +19,14 @@ from app.plugin_framework.builtin_plugins.autosignin.backend.handlers.base impor
     SiteSigninHandler,
 )
 from app.utils import StringUtils
+from app.utils.browser_mode import get_chrome_server_url
 from app.utils.chinese_utils import to_simplified
 from app.utils.json_utils import JsonUtils
 from app.utils.path_utils import get_temp_path
 
 
 class Tjupt(SiteSigninHandler):
-    site_url = "tjupt.org"
+    site_id = "tjupt"
     _sign_regex = ['<a href="attendance.php">今日已签到</a>']
     _succeed_regex = [
         "这是您的首次签到，本次签到获得\\d+个魔力值。",
@@ -33,9 +34,8 @@ class Tjupt(SiteSigninHandler):
         "重新签到成功，本次签到获得\\d+个魔力值",
     ]
 
-    def __init__(self, plugin_ctx, rate_limiter=None, drissionpage_helper=None):
+    def __init__(self, plugin_ctx, rate_limiter=None):
         super().__init__(plugin_ctx, rate_limiter)
-        self._drissionpage_helper = drissionpage_helper or ChromeClient()
 
     @property
     def _answer_file(self) -> str:
@@ -48,13 +48,14 @@ class Tjupt(SiteSigninHandler):
         cookie = ctx.cookie
         ua = ctx.ua
         base_url = StringUtils.get_base_url(signurl)
+        attendance_url = base_url + "/attendance.php"
 
         if not os.path.exists(os.path.dirname(self._answer_file)):
             os.makedirs(os.path.dirname(self._answer_file), exist_ok=True)
 
         try:
             html_res = HttpClient(config=HttpClientConfig()).get(
-                url=signurl,
+                url=attendance_url,
                 headers={"User-Agent": ua} if ua else None,
                 auth=CookieAuth(cookie) if cookie else None,
                 raise_for_status=False,
@@ -85,7 +86,7 @@ class Tjupt(SiteSigninHandler):
                     captcha_img_hash = self._tohash(captcha_img)
                     self._plugin_ctx.debug(f"签到验证码图片hash {captcha_img_hash}")
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[tjupt]忽略异常: {e}")
+                log.debug(f"[Sites]忽略异常: {e}")
 
         values = cast(list, html.xpath("//input[@name='answer']/@value"))
         options = cast(list, html.xpath("//input[@name='answer']/following-sibling::text()"))
@@ -103,7 +104,7 @@ class Tjupt(SiteSigninHandler):
             if captcha_answer and captcha_img_hash:
                 for value, answer in answers:
                     if str(captcha_answer) == str(answer):
-                        return self._do_signin(answer=value, ctx=ctx, signurl=signurl)
+                        return self._do_signin(answer=value, ctx=ctx, attendance_url=attendance_url)
         except (FileNotFoundError, OSError):
             self._plugin_ctx.debug("查询本地已知答案失败，继续请求豆瓣查询")
 
@@ -149,7 +150,7 @@ class Tjupt(SiteSigninHandler):
                         return self._do_signin(
                             answer=value,
                             ctx=ctx,
-                            signurl=signurl,
+                            attendance_url=attendance_url,
                             existing_answers=existing_answers,
                             captcha_img_hash=captcha_img_hash,
                         )
@@ -158,7 +159,13 @@ class Tjupt(SiteSigninHandler):
         self._plugin_ctx.error("豆瓣图片匹配，未获取到匹配答案")
 
         image_search_url = f"https://lens.google.com/uploadbyurl?url={img_url}"
-        html_text = self._drissionpage_helper.get_page_html(url=image_search_url)
+        server_url = get_chrome_server_url()
+        if not server_url:
+            self._plugin_ctx.info("Chrome 服务器未配置或未启用，跳过 Google 识图")
+            return SigninResult.fail(site, "未配置 Chrome 服务器")
+        with BrowserSession(site_key="tjupt", server_url=server_url) as session:
+            session.navigate(image_search_url)
+            html_text = session.html()
         search_results = BeautifulSoup(html_text, "lxml").find_all("div", class_="UAiK1e")
         if not search_results:
             self._plugin_ctx.info("Google识图失败，未获取到识图结果")
@@ -184,7 +191,7 @@ class Tjupt(SiteSigninHandler):
                 return self._do_signin(
                     answer=count_results[0][1],
                     ctx=ctx,
-                    signurl=signurl,
+                    attendance_url=attendance_url,
                     existing_answers=existing_answers,
                     captcha_img_hash=captcha_img_hash,
                 )
@@ -193,7 +200,9 @@ class Tjupt(SiteSigninHandler):
 
         return SigninResult.fail(site, "未获取到匹配答案")
 
-    def _do_signin(self, answer, ctx: SiteSigninContext, signurl: str, existing_answers=None, captcha_img_hash=None):
+    def _do_signin(
+        self, answer, ctx: SiteSigninContext, attendance_url: str, existing_answers=None, captcha_img_hash=None
+    ):
         site = ctx.site
         cookie = ctx.cookie
         ua = ctx.ua
@@ -202,7 +211,7 @@ class Tjupt(SiteSigninHandler):
 
         try:
             sign_in_res = HttpClient(config=HttpClientConfig()).post(
-                url=signurl,
+                url=attendance_url,
                 data=data,
                 headers={"User-Agent": ua} if ua else None,
                 auth=CookieAuth(cookie) if cookie else None,

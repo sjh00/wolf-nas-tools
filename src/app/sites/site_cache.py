@@ -61,6 +61,7 @@ class SiteCache:
             site_info = self._build_site_info(entity)
             sid = site_info["id"]
             self._site_by_ids[sid] = site_info
+            # 统一标识索引：配置 id 与站点名均可解析到同一 site_info
 
             strict_url = site_info.get("strict_url")
             if strict_url:
@@ -70,6 +71,12 @@ class SiteCache:
 
             if site_info.get("rss_enable"):
                 self._rss_sites.append(site_info)
+                # 用户配置的 RSS 域名（与主站不一致时）注册到引擎匹配，供 RSS 种子识别
+                rssurl = site_info.get("rssurl") or ""
+                if rssurl:
+                    rss_domain = StringUtils.get_url_domain(rssurl)
+                    if rss_domain:
+                        self._site_engine.register_rss_domain(site_info.get("name") or "", rss_domain)
             if site_info.get("brush_enable"):
                 self._brush_sites.append(site_info)
             if site_info.get("statistic_enable"):
@@ -86,6 +93,7 @@ class SiteCache:
                 self._indexer_site_config_repo.upsert_site(
                     site_name=site_info["name"],
                     source="builtin",
+                    enabled=True,
                 )
         except Exception as e:
             log.error(f"[SiteCache]同步索引器站点配置失败: {e!s}")
@@ -94,14 +102,12 @@ class SiteCache:
         """自动创建所有公开（BT）内置站点，BT 站点无需 Cookie 即可使用。"""
         try:
             existing = {s.name for s in self._repo.list_all()}
-            disabled = {row.site_name for row in self._indexer_site_config_repo.list_all() if not row.enabled}
+            tracked = {row.site_name.lower() for row in self._indexer_site_config_repo.list_all()}
             created = 0
             for site_def in self._site_engine.all_sites():
                 if not site_def.public:
                     continue
-                if site_def.name in existing:
-                    continue
-                if site_def.name.lower() in {n.lower() for n in disabled}:
+                if site_def.name in existing or site_def.name.lower() in tracked:
                     continue
                 signurl = site_def.domain
                 if not signurl.startswith(("http://", "https://")):
@@ -189,6 +195,7 @@ class SiteCache:
             "parse": bool(note.get("parse")),
             "unread_msg_notify": bool(note.get("message")),
             "chrome": bool(note.get("chrome")),
+            "browser_persistent": bool(note.get("browser_persistent")),
             "proxy": bool(note.get("proxy")),
             "subtitle": bool(note.get("subtitle")),
             "tag": bool(note.get("tag")),
@@ -217,6 +224,7 @@ class SiteCache:
     ) -> dict | list[dict]:
         """获取站点配置，与旧 Sites.get_sites() 完全兼容."""
         if siteid:
+            # 运行时统一使用 DB 主键 id；配置 id/名称仅用于迁移与静态定义
             return self._site_by_ids.get(int(siteid)) or {}
         if siteurl:
             site_def = self._site_engine.get_by_url(siteurl)
@@ -257,6 +265,16 @@ class SiteCache:
     def get_sites_by_name(self, name: str) -> list[dict]:
         """根据站点名称获取站点配置."""
         return [site for site in self._site_by_ids.values() if site.get("name") == name]
+
+    def resolve_site_db_id(self, site_key: str) -> int | None:
+        """将站点配置 id 或名称解析为 DB 主键 id（兼容历史脏数据迁移）."""
+        site_key = str(site_key)
+        for site_def in self._site_engine.all_sites():
+            if str(site_def.id) == site_key or site_def.name == site_key:
+                for site_info in self._site_by_ids.values():
+                    if site_info.get("name") == site_def.name:
+                        return site_info["id"]
+        return None
 
     def get_max_site_pri(self) -> int:
         """获取最大站点优先级."""

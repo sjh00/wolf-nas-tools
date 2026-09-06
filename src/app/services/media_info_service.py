@@ -200,7 +200,9 @@ class MediaInfoService:
 
     def name_test(self, name, subtitle) -> dict:
         """名称识别测试"""
-        media_info = self._media.get_media_info(title=name, subtitle=subtitle)
+        # cache=False：避免命中媒体缓存而返回首次缓存的资源信息，
+        # 应始终反映当前输入的资源解析（org_string/发布组/音视频等）
+        media_info = self._media.get_media_info(title=name, subtitle=subtitle, cache=False)
         if not media_info:
             return {"name": "无法识别"}
         return mediainfo_dict(media_info)
@@ -208,6 +210,11 @@ class MediaInfoService:
     def search_media_infos(self, keyword, source, page) -> list[dict]:
         """搜索媒体词条"""
         medias = search_media_infos(keyword=keyword, source=source, page=page)
+        if not medias and source != "douban":
+            # 空结果且 TMDB 搜索出错 → 抛出错误让前端提示"搜索失败"，而非误导性的"未找到相关媒体"
+            search_error = self._media.get_tmdb_search_error()
+            if search_error:
+                raise ServiceError(f"TMDB 搜索请求失败，请稍后重试: {search_error}")
         results = []
         for media in medias:
             d = media.to_dict()
@@ -348,6 +355,18 @@ class MediaInfoService:
             mediaid=media_info.tmdb_id,
         )
         seasons = self._media.get_tmdb_tv_seasons(media_info.tmdb_info)
+        sub_seasons: list[int] = []
+        if mtype == MediaType.TV:
+            try:
+                sub_seasons = self._subscribe.get_subscribe_seasons(
+                    tmdbid=media_info.tmdb_id,
+                    title=media_info.title,
+                    year=media_info.year,
+                )
+            except (ServiceError, RepositoryError, DomainError):
+                raise
+            except Exception as e:
+                log.error(f"[MediaService]查询已订阅季失败: {str(e)}")
         if seasons:
             for season in seasons:
                 try:
@@ -362,7 +381,7 @@ class MediaInfoService:
                 except (ServiceError, RepositoryError, DomainError):
                     raise
                 except Exception as e:
-                    log.error(f"[media_detail]检查季存在状态失败: {str(e)}")
+                    log.error(f"[MediaService]检查季存在状态失败: {str(e)}")
                     season.update({"state": False})
         poster_image = media_info.get_poster_image()
         if poster_image:
@@ -372,6 +391,7 @@ class MediaInfoService:
         return {
             "tmdbid": media_info.tmdb_id,
             "douban_id": media_info.douban_id,
+            "type": mtype.value,
             "background": self._media.get_tmdb_backdrops(tmdbinfo=media_info.tmdb_info),
             "image": poster_image,
             "vote": media_info.vote_average,
@@ -389,4 +409,5 @@ class MediaInfoService:
             "item_url": item_url,
             "rssid": rssid,
             "seasons": seasons,
+            "sub_seasons": sub_seasons,
         }

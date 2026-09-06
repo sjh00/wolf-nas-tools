@@ -9,15 +9,17 @@ import log
 from app.db.models import SITEUSERINFOSTATS as _S
 from app.db.repositories.site_repo_adapter import SiteRepositoryAdapter
 from app.db.repositories.site_repository import SiteRepository
-from app.infrastructure.chrome import ChromeClient
+from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.http import CookieAuth, HttpClient, HttpClientConfig
 from app.infrastructure.rate_limiter import MemoryTokenBucketBackend, RateLimitEngine
 from app.infrastructure.thread import ThreadExecutor
 from app.message import Message
+from app.message.web_store import WebMessageStore
 from app.sites.engine import SiteEngine
 from app.sites.site_cache import SiteCache
 from app.sites.site_favicon_service import SiteFaviconService
 from app.utils import ExceptionUtils, JsonUtils, StringUtils
+from app.utils.browser_mode import build_browser_mode
 from app.utils.config_tools import get_proxies
 
 lock = Lock()
@@ -44,7 +46,6 @@ class SiteUserInfo:
         site_favicon_service: SiteFaviconService,
         site_engine: SiteEngine,
         message: Message | None = None,
-        drissionpage_helper: ChromeClient | None = None,
         thread_executor: ThreadExecutor | None = None,
         rate_limiter: RateLimitEngine | None = None,
     ):
@@ -52,7 +53,6 @@ class SiteUserInfo:
         self._site_repository = site_repository
         self._site_favicon_service = site_favicon_service
         self._site_engine = site_engine
-        self._drissionpage_helper = drissionpage_helper or ChromeClient()
         self._message = message
         self._thread_executor = thread_executor or ThreadExecutor(
             max_workers=self._MAX_CONCURRENCY, name="site_refresh"
@@ -119,6 +119,7 @@ class SiteUserInfo:
                 proxy=proxy,
                 api_key=api_key,
                 bearer_token=bearer_token,
+                browser_persistent=bool(site_info.get("browser_persistent")),
             )
             if site_user_info:
                 log.debug(f"[Sites]站点 {site_name} 开始以 {site_user_info.site_schema()} 模型解析")
@@ -129,7 +130,7 @@ class SiteUserInfo:
                 if not site_user_info.site_favicon:
                     site_def = self._site_engine.get_by_url(site_url)
                     if site_def and site_def.favicon:
-                        self._fetch_favicon_from_url(site_user_info, site_def.favicon)
+                        site_user_info.site_favicon = site_def.favicon
 
                 # 获取不到数据时，仅返回错误信息，不做历史数据更新
                 if site_user_info.err_msg:
@@ -177,6 +178,7 @@ class SiteUserInfo:
         proxy=False,
         api_key=None,
         bearer_token=None,
+        browser_persistent=False,
     ):
         if not site_cookie and not site_headers and not api_key and not bearer_token:
             return None
@@ -206,35 +208,35 @@ class SiteUserInfo:
                 proxy=proxy,
                 api_key=api_key,
                 bearer_token=bearer_token,
+                browser_persistent=browser_persistent,
             ) or _log_error(site_name)
 
         html_text = None
-        if emulate:
-            chrome = self._drissionpage_helper
-            html_text = chrome.get_page_html(url=url, cookies=site_cookie)
-            if not html_text:
-                log.error(f"[Sites]{site_name} 跳转站点失败")
-                return None
+        proxies = get_proxies() if proxy else None
+        proxy_url = proxies.get("http") if proxies else None
+        rate_limiter = getattr(engine, "site_limiter", None)
+        rate_limiter_engine = rate_limiter.engine if rate_limiter else None
+        rl_kwargs = {}
+        if rate_limiter and site_id:
+            rate_config = rate_limiter.get_rate(str(site_id))
+            if rate_config:
+                rl_kwargs = {"rate_limit_key": f"site:{site_id}", "rate_limit_rate": rate_config[0]}
+        browser = build_browser_mode(
+            site_info={"chrome": emulate, "ua": ua, "browser_render": False},
+            site_key=site_name or url,
+            proxy_url=proxy_url,
+            render_html=False,
+        )
+        client = HttpClient(
+            config=HttpClientConfig(proxy_url=proxy_url, browser=browser),
+            rate_limiter=rate_limiter_engine,
+        )
+        res = client.get(url=url, headers=site_headers, auth=CookieAuth(site_cookie), **rl_kwargs)
+        if res.status_code == 200:
+            html_text = res.text
         else:
-            proxies = get_proxies() if proxy else None
-            proxy_url = proxies.get("http") if proxies else None
-            rate_limiter = getattr(engine, "site_limiter", None)
-            rate_limiter_engine = rate_limiter.engine if rate_limiter else None
-            rl_kwargs = {}
-            if rate_limiter and site_id:
-                rate_config = rate_limiter.get_rate(str(site_id))
-                if rate_config:
-                    rl_kwargs = {"rate_limit_key": f"site:{site_id}", "rate_limit_rate": rate_config[0]}
-            client = HttpClient(
-                config=HttpClientConfig(timeout=10, proxy_url=proxy_url),
-                rate_limiter=rate_limiter_engine,
-            )
-            res = client.get(url=url, headers=site_headers, auth=CookieAuth(site_cookie), **rl_kwargs)
-            if res.status_code == 200:
-                html_text = res.text
-            else:
-                log.error(f"[Sites]站点 {site_name} 无法访问：{url}")
-                return None
+            log.error(f"[Sites]站点 {site_name} 无法访问：{url}")
+            return None
 
         return engine.get_user_info(
             url,
@@ -247,6 +249,7 @@ class SiteUserInfo:
             proxy=proxy,
             api_key=api_key,
             bearer_token=bearer_token,
+            browser_persistent=browser_persistent,
         ) or _log_error(site_name)
 
     def _notify_unread_msg(self, site_name, site_user_info, unread_msg_notify):
@@ -276,7 +279,6 @@ class SiteUserInfo:
         :param specify_sites: 指定站点名称列表，None 表示全部
         """
         lock_key = f"site:refresh:{','.join(specify_sites) if specify_sites else 'all'}"
-        from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 
         refresh_lock = get_lock_manager().create_lock(lock_key, ttl_seconds=600)
         acquired = refresh_lock.acquire()
@@ -316,7 +318,23 @@ class SiteUserInfo:
         if inc_downloads or inc_uploads:
             if self.message is None:
                 return
+            msg_text = "\n".join(string_list)
+            # 内容与最近一次已发送的一致（如重启/重复刷新）则跳过，避免产生重复统计消息
+            if self._stats_message_unchanged(msg_text):
+                log.info("[Sites]站点数据统计无变化，跳过重复发送")
+                return
             self.message.send_user_statistics_message(string_list)
+
+    def _stats_message_unchanged(self, msg_text: str) -> bool:
+        """统计消息内容是否与最近一次已发送（持久化）的一致"""
+        try:
+            items = WebMessageStore.instance().history(user_id="", limit=20)
+            for item in reversed(items):
+                if (item.get("title") or "").strip() == "站点数据统计":
+                    return (item.get("content") or "").strip() == msg_text.strip()
+        except Exception as e:
+            log.debug(f"[Sites]统计消息去重检查失败: {e}")
+        return False
 
     def refresh_site_data(self, force=False, specify_sites=None) -> dict:
         """
@@ -522,19 +540,19 @@ class SiteUserInfo:
             return min(dates).strftime("%Y-%m-%d")
         return ""
 
-    def _fetch_favicon_from_url(self, site_user_info, url):
+    def _fetch_favicon_from_url(self, site_user_info, url, ua=""):
         try:
             engine = self._site_engine
             rate_limiter = getattr(engine, "site_limiter", None)
             rate_limiter_engine = rate_limiter.engine if rate_limiter else None
             client = HttpClient(
-                config=HttpClientConfig(timeout=10),
+                config=HttpClientConfig(),
                 rate_limiter=rate_limiter_engine,
             )
-            res = client.get(url=url)
+            res = client.get(url=url, headers={"User-Agent": ua or "Mozilla/5.0"})
             site_user_info.site_favicon = base64.b64encode(res.content).decode()
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[site_userinfo]忽略异常: {e}")
+            log.debug(f"[SiteUserInfo]忽略异常: {e}")
 
     @staticmethod
     def __format_filesize(size_bytes):

@@ -3,13 +3,15 @@ System Router — FastAPI 迁移
 对应原 web/controllers/system.py，复用 app/services/system_service.py
 """
 
+import asyncio
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 import log
@@ -30,20 +32,26 @@ from api.deps import (
     get_system_info_service,
     get_system_lifecycle_service,
     get_system_scheduler_service,
+    get_thread_executor,
     get_user_manage_service,
     get_web_search_service,
     require_any_permission,
     require_permission,
 )
+from app.agent.providers import list_embedding_models, validate_api_url
 from app.agent.providers.base import ProviderConfig
 from app.agent.providers.gemini import GeminiProvider
 from app.agent.providers.ollama import OllamaProvider
 from app.agent.providers.openai import OpenAIProvider
-from app.core.exceptions import DomainError, ResourceNotFoundError, ServiceError
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AuthError, DomainError, PermissionDenied, ResourceNotFoundError, ServiceError
+from app.core.root_path import get_project_root
 from app.core.system_config import SystemConfig
 from app.domain.enums import SystemConfigKey
 from app.indexer.registry import get_all_clients as get_all_indexers
 from app.infrastructure.cache_system import TokenCache
+from app.infrastructure.cache_system.manager import get_cache_manager
+from app.infrastructure.progress import ProgressTracker
 from app.infrastructure.security import generate_password_hash
 from app.infrastructure.temp import temp_manager
 from app.mediaserver.registry import get_all_clients as get_all_mediaservers
@@ -55,6 +63,7 @@ from app.schemas.common import CommonResponse
 from app.services.auth_service import AuthService
 from app.services.config_reloader import ConfigReloader
 from app.services.indexer_service import IndexerService
+from app.services.log_search_service import LogSearchService
 from app.services.log_streaming_service import LogStreamingService
 from app.services.site_config_updater import SiteConfigUpdater
 from app.services.system.config import IndexerConfigService
@@ -130,6 +139,11 @@ class SystemConfigRequest(BaseModel):
     value: str | None = None
 
 
+class ScraperConfigRequest(BaseModel):
+    scraper_nfo: dict | None = None
+    scraper_pic: dict | None = None
+
+
 class TestMessageClientRequest(BaseModel):
     type: str | None = None
     config: str | None = None
@@ -177,6 +191,12 @@ class AgentModelsRequest(BaseModel):
     provider_name: str
     api_url: str | None = None
     api_key: str | None = None
+
+
+class DocReadRequest(BaseModel):
+    """读取内置文档请求"""
+
+    name: str
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +394,7 @@ def restory_backup(
     filename = req.file_name
     result = svc.restore_from_backup(filename)
     if result.success:
-        return success(data=[], msg=result.message)
+        return success(data=[], message=result.message)
     return fail(msg=result.message)
 
 
@@ -446,10 +466,8 @@ def test_indexer(
     data["test"] = True
     result = svc.save_config(data)
     if result.success:
-        if result.code == 0:
-            return success(msg=result.msg)
-        return fail(code=result.code, msg=result.msg)
-    return fail(code=result.code, msg=result.msg)
+        return success(message=result.msg)
+    return fail(msg=result.msg)
 
 
 @router.post("/indexers/config", response_model=CommonResponse, summary="保存索引器配置")
@@ -459,9 +477,9 @@ def save_indexer_config(
     svc=Depends(get_indexer_config_service),
 ):
     result = svc.save_config(req.data)
-    if result.success and result.code == 0:
+    if result.success:
         return success()
-    return fail(code=result.code, msg=result.msg)
+    return fail(msg=result.msg)
 
 
 @router.post("/mediaservers", response_model=CommonResponse, summary="获取媒体服务器配置信息")
@@ -495,10 +513,8 @@ def test_mediaserver(
     data["test"] = True
     result = svc.save_config(data)
     if result.success:
-        if result.code == 0:
-            return success(msg=result.msg)
-        return fail(code=result.code, msg=result.msg)
-    return fail(code=result.code, msg=result.msg)
+        return success(message=result.msg)
+    return fail(msg=result.msg)
 
 
 @router.post("/mediaservers/config", response_model=CommonResponse, summary="保存媒体服务器配置")
@@ -508,9 +524,9 @@ def save_mediaserver_config(
     svc=Depends(get_media_server_config_service),
 ):
     result = svc.save_config(req.data)
-    if result.success and result.code == 0:
+    if result.success:
         return success()
-    return fail(code=result.code, msg=result.msg)
+    return fail(msg=result.msg)
 
 
 @router.post("/scheduler/run", response_model=CommonResponse, summary="运行定时任务")
@@ -531,16 +547,18 @@ def search(
     req: SearchRequest,
     current_user: UserContext = Depends(require_any_permission("setting:view", "setting:update")),
     svc=Depends(get_web_search_service),
+    executor=Depends(get_thread_executor),
 ):
     """
-    WEB资源搜索（同步执行，前端并行轮询进度）
+    WEB资源搜索（后台执行，前端轮询进度和结果）
     """
     session_id = str(uuid.uuid4())
     TokenCache.delete("search")
-    TokenCache.set(f"search_session:{current_user.user_id}", session_id, ttl=600)
+    TokenCache.set(f"search_session:{current_user.user_id}", session_id, ttl=1800)
     search_word = req.search_word
     ident_flag = not req.unident
-    result = svc.search(
+    executor.submit(
+        svc.search,
         search_word=search_word,
         ident_flag=ident_flag,
         filters=req.filters,
@@ -548,9 +566,80 @@ def search(
         media_type=req.media_type,
         session_id=session_id,
     )
-    if result.code != 0:
-        return fail(code=result.code, msg=result.msg)
-    return success()
+    return success(data={"session_id": session_id})
+
+
+@router.get("/search/progress/{session_id}", summary="SSE 搜索进度")
+async def search_progress(session_id: str):
+    """以 SSE 流推送搜索进度（per-session + 全局详细进度）"""
+
+    async def event_stream():
+        tracker = ProgressTracker()
+        last_val = -1
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 600
+        missing_since: float | None = None
+        while loop.time() < deadline:
+            detail = tracker.get_process(f"search:{session_id}")
+            if not detail:
+                # 会话无进度记录：后端重启后内存进度已清空，或会话早已结束。
+                # 宽限 3s 覆盖“SSE 先于搜索任务启动”的竞态，超时关闭流让前端回源已持久化的结果
+                now = loop.time()
+                if missing_since is None:
+                    missing_since = now
+                elif now - missing_since > 3:
+                    break
+                await asyncio.sleep(0.3)
+                continue
+            missing_since = None
+            val = detail.get("value", 0)
+            if val != last_val:
+                last_val = val
+                yield f"data: {json.dumps(detail, ensure_ascii=False)}\n\n"
+            # 已结束（enable=False 且 value>=100）→ 关闭流
+            if not detail.get("enable") and val >= 100:
+                break
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/caches", response_model=CommonResponse, summary="获取缓存列表与统计")
+def list_caches(
+    current_user: UserContext = Depends(require_permission("setting:view")),
+):
+    """列出所有缓存及其键数/占用统计"""
+    manager = get_cache_manager()
+    stats = manager.get_stats()
+    names = manager.get_all_cache_names()
+    data = []
+    for name in names:
+        stat = stats.get(name) or {}
+        if isinstance(stat, dict) and "error" in stat:
+            data.append({"name": name, "keys": 0, "error": stat["error"]})
+        else:
+            data.append({"name": name, **stat})
+    return success(data=data)
+
+
+class CacheClearRequest(BaseModel):
+    name: str | None = None
+
+
+@router.post("/caches/clear", response_model=CommonResponse, summary="清理缓存（按名或全部）")
+def clear_cache(
+    req: CacheClearRequest,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+):
+    """按缓存名清理，未指定则清空全部缓存"""
+    manager = get_cache_manager()
+    if req.name:
+        cleared = manager.cache_clear(req.name)
+        if not cleared:
+            return fail(msg=f"缓存不存在: {req.name}")
+        return success(message=f"已清理缓存: {req.name}")
+    manager.clear_all()
+    return success(message="已清理全部缓存")
 
 
 def _flatten_config(cfg: dict, prefix: str = "") -> dict:
@@ -592,6 +681,34 @@ def get_all_config(
     return success(data=flat)
 
 
+@router.post("/config/scraper", response_model=CommonResponse, summary="获取刮削配置")
+def get_scraper_config(
+    current_user: UserContext = Depends(require_any_permission("setting:view", "setting:update")),
+    svc=Depends(get_system_config_service),
+):
+    cfg = svc.get(SystemConfigKey.UserScraperConf)
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+            # 兼容旧版双重 JSON 编码
+            if isinstance(cfg, str):
+                cfg = json.loads(cfg)
+        except Exception:
+            cfg = None
+    return success(data=cfg or {})
+
+
+@router.post("/config/scraper/save", response_model=CommonResponse, summary="设置刮削配置")
+def set_scraper_config(
+    req: ScraperConfigRequest,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+    svc=Depends(get_system_config_service),
+):
+    value = req.dict(exclude_none=True)
+    svc.set(SystemConfigKey.UserScraperConf, value)
+    return success()
+
+
 @router.post("/message_clients/test", response_model=CommonResponse, summary="测试消息客户端连接")
 def test_message_client(
     req: TestMessageClientRequest,
@@ -623,12 +740,17 @@ def update_config(
 @router.post("/agent/models", response_model=CommonResponse, summary="查询 LLM 模型列表")
 def list_agent_models(
     req: AgentModelsRequest,
-    current_user: UserContext = Depends(require_permission("setting:view")),
+    current_user: UserContext = Depends(require_permission("setting:update")),
 ):
     """查询 LLM Provider 支持的模型列表"""
 
     if not req.api_url or not req.api_key:
         return success(data=[])
+
+    try:
+        validate_api_url(req.api_url)
+    except ValueError as e:
+        return fail(msg=str(e))
 
     config = ProviderConfig(
         name=req.provider_name,
@@ -651,6 +773,35 @@ def list_agent_models(
     except Exception as e:
         log.warn(f"[Agent]查询模型列表失败: {e}")
         return fail(msg=str(e))
+
+
+@router.post("/agent/embedding_models", response_model=CommonResponse, summary="查询 Embedding 模型列表")
+def list_agent_embedding_models(
+    req: AgentModelsRequest,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+):
+    """查询 Embedding Provider 支持的模型列表（动态拉取，失败回退精选）"""
+    models = list_embedding_models(
+        provider_name=req.provider_name,
+        api_url=req.api_url or "",
+        api_key=req.api_key or "",
+    )
+    return success(data=models)
+
+
+@router.post("/docs/read", response_model=CommonResponse, summary="读取内置文档 Markdown")
+def read_system_doc(
+    req: DocReadRequest,
+    current_user: UserContext = Depends(require_permission("agent:view")),
+):
+    """读取内置 docs/*.md 文档内容（供消息中心"相关文档"链接查看，防目录穿越）"""
+    name = Path(req.name).name
+    if not name.endswith(".md"):
+        name = f"{name}.md"
+    doc_path = get_project_root() / "docs" / name
+    if not doc_path.is_file():
+        return fail(msg=f"文档不存在: {name}")
+    return success(data={"name": name, "content": doc_path.read_text(encoding="utf-8")})
 
 
 @router.post("/message_clients/update", response_model=CommonResponse, summary="更新消息客户端")
@@ -688,7 +839,7 @@ def user_manager(
 
     if result.success:
         return success(data={"success": False})
-    return fail(code=-1, success=False, message=result.message or "操作失败")
+    return fail(code=ErrorCode.OPERATION_FAILED, success=False, message=result.message or "操作失败")
 
 
 @router.post("/commands", response_model=CommonResponse, summary="获取系统命令列表")
@@ -723,7 +874,14 @@ def refresh_process(
     svc=Depends(get_progress_service),
 ):
     result = svc.get_progress(ptype=req.type)
-    return success(data={"value": result.value, "text": result.text or "正在处理..."})
+    return success(
+        data={
+            "value": result.value,
+            "text": result.text or "正在处理...",
+            "enable": result.enable,
+            "exists": result.exists,
+        }
+    )
 
 
 @router.post("/messages/send", response_model=CommonResponse, summary="发送自定义消息")
@@ -760,7 +918,7 @@ def send_plugin_message(
 class LogsRequest(BaseModel):
     source: str | None = None
     level: str | None = None
-    limit: int | None = 200
+    limit: int | None = 1000
 
 
 @router.post("/logs", response_model=CommonResponse, summary="获取日志")
@@ -774,6 +932,61 @@ def get_logs(
     if req.limit and req.limit > 0:
         logs = logs[-req.limit :]
     return success(data=logs)
+
+
+class LogsSearchRequest(BaseModel):
+    keyword: str | None = None
+    level: str | None = None
+    source: str | None = None
+    page: int = 1
+    page_size: int = 1000
+    hours: int | None = 24
+
+
+@router.post("/logs/search", response_model=CommonResponse, summary="全文搜索日志")
+def search_logs(
+    req: LogsSearchRequest,
+    user: str = Depends(require_permission("log:view")),
+):
+    """搜索磁盘日志文件（含轮转文件）中的日志，支持分页；默认仅检索最近一天."""
+    result = LogSearchService().search(
+        keyword=req.keyword,
+        level=req.level,
+        source=req.source,
+        page=req.page,
+        page_size=req.page_size,
+        hours=req.hours,
+    )
+    return success(data=result)
+
+
+@router.post("/logs/sources", response_model=CommonResponse, summary="获取日志来源列表")
+def list_log_sources(
+    req: EmptyRequest = EmptyRequest(),
+    user: str = Depends(require_permission("log:view")),
+):
+    """返回日志中出现过的全部来源，供前端来源下拉框使用（默认仅统计最近一天）."""
+    return success(data=LogSearchService().list_sources())
+
+
+@router.post("/logs/export", response_model=None, summary="导出日志")
+def export_logs(
+    req: LogsSearchRequest,
+    user: str = Depends(require_permission("log:view")),
+):
+    """导出匹配日志为文本文件下载（默认仅最近一天的日志）."""
+    text = LogSearchService().export_text(
+        keyword=req.keyword,
+        level=req.level,
+        source=req.source,
+        hours=req.hours,
+    )
+    filename = f"nexus-media-logs-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+    return Response(
+        content=text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/processes", response_model=CommonResponse, summary="获取进程列表")
@@ -806,17 +1019,15 @@ def stream_logging(
     if not user_ctx and token:
         user_ctx = AuthService.verify_token(token)
     if not user_ctx:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="认证失败，请检查登录状态或 Token",
+        raise AuthError(
+            "认证失败，请检查登录状态或 Token",
+            errcode=ErrorCode.UNAUTHORIZED,
+            http_status=401,
         )
 
     # 权限检查
-    if not user_ctx.is_superadmin and "log:view" not in user_ctx.permissions:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="权限不足，需要日志查看权限",
-        )
+    if "log:view" not in user_ctx.permissions:
+        raise PermissionDenied("权限不足，需要日志查看权限")
 
     log_streaming_service = LogStreamingService(sleep_interval=0.3)
     return StreamingResponse(log_streaming_service.stream(source or ""), media_type="text/event-stream")
@@ -841,8 +1052,8 @@ def update_site_config(
     payload: EmptyRequest | None = None,
 ):
     """手动触发站点配置更新"""
-    if not user.is_superadmin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限")
+    if "setting:update" not in user.permissions:
+        raise PermissionDenied("需要站点配置更新权限")
 
     try:
         force = bool(payload and payload.data and payload.data.get("force"))

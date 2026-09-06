@@ -1,4 +1,5 @@
 import contextlib
+import html
 import time
 from threading import Lock
 from urllib.parse import urlencode
@@ -86,6 +87,15 @@ class Telegram(_IMessageClient):
                 placeholder="::/0",
                 advanced=True,
             ),
+            ConfigField(
+                id="secret_token",
+                required=False,
+                title="Webhook Secret Token",
+                tooltip="Telegram 官方 Webhook 安全令牌，留空使用 API Key 校验",
+                type="text",
+                placeholder="随机字符串",
+                advanced=True,
+            ),
         ],
     )
     _setup_done = set()
@@ -95,6 +105,7 @@ class Telegram(_IMessageClient):
         self.chat_id = None
         self.webhook = False
         self.interactive = False
+        self.secret_token = None
         self._webhook_url = None
         self._admin_ids = []
         self._user_ids = []
@@ -112,10 +123,14 @@ class Telegram(_IMessageClient):
         self.chat_id = cfg.get("chat_id")
         self.webhook = cfg.get("webhook", False)
         self.interactive = cfg.get("interactive", False)
+        self.secret_token = cfg.get("secret_token")
         self._admin_ids = cfg.get("admin_ids") or []
         self._user_ids = cfg.get("user_ids") or []
         self._domain = get_domain()
-        self._api_key = self._apikey_service.get_or_create_system_key("MessageWebhook")
+        self._api_key = (
+            self._apikey_service.get_or_create_system_key("MessageWebhook") if self._apikey_service else None
+        )
+        self._webhook_url = f"{self._domain}/telegram?apikey={self._api_key}"
         admin_ids = cfg.get("admin_ids")
         if admin_ids and not isinstance(admin_ids, list):
             self._admin_ids = [admin_ids]
@@ -144,7 +159,14 @@ class Telegram(_IMessageClient):
             return False, "参数未配置"
         if not title and not text:
             return False, "标题和内容不能同时为空"
-        caption = f"*{title}*\n{text}" if title and text else title or text
+        # 用 HTML parse_mode 而非 Markdown：内容可能含文件名/番号中的 `_ [ ] ( ) ~ #` 等
+        # 未转义字符，Markdown 模式会触发 Telegram 400 "can't parse entities"
+        caption_parts = []
+        if title:
+            caption_parts.append(f"<b>{html.escape(title)}</b>")
+        if text:
+            caption_parts.append(html.escape(text))
+        caption = "\n".join(caption_parts)
         if not caption:
             return False, "消息内容为空"
         proxies = self._get_proxies()
@@ -168,13 +190,13 @@ class Telegram(_IMessageClient):
                     url = f"https://api.telegram.org/bot{self.token}/sendPhoto"
                     res = req.post(
                         url,
-                        data={"chat_id": chat_id, "photo": image, "caption": caption, "parse_mode": "Markdown"},
+                        data={"chat_id": chat_id, "photo": image, "caption": caption, "parse_mode": "HTML"},
                     )
                 else:
                     url = f"https://api.telegram.org/bot{self.token}/sendMessage"
                     res = req.post(
                         url,
-                        data={"chat_id": chat_id, "text": caption, "parse_mode": "Markdown"},
+                        data={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"},
                     )
                 ok, msg = self._parse_response(res)
                 if not ok:
@@ -296,6 +318,8 @@ class Telegram(_IMessageClient):
             if status == 2:
                 self._del_webhook()
             values = {"url": self._webhook_url, "allowed_updates": ["message"]}
+            if self.secret_token:
+                values["secret_token"] = self.secret_token
             url = f"https://api.telegram.org/bot{self.token}/setWebhook?" + urlencode(values)
             try:
                 proxies = get_proxies()
@@ -305,7 +329,7 @@ class Telegram(_IMessageClient):
                     _webhook_set = True
                     log.info(f"[Telegram]Webhook 设置成功：{self._webhook_url}")
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[telegram]忽略异常: {e}")
+                log.debug(f"[Telegram]忽略异常: {e}")
 
     def _get_webhook_status(self):
         url = f"https://api.telegram.org/bot{self.token}/getWebhookInfo"
@@ -322,7 +346,7 @@ class Telegram(_IMessageClient):
                     return 2
                 return 0
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[telegram]忽略异常: {e}")
+            log.debug(f"[Telegram]忽略异常: {e}")
         return 0
 
     def _del_webhook(self):
@@ -333,4 +357,4 @@ class Telegram(_IMessageClient):
             HttpClient(config=HttpClientConfig(proxy_url=proxy_url)).get(url)
             log.info("[Telegram]Webhook 已删除")
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[telegram]忽略异常: {e}")
+            log.debug(f"[Telegram]忽略异常: {e}")

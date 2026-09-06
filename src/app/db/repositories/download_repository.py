@@ -12,6 +12,7 @@ from sqlalchemy import Integer, and_, case, cast, func, tuple_
 
 from app.db.models import DOWNLOADHISTORY, DOWNLOADSETTING, INDEXERSTATISTICS
 from app.db.repositories.base_repository import BaseRepository
+from app.db.repositories.episode_progress import contiguous_episodes
 
 
 class DownloadRepository(BaseRepository):
@@ -67,8 +68,28 @@ class DownloadRepository(BaseRepository):
 
             if season_episode:
                 query = query.filter(season_episode == DOWNLOADHISTORY.SE)
-
             return query.first() is not None
+
+    def get_contiguous_completed_episode_by_tmdb(
+        self, tmdb_id: int | str | None, season: int | None, start: int = 1
+    ) -> int:
+        """
+        查询某剧集某季已完成的下载历史中「从订阅起点 start 起连续」的最大集号（重订阅续订用）。
+        解析逻辑见 episode_progress.contiguous_episodes。
+        """
+        if not tmdb_id:
+            return 0
+        with self.session() as db:
+            rows = (
+                db.query(DOWNLOADHISTORY.SE)
+                .filter(
+                    DOWNLOADHISTORY.TMDBID != "",
+                    DOWNLOADHISTORY.STATE == "completed",
+                    DOWNLOADHISTORY.TMDBID == str(tmdb_id),
+                )
+                .all()
+            )
+        return contiguous_episodes((se for (se,) in rows), int(season or 1), start=int(start or 1))
 
     def delete_download_history_by_tmdb(self, tmdb_id: int | str | None, season_prefix: str | None = None) -> int:
         """
@@ -175,10 +196,10 @@ class DownloadRepository(BaseRepository):
             if hid:
                 return db.query(DOWNLOADHISTORY).filter(int(hid) == DOWNLOADHISTORY.ID).all()
 
-            # 使用子查询获取每个 TITLE 的最大日期
+            # 使用子查询获取每个 TMDBID + SE 组合的最大日期，而非仅按 TITLE 聚合
             sub_query = (
-                db.query(DOWNLOADHISTORY.TITLE, func.max(DOWNLOADHISTORY.DATE).label("max_date"))
-                .group_by(DOWNLOADHISTORY.TITLE)
+                db.query(DOWNLOADHISTORY.TMDBID, DOWNLOADHISTORY.SE, func.max(DOWNLOADHISTORY.DATE).label("max_date"))
+                .group_by(DOWNLOADHISTORY.TMDBID, DOWNLOADHISTORY.SE)
                 .subquery()
             )
 
@@ -188,7 +209,11 @@ class DownloadRepository(BaseRepository):
                     .filter(date < DOWNLOADHISTORY.DATE)
                     .join(
                         sub_query,
-                        and_(sub_query.c.TITLE == DOWNLOADHISTORY.TITLE, sub_query.c.max_date == DOWNLOADHISTORY.DATE),
+                        and_(
+                            sub_query.c.TMDBID == DOWNLOADHISTORY.TMDBID,
+                            sub_query.c.SE == DOWNLOADHISTORY.SE,
+                            sub_query.c.max_date == DOWNLOADHISTORY.DATE,
+                        ),
                     )
                     .order_by(DOWNLOADHISTORY.DATE.desc())
                     .all()
@@ -199,7 +224,11 @@ class DownloadRepository(BaseRepository):
                     db.query(DOWNLOADHISTORY)
                     .join(
                         sub_query,
-                        and_(sub_query.c.TITLE == DOWNLOADHISTORY.TITLE, sub_query.c.max_date == DOWNLOADHISTORY.DATE),
+                        and_(
+                            sub_query.c.TMDBID == DOWNLOADHISTORY.TMDBID,
+                            sub_query.c.SE == DOWNLOADHISTORY.SE,
+                            sub_query.c.max_date == DOWNLOADHISTORY.DATE,
+                        ),
                     )
                     .order_by(DOWNLOADHISTORY.DATE.desc())
                     .limit(num)
@@ -219,6 +248,20 @@ class DownloadRepository(BaseRepository):
                 .order_by(DOWNLOADHISTORY.DATE.desc())
                 .first()
             )
+
+    def get_download_history_list_by_path(self, path: str) -> list[DOWNLOADHISTORY]:
+        """按路径返回全部下载记录（聚合目录多条）."""
+        with self.session() as db:
+            return (
+                db.query(DOWNLOADHISTORY)
+                .filter(os.path.normpath(path) == DOWNLOADHISTORY.SAVE_PATH)
+                .order_by(DOWNLOADHISTORY.DATE.desc())
+                .all()
+            )
+
+    def count_download_history_by_path(self, path: str) -> int:
+        with self.session() as db:
+            return db.query(DOWNLOADHISTORY).filter(os.path.normpath(path) == DOWNLOADHISTORY.SAVE_PATH).count()
 
     def get_download_history_by_downloader(self, downloader: str, download_id: str) -> DOWNLOADHISTORY | None:
         """
@@ -346,10 +389,10 @@ class DownloadRepository(BaseRepository):
                         "CATEGORY": category,
                         "TAGS": tags,
                         "IS_PAUSED": int(is_paused),
-                        "UPLOAD_LIMIT": int(float(upload_limit)),
-                        "DOWNLOAD_LIMIT": int(float(download_limit)),
-                        "RATIO_LIMIT": int(round(float(ratio_limit), 2) * 100),
-                        "SEEDING_TIME_LIMIT": int(float(seeding_time_limit)),
+                        "UPLOAD_LIMIT": int(float(upload_limit or 0)),
+                        "DOWNLOAD_LIMIT": int(float(download_limit or 0)),
+                        "RATIO_LIMIT": int(round(float(ratio_limit or 0), 2) * 100),
+                        "SEEDING_TIME_LIMIT": int(float(seeding_time_limit or 0)),
                         "DOWNLOADER": downloader,
                     }
                 )
@@ -360,11 +403,12 @@ class DownloadRepository(BaseRepository):
                         CATEGORY=category,
                         TAGS=tags,
                         IS_PAUSED=int(is_paused),
-                        UPLOAD_LIMIT=int(float(upload_limit)),
-                        DOWNLOAD_LIMIT=int(float(download_limit)),
-                        RATIO_LIMIT=int(round(float(ratio_limit), 2) * 100),
-                        SEEDING_TIME_LIMIT=int(float(seeding_time_limit)),
+                        UPLOAD_LIMIT=int(float(upload_limit or 0)),
+                        DOWNLOAD_LIMIT=int(float(download_limit or 0)),
+                        RATIO_LIMIT=int(round(float(ratio_limit or 0), 2) * 100),
+                        SEEDING_TIME_LIMIT=int(float(seeding_time_limit or 0)),
                         DOWNLOADER=downloader,
+                        NOTE="",
                     )
                 )
 

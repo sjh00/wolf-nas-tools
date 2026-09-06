@@ -75,8 +75,11 @@ class MessageClientRepositoryAdapter(IMessageClientRepository):
     def get_message_client(self, cid: int | None = None) -> list[MESSAGECLIENT]:
         return self._repo.get_message_client(cid)
 
-    def delete_message_client(self, cid: int | None) -> None:
-        self._repo.delete_message_client(cid)
+    def delete_message_client(self, cid: int | None) -> int:
+        return self._repo.delete_message_client(cid)
+
+    def update_message_client(self, cid: int, **kwargs) -> int:
+        return self._repo.update_message_client(cid=cid, **kwargs)
 
     def insert_message_client(
         self,
@@ -374,6 +377,9 @@ class TorrentRemoveTaskRepositoryAdapter(ITorrentRemoveTaskRepository):
 
     def delete_torrent_remove_task(self, tid: int | None) -> None:
         self._repo.delete_torrent_remove_task(tid)
+
+    def update_torrent_remove_task(self, tid: int, **kwargs: Any) -> bool:
+        return self._repo.update_torrent_remove_task(tid, **kwargs)
 
     def insert_torrent_remove_task(self, **kwargs: Any) -> None:
         self._repo.insert_torrent_remove_task(**kwargs)

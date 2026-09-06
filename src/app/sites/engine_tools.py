@@ -4,7 +4,7 @@ import os
 import re
 from typing import Any
 
-import httpx
+import httpx2
 from lxml import etree
 
 import log
@@ -15,7 +15,7 @@ from app.utils.config_tools import get_proxies
 from app.utils.json_utils import JsonUtils
 
 
-def _build_auth(engine: Any, site: Any, user_config: dict) -> tuple[dict, httpx.Auth | None]:
+def _build_auth(engine: Any, site: Any, user_config: dict) -> tuple[dict, httpx2.Auth | None]:
     """构建全局认证（每个请求通用），返回 (headers, auth)。
 
     认证信息同时写入 headers（向后兼容）并返回 auth 对象（供 httpx 使用）。
@@ -63,7 +63,11 @@ def _build_auth(engine: Any, site: Any, user_config: dict) -> tuple[dict, httpx.
             auth = CookieAuth(cookie)
 
     headers["Content-Type"] = headers.get("Content-Type", "application/json;charset=utf-8")
-    headers["User-Agent"] = user_config.get("ua", "")
+    ua_override = site.api.auth.get("user_agent") if site.api and site.api.auth else None
+    if ua_override is not None:
+        headers["User-Agent"] = ua_override
+    elif user_config.get("ua"):
+        headers["User-Agent"] = user_config.get("ua")
     return headers, auth
 
 
@@ -79,8 +83,13 @@ def _get_rate_limit_kwargs(engine: Any, site: Any) -> dict:
 
 
 def _build_headers(engine: Any, site: Any, user_config: dict) -> dict:
-    """向后兼容：返回仅包含 headers 的字典（无 auth 对象）。"""
-    headers, _auth = _build_auth(engine, site, user_config)
+    """返回包含认证信息的 headers 字典。"""
+    headers, auth = _build_auth(engine, site, user_config)
+    if auth is not None and hasattr(auth, "_cookies"):
+        cookie_dict = getattr(auth, "_cookies", {})
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+        if cookie_str:
+            headers["Cookie"] = cookie_str
     return headers
 
 
@@ -111,7 +120,7 @@ def _call_endpoint(
         headers.pop("Content-Type", None)
         try:
             res = HttpClient(
-                config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
+                config=HttpClientConfig(proxy_url=proxy_url),
                 rate_limiter=rate_limiter_engine,
             ).get(url=url, headers=headers, auth=auth, **rl_kwargs)
             if download_dir:
@@ -124,7 +133,7 @@ def _call_endpoint(
             return False
 
     client = HttpClient(
-        config=HttpClientConfig(proxy_url=proxy_url, timeout=15),
+        config=HttpClientConfig(proxy_url=proxy_url),
         rate_limiter=rate_limiter_engine,
     )
     try:
@@ -138,16 +147,18 @@ def _call_endpoint(
                     body[k] = {sk: sv.format(**template_vars) if isinstance(sv, str) else sv for sk, sv in v.items()}
                 else:
                     body[k] = v
-            post_data = JsonUtils.dumps(body, separators=(",", ":")) if body else None
+            # 始终发送 JSON 请求体（空 body 也发送 "{}"），部分站点对空 body 会返回“请求参数错误”
+            post_data = JsonUtils.dumps(body, separators=(",", ":"))
             res = client.post(url=url, data=post_data, headers=headers, auth=auth, **rl_kwargs)
         else:
             params = cfg.get("params")
             if params:
                 params = {k: v.format(**template_vars) if isinstance(v, str) else v for k, v in params.items()}
+            headers.pop("Content-Type", None)
             res = client.get(url=url, params=params, headers=headers, auth=auth, **rl_kwargs)
         return res.json()
     except Exception as e:
-        log.error(f"[_call_endpoint]请求异常 {url}: {e}")
+        log.error(f"[SiteEngine]请求异常 {url}: {e}")
         return None
 
 
@@ -157,6 +168,7 @@ def _resolve_auth_token(engine: Any, site: Any, user_config: dict, token_type: s
         return engine._auth_cache[cache_key]
     if token_type == "csrf":
         token = _fetch_csrf_token(engine, site, user_config)
+        log.debug(f"[SiteEngine]{site.name} CSRF token: {'OK' if token else 'FAIL'}")
     elif token_type == "passkey":
         token = _fetch_passkey(engine, site, user_config)
     else:
@@ -180,10 +192,11 @@ def _fetch_csrf_token(engine: Any, site: Any, user_config: dict) -> str | None:
     rl_kwargs = _get_rate_limit_kwargs(engine, site)
     try:
         res = HttpClient(
-            config=HttpClientConfig(proxy_url=proxy_url, timeout=15),
+            config=HttpClientConfig(proxy_url=proxy_url),
             rate_limiter=rate_limiter_engine,
         ).get(url=csrf_url, headers={"User-Agent": ua}, auth=CookieAuth(cookie) if cookie else None, **rl_kwargs)
-    except Exception:
+    except Exception as e:
+        log.warn(f"[SiteEngine]{site.name} 获取CSRF失败: {e!r}")
         return None
     selector = auth.get("csrf_selector", "")
     selector_type = auth.get("csrf_selector_type", "regex")
@@ -218,7 +231,7 @@ def _fetch_passkey(engine: Any, site: Any, user_config: dict) -> str | None:
     rl_kwargs = _get_rate_limit_kwargs(engine, site)
     try:
         client = HttpClient(
-            config=HttpClientConfig(proxy_url=proxy_url, timeout=15),
+            config=HttpClientConfig(proxy_url=proxy_url),
             rate_limiter=rate_limiter_engine,
         )
         if method.upper() == "GET":
@@ -260,7 +273,7 @@ def _call_html_endpoint(engine: Any, url: str, html_cfg: dict, user_config: dict
 
     try:
         client = HttpClient(
-            config=HttpClientConfig(proxy_url=proxy_url, timeout=15),
+            config=HttpClientConfig(proxy_url=proxy_url),
             rate_limiter=rate_limiter_engine,
         )
         if method == "POST":

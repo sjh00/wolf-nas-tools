@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import random
 import re
+from typing import overload
 from urllib import parse
 
 import cn2an
@@ -15,6 +16,13 @@ from app.utils.exception_utils import ExceptionUtils
 
 class StringUtils:
     @staticmethod
+    def resolve_in_from_display(in_from) -> str:
+        """
+        渲染消息来源文本：枚举取 .value，字符串（如下载器名称）原样返回
+        """
+        return in_from.value if hasattr(in_from, "value") else str(in_from)
+
+    @staticmethod
     def num_filesize(text):
         """
         将文件大小文本转化为字节
@@ -26,21 +34,23 @@ class StringUtils:
         if text.isdigit():
             return int(text)
         text = text.replace(",", "").replace(" ", "").upper()
+        # 非大小格式（如站点页面捕获到日期时间等）直接返回 0，不记录错误
+        if not re.match(r"^\d+(\.\d+)?[KMGTPI]*B?$", text):
+            return 0
         size = re.sub(r"[KMGTPI]*B?", "", text, flags=re.IGNORECASE)
         try:
             size = float(size)
-        except Exception as e:
-            ExceptionUtils.exception_traceback(e)
+        except Exception:
             return 0
-        if text.find("PB") != -1 or text.find("PIB") != -1:
+        if text.find("PB") != -1 or text.find("PIB") != -1 or text.endswith("P"):
             size *= 1024**5
-        elif text.find("TB") != -1 or text.find("TIB") != -1:
+        elif text.find("TB") != -1 or text.find("TIB") != -1 or text.endswith("T"):
             size *= 1024**4
-        elif text.find("GB") != -1 or text.find("GIB") != -1:
+        elif text.find("GB") != -1 or text.find("GIB") != -1 or text.endswith("G"):
             size *= 1024**3
-        elif text.find("MB") != -1 or text.find("MIB") != -1:
+        elif text.find("MB") != -1 or text.find("MIB") != -1 or text.endswith("M"):
             size *= 1024**2
-        elif text.find("KB") != -1 or text.find("KIB") != -1:
+        elif text.find("KB") != -1 or text.find("KIB") != -1 or text.endswith("K"):
             size *= 1024
         return round(size)
 
@@ -149,6 +159,12 @@ class StringUtils:
             ExceptionUtils.exception_traceback(e)
         return float_val
 
+    @overload
+    @staticmethod
+    def handler_special_chars(text: str, replace_word: str = "", allow_space: bool = False) -> str: ...
+    @overload
+    @staticmethod
+    def handler_special_chars(text: list, replace_word: str = "", allow_space: bool = False) -> list: ...
     @staticmethod
     def handler_special_chars(text, replace_word="", allow_space=False):
         """
@@ -254,6 +270,19 @@ class StringUtils:
         return netloc[0]
 
     @staticmethod
+    def get_site_domain(url):
+        """
+        获取种子站点可展示域名：去除常见 tracker 子域，保留注册域名（如 tracker.xxx -> xxx）
+        """
+        domain = StringUtils.get_url_domain(url)
+        if not domain:
+            return ""
+        parts = domain.split(".")
+        if len(parts) > 2 and parts[0].lower() in ("t", "tracker", "opentracker", "tr", "share", "tr2"):
+            parts = parts[1:]
+        return ".".join(parts)
+
+    @staticmethod
     def get_base_url(url):
         """
         获取URL根地址
@@ -286,6 +315,7 @@ class StringUtils:
         season_num = None
         episode_num = None
         year = None
+        # 中文季/集（第X季 / 第X集）
         season_re = re.search(r"第\s*([0-9一二三四五六七八九十]+)\s*季", content, re.IGNORECASE)
         if season_re:
             mtype = MediaType.TV
@@ -294,13 +324,41 @@ class StringUtils:
         if episode_re:
             mtype = MediaType.TV
             episode_num = int(cn2an.cn2an(episode_re.group(1), mode="smart"))
-            if episode_num and not season_num:
-                season_num = 1
+        # 英文季/集：S02E06 / S02 / Season 2 / E06 / Episode 6
+        season_ep_en = re.search(
+            r"[Ss]\d{1,2}\s*[-._ ]?\s*[Ee]\d{1,3}|"
+            r"[Ss]eason\s*\d{1,2}\s*[-._ ]?\s*[Ee]pisode\s*\d{1,3}",
+            content,
+            re.IGNORECASE,
+        )
+        if season_ep_en:
+            mtype = MediaType.TV
+            nums = re.findall(r"\d+", season_ep_en.group(0))
+            if len(nums) >= 2:
+                season_num = int(nums[0])
+                episode_num = int(nums[1])
+        else:
+            season_en = re.search(r"(?:[Ss]|Season\s*)\s*(\d{1,2})\b", content, re.IGNORECASE)
+            if season_en:
+                mtype = MediaType.TV
+                season_num = int(season_en.group(1))
+            episode_en = re.search(r"(?:[Ee]|Episode\s*)\s*(\d{1,3})\b", content, re.IGNORECASE)
+            if episode_en:
+                mtype = MediaType.TV
+                episode_num = int(episode_en.group(1))
+        if episode_num and not season_num:
+            season_num = 1
         year_re = re.search(r"[\s(]+(\d{4})[\s)]*", content)
         if year_re:
             year = year_re.group(1)
         key_word = re.sub(
-            r"第\s*[0-9一二三四五六七八九十]+\s*季|第\s*[0-9一二三四五六七八九十百零]+\s*集|[\s(]+(\d{4})[\s)]*",
+            r"第\s*[0-9一二三四五六七八九十]+\s*季|"
+            r"第\s*[0-9一二三四五六七八九十百零]+\s*集|"
+            r"[Ss]\d{1,2}\s*[-._ ]?\s*[Ee]\d{1,3}|"
+            r"[Ss]eason\s*\d{1,2}\s*[-._ ]?\s*[Ee]pisode\s*\d{1,3}|"
+            r"(?:[Ss]|Season\s*)\s*\d{1,2}\b|"
+            r"(?:[Ee]|Episode\s*)\s*\d{1,3}\b|"
+            r"[\s(]+(\d{4})[\s)]*",
             "",
             content,
             flags=re.IGNORECASE,

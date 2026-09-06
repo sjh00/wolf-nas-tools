@@ -5,6 +5,7 @@ from typing import Any
 import log
 from app.domain.enums import SearchType
 from app.infrastructure.queue import MessageQueueFactory
+from app.message.web_store import WebMessageStore
 from app.utils import StringUtils
 
 
@@ -98,8 +99,11 @@ class MessageDispatcher:
         if channel == SearchType.WEB:
             if self._messagecenter:
                 self._messagecenter.insert_system_message(title=title, content=text)
+            WebMessageStore.instance().add(
+                title=title, content=text, kind="reply", image=image or "", url=url or "", user_id=user_id
+            )
             return True
-        client = self._client_manager.active_interactive_clients.get(channel)
+        client = self._client_manager.get_interactive_client(channel)
         if client:
             return self.sendmsg(client=client, title=title, text=text, image=image, url=url, user_id=user_id)
         return False
@@ -132,17 +136,25 @@ class MessageDispatcher:
     def send_channel_list_msg(self, channel: Any, title: str, medias: list, user_id: str = "") -> bool:
         """发送列表选择消息，用于消息交互."""
         if channel == SearchType.WEB:
-            texts = []
-            for index, media in enumerate(medias):
-                texts.append(f"{index}. {media.get_title_string()}，{media.get_vote_string()}")
+            items = WebMessageStore.build_list_items(medias)
+            content = "\n".join(f"{it['index']}. {it['title']}，{it['vote']}".strip() for it in items)
             if self._messagecenter:
-                self._messagecenter.insert_system_message(title=title, content="\n".join(texts))
+                self._messagecenter.insert_system_message(title=title, content=content)
+            WebMessageStore.instance().add(title=title, content="", kind="list", items=items, user_id=user_id)
             return True
-        client = self._client_manager.active_interactive_clients.get(channel)
+        client = self._client_manager.get_interactive_client(channel)
         if client:
             return self.send_list_msg(client=client, title=title, medias=medias, user_id=user_id)
         return False
 
     def get_search_types(self) -> list:
-        """获取支持搜索交互的渠道类型."""
-        return [SearchType.WX, SearchType.TG, SearchType.SLACK, SearchType.SYNOLOGY, SearchType.API, SearchType.PLUGIN]
+        """获取支持搜索交互的渠道标识：已启用交互渠道动态推导 + 系统保留标识.
+
+        直接读内存缓存（不触发 _ensure_loaded 的全量 DB 查询），
+        保留内置交互渠道标识以避免存量渠道行为回归。
+        """
+        types = list(self._client_manager._active_interactive_clients.keys())  # noqa: SLF001
+        for builtin in ("WX", "TG", "SLACK", "SYNOLOGY", "API", "PLUGIN"):
+            if builtin not in types:
+                types.append(builtin)
+        return types

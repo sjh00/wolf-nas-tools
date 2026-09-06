@@ -6,7 +6,7 @@ RBAC (Role-Based Access Control) 权限管理模型
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, object_session, relationship
 
 from app.db.models.base import Base
 
@@ -55,9 +55,6 @@ class RBACUser(Base):
     # 用户状态: 1=启用, 0=禁用
     STATUS: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
-    # 是否为超级管理员: 1=是, 0=否
-    IS_SUPERADMIN: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-
     # 最后登录信息
     LAST_LOGIN_AT: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     LAST_LOGIN_IP: Mapped[str] = mapped_column(String(64), nullable=True)
@@ -81,7 +78,6 @@ class RBACUser(Base):
             "nickname": self.NICKNAME,
             "avatar": self.AVATAR,
             "status": self.STATUS,
-            "is_superadmin": self.IS_SUPERADMIN,
             "last_login_at": self.LAST_LOGIN_AT.strftime("%Y-%m-%d %H:%M:%S")
             if self.LAST_LOGIN_AT is not None
             else None,
@@ -259,6 +255,8 @@ class RBACMenu(Base):
     ACTIVE_ICON: Mapped[str] = mapped_column(String(512), nullable=True)
     BADGE: Mapped[str] = mapped_column(String(64), nullable=True)
     BADGE_TYPE: Mapped[str] = mapped_column(String(32), nullable=True)
+    # 是否内置菜单（由 DEFAULT_MENUS 初始化）。0=用户自建/插件，1=内置。用户自建菜单不会在启动初始化时被清理
+    IS_BUILTIN: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # 时间戳
     CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
@@ -277,14 +275,15 @@ class RBACMenu(Base):
         """转换为字典"""
         # 处理children，避免递归和类型错误
         children_list = []
-        if self.children:
+        if object_session(self) is not None:
             try:
-                # children可能是列表或单个对象
-                if isinstance(self.children, list):
-                    children_list = [child.to_dict() for child in self.children]
-                else:
-                    # 单个对象情况
-                    children_list = [self.children.to_dict()]
+                if self.children:
+                    # children可能是列表或单个对象
+                    if isinstance(self.children, list):
+                        children_list = [child.to_dict() for child in self.children]
+                    else:
+                        # 单个对象情况
+                        children_list = [self.children.to_dict()]
             except (TypeError, AttributeError):
                 children_list = []
 
@@ -333,8 +332,8 @@ class RBACUserLoginLog(Base):
     __tablename__ = "RBAC_USER_LOGIN_LOGS"
 
     ID: Mapped[int] = mapped_column(Integer, primary_key=True)
-    USER_ID: Mapped[int] = mapped_column(
-        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=False, index=True
+    USER_ID: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=True, index=True
     )
     USERNAME: Mapped[str] = mapped_column(String(255), nullable=False)
     LOGIN_IP: Mapped[str] = mapped_column(String(64), nullable=True)

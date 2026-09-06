@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.deps import get_indexer_service, get_site_service, require_any_permission, require_permission
+from app.core.error_codes import ErrorCode
 from app.core.exceptions import DomainError, ServiceError  # noqa: F401
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.common import CommonResponse
@@ -24,6 +25,10 @@ router = APIRouter()
 
 class SiteIdRequest(BaseModel):
     id: str | None = None
+
+
+class SiteBatchTestRequest(BaseModel):
+    ids: list[str] = []
 
 
 class SiteUrlRequest(BaseModel):
@@ -67,6 +72,7 @@ class SiteFilterRequest(BaseModel):
     brush: bool | None = False
     statistic: bool | None = False
     basic: bool | None = False
+    source: str | None = None
 
 
 class SiteCaptchaRequest(BaseModel):
@@ -85,6 +91,7 @@ class SiteUserStatisticsRequest(BaseModel):
 class SiteResourcesRequest(BaseModel):
     id: str | None = None
     page: int | None = None
+    page_size: int | None = None
     keyword: str | None = None
 
 
@@ -216,6 +223,28 @@ def refresh_site_statistics(
     return success(data={"message": "站点数据刷新已启动，请稍候"})
 
 
+@router.post("/sites/definitions", response_model=CommonResponse, summary="获取所有可添加的站点定义")
+def get_site_definitions(
+    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    svc: SiteService = Depends(get_site_service),
+):
+    defs = svc.get_site_definitions()
+    data = [
+        {
+            "id": d.id,
+            "name": d.name,
+            "domain": d.domain,
+            "type": d.type,
+            "public": d.public,
+            "domain_aliases": d.domain_aliases,
+            "encoding": d.encoding,
+            "detail_page_url": d.detail_page_url,
+        }
+        for d in defs
+    ]
+    return success(data=data)
+
+
 @router.post("/sites", response_model=CommonResponse, summary="获取站点列表")
 def get_sites(
     req: SiteFilterRequest,
@@ -223,7 +252,11 @@ def get_sites(
     svc: SiteService = Depends(get_site_service),
 ):
     sites = svc.get_sites(
-        rss=bool(req.rss), brush=bool(req.brush), statistic=bool(req.statistic), basic=bool(req.basic)
+        rss=bool(req.rss),
+        brush=bool(req.brush),
+        statistic=bool(req.statistic),
+        basic=bool(req.basic),
+        source=req.source,
     )
     return success(data=sites)
 
@@ -245,7 +278,19 @@ def test_site(
     svc: SiteService = Depends(get_site_service),
 ):
     dto = svc.test_site(req.id or "")
-    return fail(code=dto.code, msg=dto.msg, time=dto.times)
+    if dto.code == 0:
+        return success(message=dto.msg, time=dto.times)
+    return fail(code=ErrorCode.SITE_REQUEST_FAILED, msg=dto.msg, time=dto.times)
+
+
+@router.post("/sites/test_batch", response_model=CommonResponse, summary="批量测试站点连接")
+def test_sites_batch(
+    req: SiteBatchTestRequest,
+    user: str = Depends(require_permission("site:manage")),
+    svc: SiteService = Depends(get_site_service),
+):
+    results = svc.test_sites_batch(req.ids or [])
+    return success(data=results)
 
 
 @router.post("/sites/update", response_model=CommonResponse, summary="更新站点配置")
@@ -255,7 +300,9 @@ def update_site(
     svc: SiteService = Depends(get_site_service),
 ):
     dto = svc.update_site(req.model_dump())
-    return fail(code=dto.code or 0, msg=dto.msg or "")
+    if dto.code == 0:
+        return success(message=dto.msg or "")
+    return fail(code=ErrorCode.OPERATION_FAILED, msg=dto.msg or "")
 
 
 @router.post("/sites/cookie_ua", response_model=CommonResponse, summary="更新站点 Cookie 和 UA")
@@ -287,7 +334,12 @@ def list_site_resources(
     user: str = Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
 ):
-    resources = svc.list_site_resources(index_id=req.id or "", page=req.page or 0, keyword=req.keyword or "")
+    resources = svc.list_site_resources(
+        index_id=req.id or "",
+        page=req.page or 0,
+        page_size=req.page_size or 100,
+        keyword=req.keyword or "",
+    )
     if not resources.success:
         return fail(msg=resources.msg)
     return success(data=resources.data)

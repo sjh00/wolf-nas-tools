@@ -12,6 +12,7 @@
 
 import contextlib
 import os
+import re
 from typing import Any
 
 import log
@@ -140,6 +141,13 @@ class DownloadPipeline:
         if download_info.get("label"):
             tags.append(download_info.get("label"))
 
+        # ---------- PT 拦截：目标下载器不支持 PT 时拒绝私有站点种子 ----------
+        if not getattr(downloader, "supports_pt", True) and self._is_pt_torrent(site_info, content):
+            msg = f"下载器 {downloader_name} 不支持 PT 私有站点种子，已拒绝下载"
+            log.warn(f"[DownloadPipeline]{msg}: {title}")
+            self._fail(media_info, in_from, msg)
+            return downloader_id, None, msg
+
         # ---------- 阶段3：添加任务 ----------
         download_id = self._stage_add(
             downloader=downloader,
@@ -178,9 +186,6 @@ class DownloadPipeline:
                 ),
             )
         )
-
-        if downloader.client_id == "qbittorrent" and download_id == "EXISTS":
-            return downloader_id, None, ""
 
         # ---------- 阶段4：后续处理 ----------
         self._stage_post(
@@ -259,6 +264,7 @@ class DownloadPipeline:
                         ua=site_info.get("ua"),
                         headers=headers,
                         proxy=proxy if proxy is not None else site_info.get("proxy") or False,
+                        browser_persistent=bool(site_info.get("browser_persistent")),
                     )
                 file_path, content, dl_files_folder, dl_files, retmsg = Torrent(self._site_engine).get_torrent_info(
                     url=url,
@@ -269,6 +275,37 @@ class DownloadPipeline:
                     referer=media_info.page_url if not site_info.get("referer") else site_info.get("referer"),
                     proxy=proxy if proxy is not None else site_info.get("proxy") or False,
                 )
+
+                # enclosure 下载失败且为 API 站(如 M-Team 预签名链接过期)时，
+                # 用详情页 tid 重新走下载 API 拿新鲜链接后重试一次
+                if not file_path and media_info.enclosure and media_info.page_url:
+                    page_site = self._site_engine.get_by_url(media_info.page_url)
+                    if page_site and page_site.download and page_site.download.type in ("api", "api_chained"):
+                        log.info(f"[Pipeline]下载链接可能已过期，尝试重新获取：{media_info.page_url}")
+                        page_info = self._sites.get_sites(siteurl=media_info.page_url)
+                        fresh_url = self._site_engine.resolve_download_url(
+                            page_url=media_info.page_url,
+                            user_config={
+                                "cookie": page_info.get("cookie", ""),
+                                "ua": page_info.get("ua", ""),
+                                "headers": page_info.get("headers", {}),
+                                "proxy": page_info.get("proxy"),
+                                "api_key": page_info.get("api_key", ""),
+                                "bearer_token": page_info.get("bearer_token", ""),
+                            },
+                        )
+                        if fresh_url and fresh_url != url:
+                            file_path, content, dl_files_folder, dl_files, retmsg = Torrent(
+                                self._site_engine
+                            ).get_torrent_info(
+                                url=fresh_url,
+                                cookie=cookie,
+                                api_key=api_key,
+                                bearer_token=bearer_token,
+                                ua=site_info.get("ua"),
+                                referer=media_info.page_url,
+                                proxy=proxy if proxy is not None else site_info.get("proxy") or False,
+                            )
 
         return content, file_path, dl_files_folder, dl_files, retmsg, site_info, torrent_attr
 
@@ -428,6 +465,8 @@ class DownloadPipeline:
                     ),
                 )
             )
+        if dl_files:
+            self._check_file_type_mismatch(media_info, dl_files)
 
         if page_url and subtitle_dir and site_info and site_info.get("subtitle"):
 
@@ -456,6 +495,60 @@ class DownloadPipeline:
             )
 
     # ---------- 辅助 ----------
+
+    @staticmethod
+    def _infer_type_from_files(file_names: list[str]) -> str | None:
+        """从文件列表推断媒体类型：>=3 个递进编号文件 → tv，1 个文件 → movie，其他 → None"""
+        if not file_names:
+            return None
+        if len(file_names) == 1:
+            return "movie"
+        false_positives = {"720", "1080", "2160", "480", "264", "265", "444", "420", "10"}
+        nums: list[list[int]] = []
+        for f in file_names:
+            found = re.findall(r"(?<!\d)(\d{2,4})(?!\d)", os.path.basename(f))
+            filtered = [int(n) for n in found if n not in false_positives]
+            if filtered:
+                nums.append(filtered)
+        if len(nums) < 3:
+            return None
+        # 取每组的最后一个数字作为标识（通常是集号）
+        last_nums = [group[-1] for group in nums]
+        for i in range(1, len(last_nums)):
+            if last_nums[i] <= last_nums[i - 1]:
+                return None
+        return "tv"
+
+    @staticmethod
+    def _check_file_type_mismatch(media_info, file_names: list[str]) -> None:
+        """当文件列表类型推断与 matched type 不一致时输出警告"""
+        inferred = DownloadPipeline._infer_type_from_files(file_names)
+        if not inferred:
+            return
+        matched = str(media_info.type.value) if media_info.type else ""
+        if inferred != matched:
+            log.warn(
+                "[Pipeline] 类型推断不一致: 匹配类型={} 文件推断={} name={} files={}".format(
+                    matched,
+                    inferred,
+                    media_info.org_string or media_info.title or "?",
+                    file_names[:5],
+                )
+            )
+
+    @staticmethod
+    def _is_pt_torrent(site_info: dict, content) -> bool:
+        """判断种子是否来自私有站点（PT）.
+
+        优先用站点定义的 public 标志；字符串内容（magnet/URL）按私密 tracker 特征兜底。
+        """
+        if site_info and site_info.get("public") is False:
+            return True
+        if isinstance(content, str):
+            for keyword in ("passkey=", "secure=", "announce?uid=", "totheglory", "credential="):
+                if keyword in content:
+                    return True
+        return False
 
     def _fail(self, media_info, in_from, reason):
         self._event_bus.publish(

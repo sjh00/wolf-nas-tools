@@ -11,8 +11,9 @@ from app.utils import PathUtils
 class MediaExistenceChecker:
     """负责检查媒体文件是否已存在于目标目录（支持本地和远程后端）."""
 
-    def __init__(self, path_resolver):
+    def __init__(self, path_resolver, media_service=None):
         self._path_resolver = path_resolver
+        self._media = media_service
 
     def _exists(self, path: str, backend_id: str = "local") -> bool:
         """根据后端检查路径是否存在."""
@@ -44,7 +45,7 @@ class MediaExistenceChecker:
                         continue
                 files.append(finfo.path)
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[existence_checker]忽略异常: {e}")
+            log.debug(f"[FileTransfer]忽略异常: {e}")
         return files
 
     def is_media_exists(self, media_dest, media, dst_backend=None):
@@ -65,7 +66,7 @@ class MediaExistenceChecker:
         ret_file_path = None
 
         if media.type == MediaType.MOVIE:
-            dir_name, file_name = self._path_resolver.get_movie_dest_path(media)
+            dir_name, file_name = self._path_resolver.get_movie_dest_path(media, self._media)
             file_path = os.path.join(media_dest, dir_name)
             if self._path_resolver.movie_category_flag:
                 file_path = os.path.join(media_dest, media.category, dir_name)
@@ -86,7 +87,7 @@ class MediaExistenceChecker:
                     ret_file_path = ext_dest
                     break
         else:
-            dir_name, season_name, file_name = self._path_resolver.get_tv_dest_path(media)
+            dir_name, season_name, file_name = self._path_resolver.get_tv_dest_path(media, self._media)
             if (media.type == MediaType.TV and self._path_resolver.tv_category_flag) or (
                 media.type == MediaType.ANIME and self._path_resolver.anime_category_flag
             ):
@@ -116,7 +117,7 @@ class MediaExistenceChecker:
         :return: 电影返回已存在的电影清单，剧集返回不存在的集的清单.
         """
         if meta_info_obj.type == MediaType.MOVIE:
-            dir_name, _ = self._path_resolver.get_movie_dest_path(meta_info_obj)
+            dir_name, _ = self._path_resolver.get_movie_dest_path(meta_info_obj, self._media)
             backends = self._path_resolver._movie_backend or []
             for idx, dest_path in enumerate(self._path_resolver.movie_path):
                 backend_id = backends[idx] if idx < len(backends) else "local"
@@ -131,7 +132,7 @@ class MediaExistenceChecker:
                     return [{"title": meta_info_obj.title, "year": meta_info_obj.year}]
             return []
         else:
-            dir_name, season_name, _ = self._path_resolver.get_tv_dest_path(meta_info_obj)
+            dir_name, season_name, _ = self._path_resolver.get_tv_dest_path(meta_info_obj, self._media)
             if not season or not total_num:
                 return []
             if meta_info_obj.type == MediaType.ANIME:
@@ -157,7 +158,17 @@ class MediaExistenceChecker:
                     file_meta_info = meta_info_fn(title=os.path.basename(file))
                     if not file_meta_info.get_season_list() or not file_meta_info.get_episode_list():
                         continue
-                    if file_meta_info.get_name() != meta_info_obj.title:
+                    # 同时比对 cn_name / en_name / title（兼容多语言场景）
+                    target_names = {
+                        (meta_info_obj.cn_name or "").strip(),
+                        (meta_info_obj.en_name or "").strip(),
+                        (meta_info_obj.title or "").strip(),
+                    }
+                    target_names.discard("")
+                    file_name = (file_meta_info.get_name() or "").strip()
+                    if file_name and not any(
+                        fn == tn or fn in tn or tn in fn for tn in target_names for fn in [file_name]
+                    ):
                         continue
                     if not file_meta_info.is_in_season(season):
                         continue

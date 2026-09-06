@@ -15,6 +15,7 @@ from app.core.exceptions import (
     RepositoryError,
     ServiceError,
 )
+from app.core.settings import settings
 from app.db.repositories.subscribe_repo_adapter import (
     SubscribeMovieRepositoryAdapter,
     SubscribeTvEpisodeRepositoryAdapter,
@@ -22,7 +23,7 @@ from app.db.repositories.subscribe_repo_adapter import (
 )
 from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.domain.entities.rss import SubscribeState
-from app.domain.enums import SearchType
+from app.domain.enums import SearchType, SystemConfigKey
 from app.domain.interfaces.rss_repo import (
     ISubscribeMovieRepository,
     ISubscribeTvEpisodeRepository,
@@ -37,6 +38,9 @@ from app.services.filter_service import FilterService as Filter
 from app.services.search_service import Searcher
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.sites.torrent import Torrent
+
+# 订阅搜索每轮处理上限（subscribe.batch_limit 可覆盖）
+_SUBSCRIBE_BATCH_DEFAULT = 20
 
 
 class BaseSearchStrategy:
@@ -62,8 +66,10 @@ class BaseSearchStrategy:
         tv_repo: ISubscribeTvRepository | None = None,
         tv_episode_repo: ISubscribeTvEpisodeRepository | None = None,
         coordinator: DownloadCoordinator | None = None,
+        system_config=None,
     ):
         self._service = service
+        self._system_config = system_config
         self._rss_repo = rss_repo or SubscribeRepository()
         if movie_repo is None:
             movie_repo = SubscribeMovieRepositoryAdapter(self._rss_repo)
@@ -90,6 +96,14 @@ class BaseSearchStrategy:
         """设置下载协调器（用于 SubscriptionMonitor 注入）."""
         self._coordinator = coordinator
 
+    @staticmethod
+    def _get_batch_limit() -> int:
+        """订阅搜索每轮处理上限（subscribe.batch_limit，默认 20）."""
+        try:
+            return max(1, int((settings.get("subscribe") or {}).get("batch_limit") or _SUBSCRIBE_BATCH_DEFAULT))
+        except (ValueError, TypeError):
+            return _SUBSCRIBE_BATCH_DEFAULT
+
     def search_pending(self) -> None:
         """触发一次队列搜索（处理 PENDING 订阅），供事件处理器调用."""
         self._search_movies(state=SubscribeState.PENDING.value)
@@ -99,6 +113,26 @@ class BaseSearchStrategy:
         """重试 ERROR 状态的订阅."""
         self._search_movies(state=SubscribeState.ERROR.value)
         self._search_tvs(state=SubscribeState.ERROR.value)
+
+    def _get_effective_search_sites(self, rss_info: dict, mtype: MediaType) -> list:
+        """订阅未配置搜索站点时，回退到默认订阅设置的 search_sites（空则不搜索）"""
+        sites = rss_info.get("search_sites") or []
+        if sites:
+            return sites
+        if not self._system_config:
+            return []
+        try:
+            default_setting = self._system_config.get(
+                SystemConfigKey.DefaultSubscribeSettingTV
+                if mtype in (MediaType.TV, MediaType.ANIME)
+                else SystemConfigKey.DefaultSubscribeSettingMOV
+            )
+            if not isinstance(default_setting, dict):
+                return []
+            return default_setting.get("search_sites") or []
+        except Exception as e:
+            log.debug(f"[Subscribe]读取默认订阅设置站点失败: {e}")
+            return []
 
     @contextmanager
     def _lock_context(self, media_info):
@@ -191,13 +225,14 @@ class BaseSearchStrategy:
                             "rule": rss_info.get("filter_rule"),
                             "include": rss_info.get("filter_include"),
                             "exclude": rss_info.get("filter_exclude"),
+                            "free": rss_info.get("filter_free"),
                             "site": rss_info.get("search_sites"),
                         }
                         search_result, _, _, _ = self._searcher.search_one_media(
                             media_info=media_info,
                             in_from=SearchType.SUBSCRIBE,
                             no_exists=no_exists,
-                            sites=rss_info.get("search_sites"),
+                            sites=self._get_effective_search_sites(rss_info, MediaType.MOVIE),
                             filters=filters,
                         )
                         if search_result:
@@ -239,8 +274,14 @@ class BaseSearchStrategy:
                     except Exception as update_err:
                         log.debug(f"[Subscribe]设置 ERROR 状态失败 rssid={rid}: {update_err}")
 
+        batch_limit = self._get_batch_limit()
+        if len(rss_movies) > batch_limit:
+            log.info(
+                f"[Subscribe]订阅数 {len(rss_movies)} 超过单轮上限 {batch_limit}，"
+                f"本轮流处理前 {batch_limit} 个，其余保持 PENDING 下一轮继续"
+            )
         with ThreadPoolExecutor(max_workers=5) as executor:
-            list(executor.map(_process_one, list(rss_movies.values())))
+            list(executor.map(_process_one, list(rss_movies.values())[:batch_limit]))
 
     def _search_tvs(self, state: str = SubscribeState.PENDING.value, rssid: int | None = None) -> None:
         if rssid:
@@ -280,6 +321,33 @@ class BaseSearchStrategy:
                 media_info.rssid = rid
                 total_ep = rss_info.get("total")
                 current_ep = rss_info.get("current_ep")
+
+                # 懒更新：TMDB 集数增加时自动同步（优先季详情集数，episode_count 常滞后）
+                if rid:
+                    try:
+                        new_total = 0
+                        try:
+                            season_detail = self._media_service.get_tmdb_tv_season_detail(media_info.tmdb_id, season)
+                            season_eps = season_detail.get("episodes") if isinstance(season_detail, dict) else None
+                            if isinstance(season_eps, list):
+                                new_total = len(season_eps)
+                        except Exception:  # noqa: BLE001
+                            new_total = 0
+                        if new_total <= 0 and media_info.tmdb_info:
+                            new_total = int(
+                                self._media_service.get_tmdb_season_episodes_num(
+                                    tv_info=media_info.tmdb_info, season=season
+                                )
+                                or 0
+                            )
+                        if new_total > 0 and (total_ep is None or new_total > total_ep):
+                            log.info(f"[Subscribe]{name_val} S{season} TMDB 总集数更新: {total_ep or 0} -> {new_total}")
+                            old_total = int(total_ep or 0)
+                            total_ep = int(new_total)
+                            new_missing = list(range(old_total + 1, int(new_total) + 1))
+                            self._tv_repo.update_total(rssid=rid, total_ep=int(new_total), lack_episodes=new_missing)
+                    except Exception as e:  # noqa: BLE001
+                        log.debug(f"[Subscribe]{name_val} TMDB 集数检查异常: {e}")
                 media_info.keyword = keyword
 
                 episodes = self._tv_episode_repo.get(rid) if rid is not None else None
@@ -336,6 +404,9 @@ class BaseSearchStrategy:
                     self._tv_repo.update_state(
                         title=None, year=None, season=None, rssid=rid, state=SubscribeState.SEARCHING.value
                     )
+                    # 搜索站点：订阅未配置时回退到默认订阅设置的 search_sites（与手动搜索一致）。
+                    # 不能直接用 rss_info.get("search_sites")，否则空列表会覆盖 effective sites → 0 站点搜索
+                    sites = self._get_effective_search_sites(rss_info, MediaType.TV)
                     filters_tv = {
                         "restype": rss_info.get("filter_restype"),
                         "pix": rss_info.get("filter_pix"),
@@ -343,13 +414,14 @@ class BaseSearchStrategy:
                         "rule": rss_info.get("filter_rule"),
                         "include": rss_info.get("filter_include"),
                         "exclude": rss_info.get("filter_exclude"),
-                        "site": rss_info.get("search_sites"),
+                        "free": rss_info.get("filter_free"),
+                        "site": sites,
                     }
                     search_result, no_exists, _, _ = self._searcher.search_one_media(
                         media_info=media_info,
                         in_from=SearchType.SUBSCRIBE,
                         no_exists=rss_no_exists_local,
-                        sites=rss_info.get("search_sites"),
+                        sites=sites,
                         filters=filters_tv,
                     )
                     if over_edition:
@@ -391,8 +463,14 @@ class BaseSearchStrategy:
                     title=None, year=None, season=None, rssid=rid, state=SubscribeState.ERROR.value
                 )
 
+        batch_limit = self._get_batch_limit()
+        if len(rss_tvs) > batch_limit:
+            log.info(
+                f"[Subscribe]订阅数 {len(rss_tvs)} 超过单轮上限 {batch_limit}，"
+                f"本轮流处理前 {batch_limit} 个，其余保持 PENDING 下一轮继续"
+            )
         with ThreadPoolExecutor(max_workers=5) as executor:
-            list(executor.map(_process_one, list(rss_tvs.values())))
+            list(executor.map(_process_one, list(rss_tvs.values())[:batch_limit]))
 
     def _get_media_info(self, tmdbid, name, year, mtype, cache=True):
         """综合返回媒体信息；对空 tmdbid 的 name/year/mtype 组合做进程内缓存."""
@@ -405,6 +483,9 @@ class BaseSearchStrategy:
             media_info = meta_info(title=("%s %s" % (name, year)).strip())
             tmdb_info = self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
             media_info.set_tmdb_info(tmdb_info)
+            # en_name 为空或非拉丁时补全英文名，避免日语原名导致英文标题匹配失败
+            if self._media_service:
+                self._media_service.enrich_en_name(media_info)
             if not (hasattr(media_info, "get_poster_image") and media_info.get_poster_image()):
                 log.debug(f"[BaseSearchStrategy] 缓存缺少海报，重新识别: {name} ({year})")
                 identified = self._media_service.identify(title=f"{name} {year}".strip(), mtype=mtype)

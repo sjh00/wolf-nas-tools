@@ -1,6 +1,6 @@
 """HTTP 客户端统一异常体系."""
 
-import httpx
+import httpx2
 
 import log
 
@@ -19,16 +19,16 @@ class HttpClientError(Exception):
         self.response_text = response_text
 
     @classmethod
-    def from_httpx(cls, exc: httpx.HTTPError) -> "HttpClientError":
+    def from_httpx(cls, exc: httpx2.HTTPError) -> "HttpClientError":
         """从 httpx 异常转换."""
         status_code = None
         response_text = None
-        if isinstance(exc, httpx.HTTPStatusError):
+        if isinstance(exc, httpx2.HTTPStatusError):
             status_code = exc.response.status_code
             try:
                 response_text = exc.response.text[:500]
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[exceptions]忽略异常: {e}")
+                log.debug(f"[HTTP]忽略异常: {e}")
 
         original = str(exc)
         message = original
@@ -56,3 +56,7 @@ class HttpSSLError(HttpClientError):
 
 class HttpAuthError(HttpClientError):
     """认证失败（401/403）."""
+
+
+class HttpRateLimitError(HttpClientError):
+    """本地限流器拒绝（等待超时仍无令牌）."""

@@ -21,7 +21,15 @@
     "supports_run": true
   },
   "frontend": {
-    "routes": [],
+    "routes": [
+      {
+        "path": "bind-sites",
+        "component": "BindSitesPage",
+        "title": "绑定站点",
+        "icon": "lucide:link",
+        "menu": true
+      }
+    ],
     "settings": {
       "component": "SettingsPage",
       "fields": [
@@ -49,6 +57,22 @@
           "help": "辅种任务执行的时间周期"
         },
         {
+          "key": "downloaders",
+          "type": "multi_select",
+          "label": "辅种下载器",
+          "source": "downloaders",
+          "default": [],
+          "help": "扫描这些下载器中已完成的种子进行辅种"
+        },
+        {
+          "key": "sites",
+          "type": "multi_select",
+          "label": "辅种站点",
+          "source": "sites",
+          "default": [],
+          "help": "仅对选中站点辅种"
+        },
+        {
           "key": "nolabels",
           "type": "input",
           "label": "不辅种标签",
@@ -57,18 +81,19 @@
           "help": "下载器中的种子有以下标签时不进行辅种"
         },
         {
+          "key": "rate_limit",
+          "type": "input",
+          "label": "IYUU API 限流",
+          "default": "1/30s",
+          "placeholder": "1/30s",
+          "help": "请求 IYUU API 的速率限制，格式 次数/单位，如 5/s、100/m；留空不限流"
+        },
+        {
           "key": "notify",
           "type": "switch",
           "label": "运行时通知",
           "default": false,
           "help": "运行辅助任务后发送通知"
-        },
-        {
-          "key": "onlyonce",
-          "type": "switch",
-          "label": "立即运行一次",
-          "default": false,
-          "help": "打开后立即运行一次"
         },
         {
           "key": "clearcache",

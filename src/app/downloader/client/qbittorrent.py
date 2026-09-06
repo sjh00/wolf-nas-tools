@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import os
 import re
@@ -12,6 +13,7 @@ from app.core.exceptions import InfrastructureError, NetworkError
 from app.downloader.client._base import _IDownloadClient
 from app.downloader.schema import ConfigField, DownloaderConfigSchema
 from app.downloader.strategy import RemoveStrategy
+from app.infrastructure.cache_system.decorators import cached
 from app.schemas.download import Torrent, TorrentStatus
 from app.utils import ExceptionUtils
 
@@ -273,6 +275,9 @@ class Qbittorrent(_IDownloadClient):
                     if not tags_set.intersection(labels):
                         continue
                 torrent_list.append(self._torrent_from_sync(t_hash, t_data))
+            # sync 数据无 up_speed_avg：从 properties API 补准确的平均上传速度（带缓存）
+            for torrent in torrent_list:
+                torrent.avg_upload_speed = self._get_torrent_avg_upload_speed(torrent.id)
             return torrent_list or [], False
         except (InfrastructureError, NetworkError):
             raise
@@ -312,7 +317,8 @@ class Qbittorrent(_IDownloadClient):
         return torrent_list or [], False
 
     def _torrent_from_sync(self, t_hash: str, t_data: dict) -> Torrent:
-        """从 sync/maindata 数据构造 Torrent（仅填充必要字段，避免额外 API 调用）."""
+        """从 sync/maindata 数据构造 Torrent（填充刷流/规则所需字段，避免额外 API 调用）."""
+        date_now = int(time.time())
         torrent_obj = Torrent()
         torrent_obj.id = t_hash
         torrent_obj.name = t_data.get("name")
@@ -324,6 +330,16 @@ class Qbittorrent(_IDownloadClient):
         torrent_obj.progress = float(t_data.get("progress") or 0)
         torrent_obj.download_speed = int(t_data.get("dlspeed") or 0)
         torrent_obj.upload_speed = int(t_data.get("upspeed") or 0)
+        added_on = t_data.get("added_on") or 0
+        torrent_obj.download_time = date_now - added_on if added_on else 0
+        completion_on = t_data.get("completion_on") or 0
+        torrent_obj.seeding_time = date_now - completion_on if completion_on > 0 else 0
+        torrent_obj.ratio = t_data.get("ratio") or 0
+        torrent_obj.uploaded = t_data.get("uploaded") or 0
+        torrent_obj.downloaded = int(t_data.get("downloaded") or 0)
+        torrent_obj.add_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(added_on)) if added_on else ""
+        last_activity = t_data.get("last_activity") or 0
+        torrent_obj.iatime = date_now - last_activity if last_activity else 0
         return torrent_obj
 
     def get_completed_torrents(
@@ -347,6 +363,8 @@ class Qbittorrent(_IDownloadClient):
             TorrentStatus.Pending,
         ]
         torrents, error = self.get_torrents(ids=ids, status=statuses, tag=tag)
+        # 排除已完成任务（pausedUP/stoppedUP 等会被映射为 Paused），只统计真正下载中的
+        torrents = [t for t in torrents if t.progress < 1.0]
         return None if error else torrents or []
 
     def remove_torrents_tag(self, ids: list[str] | str, tag: str) -> bool:
@@ -433,9 +451,17 @@ class Qbittorrent(_IDownloadClient):
         if not content:
             return None
         if isinstance(content, str) and content.startswith("magnet:"):
+            # 40 位十六进制 infohash（v1）
             match = re.search(r"xt=urn:btih:([a-fA-F0-9]{40})", content)
             if match:
                 return match.group(1).lower()
+            # 32 位 base32 infohash（部分站点磁力使用，如 ACG/动漫站）
+            match32 = re.search(r"xt=urn:btih:([A-Za-z2-7]{32})", content)
+            if match32:
+                try:
+                    return base64.b32decode(match32.group(1).upper()).hex().lower()
+                except Exception as err:
+                    log.debug(f"[{Qbittorrent.client_name}]base32 infohash 解析失败: {err!s}")
             return None
         if isinstance(content, bytes):
             try:
@@ -525,7 +551,10 @@ class Qbittorrent(_IDownloadClient):
         cookie=None,
         **kwargs,
     ):
-        if not self.qbc or not content:
+        if not content:
+            return False
+        if not self.qbc:
+            log.error(f"[{self.client_name}]{self.name} qBittorrent 客户端不可用（未登录或连接失败）")
             return False
         if isinstance(content, str):
             urls = content
@@ -593,7 +622,13 @@ class Qbittorrent(_IDownloadClient):
                 use_auto_torrent_management=is_auto,
                 cookie=cookie,
             )
-            return bool(qbc_ret and str(qbc_ret).find("Ok") != -1)
+            ret_ok = bool(qbc_ret and str(qbc_ret).find("Ok") != -1)
+            if not ret_ok:
+                log.warn(
+                    f"[{self.client_name}]{self.name} 添加种子失败，"
+                    f"qBittorrent 返回: {qbc_ret!r}（重复种子会返回 Fails.，需确认是否已在下载器中）"
+                )
+            return ret_ok
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
@@ -619,7 +654,7 @@ class Qbittorrent(_IDownloadClient):
             return None
         exists, _ = self.check_torrent_exists(content)
         if exists:
-            return "EXISTS"
+            return torrent_hash
         ret = self.add_torrent(
             content,
             is_paused=is_paused,
@@ -749,6 +784,20 @@ class Qbittorrent(_IDownloadClient):
                 ret_dirs.append(str(category.get("savePath") or ""))
         return ret_dirs
 
+    def list_remote_dirs(self) -> list[str]:
+        """候选目录 = 默认保存路径 + 分类路径 + 已有种子保存路径"""
+        dirs = []
+        if self.qbc:
+            try:
+                default_path = self.qbc.app_default_save_path()
+                if default_path:
+                    dirs.append(str(default_path))
+            except (InfrastructureError, NetworkError):
+                raise
+            except Exception as err:
+                ExceptionUtils.exception_traceback(err)
+        return sorted({*dirs, *super().list_remote_dirs()})
+
     def set_uploadspeed_limit(self, ids: list[str] | str, limit: int) -> None:
         if not self.qbc:
             return
@@ -821,6 +870,48 @@ class Qbittorrent(_IDownloadClient):
             ExceptionUtils.exception_traceback(err)
             return
 
+    def get_torrent_trackers(self, torrent_hash) -> list[str]:
+        tracker_list = self._get_torrent_trackers(torrent_hash)
+        if not tracker_list:
+            return []
+        result = []
+        for t in tracker_list:
+            url = getattr(t, "url", None) or (t.get("url") if isinstance(t, dict) else None)
+            # 过滤 qb 的伪 tracker（DHT/PeX/LSD）
+            if url and str(url).startswith(("http://", "https://", "udp://")):
+                result.append(str(url))
+        return result
+
+    def add_torrent_trackers(self, torrent_hash, urls):
+        if not self.qbc:
+            return
+        try:
+            self.qbc.torrents_add_trackers(torrent_hashes=torrent_hash, urls=urls)
+        except (InfrastructureError, NetworkError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+
+    def remove_torrent_trackers(self, torrent_hash, urls):
+        if not self.qbc:
+            return
+        try:
+            self.qbc.torrents_remove_trackers(torrent_hashes=torrent_hash, urls=urls)
+        except (InfrastructureError, NetworkError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+
+    def edit_torrent_tracker(self, torrent_hash, old_url, new_url):
+        if not self.qbc:
+            return
+        try:
+            self.qbc.torrents_edit_tracker(torrent_hash=torrent_hash, original_url=old_url, new_url=new_url)
+        except (InfrastructureError, NetworkError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+
     def _extract_tracker_errors(self, torrent_hash):
         tracker_list = self._get_torrent_trackers(torrent_hash) or []
         has_working = False
@@ -849,6 +940,24 @@ class Qbittorrent(_IDownloadClient):
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
             return
+
+    # 平均上传速度缓存 TTL（秒）：up_speed_avg 为长期平均值，变化缓慢；10 分钟刷新一次足够
+    _UP_AVG_CACHE_TTL = 600
+
+    @cached(
+        cache_instance="downloader_up_avg",
+        key_func=lambda self, torrent_hash: f"up_avg:{torrent_hash}",
+        ttl=_UP_AVG_CACHE_TTL,
+    )
+    def _get_torrent_avg_upload_speed(self, torrent_hash: str) -> float:
+        """获取种子平均上传速度（带缓存，避免 completed 种子多时逐种拉取 properties）."""
+        avg = 0.0
+        props = self._get_torrent_generic_properties(torrent_hash)
+        if props:
+            up_avg = props.get("up_speed_avg")
+            if isinstance(up_avg, (int, float)):
+                avg = float(up_avg)
+        return avg
 
     def torrent_properties(self, torrent: dict) -> Torrent:
         date_now = int(time.time())

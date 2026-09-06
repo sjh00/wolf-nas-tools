@@ -33,7 +33,6 @@ class IRBACUserRepository(Protocol):
         password_hash: str,
         email: str | None = None,
         nickname: str | None = None,
-        is_superadmin: int = 0,
     ) -> RBACUserEntity: ...
     def update_user(self, user_id: int, **kwargs) -> bool: ...
     def update_last_login(self, user_id: int, ip: str | None = None) -> bool: ...
@@ -116,7 +115,7 @@ class IRBACLogRepository(Protocol):
 
     def add_login_log(
         self,
-        user_id: int,
+        user_id: int | None,
         username: str,
         login_ip: str | None = None,
         login_location: str | None = None,

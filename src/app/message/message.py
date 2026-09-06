@@ -6,6 +6,7 @@
 
 from typing import Any
 
+from app.message.core.agent_dispatcher import AgentEnhancingDispatcher
 from app.message.core.client_manager import ClientManager
 from app.message.core.command_manager import CommandManager
 from app.message.core.dispatcher import MessageDispatcher
@@ -35,6 +36,15 @@ class Message:
         # 插件注册的消息命令
         self._command_manager._plugin_commands = {}
 
+    def set_agent_enhancer(self, enhancer) -> None:
+        """注入 Agent 通知增强器（单流替换模板；facade 与 builder 同步指向包装器）"""
+        if enhancer is None:
+            return
+
+        wrapped = AgentEnhancingDispatcher(self._dispatcher, enhancer)
+        self._dispatcher = wrapped
+        self._builder._dispatcher = wrapped  # type: ignore[assignment] - 包装器行为兼容
+
     # ---------- 属性代理 ----------
 
     @property
@@ -55,6 +65,9 @@ class Message:
 
     def delete_message_client(self, cid: Any) -> Any:
         return self._client_manager.delete_message_client(cid)
+
+    def update_message_client(self, cid: int, **kwargs) -> bool:
+        return self._client_manager.update_message_client(cid=cid, **kwargs)
 
     def check_message_client(
         self, cid: Any = None, interactive: Any = None, enabled: Any = None, ctype: Any = None

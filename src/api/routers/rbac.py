@@ -1,12 +1,13 @@
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from api.deps import get_current_user, get_rbac_service, require_any_permission, require_permission
-from app.core.exceptions import ResourceAlreadyExistsError, ResourceNotFoundError
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import NexusError, ResourceAlreadyExistsError, ResourceNotFoundError, ServiceError
 from app.core.settings import settings
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
@@ -105,6 +106,7 @@ class CreateUserRequest(BaseModel):
 
 class UpdateUserRequest(BaseModel):
     id: int
+    username: str | None = None
     email: str | None = None
     nickname: str | None = None
     status: int | None = None
@@ -160,9 +162,9 @@ def delete_user(
         return fail(success=False, message="用户ID不能为空")
 
     try:
-        _ = svc.delete_user(req.id)
+        _ = svc.delete_user(req.id, current_user_id=current_user.user_id)
         return success(data={"success": True, "message": "删除成功"})
-    except (ResourceAlreadyExistsError, ResourceNotFoundError) as e:
+    except (ResourceAlreadyExistsError, ResourceNotFoundError, ServiceError) as e:
         return fail(success=False, message=e.message)
 
 
@@ -176,7 +178,7 @@ def update_user(
         return fail(success=False, message="用户ID不能为空")
 
     update_fields = {}
-    for field in ["email", "nickname", "status", "avatar"]:
+    for field in ["username", "email", "nickname", "status", "avatar"]:
         val = getattr(req, field, None)
         if val is not None:
             update_fields[field] = val
@@ -184,7 +186,8 @@ def update_user(
     try:
         svc.update_user(req.id, **update_fields)
 
-        if req.role_ids is not None:
+        # 仅当明确传入非空角色列表时才重新分配角色，避免编辑资料时误传空列表清空角色导致权限丢失
+        if req.role_ids:
             svc.assign_roles_to_user(req.id, req.role_ids)
 
         return success(data={"success": True, "message": "更新成功"})
@@ -230,7 +233,6 @@ def get_users(
                 "email": d["email"],
                 "avatar": d.get("avatar"),
                 "status": d["status"],
-                "is_superadmin": bool(d.get("is_superadmin", 0)),
                 "roles": roles,
                 "last_login_at": last_login,
                 "pris": [role.get("role_name") for role in roles] if roles else ["普通用户"],
@@ -240,8 +242,8 @@ def get_users(
 
 
 def _is_admin(user: UserContext) -> bool:
-    """检查是否为管理员（超级管理员或有 user:update 权限）"""
-    return user.is_superadmin or "user:update" in (user.permissions or [])
+    """检查是否为管理员（拥有 user:update 权限）"""
+    return "user:update" in (user.permissions or [])
 
 
 @router.post("/users/{user_id}/reset-password", response_model=CommonResponse, summary="重置密码")
@@ -317,7 +319,7 @@ async def get_avatar(filename: str):
     avatar_dir = Path(settings.data_path) / "static" / "avatars"
     file_path = avatar_dir / filename
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="头像不存在")
+        raise NexusError("头像不存在", errcode=ErrorCode.RESOURCE_NOT_FOUND, http_status=404)
     return FileResponse(file_path)
 
 
@@ -359,7 +361,7 @@ def delete_role(
     try:
         message = svc.delete_role(req.id)
         return success(data={"success": True, "message": message})
-    except (ResourceAlreadyExistsError, ResourceNotFoundError) as e:
+    except (ResourceAlreadyExistsError, ResourceNotFoundError, ServiceError) as e:
         return fail(success=False, message=e.message)
 
 
@@ -388,7 +390,7 @@ def update_role(
             svc.assign_menus_to_role(req.id, req.menu_ids)
 
         return success(data={"success": True, "message": "更新成功"})
-    except (ResourceAlreadyExistsError, ResourceNotFoundError) as e:
+    except (ResourceAlreadyExistsError, ResourceNotFoundError, ServiceError) as e:
         return fail(success=False, message=e.message)
 
 
@@ -486,6 +488,18 @@ def delete_menu(
     try:
         message = svc.delete_menu(req.id)
         return success(data={"success": True, "message": message})
+    except (ResourceAlreadyExistsError, ResourceNotFoundError) as e:
+        return fail(success=False, message=e.message)
+
+
+@router.post("/menus/reset", response_model=CommonResponse, summary="重置菜单到初始状态")
+def reset_menus(
+    current_user: UserContext = Depends(require_permission("menu:update")),
+    svc=Depends(get_rbac_service),
+):
+    try:
+        affected = svc.reset_menus()
+        return success(data={"success": True, "affected": affected, "message": "菜单已重置为默认"})
     except (ResourceAlreadyExistsError, ResourceNotFoundError) as e:
         return fail(success=False, message=e.message)
 

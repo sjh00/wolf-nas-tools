@@ -4,6 +4,7 @@ import datetime
 import posixpath
 from collections.abc import Iterator
 from typing import BinaryIO
+from urllib.parse import quote
 
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
@@ -94,7 +95,7 @@ class OpenListStorageBackend(StorageBackend):
                 "list",
                 json={"path": path, "password": "", "page": page, "per_page": per_page},
             )
-            items = data.get("content", [])
+            items = data.get("content") or []
             for item in items:
                 yield FileInfo(
                     path=posixpath.join(path.rstrip("/"), item.get("name", "")),
@@ -128,7 +129,8 @@ class OpenListStorageBackend(StorageBackend):
         if not self._write_enabled:
             raise NotImplementedError("OpenList 后端未启用写入")
         url = f"{self._base}/api/fs/put"
-        headers = {"File-Path": path}
+        # HTTP 头不支持非 latin1 字符，中文路径需 URL 编码（AList 端会自动解码）
+        headers = {"File-Path": quote(path, safe="/")}
         actual_size = size or self._get_stream_size(stream)
         if actual_size > 0:
             headers["Content-Length"] = str(actual_size)
@@ -155,32 +157,45 @@ class OpenListStorageBackend(StorageBackend):
             raise NotImplementedError("OpenList 后端未启用写入")
         src_dir = posixpath.dirname(src.rstrip("/"))
         dst_dir = posixpath.dirname(dst.rstrip("/"))
+        name = posixpath.basename(src.rstrip("/"))
         self._api(
             "copy",
             json={
                 "src_dir": src_dir,
                 "dst_dir": dst_dir,
-                "names": [posixpath.basename(src.rstrip("/"))],
+                "names": [name],
             },
         )
+        # AList copy 仅支持同名复制，目标名不同时需再 rename
+        target = posixpath.basename(dst.rstrip("/"))
+        if target and target != name:
+            self._api("rename", json={"path": f"{dst_dir.rstrip('/')}/{name}", "name": target})
 
     def move(self, src: str, dst: str) -> None:
         if not self._write_enabled:
             raise NotImplementedError("OpenList 后端未启用写入")
         src_dir = posixpath.dirname(src.rstrip("/"))
         dst_dir = posixpath.dirname(dst.rstrip("/"))
+        name = posixpath.basename(src.rstrip("/"))
         self._api(
             "move",
             json={
                 "src_dir": src_dir,
                 "dst_dir": dst_dir,
-                "names": [posixpath.basename(src.rstrip("/"))],
+                "names": [name],
             },
         )
+        # AList move 仅支持同名移动，目标名不同时需再 rename
+        target = posixpath.basename(dst.rstrip("/"))
+        if target and target != name:
+            self._api("rename", json={"path": f"{dst_dir.rstrip('/')}/{name}", "name": target})
 
     def health_check(self) -> tuple[bool, str]:
         try:
             self._api("list", json={"path": "/", "password": ""})
             return True, "连接成功"
         except Exception as e:
+            # 连接/认证成功但未配置存储挂载时提示而非报错
+            if "storage not found" in str(e):
+                return True, "连接成功（未配置存储挂载）"
             return False, str(e)

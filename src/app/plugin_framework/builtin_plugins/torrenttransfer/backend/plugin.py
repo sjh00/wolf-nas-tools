@@ -5,11 +5,9 @@ TorrentTransfer Plugin v2
 
 import os.path
 from copy import deepcopy
-from datetime import datetime, timedelta
 from threading import Event
 from typing import Any
 
-import pytz
 from bencode import bdecode, bencode
 
 import log
@@ -53,26 +51,17 @@ class TorrentTransferPlugin:
     def run(self):
         """立即运行转移"""
         self.ctx.info("手动触发转移做种")
-        self._do_transfer()
+        self._do_transfer(manual=True)
 
     def _start_service(self):
         config = self._get_config()
-        config.get("enable", False)
-        cron = config.get("cron")
-        onlyonce = config.get("onlyonce", False)
-
-        if not self._get_state() and not onlyonce:
+        if not self._get_state():
             return
 
+        cron = config.get("cron")
         if cron:
             self.ctx.info(f"转移做种服务启动，周期：{cron}")
             self.ctx.schedule_cron("transfer", self._do_transfer, cron=str(cron))
-
-        if onlyonce:
-            self.ctx.info("转移做种服务启动，立即运行一次")
-            run_date = datetime.now(tz=pytz.timezone(os.environ.get("TZ") or "UTC")) + timedelta(seconds=3)
-            self.ctx.schedule_date("transfer_once", self._do_transfer, run_date=run_date)
-            self.ctx.set_config("onlyonce", False)
 
         autostart = config.get("autostart", False)
         if autostart:
@@ -85,7 +74,7 @@ class TorrentTransferPlugin:
             self.ctx.remove_schedule("transfer_once")
             self.ctx.remove_schedule("check_recheck")
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[plugin]忽略异常: {e}")
+            log.debug(f"[Plugin]忽略异常: {e}")
         self._event.clear()
 
     def _get_state(self):
@@ -104,9 +93,9 @@ class TorrentTransferPlugin:
             return val[0] if val else None
         return val
 
-    def _do_transfer(self):
+    def _do_transfer(self, manual=False):
         config = self._get_config()
-        if not config.get("enable", False):
+        if not config.get("enable", False) and not manual:
             return
 
         from_downloader = self._get_downloader_id(config.get("fromdownloader"))
@@ -309,7 +298,10 @@ class TorrentTransferPlugin:
                 if torrents:
                     can_seeding = []
                     for torrent in torrents:
-                        if torrent.status in [TorrentStatus.Paused, TorrentStatus.Stopped] and torrent.progress >= 1:
+                        if (
+                            torrent.status in [TorrentStatus.Paused, TorrentStatus.Stopped]
+                            and torrent.progress >= 0.999
+                        ):
                             can_seeding.append(torrent.id)
                     if can_seeding:
                         self.ctx.info(f"共 {len(can_seeding)} 个任务校验完成，开始辅种")
@@ -322,19 +314,19 @@ class TorrentTransferPlugin:
 
     @staticmethod
     def _convert_save_path(save_path, from_root, to_root):
+        if not save_path:
+            return to_root
+        if not to_root or not from_root:
+            return save_path
         try:
-            if not save_path:
-                return to_root
-            if not to_root or not from_root:
-                return save_path
             save_path = os.path.normpath(save_path).replace("\\", "/")
             from_root = os.path.normpath(from_root).replace("\\", "/")
             to_root = os.path.normpath(to_root).replace("\\", "/")
             if save_path.startswith(from_root):
                 return save_path.replace(from_root, to_root, 1)
-        except Exception as e:  # noqa: BLE001
-            log.debug(f"[plugin]忽略异常: {e}")
-        return None
+        except Exception as e:
+            log.debug(f"[Plugin]路径转换异常: {e}")
+        return save_path
 
     def _load_history(self):
         content = self.ctx.read_data("history.json")
@@ -342,7 +334,7 @@ class TorrentTransferPlugin:
             try:
                 return JsonUtils.loads(content)
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[plugin]忽略异常: {e}")
+                log.debug(f"[Plugin]忽略异常: {e}")
         return {}
 
     def _save_history(self, key, value):

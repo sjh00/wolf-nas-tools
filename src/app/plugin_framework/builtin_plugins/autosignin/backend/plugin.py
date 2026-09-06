@@ -5,8 +5,7 @@ import log
 from app.infrastructure.rate_limiter import RateLimitEngine
 from app.plugin_framework.builtin_plugins.autosignin.backend.registry import HandlerRegistry
 from app.plugin_framework.builtin_plugins.autosignin.backend.signer import SigninEngine
-from app.plugin_framework.builtin_plugins.autosignin.backend.simulator import ChromeSigninSimulator
-from app.plugin_framework.builtin_plugins.autosignin.backend.site_config_store import SiteConfigStore
+from app.plugin_framework.builtin_plugins.autosignin.backend.signin_config_store import SigninConfigStore
 from app.plugin_framework.context import PluginContext
 from app.utils.json_utils import JsonUtils
 
@@ -20,8 +19,7 @@ class AutoSignInPlugin:
         rate_limit_engine: RateLimitEngine | None = None,
     ):
         self.ctx = ctx
-        self._config_store = SiteConfigStore(ctx)
-        self._simulator = ChromeSigninSimulator(site_engine=self.ctx.site_engine)
+        self._config_store = SigninConfigStore(ctx, site_engine=self.ctx.site_engine)
         self._registry: Any = None
         self._engine: Any = None
         self._rate_limit_engine = rate_limit_engine or RateLimitEngine()
@@ -33,11 +31,21 @@ class AutoSignInPlugin:
 
     def on_enable(self):
         self.ctx.info("站点自动签到插件已启用")
-        self._config_store.save_defaults()
-        site_configs = self._config_store.load()
-        self._registry = HandlerRegistry(self.ctx, self._rate_limit_engine, site_configs, self._agent_service)
+        signin_configs = self._config_store.load()
+        self._registry = HandlerRegistry(
+            self.ctx,
+            self._rate_limit_engine,
+            self.ctx.site_engine,
+            signin_configs,
+            self._agent_service,
+        )
         self._registry.load()
-        self._engine = SigninEngine(self.ctx, self._registry, self._simulator, site_cache=self._site_cache)
+        self._engine = SigninEngine(
+            self.ctx,
+            self._registry,
+            site_cache=self._site_cache,
+            site_engine=self.ctx.site_engine,
+        )
         self._start_service()
         self.ctx.register_message_command(cmd="/signin", desc="站点签到", func=self._handle_signin_command)
 
@@ -62,6 +70,8 @@ class AutoSignInPlugin:
 
     def run(self):
         self.ctx.info("手动触发站点签到")
+        if not self._get_config().get("enabled"):
+            return
         self._engine.run(
             self._get_config(),
             get_history=self._get_history,
@@ -94,19 +104,19 @@ class AutoSignInPlugin:
             self.ctx.remove_schedule("signin")
             self.ctx.remove_schedule("signin_once")
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[plugin]忽略异常: {e}")
+            log.debug(f"[Plugin]忽略异常: {e}")
 
     def _load_history(self):
-        content = self.ctx.read_data("signin_history.json")
+        content = self.ctx.read_data("history.json")
         if content:
             try:
                 return JsonUtils.loads(content)
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[plugin]忽略异常: {e}")
+                log.debug(f"[Plugin]忽略异常: {e}")
         return {}
 
     def _save_history(self, data):
-        self.ctx.write_data("signin_history.json", JsonUtils.dumps(data, ensure_ascii=False, indent=2))
+        self.ctx.write_data("history.json", JsonUtils.dumps(data, ensure_ascii=False, indent=2))
 
     def _get_history(self, key=None):
         data = self._load_history()

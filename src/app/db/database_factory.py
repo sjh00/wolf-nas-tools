@@ -183,8 +183,9 @@ class DatabaseFactory:
         # 构建连接URL
         if db_type == DatabaseFactory.SQLITE:
             if db_path is None:
-                # 自动从配置路径获取数据库文件路径
-                db_path = os.path.join(settings.data_path, "user.db")
+                # 优先使用配置的 sqlite_path（DATABASE__SQLITE_PATH），否则落在 data/user.db
+                configured = DatabaseFactory._get_config_value("sqlite_path")
+                db_path = configured or os.path.join(settings.data_path, "user.db")
             url = DatabaseFactory.get_database_url(db_type, db_path=db_path)
         else:
             # MySQL/PostgreSQL 使用配置中的数据库名
@@ -213,10 +214,10 @@ class DatabaseFactory:
         else:
             # MySQL/PostgreSQL 连接池配置
             engine_kwargs["poolclass"] = QueuePool
-            engine_kwargs["pool_size"] = kwargs.get("pool_size", 50)
-            engine_kwargs["max_overflow"] = kwargs.get("max_overflow", 100)
+            engine_kwargs["pool_size"] = kwargs.get("pool_size", 10)
+            engine_kwargs["max_overflow"] = kwargs.get("max_overflow", 10)
             engine_kwargs["pool_timeout"] = kwargs.get("pool_timeout", 60)
-            engine_kwargs["pool_recycle"] = kwargs.get("pool_recycle", 3600)
+            engine_kwargs["pool_recycle"] = kwargs.get("pool_recycle", 1800)
             engine_kwargs["pool_pre_ping"] = True
 
         engine = create_engine(url, **engine_kwargs)

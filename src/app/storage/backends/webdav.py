@@ -1,11 +1,13 @@
 """WebDAV 存储后端（基于 httpx 自实现）。"""
 
+import posixpath
 from collections.abc import Iterator
 from email.utils import parsedate_to_datetime
 from typing import BinaryIO
+from urllib.parse import quote, unquote, urlparse
 
 import defusedxml.ElementTree as ET  # type: ignore[import-untyped]
-import httpx
+import httpx2
 
 import log
 from app.infrastructure.http.client import HttpClient
@@ -22,21 +24,43 @@ class WebDAVStorageBackend(StorageBackend):
         self._client = HttpClient(
             config=HttpClientConfig(
                 verify_ssl=getattr(config, "ssl_verify", True),
-                auth=httpx.BasicAuth(
+                auth=httpx2.BasicAuth(
                     getattr(config, "username", ""),
                     getattr(config, "password", ""),
                 ),
-                default_headers={"Depth": "1"},
+                default_headers={"Depth": "0"},
             )
         )
 
     def _req(self, method: str, path: str, **kwargs):
-        url = self._url + "/" + path.lstrip("/")
-        return self._client.request(method, url, **kwargs)
+        return self._client.request(method, self._url_for(path), **kwargs)
+
+    def _url_for(self, path: str) -> str:
+        """解码后的可读路径 → 请求 URL（路径段百分号编码，保留 / 分隔）"""
+        return self._url + "/" + quote(path.lstrip("/"), safe="/")
+
+    def _href_to_path(self, href: str) -> str:
+        """WebDAV href → 相对挂载根的路径（去服务器前缀 + URL 解码）"""
+        href = unquote(href or "")
+        if href.startswith(self._url):
+            href = href[len(self._url) :]
+        else:
+            base = urlparse(self._url).path.rstrip("/")
+            if base and href.startswith(base):
+                href = href[len(base) :]
+        return href.strip("/")
 
     def exists(self, path: str) -> bool:
         try:
             self._req("HEAD", path)
+            return True
+        except Exception:
+            # 部分 WebDAV 服务不支持 HEAD（405），回退 PROPFIND Depth:0
+            return self._exists_via_propfind(path)
+
+    def _exists_via_propfind(self, path: str) -> bool:
+        try:
+            self._req("PROPFIND", path, headers={"Depth": "0"})
             return True
         except Exception:
             return False
@@ -53,12 +77,14 @@ class WebDAVStorageBackend(StorageBackend):
         resp = self._req("PROPFIND", path, headers={"Depth": "1"})
         root = ET.fromstring(resp.content)
         ns = {"d": "DAV:"}
-        self_href = path.lstrip("/")
+        self_path = path.strip("/")
         for response in root.findall("d:response", ns):
-            href = response.findtext("d:href", "", ns).lstrip("/")
-            if href == self_href or href.rstrip("/") == self_href.rstrip("/"):
+            rel = self._href_to_path(response.findtext("d:href", "", ns))
+            if not rel:
                 continue
-            yield self._parse_prop(response, href)
+            if rel == self_path or rel.rstrip("/") == self_path.rstrip("/"):
+                continue
+            yield self._parse_prop(response, rel)
 
     def _parse_prop(self, elem, path: str) -> FileInfo:
         ns = {"d": "DAV:"}
@@ -80,7 +106,7 @@ class WebDAVStorageBackend(StorageBackend):
         return FileInfo(path=path, size=size, mtime=mtime, is_dir=is_dir)
 
     def read_stream(self, path: str) -> BinaryIO:
-        return self._client.stream("GET", self._url + "/" + path.lstrip("/"))
+        return self._client.stream("GET", self._url_for(path))
 
     def write_stream(self, path: str, stream: BinaryIO, size: int = 0, chunk_size: int = 0) -> None:
         # httpx content 接受文件对象，会按内部缓冲区流式上传；chunk_size 预留用于后续细粒度控制
@@ -94,7 +120,7 @@ class WebDAVStorageBackend(StorageBackend):
                 raise
             parts = path.strip("/").split("/")
             for i in range(1, len(parts) + 1):
-                sub = "/" + "/".join(parts[:i])
+                sub = "/".join(parts[:i])
                 try:
                     self._req("MKCOL", sub)
                 except Exception as e:  # noqa: BLE001
@@ -107,12 +133,18 @@ class WebDAVStorageBackend(StorageBackend):
         self._req("DELETE", path)
 
     def copy(self, src: str, dst: str) -> None:
-        dst_url = self._url + "/" + dst.lstrip("/")
-        self._req("COPY", src, headers={"Destination": dst_url})
+        # 服务端 COPY 要求目标父目录已存在，先递归建目录
+        parent = posixpath.dirname(dst)
+        if parent and not self.exists(parent):
+            self.mkdir(parent, parents=True)
+        # COPY/MOVE 不允许 Depth: 1（SabreDAV 返回 400），显式覆盖为 0
+        self._req("COPY", src, headers={"Destination": self._url_for(dst), "Depth": "0"})
 
     def move(self, src: str, dst: str) -> None:
-        dst_url = self._url + "/" + dst.lstrip("/")
-        self._req("MOVE", src, headers={"Destination": dst_url})
+        parent = posixpath.dirname(dst)
+        if parent and not self.exists(parent):
+            self.mkdir(parent, parents=True)
+        self._req("MOVE", src, headers={"Destination": self._url_for(dst), "Depth": "0"})
 
     def health_check(self) -> tuple[bool, str]:
         try:

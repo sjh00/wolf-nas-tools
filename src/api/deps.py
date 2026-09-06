@@ -3,10 +3,12 @@
 import uuid
 from typing import Any, cast
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import log
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AuthError, PermissionDenied
 from app.di.context import AppContext
 from app.infrastructure.cache_system import TokenCache
 from app.infrastructure.security import identify
@@ -63,11 +65,10 @@ def _extract_user_from_api_key(
             status=1,
         )
     except Exception as e:  # noqa: BLE001
-        log.debug(f"[deps]忽略异常: {e}")
+        log.debug(f"[API]忽略异常: {e}")
 
     # 查询创建用户的权限，API Key 继承创建者权限
     permissions = []
-    is_superadmin = False
     level = 0
     username: str = "api_key"
     nickname = cast(str, api_key.name)
@@ -80,14 +81,13 @@ def _extract_user_from_api_key(
                 username = cast(str, getattr(user, "USERNAME", username) or username)
                 nickname = cast(str, api_key.name)
                 level = getattr(user, "LEVEL", 0) or 0
-                is_superadmin = getattr(user, "IS_SUPERADMIN", 0) == 1
                 try:
                     perms = rbac_service.get_user_permissions(created_by)
                     permissions = list(perms) if perms else []
                 except Exception as e:  # noqa: BLE001
-                    log.debug(f"[deps]忽略异常: {e}")
+                    log.debug(f"[API]忽略异常: {e}")
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[deps]忽略异常: {e}")
+            log.debug(f"[API]忽略异常: {e}")
 
     return UserContext(
         user_id=created_by,
@@ -95,7 +95,6 @@ def _extract_user_from_api_key(
         nickname=nickname,
         level=level,
         permissions=permissions,
-        is_superadmin=is_superadmin,
     )
 
 
@@ -123,7 +122,7 @@ def get_current_user(
     # 2) 旧 Token 认证（APIv1 兼容）
     username = _extract_user_from_token(auth_header)
     if username:
-        return UserContext(user_id=0, username=username, level=0, permissions=[], is_superadmin=False)
+        return UserContext(user_id=0, username=username, level=0, permissions=[])
 
     # 3) API Key 认证
     query_key = request.query_params.get("apikey")
@@ -136,9 +135,10 @@ def get_current_user(
     if user_ctx:
         return user_ctx
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="安全认证未通过，请检查登录状态、Token 或 ApiKey",
+    raise AuthError(
+        "安全认证未通过，请检查登录状态、Token 或 ApiKey",
+        errcode=ErrorCode.UNAUTHORIZED,
+        http_status=status.HTTP_401_UNAUTHORIZED,
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -153,7 +153,10 @@ def get_current_user_optional(
     """
     try:
         return get_current_user(request, app_context, credentials)
-    except HTTPException:
+    except AuthError as e:
+        # 仅将"未认证"视为可选；权限不足(403)不属于可选场景，需继续抛出
+        if isinstance(e, PermissionDenied):
+            raise
         return None
 
 
@@ -167,8 +170,8 @@ def require_permission(permission: str):
     """
 
     def checker(user: UserContext = current_user_dependency) -> UserContext:
-        if permission not in user.permissions and not user.is_superadmin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"权限不足: {permission}")
+        if permission not in user.permissions:
+            raise PermissionDenied(f"权限不足: {permission}")
         return user
 
     return checker
@@ -181,13 +184,9 @@ def require_any_permission(*permissions: str):
     """
 
     def checker(user: UserContext = current_user_dependency) -> UserContext:
-        if user.is_superadmin:
-            return user
         if any(p in user.permissions for p in permissions):
             return user
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=f"权限不足，需要以下任一权限: {', '.join(permissions)}"
-        )
+        raise PermissionDenied(f"权限不足，需要以下任一权限: {', '.join(permissions)}")
 
     return checker
 
@@ -199,11 +198,9 @@ def require_all_permissions(*permissions: str):
     """
 
     def checker(user: UserContext = current_user_dependency) -> UserContext:
-        if user.is_superadmin:
-            return user
         missing = [p for p in permissions if p not in user.permissions]
         if missing:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"权限不足，缺少: {', '.join(missing)}")
+            raise PermissionDenied(f"权限不足，缺少: {', '.join(missing)}")
         return user
 
     return checker
@@ -422,6 +419,11 @@ def get_plugin_framework_service(app_context: AppContext = Depends(get_app_conte
     return app_context.plugin_framework_service
 
 
+def get_plugin_market_service(app_context: AppContext = Depends(get_app_context)):
+    """获取插件市场服务实例"""
+    return app_context.plugin_market_service
+
+
 def get_brush_service(app_context: AppContext = Depends(get_app_context)):
     """获取刷流服务实例"""
     return app_context.brush_service
@@ -491,3 +493,13 @@ def _extract_user_from_jwt(auth_header: str | None) -> UserContext | None:
     # 支持 "Bearer xxx" 或直接 "xxx"
     token = auth_header.split()[-1] if " " in auth_header else auth_header
     return AuthService.verify_token(token)
+
+
+def get_retriever(app_context: AppContext = Depends(get_app_context)):
+    """获取 RAG 检索器（agent 未启用时为 None）"""
+    return app_context.retriever
+
+
+def get_knowledge_ingestor(app_context: AppContext = Depends(get_app_context)):
+    """获取知识库采集器（agent 未启用时为 None）"""
+    return app_context.knowledge_ingestor

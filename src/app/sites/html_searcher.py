@@ -19,13 +19,13 @@ from lxml import etree
 import log
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType
-from app.infrastructure.http.auth import CookieAuth
-from app.infrastructure.http.client import HttpClient
-from app.infrastructure.http.config import HttpClientConfig
+from app.infrastructure.chrome.challenge import is_challenge
+from app.infrastructure.http import CookieAuth, HttpClient, HttpClientConfig
 from app.sites import engine_tools
 from app.sites.api_searcher import ApiSiteSearcher
 from app.sites.engine import SiteDefinition
 from app.sites.searchers import _TRANSFORMS, _css_to_xpath, _resolve_jinja
+from app.utils.browser_mode import build_browser_mode
 from app.utils.config_tools import get_proxies
 
 
@@ -38,12 +38,20 @@ class HtmlSiteSearcher:
         self._site = site_def
         self._user_config = user_config or {}
         self._site_engine = site_engine
+        self.last_error: str = ""
 
-    def search(self, keyword: str = "", page: int = 0, mtype: MediaType | None = None) -> list[dict[str, Any]]:
+    def search(
+        self,
+        keyword: str = "",
+        page: int = 0,
+        mtype: MediaType | None = None,
+        page_size: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not self._site.html:
             return []
+        self.last_error = ""
         is_browse = not keyword
-        url = self._build_url(keyword, page, mtype)
+        url = self._build_url(keyword, page, mtype, page_size)
         if not url:
             return []
 
@@ -62,7 +70,7 @@ class HtmlSiteSearcher:
     def _domain(self) -> str:
         return (self._user_config.get("domain") or self._site.domain or "").rstrip("/")
 
-    def _build_url(self, keyword: str, page: int, mtype: MediaType | None) -> str | None:
+    def _build_url(self, keyword: str, page: int, mtype: MediaType | None, page_size: int | None = None) -> str | None:
         cfg = self._site.html
         if not (isinstance(cfg, dict) or hasattr(cfg, "search")):
             return None
@@ -113,6 +121,12 @@ class HtmlSiteSearcher:
                 if pk in params_filled:
                     params_filled[pk] = MediaTypeMapper.to_site_cat(mtype)
 
+        # 每页数量：站点参数中存在 page_size/limit/per_page 等键时覆盖为前端选择值
+        if page_size:
+            for size_key in ("page_size", "pagesize", "per_page", "perpage", "limit"):
+                if size_key in params_filled:
+                    params_filled[size_key] = int(page_size)
+
         qs = "&".join(f"{k}={quote(str(v))}" for k, v in params_filled.items() if v)
         path_with_slash = f"/{path.lstrip('/')}" if path else ""
         url = f"{domain}{path_with_slash}"
@@ -136,18 +150,50 @@ class HtmlSiteSearcher:
         rate_limiter = getattr(engine, "site_limiter", None)
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(engine, self._site)
-        try:
-            res = HttpClient(
-                config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
-                rate_limiter=rate_limiter_engine,
-            ).get(url=url, headers=headers, auth=CookieAuth(cookie) if cookie else None, **rl_kwargs)
-        except Exception:
-            log.warn(f"[HtmlSiteSearcher]{self._site.name} 请求失败")
-            return None
-        encoding = self._site.encoding or None
-        if encoding:
-            return res.content.decode(encoding)
-        return res.text
+        chrome_enabled = bool(self._user_config.get("chrome"))
+        render = bool(self._user_config.get("browser_render"))
+
+        def _request(with_browser):
+            # 浏览器模式请求用完即关：非持久会话立即删除，避免 nexus-chrome 会话/标签页堆积
+            client = None
+            try:
+                client = HttpClient(
+                    config=HttpClientConfig(proxy_url=proxy_url, browser=with_browser),
+                    rate_limiter=rate_limiter_engine,
+                )
+                res = client.get(url=url, headers=headers, auth=CookieAuth(cookie) if cookie else None, **rl_kwargs)
+                if not res.is_success:
+                    self.last_error = f"HTTP {res.status_code}"
+                    log.warn(f"[HtmlSiteSearcher]{self._site.name} HTTP {res.status_code}, url={url}")
+                    return None
+                encoding = self._site.encoding or None
+                return res.content.decode(encoding) if encoding else res.text
+            except Exception as e:
+                self.last_error = f"{type(e).__name__}"
+                log.warn(f"[HtmlSiteSearcher]{self._site.name} 请求失败: {e}")
+                return None
+            finally:
+                if client is not None and with_browser is not None:
+                    client.close()
+
+        # 站点开启浏览器自动化：直连失败/疑似挑战页时自动经 nexus-chrome 渲染再取一次
+        html = _request(None)
+        if html is None or is_challenge(html):
+            if not chrome_enabled:
+                return html
+            browser = build_browser_mode(
+                site_info={
+                    "chrome": True,
+                    "ua": ua,
+                    "browser_render": render,
+                    "browser_persistent": bool(self._user_config.get("browser_persistent")),
+                },
+                site_key=self._user_config.get("domain") or self._site.domain or "",
+                proxy_url=proxy_url,
+                render_html=render,
+            )
+            html = _request(browser)
+        return html
 
     def _parse_html(self, html_text, is_browse=False):
         html_doc = etree.HTML(html_text)
@@ -383,7 +429,6 @@ class HtmlSiteSearcher:
                 except Exception:
                     els = []
 
-            log.debug(f"[HtmlSearcher]selector={selector} xpath={xpath} els_count={len(els)}")
             if els:
                 attr = fcfg.get("attribute", "")
                 contents = fcfg.get("contents", 0)
@@ -408,7 +453,7 @@ class HtmlSiteSearcher:
                                     if rm_el.text:
                                         els[0].text = (els[0].text or "").replace(rm_el.text, "")
                             except Exception as e:  # noqa: BLE001
-                                log.debug(f"[html_searcher]忽略异常: {e}")
+                                log.debug(f"[HtmlSiteSearcher]忽略异常: {e}")
                         val = "".join(e for e in els[0].xpath(".//text()") if e).strip()
                         if not val:
                             val = (els[0].text or "").strip()
@@ -461,7 +506,7 @@ class HtmlSiteSearcher:
                         val = mapped_val
                         break
                 except Exception as e:  # noqa: BLE001
-                    log.debug(f"[html_searcher]忽略异常: {e}")
+                    log.debug(f"[HtmlSiteSearcher]忽略异常: {e}")
                 try:
                     if css_class.startswith("img."):
                         cls = css_class[4:]
@@ -470,7 +515,7 @@ class HtmlSiteSearcher:
                             val = mapped_val
                             break
                 except Exception as e:  # noqa: BLE001
-                    log.debug(f"[html_searcher]忽略异常: {e}")
+                    log.debug(f"[HtmlSiteSearcher]忽略异常: {e}")
 
         filters = fcfg.get("filters", [])
         if filters and val is not None:

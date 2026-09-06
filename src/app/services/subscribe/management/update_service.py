@@ -54,6 +54,7 @@ class SubscribeUpdateService:
         filter_rule: int | str | None = None,
         filter_include: str | None = None,
         filter_exclude: str | None = None,
+        filter_free: bool | None = None,
         save_path: str | None = None,
         download_setting: int | str | None = None,
         total_ep: int | None = None,
@@ -68,10 +69,8 @@ class SubscribeUpdateService:
             return -1, "缺少订阅ID", None
 
         year = int(str(year)) if str(year).isdigit() else ""
-        rss_sites = rss_sites or []
         if isinstance(rss_sites, str):
             rss_sites = rss_sites.split(",")
-        search_sites = search_sites or []
         if isinstance(search_sites, str):
             search_sites = search_sites.split(",")
         over_edition = 1 if over_edition else 0
@@ -120,7 +119,8 @@ class SubscribeUpdateService:
                 else:
                     total = media_info.total_episodes
                 if current_ep:
-                    lack = total - current_ep - 1
+                    # 首个待下载集为 current_ep → 缺失集数 = total - current_ep + 1
+                    lack = max(0, total - current_ep + 1)
                 else:
                     lack = total
                 season_str = media_info.get_season_string()
@@ -130,7 +130,7 @@ class SubscribeUpdateService:
                     year=media_info.year,
                     season=season_str,
                     tmdbid=media_info.tmdb_id,
-                    image=image or media_info.get_message_image(),
+                    image=image or media_info.get_poster_image(),
                     rss_sites=rss_sites,
                     search_sites=search_sites,
                     over_edition=over_edition,
@@ -140,6 +140,7 @@ class SubscribeUpdateService:
                     filter_rule=filter_rule,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,
+                    filter_free=filter_free,
                     save_path=save_path,
                     download_setting=download_setting,
                     total_ep=total_ep,
@@ -158,7 +159,7 @@ class SubscribeUpdateService:
                     name=media_info.title,
                     year=media_info.year,
                     tmdbid=media_info.tmdb_id,
-                    image=image or media_info.get_message_image(),
+                    image=image or media_info.get_poster_image(),
                     rss_sites=rss_sites,
                     search_sites=search_sites,
                     over_edition=over_edition,
@@ -168,6 +169,7 @@ class SubscribeUpdateService:
                     filter_rule=filter_rule,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,
+                    filter_free=filter_free,
                     save_path=save_path,
                     download_setting=download_setting,
                     state=state,
@@ -197,6 +199,7 @@ class SubscribeUpdateService:
                     filter_rule=filter_rule,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,
+                    filter_free=filter_free,
                     save_path=save_path,
                     download_setting=download_setting,
                     state=state,
@@ -220,6 +223,7 @@ class SubscribeUpdateService:
                     filter_rule=filter_rule,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,
+                    filter_free=filter_free,
                     save_path=save_path,
                     download_setting=download_setting,
                     total=0,

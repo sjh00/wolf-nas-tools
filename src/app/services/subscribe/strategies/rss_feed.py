@@ -11,10 +11,11 @@ from app.core.exceptions import (
     RepositoryError,
     ServiceError,
 )
+from app.core.settings import settings
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.db.repositories.subscribe_repo_adapter import SubscribeHistoryRepositoryAdapter
 from app.domain.entities.rss import SubscribeState
-from app.domain.enums import SearchType
+from app.domain.enums import SearchType, SystemConfigKey
 from app.domain.mediatypes import MediaType
 from app.media.service import MediaService
 from app.message import Message
@@ -45,6 +46,7 @@ class RssFeedStrategy:
         matcher: SubscribeMatcher,
         message: Message,
         coordinator=None,
+        system_config=None,
     ):
         self.media = media
         self.sites = sites
@@ -57,6 +59,7 @@ class RssFeedStrategy:
         self.matcher = matcher
         self.message = message
         self._coordinator = coordinator
+        self._system_config = system_config
 
     def set_coordinator(self, coordinator) -> None:
         """设置下载协调器（用于 SubscriptionMonitor 注入）."""
@@ -69,6 +72,22 @@ class RssFeedStrategy:
                 log.info("[RssFeedStrategy] RSS 轮询正在其他实例执行，跳过")
                 return
             self._do_rss_poll()
+
+    def _get_default_rss_sites(self, mtype: MediaType) -> list:
+        """读取默认订阅设置的 rss_sites（订阅未配置时的回退站点）"""
+        if not self._system_config:
+            return []
+        try:
+            default_setting = self._system_config.get(
+                SystemConfigKey.DefaultSubscribeSettingTV
+                if mtype in (MediaType.TV, MediaType.ANIME)
+                else SystemConfigKey.DefaultSubscribeSettingMOV
+            )
+            if isinstance(default_setting, dict):
+                return default_setting.get("rss_sites") or []
+        except Exception as e:
+            log.debug(f"[RssFeedStrategy]读取默认订阅设置 RSS 站点失败: {e}")
+        return []
 
     def _do_rss_poll(self) -> None:
         if self.sites is None:
@@ -123,7 +142,9 @@ class RssFeedStrategy:
                 else:
                     check_sites += rss_sites
         if check_all:
-            check_sites = []
+            # 订阅未配置 rss_sites → 使用默认订阅设置的 rss_sites（与搜索/手动一致），而非全部站点
+            check_sites = self._get_default_rss_sites(MediaType.TV) + self._get_default_rss_sites(MediaType.MOVIE)
+            check_sites = list(set(check_sites))
         else:
             check_sites = list(set(check_sites))
 
@@ -224,6 +245,10 @@ class RssFeedStrategy:
                     identify_results[item["idx"]] = info
             except (MediaError, NetworkError) as e:
                 log.error(f"[RssFeedStrategy] 批量识别出错: {e}")
+            except Exception as e:  # noqa: BLE001
+                # 单条资源解析异常不应中断整轮 RSS，保留堆栈便于定位
+                ExceptionUtils.exception_traceback(e)
+                log.error(f"[RssFeedStrategy] 批量识别出现未预期异常: {e}")
 
         rss_download_torrents = []
         rss_no_exists = {}
@@ -259,8 +284,8 @@ class RssFeedStrategy:
 
                 if media_info.tmdb_id:
                     season_episode = media_info.get_season_episode_string()
-                    if self.download_repo.is_exists_download_history_by_tmdb(media_info.tmdb_id, season_episode):
-                        log.info(f"[RssFeedStrategy] {title} 已在下载历史中存在，跳过下载")
+                    if self.download_repo.is_completed_by_tmdb(str(media_info.tmdb_id), season_episode):
+                        log.info(f"[RssFeedStrategy] {title} 已完成下载，跳过")
                         continue
 
                 match_flag, match_msg, match_info = self.matcher.match(
@@ -309,11 +334,47 @@ class RssFeedStrategy:
                                 season = int(str(match_info.get("season")).replace("S", ""))
                             total_ep = match_info.get("total")
                             current_ep = match_info.get("current_ep")
+                            # 懒更新：TMDB 集数增加时自动同步，避免订阅停留在旧集数
+                            # 优先用季详情集数（12h 缓存，episode_count 常滞后），失败再退回主详情
+                            if match_info.get("id") and media_info.tmdb_id:
+                                try:
+                                    new_total = 0
+                                    try:
+                                        season_detail = self.media.get_tmdb_tv_season_detail(media_info.tmdb_id, season)
+                                        season_eps = (
+                                            season_detail.get("episodes") if isinstance(season_detail, dict) else None
+                                        )
+                                        if isinstance(season_eps, list):
+                                            new_total = len(season_eps)
+                                    except Exception:  # noqa: BLE001
+                                        new_total = 0
+                                    if new_total <= 0 and media_info.tmdb_info:
+                                        new_total = int(
+                                            self.media.get_tmdb_season_episodes_num(
+                                                tv_info=media_info.tmdb_info, season=season
+                                            )
+                                            or 0
+                                        )
+                                    if new_total > 0 and (total_ep is None or new_total > total_ep):
+                                        log.info(
+                                            f"[RssFeedStrategy] {media_info.get_title_string()} S{season} "
+                                            f"TMDB 总集数更新: {total_ep or 0} -> {new_total}"
+                                        )
+                                        old_total = int(total_ep or 0)
+                                        total_ep = int(new_total)
+                                        new_missing = list(range(old_total + 1, int(new_total) + 1))
+                                        self.subscribe._tv_repo.update_total(
+                                            rssid=match_info.get("id"),
+                                            total_ep=int(new_total),
+                                            lack_episodes=new_missing,
+                                        )
+                                except Exception as e:  # noqa: BLE001
+                                    log.debug(f"[RssFeedStrategy] TMDB 集数检查异常: {e}")
                             episodes = self.subscribe.get_subscribe_tv_episodes(match_info.get("id"))
                             if episodes is None:
                                 episodes = []
                                 if current_ep:
-                                    episodes = list(range(int(current_ep), int(total_ep) + 1))
+                                    episodes = list(range(int(current_ep), int(total_ep or 0) + 1))
                             if media_info.tmdb_id not in rss_no_exists:
                                 rss_no_exists[media_info.tmdb_id] = []
                             rss_no_exists[media_info.tmdb_id].append(
@@ -370,6 +431,11 @@ class RssFeedStrategy:
             except (MediaError, DownloadError, IndexerError, RepositoryError, ServiceError, NetworkError) as e:
                 ExceptionUtils.exception_traceback(e)
                 log.error(f"[RssFeedStrategy] 处理 RSS 发生错误：{e!s}")
+                continue
+            except Exception as e:  # noqa: BLE001
+                # 未预期异常（如对 None 做正则）不应中断整轮 RSS：记录堆栈后跳过本条
+                ExceptionUtils.exception_traceback(e)
+                log.error(f"[RssFeedStrategy] 处理 RSS 出现未预期异常：{e!s}")
                 continue
 
         log.info(f"[RssFeedStrategy] 所有 RSS 处理结束，共 {len(rss_download_torrents)} 个有效资源")
@@ -458,6 +524,16 @@ class RssFeedStrategy:
                 collection_priority = 1
             else:
                 collection_priority = 0
+            download_order = (settings.get("pt") or {}).get("download_order")
+            # 做种数优先时做种数在站点顺序前，与下载优先规则一致
+            if download_order == "seeder":
+                return (
+                    collection_priority,
+                    episode_count,
+                    x.res_order,
+                    x.seeders,
+                    x.site_order,
+                )
             return (collection_priority, episode_count, x.res_order, x.site_order, x.seeders)
 
         rss_download_torrents.sort(key=_rss_sort_key, reverse=True)
