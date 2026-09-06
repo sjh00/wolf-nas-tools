@@ -157,7 +157,6 @@ class RBACUserRepository(BaseRepository):
         password_hash: str,
         email: str | None = None,
         nickname: str | None = None,
-        is_superadmin: int = 0,
     ) -> RBACUser:
         """
         创建新用户
@@ -167,7 +166,6 @@ class RBACUserRepository(BaseRepository):
             password_hash: 密码哈希
             email: 邮箱
             nickname: 昵称
-            is_superadmin: 是否为超级管理员
 
         Returns:
             创建的用户对象
@@ -178,12 +176,22 @@ class RBACUserRepository(BaseRepository):
                 PASSWORD_HASH=password_hash,
                 EMAIL=email,
                 NICKNAME=nickname or username,
-                IS_SUPERADMIN=is_superadmin,
                 STATUS=1,
             )
             db.add(user)
             db.commit()
-            return user
+            # commit 后会话关闭会返回游离实例，懒加载 roles 会报 DetachedInstanceError；
+            # 重新查询并预加载关联后再返回
+            return (
+                db.query(RBACUser)
+                .options(
+                    selectinload(RBACUser.roles).selectinload(RBACRole.permissions),
+                    selectinload(RBACUser.roles).selectinload(RBACRole.menus),
+                    selectinload(RBACUser.roles).selectinload(RBACRole.users),
+                )
+                .filter(RBACUser.ID == user.ID)
+                .first()
+            )
 
     def update_user(self, user_id: int, **kwargs) -> bool:
         """
@@ -201,7 +209,7 @@ class RBACUserRepository(BaseRepository):
             if not user:
                 return False
 
-            allowed_fields = ["EMAIL", "NICKNAME", "AVATAR", "STATUS", "PASSWORD_HASH"]
+            allowed_fields = ["USERNAME", "EMAIL", "NICKNAME", "AVATAR", "STATUS", "PASSWORD_HASH"]
             for key, value in kwargs.items():
                 if key.upper() in allowed_fields:
                     setattr(user, key.upper(), value)

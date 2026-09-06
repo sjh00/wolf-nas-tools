@@ -4,6 +4,7 @@ import cn2an
 import regex as re
 from pydantic import BaseModel, Field
 
+import log
 from app.core.constants import ANIME_GENREIDS
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.domain.mediatypes import MediaType
@@ -48,6 +49,10 @@ class MediaInfo(BaseModel):
     begin_episode: int | None = None
     end_episode: int | None = None
     part: str | None = None
+    # 种子原始季/集（remap 后保留重映射前的值）
+    seeds_season: int | None = None
+    seeds_episode: int | None = None
+    seeds_end_episode: int | None = None
 
     # ---- 资源信息 ----
     resource_type: str | None = None
@@ -89,6 +94,9 @@ class MediaInfo(BaseModel):
 
     # ---- TMDB 完整信息 ----
     tmdb_info: dict[str, Any] = Field(default_factory=dict)
+
+    # ---- 识别置信度（ADR-014 透传，0.0-1.0；未识别/旧路径默认 0） ----
+    confidence: float = 0.0
 
     # ---- 本地状态 ----
     fav: str = "0"
@@ -139,9 +147,11 @@ class MediaInfo(BaseModel):
 
     def get_season_string(self) -> str:
         if self.begin_season is not None:
-            if self.end_season is None:
-                return "S{}".format(str(self.begin_season).rjust(2, "0"))
-            return "S{}-S{}".format(str(self.begin_season).rjust(2, "0"), str(self.end_season).rjust(2, "0"))
+            b = self.begin_season
+            e = self.end_season
+            if e is None or (isinstance(b, int) and isinstance(e, int) and e == b):
+                return "S{}".format(str(b).rjust(2, "0"))
+            return "S{}-S{}".format(str(b).rjust(2, "0"), str(e).rjust(2, "0"))
         if self.type == MediaType.MOVIE:
             return ""
         return "S01"
@@ -199,9 +209,11 @@ class MediaInfo(BaseModel):
 
     def get_episode_string(self) -> str:
         if self.begin_episode is not None:
-            if self.end_episode is None:
-                return "E{}".format(str(self.begin_episode).rjust(2, "0"))
-            return "E{}-E{}".format(str(self.begin_episode).rjust(2, "0"), str(self.end_episode).rjust(2, "0"))
+            b = self.begin_episode
+            e = self.end_episode
+            if e is None or (isinstance(b, int) and isinstance(e, int) and e == b):
+                return "E{}".format(str(b).rjust(2, "0"))
+            return "E{}-E{}".format(str(b).rjust(2, "0"), str(e).rjust(2, "0"))
         return ""
 
     def get_episode_items(self) -> str:
@@ -434,7 +446,10 @@ class MediaInfo(BaseModel):
 
         media_type = info.get("media_type")
         if media_type == MediaType.TV:
-            genre_ids = info.get("genre_ids", [])
+            genre_ids = info.get("genre_ids") or []
+            # TMDB detail 返回 genres（数组）而非 genre_ids，需兼容提取
+            if not genre_ids:
+                genre_ids = [g.get("id") for g in (info.get("genres") or []) if g.get("id")]
             if isinstance(genre_ids, list):
                 genre_ids = [str(val).upper() for val in genre_ids]
             else:
@@ -459,13 +474,37 @@ class MediaInfo(BaseModel):
         self.original_language = info.get("original_language")
         self.networks = [network.get("name") for network in info.get("networks") or []]
         if self.type == MediaType.MOVIE:
+            tmdb_year = info.get("release_date", "")[:4] if info.get("release_date") else ""
+            if self.year and tmdb_year and str(self.year) != str(tmdb_year):
+                log.debug(f"[MediaInfo]TMDB年份不匹配: 种子={self.year}, TMDB={tmdb_year}, 保留种子元数据")
+                tmdb_year = ""  # 年份冲突时不覆盖
+        elif self.type != MediaType.MOVIE and self.year and info:
+            tmdb_year = info.get("first_air_date", "")[:4] if info.get("first_air_date") else ""
+            if tmdb_year.isdigit() and self.year.isdigit() and abs(int(self.year) - int(tmdb_year)) > 5:
+                self.tmdb_id = None  # type: ignore[reportAttributeAccessIssue]
+                self.tmdb_info = None  # type: ignore[reportAttributeAccessIssue]
+                return
+
+        if media_type == MediaType.MOVIE:
             self.title = info.get("title")
             self.original_title = info.get("original_title")
             self.runtime = info.get("runtime")
             self.release_date = info.get("release_date")
-            if info.get("original_language") == "en":
-                self.en_name = info.get("original_title")
-            self.cn_name = info.get("title")
+            title_val = info.get("title") or ""
+            self.cn_name = title_val if StringUtils.is_chinese(title_val) else None
+            en_val = info.get("original_title") or ""
+            # en_name 仅存真正的英文/拉丁名；中日韩原名不存（交给上层取 TMDB 英文标题），避免日语名污染英文名
+            self.en_name = None
+            if not StringUtils.is_chinese(title_val) and not StringUtils.is_japanese(title_val):
+                self.en_name = title_val
+            elif not StringUtils.is_chinese(en_val) and not StringUtils.is_japanese(en_val):
+                self.en_name = en_val
+            # 兜底：name/original_name 均为中日文时（中文 locale 的 detail 接口），从 translations 提取英文名
+            if not self.en_name:
+                for tr in (info.get("translations") or {}).get("translations") or []:
+                    if tr.get("iso_639_1") == "en" and tr.get("data", {}).get("name"):
+                        self.en_name = tr["data"]["name"].strip()
+                        break
             if self.release_date:
                 self.year = self.release_date[0:4]
             self.category = get_category(rule_map.get("movie"), info)
@@ -474,17 +513,35 @@ class MediaInfo(BaseModel):
                 ImageProxy.get_tmdbimage_url(info.get("backdrop_path")) if info.get("backdrop_path") else ""
             )
         else:
+            tmdb_year = info.get("first_air_date", "")[:4] if info.get("first_air_date") else ""
+            if self.year and tmdb_year and str(self.year) != str(tmdb_year):
+                log.debug(f"[MediaInfo]TMDB年份不匹配: 种子={self.year}, TMDB={tmdb_year}, 保留种子元数据")
+                tmdb_year = ""  # 年份冲突时不覆盖
             self.title = info.get("name")
             self.original_title = info.get("original_name")
             runtime_val = info.get("episode_run_time")
             self.runtime = int(runtime_val[0]) if runtime_val else None  # type: ignore[assignment]
             self.release_date = info.get("first_air_date")
-            self.cn_name = info.get("name")
-            if info.get("original_language") == "en":
-                self.en_name = info.get("original_name")
+            name_val = info.get("name") or ""
+            self.cn_name = name_val if StringUtils.is_chinese(name_val) else None
+            en_val = info.get("original_name") or ""
+            # en_name 仅存真正的英文/拉丁名；中日韩原名不存（交给上层取 TMDB 英文标题），避免日语名污染英文名
+            self.en_name = None
+            if not StringUtils.is_chinese(name_val) and not StringUtils.is_japanese(name_val):
+                self.en_name = name_val
+            elif not StringUtils.is_chinese(en_val) and not StringUtils.is_japanese(en_val):
+                self.en_name = en_val
+            # 兜底：name/original_name 均为中日文时（中文 locale 的 detail 接口），从 translations 提取英文名
+            if not self.en_name:
+                for tr in (info.get("translations") or {}).get("translations") or []:
+                    if tr.get("iso_639_1") == "en" and tr.get("data", {}).get("name"):
+                        self.en_name = tr["data"]["name"].strip()
+                        break
             if self.release_date:
                 self.year = self.release_date[0:4]
-            if self.type == MediaType.TV:
+            if self.type == MediaType.MOVIE:
+                self.category = get_category(rule_map.get("movie"), info)
+            elif self.type == MediaType.TV:
                 self.category = get_category(rule_map.get("tv"), info)
             else:
                 self.category = get_category(rule_map.get("anime"), info)
@@ -538,6 +595,9 @@ class MediaInfo(BaseModel):
             "link": self.get_detail_url(),
             "season": self.get_season_list(),
             "episode": self.get_episode_list(),
+            "seeds_season": self.seeds_season,
+            "seeds_episode": self.seeds_episode,
+            "seeds_end_episode": self.seeds_end_episode,
             "backdrop": self.get_backdrop_image(),
             "poster": self.get_poster_image(),
             "org_string": self.org_string,
@@ -614,11 +674,11 @@ class MediaInfo(BaseModel):
         if not title_text:
             return
         title_text = f" {title_text} "
-        subtitle_season_re = r"(?<!全\s*|共\s*)[第\s]+([0-9一二三四五六七八九十S\-]+)\s*季(?!\s*全|\s*共)"
+        subtitle_season_re = r"(?<!全\s*|共\s*)第\s*([0-9一二三四五六七八九十S\-]+)\s*季(?!\s*全|\s*共)"
         subtitle_season_all_re = (
             r"[全共]\s*([0-9一二三四五六七八九十]+)\s*季|([0-9一二三四五六七八九十]+)\s*季\s*[全共]"
         )
-        subtitle_episode_re = r"(?<!全\s*|共\s*)[第\s]+([0-9一二三四五六七八九十百零EP\-]+)\s*[集话話期](?!\s*全|\s*共)"
+        subtitle_episode_re = r"(?<!全\s*|共\s*)第\s*([0-9一二三四五六七八九十百零EP\-]+)\s*[集话話期](?!\s*全|\s*共)"
         subtitle_episode_all_re = (
             r"([0-9一二三四五六七八九十百零]+)\s*集\s*[全共]|[共全]\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期]"
         )

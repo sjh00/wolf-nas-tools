@@ -2,6 +2,7 @@
 
 import os
 import re
+import time
 from typing import Any
 
 import log
@@ -11,6 +12,7 @@ from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAd
 from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepositoryAdapter
 from app.domain.mediatypes import MediaType
 from app.services.media_config_service import MediaConfigService
+from app.services.transfer.name_format import render
 from app.storage import StorageBackendFactory
 from app.storage.backends.base import StorageConfig, StorageType
 from app.storage.backends.local import LocalStorageBackend
@@ -59,6 +61,9 @@ class TransferPathResolver:
         self._tv_file_rmt_format = tv_file_rmt_format
         self._backend_cache: dict[str, Any] = {}
         self._storage_backend_repo = storage_backend_repo or StorageBackendRepositoryAdapter()
+        self._media_config_service = None
+        self._last_refresh = 0.0
+        self._refresh_ttl = 60
 
     @classmethod
     def from_settings(
@@ -108,7 +113,7 @@ class TransferPathResolver:
                     tv_season_rmt_format = tv_formats[-2]
                     tv_file_rmt_format = tv_formats[-1]
 
-        return cls(
+        result = cls(
             movie_path=movie_path,
             tv_path=tv_path,
             anime_path=anime_path,
@@ -127,6 +132,45 @@ class TransferPathResolver:
             tv_file_rmt_format=tv_file_rmt_format,
             storage_backend_repo=storage_backend_repo or StorageBackendRepositoryAdapter(),
         )
+        result._media_config_service = media_config_service
+        return result
+
+    def refresh(self) -> None:
+        """重新读取媒体库路径配置，使配置变更无需重启即可生效.
+
+        TTL 守卫：60 秒内不重复读库（转移按文件逐个调用 refresh，
+        避免批量转移退化为 N+1 次 DB 往返）；配置源读取失败时沿用旧配置。
+        """
+        if self._media_config_service is None:
+            return
+        now = time.time()
+        if now - self._last_refresh < self._refresh_ttl:
+            return
+        try:
+            fresh = TransferPathResolver.from_settings(
+                media_config_service=self._media_config_service,
+                storage_backend_repo=self._storage_backend_repo,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[TransferPathResolver]配置刷新失败，沿用旧配置: {e}")
+            return
+        self._last_refresh = now
+        self._movie_path = fresh._movie_path
+        self._tv_path = fresh._tv_path
+        self._anime_path = fresh._anime_path
+        self._unknown_path = fresh._unknown_path
+        self._movie_backend = fresh._movie_backend
+        self._tv_backend = fresh._tv_backend
+        self._anime_backend = fresh._anime_backend
+        self._unknown_backend = fresh._unknown_backend
+        self._movie_category_flag = fresh._movie_category_flag
+        self._tv_category_flag = fresh._tv_category_flag
+        self._anime_category_flag = fresh._anime_category_flag
+        self._movie_dir_rmt_format = fresh._movie_dir_rmt_format
+        self._movie_file_rmt_format = fresh._movie_file_rmt_format
+        self._tv_dir_rmt_format = fresh._tv_dir_rmt_format
+        self._tv_season_rmt_format = fresh._tv_season_rmt_format
+        self._tv_file_rmt_format = fresh._tv_file_rmt_format
 
     # ---------- 目标路径属性 ----------
 
@@ -175,22 +219,30 @@ class TransferPathResolver:
                 return True
         return any(PathUtils.is_path_in_path(unknown_path, path) for unknown_path in self._unknown_path)
 
-    def get_best_target_path(self, mtype, in_path=None, size=0):
+    def get_best_target_path(self, mtype, in_path=None, size=0, media=None, media_service=None):
         """查询一个最好的目录返回."""
         if not mtype:
             return None
         if mtype == MediaType.MOVIE:
             dest_paths = self._movie_path
+            backends = self._movie_backend
         elif mtype == MediaType.TV:
             dest_paths = self._tv_path
+            backends = self._tv_backend
         else:
             dest_paths = self._anime_path
+            backends = self._anime_backend
         if not dest_paths:
             return None
         if not isinstance(dest_paths, list):
             return dest_paths
         if isinstance(dest_paths, list) and len(dest_paths) == 1:
             return dest_paths[0]
+        # 多后端集数更新：剧集已存在于某后端时，优先选择该目录，避免同一剧集分散到多个后端
+        if media is not None and mtype in (MediaType.TV, MediaType.ANIME):
+            existing = self._find_existing_media_path(dest_paths, backends, media, media_service)
+            if existing:
+                return existing
         if in_path:
             max_return_path = None
             max_path_len = 0
@@ -210,6 +262,26 @@ class TransferPathResolver:
                 if SystemUtils.get_free_space(path) > NumberUtils.get_size_gb(size):
                     return path
         return dest_paths[0]
+
+    def _find_existing_media_path(self, dest_paths: list, backends: list, media, media_service) -> str | None:
+        """剧集已存在的目标目录（跨多后端）"""
+        for idx, dest_path in enumerate(dest_paths):
+            try:
+                check_path = self.get_dest_path_by_info(dest_path, media, media_service)
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[PathResolver]计算目标路径失败: {e}")
+                continue
+            if not check_path:
+                continue
+            backend_id = backends[idx] if idx < len(backends) else "local"
+            if backend_id == "local":
+                if os.path.isdir(check_path):
+                    return dest_path
+            else:
+                backend = self.resolve_backend_by_id(backend_id)
+                if backend and backend.exists(check_path):
+                    return dest_path
+        return None
 
     def _get_best_unknown_path(self, in_path):
         """查找最合适的 unknown 目录."""
@@ -277,12 +349,49 @@ class TransferPathResolver:
         self._backend_cache[backend_id] = backend
         return backend
 
+    def list_enabled_dest_backends(self, mtype: MediaType) -> list[tuple[str, Any]]:
+        """返回媒体类型下已启用（且非本地）的目标目录与后端实例列表，用于多后端镜像"""
+        if mtype == MediaType.MOVIE:
+            dest_paths = self._movie_path
+            backend_ids = self._movie_backend
+        elif mtype == MediaType.TV:
+            dest_paths = self._tv_path
+            backend_ids = self._tv_backend
+        else:
+            dest_paths = self._anime_path
+            backend_ids = self._anime_backend
+        result: list[tuple[str, Any]] = []
+        for idx, dest_path in enumerate(dest_paths or []):
+            backend_id = backend_ids[idx] if idx < len(backend_ids or []) else "local"
+            if not backend_id or backend_id == "local":
+                continue
+            backend = self.resolve_backend_by_id(backend_id)
+            if backend and getattr(backend.config, "enabled", True):
+                result.append((dest_path, backend))
+        return result
+
     # ---------- 格式化 ----------
 
     def get_format_dict(self, media, media_service=None) -> dict:
         """根据媒体信息，返回 Format 字典."""
         if not media:
             return {}
+        if media_service is None and re.search(
+            r"\{en_title\}|\{episode_title\}",
+            "".join(
+                (
+                    self._movie_dir_rmt_format,
+                    self._movie_file_rmt_format,
+                    self._tv_dir_rmt_format,
+                    self._tv_season_rmt_format,
+                    self._tv_file_rmt_format,
+                )
+            ),
+        ):
+            log.warn(
+                "[TransferPathResolver]重命名格式使用了 {en_title} / {episode_title}，"
+                "但未传入 media_service，这两项将渲染为空，请检查 DI 配置"
+            )
         episode_title = media_service.get_episode_title(media) if media_service else ""
         en_title = media_service.get_tmdb_en_title(media) if media_service else ""
         media_format_dict = {
@@ -295,6 +404,7 @@ class TransferPathResolver:
             "year": media.year,
             "edition": media.get_edtion_string() or None,
             "videoFormat": media.resource_pix,
+            "source": media.resource_type,
             "releaseGroup": media.resource_team,
             "customization": media.customization,
             "effect": media.resource_effect,
@@ -302,6 +412,8 @@ class TransferPathResolver:
             "audioCodec": media.audio_encode,
             "tmdbid": media.tmdb_id,
             "imdbid": media.imdb_id,
+            "media_type": media.type.value if media.type else None,
+            "category": media.category,
             "season": media.get_season_seq(),
             "episode": media.get_episode_seqs(),
             "episode_title": StringUtils.clear_file_name(episode_title),
@@ -316,16 +428,16 @@ class TransferPathResolver:
     def get_movie_dest_path(self, media_info, media_service=None):
         """计算电影文件路径."""
         format_dict = self.get_format_dict(media_info, media_service)
-        dir_name = re.sub(r"[-_\s.]*\t", "", self._movie_dir_rmt_format.format(**format_dict))
-        file_name = re.sub(r"[-_\s.]*\t", "", self._movie_file_rmt_format.format(**format_dict))
+        dir_name = render(self._movie_dir_rmt_format, format_dict)
+        file_name = render(self._movie_file_rmt_format, format_dict)
         return dir_name, file_name
 
     def get_tv_dest_path(self, media_info, media_service=None):
         """计算电视剧文件路径."""
         format_dict = self.get_format_dict(media_info, media_service)
-        dir_name = re.sub(r"[-_\s.]*\t", "", self._tv_dir_rmt_format.format(**format_dict))
-        season_name = re.sub(r"[-_\s.]*\t", "", self._tv_season_rmt_format.format(**format_dict))
-        file_name = re.sub(r"[-_\s.]*\t", "", self._tv_file_rmt_format.format(**format_dict))
+        dir_name = render(self._tv_dir_rmt_format, format_dict)
+        season_name = render(self._tv_season_rmt_format, format_dict)
+        file_name = render(self._tv_file_rmt_format, format_dict)
         return dir_name, season_name, file_name
 
     def get_dest_path_by_info(self, dest, meta_info, media_service):
@@ -340,7 +452,14 @@ class TransferPathResolver:
                 return os.path.join(dest, dir_name)
         else:
             dir_name, season_name, _ = self.get_tv_dest_path(meta_info, media_service)
+            if meta_info.type == MediaType.TV:
+                if self._tv_category_flag:
+                    return os.path.join(dest, meta_info.category, dir_name, season_name)
+                return os.path.join(dest, dir_name, season_name)
+            # 动漫：专用动漫目录时不加分类子目录；回退 TV 目录时按分类进子目录
+            is_dedicated_anime = any(PathUtils.is_path_in_path(p, dest) for p in self._anime_path)
+            if is_dedicated_anime:
+                return os.path.join(dest, dir_name, season_name)
             if self._tv_category_flag:
                 return os.path.join(dest, meta_info.category, dir_name, season_name)
-            else:
-                return os.path.join(dest, dir_name, season_name)
+            return os.path.join(dest, dir_name, season_name)

@@ -1,6 +1,7 @@
 """ClientManager - 消息客户端生命周期管理."""
 
 import json
+from enum import Enum
 from typing import Any, cast
 
 import log
@@ -78,12 +79,27 @@ class ClientManager:
     def _ensure_loaded(self):
         if not self.config_repo:
             return
-        loaded_ids = set(self._client_configs.keys())
-        for client_config in self.config_repo.get_message_client() or []:
-            cid = str(client_config.ID)
-            if cid in loaded_ids:
+        db_clients = {str(c.ID): c for c in self.config_repo.get_message_client() or []}
+
+        # Remove clients that no longer exist in DB or are disabled/empty
+        for cid in list(self._client_configs.keys()):
+            if cid not in db_clients:
+                self._remove_client(cid)
                 continue
-            if cast(bool, client_config.ENABLED) and str(client_config.CONFIG):
+            client_config = db_clients[cid]
+            if not (cast(bool, client_config.ENABLED) and str(client_config.CONFIG)):
+                self._remove_client(cid)
+
+        # Add new clients or refresh existing ones when interactive/enabled changed
+        for cid, client_config in db_clients.items():
+            if not (cast(bool, client_config.ENABLED) and str(client_config.CONFIG)):
+                continue
+            old_config = self._client_configs.get(cid)
+            if old_config is None:
+                self._add_client_from_config(client_config)
+            elif old_config.get("interactive") != bool(client_config.INTERACTIVE) or old_config.get("enabled") != bool(
+                client_config.ENABLED
+            ):
                 self._add_client_from_config(client_config)
 
     def _add_client_from_config(self, client_config):
@@ -110,7 +126,14 @@ class ClientManager:
             ),
         }
         client_instance = client_entry["client"]
-        if hasattr(client_instance, "setup"):
+        if client_instance is None:
+            log.warn(
+                f"[Message]渠道类型未注册，跳过加载: {client_config.TYPE}"
+                "（若为插件化渠道请启用对应 msg_* 插件，否则该渠道通知将无法发送）"
+            )
+            return
+        # 仅交互渠道启动入站服务（与交互路由门控一致，INTERACTIVE=0 不启动）
+        if client_config.INTERACTIVE and hasattr(client_instance, "setup"):
             ThreadExecutor(name="msg_setup").submit(client_instance.setup)
         self._active_clients.append(client_entry)
         if client_config.INTERACTIVE:
@@ -132,6 +155,16 @@ class ClientManager:
 
     def _remove_client(self, cid):
         cid = str(cid)
+        for c in self._active_clients:
+            if str(c.get("id")) == cid:
+                instance = c.get("client")
+                if instance and hasattr(instance, "stop_service"):
+                    try:
+                        # 异步停止入站服务，避免阻塞当前（API 请求）线程
+                        ThreadExecutor(name="msg_stop").submit(instance.stop_service)
+                    except Exception as e:  # noqa: BLE001
+                        log.warn(f"[Message]客户端停止服务失败: {e}")
+                break
         self._active_clients = [c for c in self._active_clients if str(c.get("id")) != cid]
         keys_to_remove = [k for k, v in self._active_interactive_clients.items() if str(v.get("id")) == cid]
         for k in keys_to_remove:
@@ -167,9 +200,10 @@ class ClientManager:
 
     def get_interactive_client(self, client_type: Any = None) -> Any:
         self._ensure_loaded()
-        if client_type:
-            return self._active_interactive_clients.get(client_type)
-        return list(self._active_interactive_clients.values())
+        if not client_type:
+            return list(self._active_interactive_clients.values())
+        key = client_type.name if isinstance(client_type, Enum) else client_type
+        return self._active_interactive_clients.get(key)
 
     def delete_message_client(self, cid: Any) -> Any:
         self._ensure_loaded()
@@ -194,6 +228,17 @@ class ClientManager:
                     self.refresh_client(c.get("id"))
         return ret
 
+    def update_message_client(self, cid: int, **kwargs) -> bool:
+        """更新消息客户端并刷新内存缓存."""
+        self._ensure_loaded()
+        if not self.config_repo:
+            return False
+        updated_id = self.config_repo.update_message_client(cid=cid, **kwargs)
+        if updated_id:
+            self.refresh_client(cid)
+            return True
+        return False
+
     def insert_message_client(
         self,
         name: str,
@@ -205,6 +250,7 @@ class ClientManager:
         note: str = "",
         templates: Any = None,
     ) -> bool:
+        """新增消息客户端."""
         self._ensure_loaded()
         if not self.config_repo:
             return False
@@ -232,13 +278,25 @@ class ClientManager:
 
     def get_status(self, ctype: Any = None, config: Any = None) -> bool:
         """测试消息设置状态."""
-        if not config or not ctype:
+        if not ctype:
             return False
         built_client = ClientRegistry.build(
-            ctype=ctype, conf=config, apikey_service=self._apikey_service, message=self._message
+            ctype=ctype,
+            conf=config or {},
+            apikey_service=self._apikey_service,
+            message=self._message,
         )
         if not built_client:
             return False
+        # 渠道可提供专用连接测试方法（如仅校验凭证），否则回退为发送测试消息
+        # 检查类层面的方法，避免实例属性（如 Mock 自动生成）误命中
+        status_method = getattr(type(built_client), "get_status", None)
+        if callable(status_method):
+            try:
+                return bool(status_method(built_client))
+            except Exception as e:  # noqa: BLE001
+                log.error(f"[Message]{ctype} 连接测试异常：%s" % e)
+                return False
         state, ret_msg = built_client.send_msg(
             title="测试", text="这是一条测试消息", url="https://github.com/sjh00/wolf-nas-tools"
         )

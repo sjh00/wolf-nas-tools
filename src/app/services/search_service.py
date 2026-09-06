@@ -16,7 +16,7 @@ from typing import Any
 import log
 from app.core.exceptions import RepositoryError, ServiceError
 from app.core.settings import settings
-from app.domain.enums import ProgressKey, SearchType
+from app.domain.enums import ProgressKey, SearchType, channel_key, channel_name
 from app.domain.interfaces.download_repo import IDownloadHistoryRepository
 from app.domain.interfaces.search_repo import ISearchRepository
 from app.domain.mediatypes import MediaType
@@ -50,7 +50,6 @@ class SearchQueryBuilder:
         search_name_list = []
         if media_info.keyword:
             search_name_list.append(media_info.keyword)
-            return list(filter(None, search_name_list)), 1
 
         # 中文名
         if media_info.cn_name:
@@ -89,7 +88,14 @@ class SearchQueryBuilder:
                 search_name_list.append(media_info.original_title)
             max_workers = len(search_name_list)
 
-        return list(filter(None, search_name_list)), max_workers
+        # 去重（保持顺序；keyword 常与中文名相同）
+        seen = set()
+        deduped = []
+        for n in search_name_list:
+            if n and n not in seen:
+                seen.add(n)
+                deduped.append(n)
+        return deduped, max(1, min(len(deduped), max_workers))
 
 
 class SearchExecutor:
@@ -175,8 +181,12 @@ class SearchResultProcessor:
         self._message = message
 
     @staticmethod
-    def sort_results(media_list: list) -> list:
-        """按合集优先、标题、资源顺序、站点顺序、做种数排序"""
+    def sort_results(media_list: list, download_order: str | None = None) -> list:
+        """按合集、集数、资源顺序、做种数/站点顺序（按 download_order）、标题排序。
+
+        与 Torrent.get_download_list 的下载优先规则保持一致：
+        seeder=做种数优先（做种数在站点顺序前），否则站点顺序优先。
+        """
 
         def _sort_key(x):
             episode_list = x.get_episode_list() if hasattr(x, "get_episode_list") else []
@@ -191,14 +201,33 @@ class SearchResultProcessor:
                 collection_priority = 1
             else:
                 collection_priority = 0
-            return "{}{}{}{}{}{}".format(
-                str(collection_priority).rjust(1, "0"),
-                str(episode_count).rjust(3, "0"),
-                str(x.res_order).rjust(3, "0"),
-                str(x.site_order).rjust(3, "0"),
-                str(x.seeders).rjust(10, "0"),
-                str(x.title).ljust(100, " "),
-            )
+            seasons = x.get_season_list() if hasattr(x, "get_season_list") else []
+            season = max(seasons) if seasons else (getattr(x, "begin_season", 0) or 0)
+            episode = getattr(x, "begin_episode", 0) or 0
+            if download_order == "seeder":
+                # 做种数优先：做种数在站点顺序前
+                order_key = "{}{}{}{}{}{}{}{}".format(
+                    str(season).rjust(3, "0"),
+                    str(collection_priority).rjust(1, "0"),
+                    str(episode).rjust(3, "0"),
+                    str(episode_count).rjust(3, "0"),
+                    str(x.res_order).rjust(3, "0"),
+                    str(x.seeders).rjust(10, "0"),
+                    str(x.site_order).rjust(3, "0"),
+                    str(x.title).ljust(100, " "),
+                )
+            else:
+                order_key = "{}{}{}{}{}{}{}{}".format(
+                    str(season).rjust(3, "0"),
+                    str(collection_priority).rjust(1, "0"),
+                    str(episode).rjust(3, "0"),
+                    str(episode_count).rjust(3, "0"),
+                    str(x.res_order).rjust(3, "0"),
+                    str(x.site_order).rjust(3, "0"),
+                    str(x.seeders).rjust(10, "0"),
+                    str(x.title).ljust(100, " "),
+                )
+            return order_key
 
         return sorted(media_list, key=_sort_key, reverse=True)
 
@@ -286,7 +315,7 @@ class Searcher:
                     key_word=key_word,
                     media_info=match_media.to_dict() if match_media else None,
                     filter_args=filter_args,
-                    search_type=in_from.value if in_from else None,
+                    search_type=channel_name(in_from) if in_from else None,
                 ),
             )
         )
@@ -330,34 +359,31 @@ class Searcher:
         if filters:
             filter_args.update(filters)
 
-        # 1. 构建搜索词
+        # 1. 构建搜索词（含关键词 + 多语言名，build_search_names 内已去重）
         search_name_list, max_workers = SearchQueryBuilder.build_search_names(media_info, self.media)
 
-        if media_info.keyword:
-            media_list = self.search_medias(media_info.keyword, filter_args, media_info, in_from)
-        else:
-            log.info(f"[Searcher]开始搜索 {search_name_list} ...")
-            optimal_workers = min(len(search_name_list), max_workers, 8)
+        log.info(f"[Searcher]开始搜索 {search_name_list} ...")
+        optimal_workers = min(len(search_name_list), max_workers, 8)
 
-            # 2. 并发执行搜索
-            executor = SearchExecutor(max_workers=optimal_workers)
+        # 2. 并发执行搜索
+        executor = SearchExecutor(max_workers=optimal_workers)
 
-            def _update_progress(finish_count, total):
-                if self.progress is None:
-                    return
-                self.progress.update(
-                    ptype=ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search,
-                    value=round(100 * (finish_count / total)),
-                )
-
-            media_list = executor.execute(
-                search_func=self.search_medias,
-                search_names=search_name_list,
-                filter_args=filter_args,
-                media_info=media_info,
-                in_from=in_from or SearchType.WEB,
-                progress_updater=_update_progress,
+        def _update_progress(finish_count, total):
+            if self.progress is None:
+                return
+            self.progress.update(
+                ptype=ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search,
+                value=round(100 * (finish_count / total)),
             )
+
+        media_list = executor.execute(
+            search_func=self.search_medias,
+            search_names=search_name_list,
+            filter_args=filter_args,
+            media_info=media_info,
+            in_from=in_from or SearchType.WEB,
+            progress_updater=_update_progress,
+        )
 
         # 3. 去重
         media_list = SearchResultDeduplicator.deduplicate(media_list)
@@ -375,11 +401,13 @@ class Searcher:
 
         if self.message is None:
             return None, no_exists, len(media_list), 0
-        if in_from in self.message.get_search_types():
-            # 排序并入库
-            media_list = processor.sort_results(media_list)
+        if channel_key(in_from) in self.message.get_search_types():
+            # 排序并入库（排序尊重下载优先规则：做种数优先时做种数在前）
+            download_order = (settings.get("pt") or {}).get("download_order")
+            media_list = processor.sort_results(media_list, download_order=download_order)
             processor.persist_results(media_list)
-            if not self._search_auto:
+            # 订阅始终自动下载；手动/WEB 搜索按"搜索后自动下载"开关决定
+            if in_from != SearchType.SUBSCRIBE and not self._search_auto:
                 return None, no_exists, len(media_list), 0
 
         # 4. 过滤已下载

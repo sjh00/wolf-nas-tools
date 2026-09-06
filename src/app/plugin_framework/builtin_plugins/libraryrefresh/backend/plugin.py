@@ -39,7 +39,7 @@ class LibraryRefreshPlugin:
                 self.ctx.info("配置已变更，重载服务")
                 self.on_disable()
                 self.on_enable()
-        elif event in ("media.transfered", "media.library_synced"):
+        elif event in ("media.transfer_finished", "media.library_synced"):
             self._handle_refresh(data)
 
     def _handle_refresh(self, event_data: dict):
@@ -65,7 +65,12 @@ class LibraryRefreshPlugin:
 
         if self._mediaserver:
             mediaserver_type_obj = self._mediaserver.get_type()
-            mediaserver_type = mediaserver_type_obj.value if mediaserver_type_obj else ""
+            # get_type 返回字符串或枚举（不同客户端实现不一），统一转为字符串
+            mediaserver_type = (
+                mediaserver_type_obj.value
+                if hasattr(mediaserver_type_obj, "value")
+                else str(mediaserver_type_obj or "")
+            )
         else:
             mediaserver_type = ""
         media_info = event_data.get("media_info") if event_data else None

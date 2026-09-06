@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.deps import get_config_service, get_filter_service, require_any_permission
+from app.core.error_codes import ErrorCode
 from app.core.exceptions import (
     DomainError,
     ResourceNotFoundError,
@@ -98,7 +99,7 @@ def add_filtergroup(
 ):
     name = req.name
     if not name:
-        return fail(code=-1)
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED)
     filter_service.add_group(name, req.default or "N")
     return success()
 
@@ -186,7 +187,7 @@ def rule_test(
 ):
     title = req.title
     if not title:
-        return fail(code=-1)
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED)
     match_flag, text, order = filter_service.test_rule(
         title=title,
         subtitle=req.subtitle,
@@ -205,7 +206,7 @@ def set_default_filtergroup(
 ):
     groupid = req.id
     if not groupid:
-        return fail(code=-1)
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED)
     filter_service.set_default_filtergroup(groupid)
     return success()
 

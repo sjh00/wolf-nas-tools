@@ -65,3 +65,12 @@ static/avatars/*
 config/*.pid
 deps_win.txt
 third_party/
+
+# MkDocs 构建输出
+/site/
+
+tests/config_test.yaml.lock
+tests/config_test.yaml
+
+# 本地调试日志
+/log

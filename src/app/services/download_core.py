@@ -269,22 +269,22 @@ class DownloadCore:
 
     # ---------- 历史记录 / 配置 CRUD 代理 ----------
 
-    def get_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo]:
+    def get_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo] | None:
         if not downloader_id:
             downloader_id = self._client_factory.default_downloader_id
         _client = self._client_factory.get_client(downloader_id)
         if not _client:
-            return []
+            return None
         try:
             torrents, error_flag = _client.get_torrents(tag=tag, ids=ids)
             if error_flag:
-                return []
+                return None
             return torrents
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
-            return []
+            return None
 
     def get_remove_torrents(self, downloader_id=None, config=None):
         if not config or not downloader_id:
@@ -303,19 +303,19 @@ class DownloadCore:
             torrents.sort(key=lambda x: x.get("name") or "")
         return torrents
 
-    def get_downloading_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo]:
+    def get_downloading_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo] | None:
         if not downloader_id:
             downloader_id = self._client_factory.default_downloader_id
         _client = self._client_factory.get_client(downloader_id)
         if not _client:
-            return []
+            return None
         try:
             return _client.get_downloading_torrents(tag=tag, ids=ids) or []
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
-            return []
+            return None
 
     def get_downloading_progress(self, downloader_id=None, ids=None):
         if not downloader_id:
@@ -451,6 +451,38 @@ class DownloadCore:
             ExceptionUtils.exception_traceback(err)
             upload_limit = 0
         _client.set_speed_limit(download_limit=download_limit, upload_limit=upload_limit)
+
+    def get_torrent_trackers(self, tid, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return []
+        return _client.get_torrent_trackers(tid) or []
+
+    def add_torrent_trackers(self, ids, urls, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return
+        _client.add_torrent_trackers(ids, urls)
+
+    def edit_torrent_tracker(self, ids, old_url, new_url, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return
+        _client.edit_torrent_tracker(ids, old_url, new_url)
+
+    def remove_torrent_trackers(self, ids, urls, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return
+        _client.remove_torrent_trackers(ids, urls)
 
     # ---------- 种子解析 ----------
 

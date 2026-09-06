@@ -1,6 +1,8 @@
 """Brush RSS checker - RSS 刷流选种逻辑."""
 
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import log
@@ -9,9 +11,14 @@ from app.db.repositories.subscribe_repo_adapter import SubscribeMovieRepositoryA
 from app.domain.engine.brush_rule_engine import BrushRuleEngine
 from app.domain.entities.brush import BrushTaskState
 from app.media import MediaService
+from app.services.brush.helpers import cached_torrent_attr, store_torrent_attr
 from app.services.rss_processor import RssHelper
 from app.sites import SiteConf
+from app.sites.engine import TorrentAttrFetchError
 from app.utils import ExceptionUtils, JsonUtils
+
+# 已处理种子缓存 TTL：拒绝原因（优惠/做种人数等）可能随时间变化，过期后允许重新评估
+_PROCESSED_CACHE_TTL = 3600
 
 
 class BrushRssChecker:
@@ -27,7 +34,7 @@ class BrushRssChecker:
         sites,
         rsshelper: RssHelper,
         siteconf: SiteConf,
-        torrents_cache: set | None = None,
+        torrents_cache: dict[str, float] | None = None,
         torrent_lifecycle=None,
     ):
         self._helper = helper
@@ -35,9 +42,28 @@ class BrushRssChecker:
         self._rsshelper = rsshelper
         self._sites = sites
         self._siteconf = siteconf
-        self._torrents_cache = torrents_cache or set()
+        self._torrents_cache = torrents_cache if torrents_cache is not None else {}
         self._cache_lock = threading.Lock()
         self._torrent_lifecycle = torrent_lifecycle
+
+    def _mark_or_skip_processed(self, task_id: int, enclosure: str) -> bool:
+        """标记种子已处理（按任务隔离）；TTL 内已处理过返回 True（跳过）。
+
+        优惠/做种人数等状态可能随时间变化，TTL 过期后放行重新评估。
+        缓存键含 task_id，避免任务 A 拒绝的种子影响任务 B。
+        """
+        cache_key = f"{task_id}:{enclosure}"
+        with self._cache_lock:
+            now = time.time()
+            cached_at = self._torrents_cache.get(cache_key)
+            if cached_at is not None and now - cached_at < _PROCESSED_CACHE_TTL:
+                return True
+            if len(self._torrents_cache) >= 10000:
+                oldest = sorted(self._torrents_cache, key=lambda k: self._torrents_cache[k])[:5000]
+                for key in oldest:
+                    del self._torrents_cache[key]
+            self._torrents_cache[cache_key] = now
+            return False
 
     @staticmethod
     def _rss_rule_needs_torrent_attr(rss_rule: dict) -> bool:
@@ -68,15 +94,27 @@ class BrushRssChecker:
             log.debug("[Brush]page_url 为空，跳过 torrent_attr 检查")
             return {}
         log.debug(f"[Brush]开始检查 torrent_attr, page_url={page_url[:80]}")
-        return self._siteconf.check_torrent_attr(
-            torrent_url=page_url,
-            cookie=cookie,
-            api_key=api_key,
-            bearer_token=bearer_token,
-            ua=ua,
-            headers=headers,
-            proxy=site_proxy,
-        )
+
+        cached = cached_torrent_attr(page_url)
+        if cached is not None:
+            return cached
+
+        try:
+            result = self._siteconf.check_torrent_attr(
+                torrent_url=page_url,
+                cookie=cookie,
+                api_key=api_key,
+                bearer_token=bearer_token,
+                ua=ua,
+                headers=headers,
+                proxy=site_proxy,
+            )
+        except TorrentAttrFetchError as e:
+            # 详情抓取失败 → 视为无此属性（规则如 free=FREE 将判为不满足，不下载，宁可不选不误下）
+            log.warn(f"[Brush]种子属性抓取失败({page_url[:60]}): {e}")
+            return {}
+        store_torrent_attr(page_url, result)
+        return result
 
     def check_task_rss(self, taskid: int | None, taskinfo: dict) -> None:
         if not taskid or not taskinfo:
@@ -127,7 +165,7 @@ class BrushRssChecker:
         log.info(f"[Brush]开始站点 {site_name} 的刷流任务：{task_name}...")
         # 先清理已删除的种子记录，避免保种体积虚高阻止进种
         if self._torrent_lifecycle:
-            self._torrent_lifecycle.remove_task_torrents(taskid=None, taskinfo=taskinfo)
+            self._torrent_lifecycle.remove_task_torrents(taskid=taskid, taskinfo=taskinfo)
         if not self._helper.is_allow_new_torrent(taskinfo=taskinfo, dlcount=rss_rule.get("dlcount")):
             return
 
@@ -168,6 +206,40 @@ class BrushRssChecker:
 
         media_service = self._media_service
 
+        # 并发预取详情属性：需要属性且未命中缓存的详情页先并行抓取（3 并发），
+        # 主循环再复用缓存，缩短整批串行等待
+        if self._rss_rule_needs_torrent_attr(rss_rule):
+            to_fetch: list[str] = []
+            for res in rss_result:
+                enclosure = res.get("enclosure")
+                page_url = res.get("link")
+                if not enclosure or not page_url:
+                    continue
+                if self._helper.is_torrent_handled(enclosure=enclosure):
+                    continue
+                if cached_torrent_attr(page_url) is None:
+                    to_fetch.append(page_url)
+            if to_fetch:
+
+                def _fetch_one(url: str) -> None:
+                    try:
+                        self._check_torrent_attr_if_needed(
+                            rss_rule=rss_rule,
+                            page_url=url,
+                            cookie=cookie,
+                            api_key=api_key,
+                            bearer_token=bearer_token,
+                            ua=ua,
+                            headers=headers,
+                            site_proxy=bool(site_proxy),
+                        )
+                    except Exception:  # noqa: BLE001, S110
+                        pass  # 抓取失败由下游按“未知”处理
+
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    list(pool.map(_fetch_one, to_fetch))
+                log.debug(f"[Brush]{len(to_fetch)} 个详情页并发预取完成")
+
         for res in rss_result:
             try:
                 torrent_name = res.get("title")
@@ -176,22 +248,23 @@ class BrushRssChecker:
                 size = res.get("size")
                 pubdate = res.get("pubdate")
                 category = res.get("category", "")
-                log.debug(f"[Brush]RSS: title={torrent_name[:30]}, link={page_url[:60]}, enc={enclosure[:60]}")
+                log.debug(
+                    f"[Brush]RSS: title={str(torrent_name or '')[:30]}, "
+                    f"link={str(page_url or '')[:60]}, enc={str(enclosure or '')[:60]}"
+                )
 
                 if not enclosure:
                     continue
 
-                with self._cache_lock:
-                    if enclosure not in self._torrents_cache:
-                        if len(self._torrents_cache) >= 10000:
-                            self._torrents_cache = set(list(self._torrents_cache)[5000:])
-                        self._torrents_cache.add(enclosure)
-                    else:
-                        log.debug(f"[Brush]{torrent_name} 已处理过")
-                        continue
-
-                if self._helper.is_torrent_handled(enclosure=enclosure):
+                if self._helper.is_torrent_handled(enclosure=enclosure, page_url=page_url):
                     log.info(f"[Brush]{torrent_name} 已在刷流任务中")
+                    continue
+                if self._helper.is_recently_deleted(
+                    task_id=taskinfo.get("id"),
+                    page_url=page_url,
+                    enclosure=enclosure,
+                ):
+                    log.info(f"[Brush]{torrent_name} 近期已删除过，跳过避免重复进种")
                     continue
 
                 torrent_attr = self._check_torrent_attr_if_needed(
@@ -209,6 +282,8 @@ class BrushRssChecker:
                 media_info = None
                 if rss_movies is not None or rss_tvs is not None:
                     media_info = media_service.get_media_info(title=torrent_name)
+                    if media_info:
+                        media_info.site = site_info.get("name") if isinstance(site_info, dict) else None
 
                 if not BrushRuleEngine.check_rss_rule(
                     rss_rule=rss_rule,

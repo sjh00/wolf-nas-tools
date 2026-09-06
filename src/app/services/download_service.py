@@ -104,8 +104,10 @@ class DownloadService:
                 size=res.SIZE,
                 site=res.SITE,
                 page_url=res.PAGEURL,
-                upload_volume_factor=float(res.UPLOAD_VOLUME_FACTOR),
-                download_volume_factor=float(res.DOWNLOAD_VOLUME_FACTOR),
+                upload_volume_factor=float(res.UPLOAD_VOLUME_FACTOR if res.UPLOAD_VOLUME_FACTOR is not None else 1.0),
+                download_volume_factor=float(
+                    res.DOWNLOAD_VOLUME_FACTOR if res.DOWNLOAD_VOLUME_FACTOR is not None else 1.0
+                ),
             )
             _, ret, ret_msg = self._downloader.download(
                 media_info=media,
@@ -160,8 +162,8 @@ class DownloadService:
         media.enclosure = enclosure
         media.page_url = page_url
         media.size = int(size or 0)
-        media.upload_volume_factor = float(uploadvolumefactor)
-        media.download_volume_factor = float(downloadvolumefactor)
+        media.upload_volume_factor = float(uploadvolumefactor if uploadvolumefactor is not None else 1.0)
+        media.download_volume_factor = float(downloadvolumefactor if downloadvolumefactor is not None else 1.0)
         media.seeders = int(seeders or 0)
 
         _, ret, ret_msg = self._downloader.download(
@@ -332,11 +334,19 @@ class DownloadService:
             downloader_conf = None
             try:
                 downloader_conf = self._downloader.get_downloader_conf(did)
-                downloader_name = downloader_conf.get("name") if downloader_conf else did
             except (DomainError, ServiceError):
                 raise
             except Exception:
-                downloader_name = did
+                downloader_conf = None
+            if not downloader_conf:
+                # 下载器配置已不存在：历史任务无法再查询进度，直接标记完成并清理，
+                # 避免每次轮询都触发 get_downloader 打印“配置不存在”刷屏。
+                for task in tasks:
+                    if task.download_id:
+                        completed_ids.append((did, task.download_id))
+                log.warn(f"[DownloadService]下载器 {did} 配置不存在，{len(tasks)} 个下载任务已标记完成")
+                continue
+            downloader_name = downloader_conf.get("name") if downloader_conf else did
 
             # 批量查询这些任务的进度（直接调用客户端，绕过 only_wolf_nas 标签过滤）
             ids = [t.download_id for t in tasks if t.download_id]

@@ -19,12 +19,14 @@ from urllib.parse import urljoin
 from lxml import etree
 
 import log
+from app.infrastructure.chrome.challenge import is_challenge
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
 from app.sites import engine_tools
 from app.sites.siteuserinfo import discuz, gazelle, nexus_php, small_horse, unit3d
 from app.utils import StringUtils
+from app.utils.browser_mode import build_browser_mode
 from app.utils.config_tools import get_proxies
 from app.utils.json_utils import JsonUtils
 
@@ -55,6 +57,7 @@ class ConfigHtmlUserInfo:
         json_data: str | None = None,
         api_key: str | None = None,
         bearer_token: str | None = None,
+        browser_persistent: bool = False,
     ) -> None:
         self.site_name: str = site_name
         self.site_url: str = url
@@ -63,6 +66,7 @@ class ConfigHtmlUserInfo:
         self._headers: dict = site_headers or {}
         self._ua: str = ua
         self._emulate: bool = emulate
+        self._browser_persistent: bool = browser_persistent
         self._proxy: bool = proxy
         self._proxies: Any = get_proxies() if proxy else None
         self._session: Any = session
@@ -105,7 +109,9 @@ class ConfigHtmlUserInfo:
         cfg = self._def.user_info if isinstance(self._def.user_info, dict) else {}
         if cfg.get("type") == "html" and cfg.get("fields"):
             nexus_php._parse_userid(self)
+            nexus_php._parse_base_info(self)
             self._parse_fields(cfg)
+            self.user_level = self.user_level or ""
             self._parse_seeding(cfg)
             return
         for check, parser in _ARCH_PARSERS:
@@ -119,11 +125,30 @@ class ConfigHtmlUserInfo:
         fields = cfg.get("fields", {})
         if not fields:
             return
+        if not self.userid:
+            brief_page = cfg.get("brief_page", "")
+            if brief_page:
+                brief_url = urljoin(self._base_url_str + "/", brief_page)
+                brief_html = self._fetch_html(brief_url, use_ajax_headers=False)
+                if brief_html:
+                    m = re.search(r"user_detail\.php\?uid=(\d+)", brief_html)
+                    if m and m.group(1):
+                        self.userid = m.group(1)
         page = cfg.get("page")
         html_text = self._index_html
         if page:
-            url = urljoin(self._base_url_str + "/", page.format(userid=self.userid or ""))
-            html_text = self._fetch_html(url)
+            if not self.userid and "{userid}" in page:
+                brief_page = cfg.get("brief_page", "")
+                if brief_page:
+                    brief_url = urljoin(self._base_url_str + "/", brief_page)
+                    brief_html = self._fetch_html(brief_url, use_ajax_headers=False)
+                    if brief_html:
+                        m = re.search(r"user_detail\.php\?uid=(\d+)", brief_html)
+                        if m and m.group(1):
+                            self.userid = m.group(1)
+            if self.userid or "{userid}" not in page:
+                url = urljoin(self._base_url_str + "/", page.format(userid=self.userid or ""))
+                html_text = self._fetch_html(url, use_ajax_headers=False)
         if not html_text:
             return
         doc: Any = etree.HTML(html_text)
@@ -140,7 +165,8 @@ class ConfigHtmlUserInfo:
         selector = cfg.get("selector", "")
         extract = cfg.get("extract", "text")
         attr = cfg.get("attribute", "")
-        if not selector:
+        # 空 selector + regex 提取：直接在整页 HTML 上跑正则
+        if not selector and extract != "regex":
             return None
         raw = None
         try:
@@ -165,6 +191,9 @@ class ConfigHtmlUserInfo:
                 raw = m.group(1) if m.lastindex else m.group(0)
         if raw is None:
             return None
+        values = cfg.get("values", {})
+        if values and raw in values:
+            raw = values[raw]
         if extract == "filesize":
             return StringUtils.num_filesize(str(raw))
         elif extract == "float":
@@ -228,6 +257,8 @@ class ConfigHtmlUserInfo:
                     rows = doc.xpath(ls)
                 except Exception:
                     rows = []
+                if not isinstance(rows, list):
+                    rows = []
             cnt = 0
             for row in rows:
                 if row.xpath(".//td[contains(@class,'colhead')]") or row.xpath(".//th"):
@@ -235,19 +266,15 @@ class ConfigHtmlUserInfo:
                 try:
                     se = row.cssselect(ss)
                     if not se:
-                        se = row.xpath(ss)
-                    sd_els = row.cssselect(sd)
-                    if not sd_els:
-                        sd_els = row.xpath(sd)
-                    if not se:
                         continue
-                    size = StringUtils.num_filesize(se[0].xpath("string(.)").strip())
+                    sd_els = row.cssselect(sd)
                     seeders = StringUtils.str_int(sd_els[0].xpath("string(.)").strip()) if sd_els else 0
+                    size = StringUtils.num_filesize(se[0].xpath("string(.)").strip())
                     total += size
                     cnt += 1
                     info.append([seeders, size])
                 except Exception as e:  # noqa: BLE001
-                    log.debug(f"[config_html]忽略异常: {e}")
+                    log.debug(f"[SiteConfigUpdater]忽略异常: {e}")
             if cnt == 0 or not has_pagination:
                 break
             pn += 1
@@ -260,47 +287,65 @@ class ConfigHtmlUserInfo:
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(engine, self._def)
         method = sc.get("method", "GET").upper()
-        path = sc.get("path", "").format(userid=self.userid or "")
-        url = urljoin(self._base_url_str + "/", path)
+        path_tpl = sc.get("path", "")
         headers = {"User-Agent": self._ua} if self._ua else {}
-        if method == "POST":
-            body = sc.get("body") or {}
-            proxy_url = self._proxies.get("http") if self._proxies else None
-            res = HttpClient(
-                config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
-                rate_limiter=rate_limiter_engine,
-            ).post(
-                url=url,
-                data=JsonUtils.dumps(body),
-                headers=headers,
-                cookies=self._cookie if self._cookie else None,
-                **rl_kwargs,
-            )
-        else:
-            res = self._fetch_html(url)
-        if not res:
-            return
-        try:
-            data = JsonUtils.loads(res) if isinstance(res, str) else res
-        except Exception:
-            return
         total_size = 0
         info = []
+        pn = int(sc.get("page_start", 1))
+        has_pagination = "{page}" in path_tpl
         items_key = sc.get("response", {}).get("items_key", "data")
         size_field = sc.get("response", {}).get("size_field", "size")
         seeders_field = sc.get("response", {}).get("seeders_field", "seeders")
-        items = self._get_nested(data, items_key.split(".")) if isinstance(data, dict) else []
-        if not isinstance(items, list):
-            items = []
-        for _total, item in enumerate(items, start=1):
-            if isinstance(item, dict):
-                size = int(self._get_nested(item, size_field.split(".")) or 0)
-                seeders = int(self._get_nested(item, seeders_field.split(".")) or 0)
+        total_count_field = sc.get("response", {}).get("total_count_field", "")
+        total_count = 0
+        while True:
+            url = urljoin(self._base_url_str + "/", path_tpl.format(userid=self.userid or "", page=pn))
+            if method == "POST":
+                body = sc.get("body") or {}
+                proxy_url = self._proxies.get("http") if self._proxies else None
+                res = HttpClient(
+                    config=HttpClientConfig(proxy_url=proxy_url),
+                    rate_limiter=rate_limiter_engine,
+                ).post(
+                    url=url,
+                    data=JsonUtils.dumps(body),
+                    headers=headers,
+                    cookies=self._cookie if self._cookie else None,
+                    **rl_kwargs,
+                )
             else:
-                size = StringUtils.num_filesize(str(item))
-                seeders = 0
-            total_size += size
-            info.append([seeders, size])
+                res = self._fetch_html(url)
+            if not res:
+                break
+            try:
+                data = JsonUtils.loads(res) if isinstance(res, str) else res
+            except Exception:
+                break
+            items = self._get_nested(data, items_key.split(".")) if isinstance(data, dict) else []
+            if not isinstance(items, list):
+                items = []
+            for _total, item in enumerate(items, start=1):
+                if isinstance(item, dict):
+                    raw_size = self._get_nested(item, size_field.split("."))
+                    if isinstance(raw_size, str) and not raw_size.isdigit():
+                        size_val = StringUtils.num_filesize(raw_size)
+                    else:
+                        size_val = int(raw_size or 0)
+                    seeders = int(self._get_nested(item, seeders_field.split(".")) or 0)
+                else:
+                    size_val = StringUtils.num_filesize(str(item))
+                    seeders = 0
+                total_size += size_val
+                info.append([seeders, size_val])
+            if total_count_field and isinstance(data, dict):
+                tc = self._get_nested(data, total_count_field.split("."))
+                total_count = int(tc or 0)
+            if not has_pagination or len(items) == 0:
+                break
+            if total_count > 0 and len(info) >= total_count:
+                break
+            pn += 1
+        self.seeding = total_count if total_count > 0 else len(info)
         self.seeding_size = total_size
         self.seeding_info = JsonUtils.dumps(info)
 
@@ -352,20 +397,53 @@ class ConfigHtmlUserInfo:
         rate_limiter = getattr(engine, "site_limiter", None)
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(engine, self._def)
-        try:
-            res = HttpClient(
-                config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
-                rate_limiter=rate_limiter_engine,
-            ).get(
-                url=url,
-                headers=headers,
-                auth=CookieAuth(self._cookie) if self._cookie else None,
-                **rl_kwargs,
-            )
-            return res.text
-        except Exception as exc:
-            log.debug(f"_fetch_html {self.site_name} 请求失败: {url} ({exc})")
-            return None
+
+        def _request(with_browser=None) -> str | None:
+            # 浏览器模式请求用完即关：非持久会话立即删除，避免 nexus-chrome 会话/标签页堆积
+            client = None
+            try:
+                client = HttpClient(
+                    config=HttpClientConfig(proxy_url=proxy_url, browser=with_browser),
+                    rate_limiter=rate_limiter_engine,
+                )
+                res = client.get(
+                    url=url,
+                    headers=headers,
+                    auth=CookieAuth(self._cookie) if self._cookie else None,
+                    **rl_kwargs,
+                )
+                if not res.is_success:
+                    return None
+                return res.text
+            except Exception as exc:
+                log.debug(f"_fetch_html {self.site_name} 请求失败: {url} ({exc})")
+                return None
+            finally:
+                if client is not None and with_browser is not None:
+                    client.close()
+
+        text = _request()
+        # 站点开启“浏览器自动化”(emulate) 时：直连失败/疑似挑战页自动降级 chrome 渲染再取一次
+        if (text is None or is_challenge(text)) and self._emulate:
+            site_key = str(getattr(self._def, "id", "") or "")
+            if site_key:
+                try:
+                    text = _request(
+                        build_browser_mode(
+                            site_info={
+                                "chrome": True,
+                                "ua": self._ua,
+                                "browser_render": True,
+                                "browser_persistent": bool(getattr(self, "_browser_persistent", False)),
+                            },
+                            site_key=site_key,
+                            proxy_url=proxy_url,
+                            render_html=True,
+                        )
+                    )
+                except Exception:
+                    text = None
+        return text
 
 
 def _html_config_factory(
@@ -381,6 +459,7 @@ def _html_config_factory(
     session: Any = None,
     api_key: str | None = None,
     bearer_token: str | None = None,
+    browser_persistent: bool = False,
 ) -> ConfigHtmlUserInfo | None:
     engine = site_engine
     site_def = engine.get_by_url(url)
@@ -400,6 +479,7 @@ def _html_config_factory(
         json_data=html_text,
         api_key=api_key,
         bearer_token=bearer_token,
+        browser_persistent=browser_persistent,
     )
 
 

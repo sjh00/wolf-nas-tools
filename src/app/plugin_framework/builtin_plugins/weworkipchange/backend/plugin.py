@@ -4,23 +4,21 @@ WeworkIPChange Plugin v2
 """
 
 import contextlib
-import os
 import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
-from typing import Any
+from threading import Event
 
-import pytz
 from pyquery import PyQuery
 
 import log
 from app.infrastructure.cache_system import get_cache_manager
 from app.infrastructure.cache_system.cookiecloud_adapter import CookiecloudAdapter
-from app.infrastructure.chrome import ChromeClient
+from app.infrastructure.chrome import BrowserSession
 from app.infrastructure.http.client import HttpClient
 from app.plugin_framework.context import PluginContext
+from app.utils.browser_mode import get_chrome_server_url
 from app.utils.config_tools import get_ua
 
 
@@ -30,16 +28,31 @@ class WeworkIPChangePlugin:
     def __init__(
         self,
         ctx: PluginContext,
-        drissionpage_helper: Any = None,
     ):
         self.ctx = ctx
-        self._drissonpage_helper = drissionpage_helper or ChromeClient()
         self._cache = None
-        self._tab_id = ""
+        self._session: BrowserSession | None = None
+        self._session_id = "wework"
         self._ip_url = "https://4.ipw.cn"
+        self._event = Event()
+
+    def _get_server_url(self) -> str:
+        return get_chrome_server_url() or ""
 
     def _get_config(self):
         return self.ctx.get_config() or {}
+
+    def _ensure_session(self) -> BrowserSession | None:
+        """获取或创建 BrowserSession。"""
+        server_url = self._get_server_url()
+        if not server_url:
+            return None
+        if self._session is None:
+            self._session = BrowserSession(
+                site_key=self._session_id,
+                server_url=server_url,
+            )
+        return self._session
 
     def on_enable(self):
         self.ctx.info("企业微信可信IP更新插件已启用")
@@ -50,7 +63,14 @@ class WeworkIPChangePlugin:
 
     def on_disable(self):
         self.ctx.info("企业微信可信IP更新插件已禁用")
+        self._event.set()
         self._stop_service()
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception as e:
+                log.debug(f"[Wework] 关闭 BrowserSession 失败: {e}")
+            self._session = None
 
     def on_hook(self, event, data):
         if event == "plugin.config_changed":
@@ -64,39 +84,40 @@ class WeworkIPChangePlugin:
     def run(self):
         """立即运行IP更新"""
         self.ctx.info("手动触发企业微信可信IP更新")
-        self._change_ip()
+        self._change_ip(manual=True)
 
     def _init_chrome_tab(self):
-        if not self._drissonpage_helper or not self._cache:
+        if not self._cache:
+            return
+        session = self._ensure_session()
+        if not session:
             return
         try:
-            tab_id = self._cache.get("tab_id")
-            if isinstance(tab_id, bytes):
-                tab_id = tab_id.decode("utf-8")
-            if not tab_id or not self._drissonpage_helper.get_page_html_without_closetab(tab_id=tab_id):
-                self._tab_id = self._drissonpage_helper.create_tab(
-                    "https://work.weixin.qq.com/wework_admin/frame", self._get_config().get("cookie", "")
+            cached_id = self._cache.get("session_id")
+            if isinstance(cached_id, bytes):
+                cached_id = cached_id.decode("utf-8")
+            if not cached_id:
+                self.ctx.info("初始化企业微信 BrowserSession")
+                session.navigate(
+                    "https://work.weixin.qq.com/wework_admin/frame",
+                    cookie=self._get_config().get("cookie", ""),
                 )
-                self._cache.set("tab_id", self._tab_id)
+                self._cache.set("session_id", self._session_id)
             else:
-                self._tab_id = tab_id
+                self.ctx.debug(f"复用 BrowserSession: {cached_id}")
+                self._session_id = cached_id
         except Exception as e:
-            self.ctx.error(f"初始化Chrome标签页失败: {e}")
+            self.ctx.error(f"初始化BrowserSession失败: {e}")
 
     def _start_service(self):
         config = self._get_config()
         enabled = config.get("enabled", False)
         cron = config.get("cron")
-        onlyonce = config.get("onlyonce", False)
 
-        if not enabled and not onlyonce:
+        if not enabled:
             return
 
-        if onlyonce:
-            self.ctx.info("企业微信可信IP更新服务启动，立即运行一次")
-            run_date = datetime.now(tz=pytz.timezone(os.environ.get("TZ") or "UTC")) + timedelta(seconds=3)
-            self.ctx.schedule_date("change_ip_once", self._change_ip, run_date=run_date)
-            self.ctx.set_config("onlyonce", False)
+        self._event.clear()
 
         if cron:
             self.ctx.info(f"企业微信可信IP更新服务启动，周期：{cron}")
@@ -107,49 +128,59 @@ class WeworkIPChangePlugin:
             self.ctx.remove_schedule("change_ip")
             self.ctx.remove_schedule("change_ip_once")
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[plugin]忽略异常: {e}")
+            log.debug(f"[Plugin]忽略异常: {e}")
 
     def login_by_code(self, data=None) -> bool:
-        if not self._drissonpage_helper:
+        session = self._ensure_session()
+        if not session:
             return False
         item = data or {}
         if item:
             msg = item.get("msg")
             self.ctx.debug(f"验证码: {msg}")
-            if self._drissonpage_helper.input_on_element(
-                tab_id=self._tab_id, selector="tag:div@class=number_panel", input_str=msg or ""
-            ):
+            try:
+                session.input("tag:div@class=number_panel", msg or "")
                 self.ctx.debug("验证码输入成功")
                 return True
+            except Exception as e:
+                self.ctx.error(f"验证码输入失败: {e}")
         return False
 
     def _get_cookie_by_chrome(self) -> bool:
-        if not self._drissonpage_helper:
+        session = self._ensure_session()
+        if not session:
             return False
         login_status = False
-        html_text = self._drissonpage_helper.get_page_html_without_closetab(tab_id=self._tab_id, is_refresh=True)
-        if html_text and "退出" in html_text:
-            login_status = True
-            self.ctx.info("登录成功")
-        else:
-            html_text = self._drissonpage_helper.get_page_html_without_closetab(
-                tab_id=self._tab_id, is_refresh=False, tab_category="iframe"
-            )
-            if html_text:
-                html_doc = PyQuery(html_text)
-                img_url = html_doc("img.qrcode_login_img.js_qrcode_img").attr("src")
-                self.ctx.debug(f"获取二维码成功，当前二维码url: {img_url}")
-                if img_url:
-                    img_url = f"https://work.weixin.qq.com{img_url}"
-                    self.ctx.info("登录已过期，重新登录")
-                    self.ctx.notify(title="[企业微信登录过期]", text="请点击扫码重新登录", image=img_url)
+        try:
+            # 刷新页面重新获取状态
+            session.navigate("https://work.weixin.qq.com/wework_admin/frame")
+            html_text = session.html()
+            if html_text and "退出" in html_text:
+                login_status = True
+                self.ctx.info("登录成功")
+            else:
+                # 尝试 iframe 内二维码
+                html_text = session.html()
+                if html_text:
+                    html_doc = PyQuery(html_text)
+                    img_url = html_doc("img.qrcode_login_img.js_qrcode_img").attr("src")
+                    self.ctx.debug(f"获取二维码成功，当前二维码url: {img_url}")
+                    if img_url:
+                        img_url = f"https://work.weixin.qq.com{img_url}"
+                        self.ctx.info("登录已过期，重新登录")
+                        self.ctx.notify(title="[企业微信登录过期]", text="请点击扫码重新登录", image=img_url)
+        except Exception as e:
+            self.ctx.error(f"刷新页面失败: {e}")
 
         if not login_status:
             start = time.time()
             self.ctx.info("等待扫码结果...")
             while time.time() - start < 60:
                 time.sleep(5)
-                html_text = self._drissonpage_helper.get_page_html_without_closetab(tab_id=self._tab_id)
+                try:
+                    html_text = session.html()
+                except Exception:
+                    html_text = ""
                 if html_text and ("短信安全验证" in html_text or "SMS" in html_text):
                     self.ctx.info("等待输入验证码...")
                     self.ctx.notify(title="[企业微信登录验证码]", text="请输入 /wxl+验证码 认证")
@@ -162,14 +193,21 @@ class WeworkIPChangePlugin:
                 self.ctx.info("登录失败，请重新登录...")
                 return False
 
-        cookie = self._drissonpage_helper.get_cookie(self._tab_id)
-        self.ctx.debug(f"获取cookie成功，当前cookie: {cookie}")
-        self.ctx.set_config("cookie", cookie)
-        return True
+        try:
+            cookie = session.cookies().get("cookie", "")
+            self.ctx.debug(f"获取cookie成功，当前cookie: {cookie}")
+            self.ctx.set_config("cookie", cookie)
+            return True
+        except Exception as e:
+            self.ctx.error(f"获取cookie失败: {e}")
+            return False
 
-    def _change_ip(self):
-        self.ctx.info(f"当前时间 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} 开始更新IP")
+    def _change_ip(self, manual=False):
         config = self._get_config()
+        if not manual and not config.get("enabled", False):
+            self.ctx.info("插件未启用，跳过IP更新")
+            return
+        self.ctx.info(f"当前时间 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} 开始更新IP")
         use_cookiecloud = config.get("use_cookiecloud")
         use_chrome = config.get("use_chrome")
         cookie = config.get("cookie")
@@ -227,6 +265,8 @@ class WeworkIPChangePlugin:
             )
 
     def _process_single_app(self, app_id, cookie, dynamic_ip, overwrite):
+        if self._event.is_set():
+            return ""
         msg = ""
         update_status = False
         try:
@@ -322,8 +362,8 @@ class WeworkIPChangePlugin:
             "timeZoneInfo[zone_offset]": "-8",
             "random": str(random.random()),
         }
-        ip_str = "\u0026".join([f"ipList[]={ip}" for ip in iplist])
-        data = f"app_id={app_id}\u0026{ip_str}"
+        ip_str = "&".join([f"ipList[]={ip}" for ip in iplist])
+        data = f"app_id={app_id}&{ip_str}"
         url = "https://work.weixin.qq.com/wework_admin/apps/saveIpConfig"
 
         try:

@@ -27,6 +27,7 @@ from app.core.exceptions import (
     ServiceError,
     ValidationError,
 )
+from app.downloader.client_factory import DownloadClientFactory
 from app.downloader.registry import get_all_clients
 from app.downloader.status import TORRENT_STATUS_LABELS
 from app.events.constants import DOWNLOAD_FAILED
@@ -56,7 +57,7 @@ class EmptyRequest(BaseModel):
 
 
 class AutoRemoveTorrentsRequest(BaseModel):
-    tid: str | None = None
+    tid: str | int | None = None
 
 
 class CheckDownloaderRequest(BaseModel):
@@ -74,7 +75,7 @@ class DeleteDownloadSettingRequest(BaseModel):
 
 
 class DeleteTorrentRemoveTaskRequest(BaseModel):
-    tid: str | None = None
+    tid: str | int | None = None
 
 
 class DownloadRequest(BaseModel):
@@ -132,6 +133,7 @@ class GetDownloadSettingRequest(BaseModel):
 
 class GetDownloadersRequest(BaseModel):
     did: str | None = None
+    brush: bool = False
 
 
 class SetDefaultDownloaderRequest(BaseModel):
@@ -143,11 +145,11 @@ class SetDefaultDownloadSettingRequest(BaseModel):
 
 
 class GetRemoveTorrentsRequest(BaseModel):
-    tid: str | None = None
+    tid: str | int | None = None
 
 
 class GetTorrentRemoveTaskRequest(BaseModel):
-    tid: str | None = None
+    tid: str | int | None = None
 
 
 class PtInfoRequest(BaseModel):
@@ -166,6 +168,11 @@ class BatchIdsRequest(BaseModel):
 class TestDownloaderRequest(BaseModel):
     type: str | None = None
     config: str | None = None
+
+
+class BrowseDownloaderDirsRequest(BaseModel):
+    type: str | None = None
+    config: str | dict | None = None
 
 
 class UpdateDownloadSettingRequest(BaseModel):
@@ -209,7 +216,7 @@ def auto_remove_torrents(
     user: str = Depends(require_permission("download:manage")),
     svc: DownloadService = Depends(get_download_service),
 ):
-    svc.auto_remove_torrents(taskids=req.tid)
+    ThreadExecutor.named("torrent_remove").submit(svc.auto_remove_torrents, taskids=req.tid)
     return success()
 
 
@@ -298,7 +305,7 @@ def download(
             )
 
     ThreadExecutor(name="download").submit(_do_download)
-    return success(msg="下载任务已提交")
+    return success(message="下载任务已提交")
 
 
 @router.post("/tasks/add_link", response_model=CommonResponse, summary="添加链接下载任务")
@@ -328,7 +335,7 @@ def download_link(
             put_download_event({"event": DOWNLOAD_FAILED, "data": {"title": req.title or "", "reason": str(e)}})
 
     ThreadExecutor(name="download").submit(_do_download)
-    return success(msg="下载任务已提交")
+    return success(message="下载任务已提交")
 
 
 @router.post("/tasks/resolve_url", response_model=CommonResponse, summary="解析下载链接")
@@ -383,7 +390,7 @@ def download_torrent(
             ExceptionUtils.exception_traceback(e)
 
     ThreadExecutor(name="download").submit(_do_download)
-    return success(msg="下载任务已提交")
+    return success(message="下载任务已提交")
 
 
 @router.post("/tools/hardlinks", response_model=CommonResponse, summary="查找硬链接")
@@ -449,7 +456,22 @@ def get_downloaders(
     user: str = Depends(require_any_permission("download:view", "download:manage")),
     svc: Downloader = Depends(get_downloader_service),
 ):
-    return success(data=svc.get_downloader_conf(did=req.did))
+    data = svc.get_downloader_conf(did=req.did)
+    data = data or {}
+    if req.brush:
+        # 刷流仅支持 PT 站，过滤不支持 PT 的下载器（aria2/thunder 等）
+        data = {k: v for k, v in data.items() if DownloadClientFactory._supports_brush(v.get("type"))}
+    return success(data=data)
+
+
+@router.post("/downloaders/simple", response_model=CommonResponse, summary="获取下载器列表")
+def get_downloaders_simple(
+    user: str = Depends(require_any_permission("download:view", "download:manage")),
+    svc: Downloader = Depends(get_downloader_service),
+    brush: int = 0,
+):
+    data = svc.get_downloader_conf_simple(brush=bool(brush))
+    return success(data=[{"id": v["id"], "name": v["name"]} for v in data.values()])
 
 
 @router.post("/downloaders/default", response_model=CommonResponse, summary="设置默认下载器")
@@ -509,9 +531,7 @@ def get_remove_torrents(
 ):
     try:
         torrents = svc.get_remove_torrents(taskid=req.tid)
-        if not torrents:
-            return fail(msg="未获取到符合处理条件种子")
-        return success(data=torrents)
+        return success(data=torrents or [])
     except (ResourceNotFoundError, ValidationError) as e:
         return fail(msg=e.message)
     except (ServiceError, DomainError) as e:
@@ -631,6 +651,32 @@ def test_downloader(
         return success(data={"success": False, "message": e.message})
     except Exception as e:
         return success(data={"success": False, "message": f"连接异常：{e!s}"})
+
+
+@router.post("/downloaders/browse_dirs", response_model=CommonResponse, summary="浏览下载器目录")
+def browse_downloader_dirs(
+    req: BrowseDownloaderDirsRequest,
+    user: str = Depends(require_permission("download:manage")),
+    svc: Downloader = Depends(get_downloader_service),
+):
+    """通过下载器 API 读取其已知目录（默认保存路径、分类路径、已有种子路径）"""
+    if not req.type:
+        return fail(msg="下载器类型不能为空")
+    if isinstance(req.config, dict):
+        config = req.config
+    else:
+        try:
+            config = json.loads(req.config) if req.config else {}
+        except json.JSONDecodeError:
+            return fail(msg="下载器配置格式错误")
+    try:
+        dirs = svc.get_remote_dirs(dtype=req.type, config=config)
+        return success(data={"count": len(dirs), "items": dirs})
+    except (ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+    except Exception as e:
+        ExceptionUtils.exception_traceback(e)
+        return fail(msg=f"读取下载器目录失败: {e!s}")
 
 
 @router.post("/settings/update", response_model=CommonResponse, summary="更新下载设置")

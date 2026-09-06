@@ -8,8 +8,10 @@
 """
 
 import datetime
+import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import log
 from app.core.system_config import SystemConfig
@@ -21,10 +23,132 @@ from app.indexer.client._base import _IIndexClient
 from app.indexer.configuration import IndexerHelper
 from app.indexer.core.pipeline import SearchPipeline
 from app.indexer.registry import get_all_clients, get_client_class
+from app.infrastructure.cache_system import get_cache_manager
 from app.infrastructure.progress import ProgressTracker
 from app.sites.engine import SiteEngine
 from app.sites.site_cache import SiteCache
 from app.utils import ExceptionUtils, StringUtils
+
+
+# 站点级搜索超时上下限（秒）：按历史延迟在区间内自适应。
+# 站点延迟样本不足时直接使用上限；样本充足后按 p95*1.5 收敛在 [MIN, MAX]。
+# 上限可用环境变量 NEXUS_MEDIA_INDEXER_TIMEOUT 调大（慢站建议 ≥45）。
+def _env_float(name: str, default: float) -> float:
+    """解析正整数型超时环境变量；缺失/非法/非正数一律回退默认值，避免导入崩溃."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warn(f"[Indexer]环境变量 {name} 非法（{raw!r}），回退默认值 {default}")
+        return default
+    return value if value > 0 else default
+
+
+def _clamp_timeouts(min_value: float, max_value: float) -> tuple[float, float]:
+    if min_value > max_value:
+        log.warn(f"[Indexer]索引器搜索超时 MIN({min_value}) 大于 MAX({max_value})，已对齐到 MAX")
+        min_value = max_value
+    return min_value, max_value
+
+
+_SITE_TIMEOUT_MIN, _SITE_TIMEOUT_MAX = _clamp_timeouts(
+    _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT_MIN", 15.0),
+    _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT", 45.0),
+)
+
+
+class SiteLatencyTracker:
+    """站点搜索延迟跟踪：按最近样本 p95 × 1.5 自适应超时，慢站不拖垮每次搜索"""
+
+    _KEEP = 20
+    _TTL = 7 * 24 * 3600
+
+    def __init__(self):
+        self._cache = get_cache_manager().get_or_create("site_latency", "tiered", memory_maxsize=300, ttl=self._TTL)
+
+    def timeout_for(self, indexer) -> float:
+        samples = self._cache.get(f"lat:{indexer.name}") or []
+        if len(samples) < 3:
+            return _SITE_TIMEOUT_MAX
+        ordered = sorted(samples)
+        p95 = ordered[max(0, int(len(ordered) * 0.95) - 1)]
+        return min(_SITE_TIMEOUT_MAX, max(_SITE_TIMEOUT_MIN, round(p95 * 1.5, 1)))
+
+    def record(self, indexer, seconds: float) -> None:
+        key = f"lat:{indexer.name}"
+        samples = self._cache.get(key) or []
+        samples.append(round(seconds, 2))
+        self._cache.set(key, samples[-self._KEEP :], ttl=self._TTL)
+
+
+_tracker: SiteLatencyTracker | None = None
+
+
+def get_site_latency_tracker() -> SiteLatencyTracker:
+    global _tracker
+    if _tracker is None:
+        _tracker = SiteLatencyTracker()
+    return _tracker
+
+
+def collect_search_results(futures: dict, timeout_for, on_advance=None) -> list:
+    """
+    带站点级超时的并发结果收集。
+
+    :param futures: {Future: (client, indexer)}
+    :param timeout_for: 按站点返回超时秒数的回调，超时放弃等待（线程由 HTTP 层自然终结）
+    :param on_advance: 每完成/超时一个站点的回调
+        (completed, total, indexer, timed_out, elapsed, site_status)
+        site_status: {"name", "status": ok/error/timeout, "count", "error"}
+    """
+    pending = dict(futures)
+    started = {f: time.monotonic() for f in futures}
+    total = len(futures)
+    completed = 0
+    results: list = []
+    while pending:
+        done, _ = wait(list(pending), timeout=0.5, return_when=FIRST_COMPLETED)
+        for future in done:
+            client, indexer = pending.pop(future)
+            completed += 1
+            elapsed = time.monotonic() - started[future]
+            site_status = {"name": indexer.name, "status": "ok", "count": 0, "error": ""}
+            try:
+                result = future.result()
+                if result:
+                    results.extend(result)
+                    site_status["count"] = len(result)
+            except Exception:
+                site_status["status"] = "error"
+                site_status["error"] = getattr(client, "last_error", "") or "执行异常"
+                log.error(f"[Indexer]{client.client_id} 搜索 {indexer.name} 失败")
+            else:
+                err = getattr(client, "last_error", "")
+                if not result and err:
+                    site_status["status"] = "error"
+                    site_status["error"] = err
+            if on_advance:
+                on_advance(completed, total, indexer, False, elapsed, site_status)
+        now = time.monotonic()
+        for future, (client, indexer) in list(pending.items()):
+            limit = timeout_for(indexer)
+            if now - started[future] > limit:
+                pending.pop(future)
+                completed += 1
+                elapsed = now - started[future]
+                log.warn(f"[Indexer]{indexer.name} 搜索超时({limit}s)，跳过")
+                if on_advance:
+                    on_advance(
+                        completed,
+                        total,
+                        indexer,
+                        True,
+                        elapsed,
+                        {"name": indexer.name, "status": "timeout", "count": 0, "error": f"超过 {limit}s"},
+                    )
+    return results
 
 
 class Indexer:
@@ -154,7 +278,9 @@ class Indexer:
         if client.get_client_id() != "builtin":
             enabled_names = set(self._site_config_repo.list_enabled_names(source=client.get_client_id()))
             indexers = [i for i in indexers if i.name in enabled_names]
-        if filter_args and filter_args.get("site"):
+        if filter_args and filter_args.get("site") is not None:
+            # site 为 None → 不限制（WEB 搜索默认全部）
+            # site 为空列表 → 订阅未配置站点，搜索零站点（不搜全站）
             site_filter = filter_args.get("site")
             indexers = [i for i in indexers if i.name in site_filter]
         return indexers
@@ -187,7 +313,7 @@ class Indexer:
             ).get_indexers(check=check, indexer_id=indexer_id)
         return []
 
-    def list_resources(self, index_id, page=0, keyword=None):
+    def list_resources(self, index_id, page=0, page_size=100, keyword=None):
         if not index_id:
             return []
         builtin_cls = get_client_class("builtin")
@@ -197,7 +323,7 @@ class Indexer:
                 site_cache=self._site_cache,
                 site_engine=self._site_engine,
                 download_repo=self.download_repo,
-            ).list(index_id=index_id, page=page, keyword=keyword)
+            ).list(index_id=index_id, page=page, page_size=page_size, keyword=keyword)
             if result is not None:
                 return result
         site_config = self._site_config_repo.get_by_id(index_id)
@@ -208,7 +334,7 @@ class Indexer:
                     site_cache=self._site_cache,
                     site_engine=self._site_engine,
                     download_repo=self.download_repo,
-                ).list(index_id=site_config.site_name, page=page, keyword=keyword)
+                ).list(index_id=site_config.site_name, page=page, page_size=page_size, keyword=keyword)
                 if result is not None:
                     return result
             elif site_config.source and site_config.source != "builtin":
@@ -217,7 +343,9 @@ class Indexer:
                 cfg = idx_config.get(site_config.source, {})
                 client = self._clients.get(site_config.source) or self.__get_client(site_config.source, cfg)
                 if client:
-                    result = client.list(index_id=site_config.site_name, page=page, keyword=keyword)
+                    result = client.list(
+                        index_id=site_config.site_name, page=page, page_size=page_size, keyword=keyword
+                    )
                     if result is not None:
                         return result
         return None
@@ -235,7 +363,10 @@ class Indexer:
         if not key_word:
             return []
 
-        progress_key = ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search
+        # 优先使用调用方传入的 per-session progress key（WEB 搜索按会话隔离进度）
+        progress_key = filter_args.get("progress_key") or (
+            ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search
+        )
         self._ensure_clients()
         if not self._clients:
             log.error("没有配置索引器，无法搜索！")
@@ -248,6 +379,24 @@ class Indexer:
             for indexer in indexers:
                 order_seq = 100 - int(getattr(indexer, "pri", 0))
                 work_items.append((client, indexer, order_seq))
+
+        # 同域名索引器去重：内置优先，跳过被内置覆盖的第三方(如 jackett)重复站点
+        builtin_domains = {
+            StringUtils.get_url_domain(getattr(indexer, "domain", "") or "")
+            for client, indexer, _ in work_items
+            if client.get_client_id() == "builtin"
+        }
+        builtin_domains.discard("")
+        if builtin_domains:
+            filtered_items = []
+            for client, indexer, order_seq in work_items:
+                if client.get_client_id() != "builtin":
+                    dom = StringUtils.get_url_domain(getattr(indexer, "domain", "") or "")
+                    if dom and dom in builtin_domains:
+                        log.info(f"[Indexer]跳过第三方重复站点 {indexer.name}（内置已覆盖 {dom}）")
+                        continue
+                filtered_items.append((client, indexer, order_seq))
+            work_items = filtered_items
 
         if not work_items:
             log.error("没有可用索引器站点，无法搜索！")
@@ -265,8 +414,7 @@ class Indexer:
             log.info("开始并行搜索 %s，工作项：%s，并发数：%s ..." % (key_word, len(work_items), max_workers))
             self.progress.update(ptype=progress_key, text=f"开始并行搜索 {key_word}，站点数：{len(work_items)} ...")
 
-        # ---------- 阶段1：单层并发搜索，收集原始结果 ----------
-        all_raw_results = []
+        # ---------- 阶段1：单层并发搜索，站点级超时熔断 ----------
         executor = ThreadPoolExecutor(max_workers=max_workers)
         try:
             futures = {
@@ -276,22 +424,28 @@ class Indexer:
                 )
                 for client, indexer, order_seq in work_items
             }
-            completed = 0
-            for future in as_completed(futures, timeout=120):
-                client, indexer = futures[future]
-                completed += 1
-                pct = 10 + round(50 * (completed / len(futures)))
-                self.progress.update(
-                    ptype=progress_key,
-                    value=pct,
-                    text=f"站点搜索 {completed}/{len(futures)} 完成 ({pct}%)",
-                )
-                try:
-                    result = future.result()
-                    if result:
-                        all_raw_results.extend(result)
-                except Exception:
-                    log.error(f"[Indexer]{client.client_id} 搜索 {indexer.name} 失败")
+
+            tracker = get_site_latency_tracker()
+            site_statuses: list[dict] = []
+
+            def _on_advance(completed, total, indexer, timed_out, elapsed, site_status=None):
+                tracker.record(indexer, elapsed)
+                pct = 10 + round(50 * (completed / total))
+                tag = "超时跳过" if timed_out else "完成"
+                text = f"站点搜索 {completed}/{total} {tag}（{indexer.name}）"
+                if site_status:
+                    if site_status.get("status") == "ok":
+                        text += f"：{site_status['count']} 条"
+                    elif site_status.get("error"):
+                        text += f"：{site_status['error']}"
+                self.progress.update_max(ptype=progress_key, value=pct, text=text)
+                if site_status:
+                    site_statuses.append(site_status)
+                    detail = self.progress.get_process(progress_key)
+                    if detail is not None:
+                        detail["sites"] = list(site_statuses)
+
+            all_raw_results = collect_search_results(futures, timeout_for=tracker.timeout_for, on_advance=_on_advance)
         finally:
             executor.shutdown(wait=False)
 
@@ -302,20 +456,27 @@ class Indexer:
             match_media=match_media,
             in_from=in_from,
             progress_key=progress_key,
+            search_name=key_word,
         )
 
         end_time = datetime.datetime.now()
+        failed_sites = [s for s in site_statuses if s.get("status") in ("error", "timeout")]
+        failed_summary = ""
+        if failed_sites:
+            failed_summary = "；失败站点：" + "、".join(
+                f"{s['name']}({s.get('error') or s['status']})" for s in failed_sites
+            )
         log.info(
             f"搜索关键词 {key_word} 所有站点完成，"
             f"原始结果 {len(all_raw_results)} 条，有效资源数：{len(pipeline_result.results)}，"
-            f"总耗时 {(end_time - start_time).seconds} 秒"
+            f"总耗时 {(end_time - start_time).seconds} 秒{failed_summary}"
         )
         self.progress.update(
             ptype=progress_key,
             text=(
                 f"搜索关键词 {key_word} 所有站点完成，"
                 f"有效资源数：{len(pipeline_result.results)}，"
-                f"总耗时 {(end_time - start_time).seconds} 秒"
+                f"总耗时 {(end_time - start_time).seconds} 秒{failed_summary}"
             ),
         )
 
@@ -323,10 +484,10 @@ class Indexer:
 
     @staticmethod
     def _dedup(results: list[dict]) -> list[dict]:
-        """按 (title, size) 去重；builtin 来源优先"""
+        """按 (title, size) 去重；builtin 来源优先，同来源 order_seq 大者（pri 小=主站）优先"""
         ordered = sorted(
             results,
-            key=lambda r: (0 if r.get("_indexer_source") == "builtin" else 1, r.get("_indexer_order", 0)),
+            key=lambda r: (0 if r.get("_indexer_source") == "builtin" else 1, -r.get("_indexer_order", 0)),
         )
         seen: set[tuple] = set()
         deduped: list[dict] = []
@@ -340,7 +501,7 @@ class Indexer:
     def get_indexer_statistics(self):
         """获取所有索引器统计信息"""
         self._ensure_clients()
-        log.warn(f"[Indexer]统计：已加载客户端 {list(self._clients.keys())}")
+        log.info(f"[Indexer]统计：已加载客户端 {list(self._clients.keys())}")
         stats = []
         for client in self._clients.values():
             rows = self.download_repo.get_indexer_statistics(client.get_client_id())

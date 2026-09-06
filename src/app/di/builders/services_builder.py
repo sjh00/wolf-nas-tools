@@ -18,6 +18,7 @@ from app.db.repositories.download_repo_adapter import (
     IndexerStatisticsRepositoryAdapter,
 )
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
+from app.db.repositories.plugin_market_repository import PluginMarketRepository
 from app.db.repositories.rbac_repo_adapter import RBACMenuRepositoryAdapter, RBACRoleRepositoryAdapter
 from app.db.repositories.search_repo_adapter import SearchRepositoryAdapter
 from app.db.repositories.site_repo_adapter import SiteRepositoryAdapter
@@ -33,10 +34,11 @@ from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferBlacklistRepositoryAdapter
 from app.db.repositories.word_repo_adapter import CustomWordGroupRepositoryAdapter, CustomWordRepositoryAdapter
 from app.di.models import BusinessFacades, InfrastructureObjects, ServiceObjects
+from app.domain.mediatypes import MediaType
 from app.downloader.client_factory import DownloadClientFactory
-from app.indexer.configuration import IndexerHelper
 from app.indexer.core.pipeline import SearchPipeline
 from app.indexer.indexer import Indexer
+from app.infrastructure.image_proxy import ImageProxy
 from app.infrastructure.progress.tracker import ProgressTracker
 from app.media import MediaCache
 from app.media.external.bangumi import Bangumi
@@ -59,13 +61,18 @@ from app.services.media_info_service import MediaInfoService
 from app.services.media_library_service import MediaLibraryService
 from app.services.media_recommendation_service import MediaRecommendationService
 from app.services.plugin_framework_service import PluginFrameworkService
+from app.services.plugin_market_service import PluginMarketService
 from app.services.rbac.service import RBACService
 from app.services.rss_automation.task_service import RssTaskService
 from app.services.rss_automation.userrss_service import UserRssService
 from app.services.rss_processor import RssHelper
 from app.services.scheduler_service import SchedulerService
+from app.services.scrape_queue_service import ScrapeQueueService
+from app.services.search_intent_resolver import IntentResolverChain
+from app.services.search_orchestrator import SearchOrchestrator
 from app.services.search_result_service import SearchResultService
 from app.services.search_service import Searcher
+from app.services.search_web_entry import make_web_search_fn
 from app.services.site_service import SiteService
 from app.services.storage_backend_service import StorageBackendService
 from app.services.subscribe.management.calendar_service import SubscribeCalendarService
@@ -123,7 +130,10 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     media_config_service = MediaConfigService(repo=MediaConfigRepositoryAdapter())
 
     path_resolver = TransferPathResolver.from_settings(media_config_service=media_config_service)
-    existence_checker = MediaExistenceChecker(path_resolver=path_resolver)
+    existence_checker = MediaExistenceChecker(
+        path_resolver=path_resolver,
+        media_service=media_service,
+    )
     history_manager = TransferHistoryManager()
     cleanup_service = TransferCleanupService(
         history_manager=history_manager,
@@ -134,11 +144,12 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     )
 
     shared_scraper = Scraper(media_service=media_service)
+    scrape_queue_service = ScrapeQueueService(scraper=shared_scraper)
 
     filetransfer_service = FileTransferService(
         media_service=media_service,
         message=message,
-        scraper=shared_scraper,
+        scrape_queue_service=scrape_queue_service,
         thread_executor=thread_executor,
         history_manager=history_manager,
         progress=ProgressTracker(),
@@ -152,11 +163,16 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
 
     transfer_pipeline = TransferPipeline(
         filetransfer=filetransfer_service,
-        scraper=shared_scraper,
+        scrape_queue_service=scrape_queue_service,
         blacklist_repo=TransferBlacklistRepositoryAdapter(),
         backend_repo=StorageBackendRepositoryAdapter(),
     )
-    register_download_completed_handler(event_bus=event_bus, transfer_pipeline=transfer_pipeline)
+    register_download_completed_handler(
+        event_bus=event_bus,
+        transfer_pipeline=transfer_pipeline,
+        download_history_repo=DownloadHistoryRepositoryAdapter(),
+        media_cache=MediaCache(),
+    )
 
     shared_client_factory = DownloadClientFactory()
 
@@ -195,7 +211,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
 
     indexer = Indexer(
         search_pipeline=search_pipeline,
-        indexer_helper=IndexerHelper(),
+        indexer_helper=infra.indexer_helper,
         site_cache=site_cache,
         site_engine=site_engine,
         site_config_repo=indexer_site_config_repo,
@@ -203,7 +219,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
 
     indexer_service = IndexerService(
         indexer=indexer,
-        indexer_helper=IndexerHelper(),
+        indexer_helper=infra.indexer_helper,
         site_cache=site_cache,
         site_engine=site_engine,
         indexer_statistics_repo=IndexerStatisticsRepositoryAdapter(),
@@ -226,6 +242,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         event_bus=event_bus,
         system_config=SystemConfig(),
         download_repo=DownloadHistoryRepositoryAdapter(),
+        transfer_history_manager=history_manager,
     )
 
     searcher = Searcher(
@@ -284,11 +301,22 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     system_info_service = SystemInfoService(message=message)
     net_test_service = NetTestService()
     progress_service = ProgressService()
-    web_search_service = WebSearchService(
+
+    # 搜索/意图统一：规则+LLM 意图解析链 + 唯一搜索编排入口
+    intent_resolver = IntentResolverChain(llm_resolver=facades.search_intent_agent)
+    search_orchestrator = SearchOrchestrator(
         searcher=searcher,
-        progress_helper=ProgressTracker(),
+        search_repo=SearchRepositoryAdapter(),
+        download_repo=DownloadHistoryRepositoryAdapter(),
+        downloader=downloader_core,
         media_service=media_service,
-        intent_agent=facades.search_intent_agent,
+        message=message,
+        progress_helper=ProgressTracker(),
+        event_bus=event_bus,
+        intent_resolver=intent_resolver,
+    )
+    web_search_service = WebSearchService(
+        search_fn=make_web_search_fn(search_orchestrator, SystemConfigService()),
     )
     backup_restore_service = BackupRestoreService()
     rbac_service = RBACService()
@@ -320,6 +348,21 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         plugin_registry=infra.plugin_registry,
         plugin_sandbox=infra.plugin_sandbox,
         hook_system=infra.hook_system,
+    )
+
+    plugin_market_service = PluginMarketService(
+        store=PluginMarketRepository(),
+        plugin_installer=(
+            (lambda data, enabled: plugin_framework_service.install_market_plugin(data, enabled=enabled))
+            if plugin_framework_service
+            else None
+        ),
+        plugin_updater=(
+            (lambda data, plugin_id: plugin_framework_service.update_market_plugin(data, plugin_id))
+            if plugin_framework_service
+            else None
+        ),
+        installed_provider=((lambda: plugin_framework_service.list_plugins()) if plugin_framework_service else None),
     )
 
     storage_backend_service = StorageBackendService(
@@ -434,9 +477,25 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         media_server=media_server,
         subscribe=subscribe_service,
     )
+
+    def _history_poster_resolver(type_value: str, tmdbid: int) -> str:
+        """按 (类型, TMDBID) 解析海报 URL：优先缓存，缺失时回源一次并回填缓存."""
+        try:
+            mtype = MediaType.from_string(type_value)
+            if mtype not in (MediaType.MOVIE, MediaType.TV, MediaType.ANIME) or not tmdbid:
+                return ""
+            info = MediaCache().get_tmdb_info(mtype, tmdbid)
+            if not info:
+                info = media_service.get_tmdb_info(mtype, str(tmdbid), chinese=True)  # type: ignore[union-attr]
+            poster_path = (info or {}).get("poster_path") or ""
+            return ImageProxy.get_tmdbimage_url(poster_path) if poster_path else ""
+        except Exception:
+            return ""
+
     transfer_history_service = TransferHistoryService(
         filetransfer=filetransfer_service,
         sync_service=sync_service,
+        poster_resolver=_history_poster_resolver,
     )
 
     # 回填 PluginSandbox 的服务依赖（供动态加载插件使用）
@@ -456,6 +515,10 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         infra.plugin_sandbox._filetransfer_service = filetransfer_service
     if infra.plugin_sandbox._site_resolver is None:
         infra.plugin_sandbox._site_resolver = site_resolver
+    if infra.plugin_sandbox._site_service is None:
+        infra.plugin_sandbox._site_service = site_service
+    if infra.plugin_sandbox._event_bus is None:
+        infra.plugin_sandbox._event_bus = infra.event_bus
 
     return ServiceObjects(
         downloader_core=downloader_core,
@@ -492,11 +555,13 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         net_test_service=net_test_service,
         progress_service=progress_service,
         web_search_service=web_search_service,
+        search_orchestrator=search_orchestrator,
         backup_restore_service=backup_restore_service,
         user_manage_service=user_manage_service,
         tmdb_blacklist_service=tmdb_blacklist_service,
         download_service=download_service,
         plugin_framework_service=plugin_framework_service,
+        plugin_market_service=plugin_market_service,
         storage_backend_service=storage_backend_service,
         search_result_service=search_result_service,
         transfer_history_service=transfer_history_service,

@@ -34,7 +34,7 @@ class ConfigRepository(BaseRepository):
 
     # ==================== Message Client ====================
 
-    def delete_message_client(self, cid: int | None) -> None:
+    def delete_message_client(self, cid: int | None) -> int:
         """
         删除消息服务器
 
@@ -42,9 +42,9 @@ class ConfigRepository(BaseRepository):
             cid: 客户端ID
         """
         if not cid:
-            return
+            return 0
         with self.session() as db:
-            db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).delete()
+            return db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).delete()
 
     def get_message_client(self, cid: int | None = None) -> list[MESSAGECLIENT]:
         with self.session() as db:
@@ -75,6 +75,34 @@ class ConfigRepository(BaseRepository):
         )
         with self.session() as db:
             db.add(client)
+            db.flush()
+            return int(client.ID)
+
+    def update_message_client(
+        self,
+        cid: int,
+        name: str,
+        ctype: str,
+        config: str,
+        switches: list,
+        interactive: int,
+        enabled: int,
+        note: str = "",
+        templates: str | None = None,
+    ) -> int:
+        """更新消息客户端配置，返回客户端 ID."""
+        with self.session() as db:
+            client = db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).first()
+            if not client:
+                return 0
+            client.NAME = name
+            client.TYPE = ctype
+            client.CONFIG = config
+            client.SWITCHES = JsonUtils.dumps(switches)
+            client.INTERACTIVE = int(interactive)
+            client.ENABLED = int(enabled)
+            client.NOTE = note
+            client.TEMPLATES = JsonUtils.dumps(templates) if templates else None
             db.flush()
             return int(client.ID)
 
@@ -132,6 +160,51 @@ class ConfigRepository(BaseRepository):
             if tid:
                 return db.query(TORRENTREMOVETASK).filter(int(tid) == TORRENTREMOVETASK.ID).all()
             return db.query(TORRENTREMOVETASK).order_by(TORRENTREMOVETASK.NAME).all()
+
+    def update_torrent_remove_task(
+        self,
+        tid: int,
+        name: str,
+        action: int,
+        interval: int,
+        enabled: int,
+        samedata: int,
+        only_wolf_nas: int,
+        downloader: str,
+        config: dict,
+        note: str | None = None,
+    ) -> bool:
+        """
+        更新自动删种策略
+
+        Args:
+            tid: 任务ID
+            其余参数同 insert_torrent_remove_task
+
+        Returns:
+            是否更新成功（任务不存在时返回 False）
+        """
+        if not tid:
+            return False
+        with self.session() as db:
+            count = (
+                db.query(TORRENTREMOVETASK)
+                .filter(int(tid) == TORRENTREMOVETASK.ID)
+                .update(
+                    {
+                        TORRENTREMOVETASK.NAME: name,
+                        TORRENTREMOVETASK.ACTION: int(action),
+                        TORRENTREMOVETASK.INTERVAL: int(interval),
+                        TORRENTREMOVETASK.ENABLED: int(enabled),
+                        TORRENTREMOVETASK.SAMEDATA: int(samedata),
+                        TORRENTREMOVETASK.ONLY_WOLF_NAS: int(only_wolf_nas),
+                        TORRENTREMOVETASK.DOWNLOADER: downloader,
+                        TORRENTREMOVETASK.CONFIG: JsonUtils.dumps(config),
+                        TORRENTREMOVETASK.NOTE: note,
+                    }
+                )
+            )
+            return count > 0
 
     def insert_torrent_remove_task(
         self,
@@ -659,26 +732,26 @@ class ConfigRepository(BaseRepository):
             if ruleid:
                 db.query(CONFIGFILTERRULES).filter(int(ruleid) == CONFIGFILTERRULES.ID).update(
                     {
-                        "ROLE_NAME": item.get("name"),
-                        "PRIORITY": item.get("pri"),
-                        "INCLUDE": item.get("include"),
-                        "EXCLUDE": item.get("exclude"),
-                        "SIZE_LIMIT": item.get("size"),
-                        "NOTE": item.get("free"),
-                        "ORIGINAL_LANGUAGE": item.get("original_language"),
+                        "ROLE_NAME": item.get("name") or "",
+                        "PRIORITY": item.get("pri") or "",
+                        "INCLUDE": item.get("include") or "",
+                        "EXCLUDE": item.get("exclude") or "",
+                        "SIZE_LIMIT": item.get("size") or "",
+                        "NOTE": item.get("free") or "",
+                        "ORIGINAL_LANGUAGE": item.get("original_language") or "",
                     }
                 )
             else:
                 db.add(
                     CONFIGFILTERRULES(
                         GROUP_ID=item.get("group"),
-                        ROLE_NAME=item.get("name"),
-                        PRIORITY=item.get("pri"),
-                        INCLUDE=item.get("include"),
-                        EXCLUDE=item.get("exclude"),
-                        SIZE_LIMIT=item.get("size"),
-                        NOTE=item.get("free"),
-                        ORIGINAL_LANGUAGE=item.get("original_language"),
+                        ROLE_NAME=item.get("name") or "",
+                        PRIORITY=item.get("pri") or "",
+                        INCLUDE=item.get("include") or "",
+                        EXCLUDE=item.get("exclude") or "",
+                        SIZE_LIMIT=item.get("size") or "",
+                        NOTE=item.get("free") or "",
+                        ORIGINAL_LANGUAGE=item.get("original_language") or "",
                     )
                 )
 
@@ -789,9 +862,13 @@ class ConfigRepository(BaseRepository):
     # ==================== SQL Operations ====================
 
     def _execute_raw(self, sql: str) -> object:
-        """执行原始SQL语句（仅供初始化场景使用，禁止传入外部输入）。"""
+        """执行原始SQL语句（仅供初始化场景使用，禁止传入外部输入）。
+
+        使用 exec_driver_sql 原样下发，避免 text() 将正则中的 :xxx
+        （如非捕获分组 (?:简体|…)）误解析为绑定参数。
+        """
         with self.session() as db:
-            return db.execute(text(sql))
+            return db.connection().exec_driver_sql(sql)
 
     def drop_table(self, table_name: str) -> object:
         """

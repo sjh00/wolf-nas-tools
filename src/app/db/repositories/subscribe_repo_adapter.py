@@ -83,6 +83,7 @@ class SubscribeMovieRepositoryAdapter:
         filter_rule=None,
         filter_include=None,
         filter_exclude=None,
+        filter_free=None,
         save_path=None,
         download_setting: int | None = -1,
         fuzzy_match=0,
@@ -102,6 +103,7 @@ class SubscribeMovieRepositoryAdapter:
             filter_rule=filter_rule,
             filter_include=filter_include,
             filter_exclude=filter_exclude,
+            filter_free=filter_free,
             save_path=save_path,
             download_setting=download_setting if download_setting is not None else -1,
             fuzzy_match=fuzzy_match,
@@ -165,6 +167,9 @@ class SubscribeTvRepositoryAdapter:
     ) -> None:
         self._repo.update_rss_tv_lack(title, year, season, rssid, lack_episodes if lack_episodes is not None else [])
 
+    def update_total(self, rssid: int, total_ep: int, lack_episodes: list[int] | None = None) -> None:
+        self._repo.update_rss_tv_total(rssid, total_ep, lack_episodes)
+
     def update_filter_order(self, rssid: int, res_order: int) -> None:
 
         self._repo.update_rss_filter_order(MediaType.TV.value, rssid, str(res_order))
@@ -196,6 +201,7 @@ class SubscribeTvRepositoryAdapter:
         filter_rule=None,
         filter_include=None,
         filter_exclude=None,
+        filter_free=None,
         save_path=None,
         download_setting: int | None = -1,
         total_ep=None,
@@ -219,6 +225,7 @@ class SubscribeTvRepositoryAdapter:
             filter_rule=filter_rule,
             filter_include=filter_include,
             filter_exclude=filter_exclude,
+            filter_free=filter_free,
             save_path=save_path,
             download_setting=download_setting if download_setting is not None else -1,
             total_ep=total_ep,

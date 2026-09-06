@@ -10,6 +10,7 @@ import re
 import log
 from app.core.constants import FILTER_LANGUAGE_OPTIONS
 from app.core.module_config import ModuleConf
+from app.core.settings import settings
 from app.domain.mediatypes import MediaType
 from app.media import ReleaseGroupsMatcher
 from app.utils import StringUtils
@@ -35,7 +36,7 @@ class IndexerFilterEngine:
 
         :return: (是否匹配, 优先值, 信息)
         """
-        text = meta_info.rev_string
+        text = meta_info.rev_string or ""
         if meta_info.subtitle:
             text = f"{text} {meta_info.subtitle}"
 
@@ -65,7 +66,7 @@ class IndexerFilterEngine:
             if re.search(pat, text, re.IGNORECASE):
                 return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
 
-        # 过滤漫画/书籍类资源（第X巻、漫画、Manga 等）
+        # 过滤漫画/书籍类资源（仅检查标题，不检查 description 避免误杀）
         target_type = filter_args.get("type")
         if isinstance(target_type, str):
             target_type = MediaType.from_string(target_type)
@@ -75,9 +76,23 @@ class IndexerFilterEngine:
                 r"(?:raw|RAW)\b.*第\s*\d+\s*巻",
                 r"第\s*\d+\s*巻.*(?:raw|RAW)\b",
             ]
+            _title_text = meta_info.org_string or meta_info.rev_string or ""
             for pat in _book_patterns:
-                if re.search(pat, text, re.IGNORECASE):
+                if re.search(pat, _title_text, re.IGNORECASE):
                     return False, 0, f"{meta_info.org_string} 为漫画/书籍类资源，不匹配视频订阅"
+
+        # 过滤过小文件（字幕/样本等非视频资源）
+        if target_type in (MediaType.TV, MediaType.MOVIE, MediaType.ANIME):
+            min_filesize_mb = (settings.get("media") or {}).get("min_filesize", 150)
+            if min_filesize_mb and meta_info.size:
+                size_bytes = StringUtils.num_filesize(meta_info.size)
+                if size_bytes and size_bytes < min_filesize_mb * 1024 * 1024:
+                    return (
+                        False,
+                        0,
+                        f"{meta_info.org_string} 大小 {StringUtils.str_filesize(size_bytes)}"
+                        f" < {min_filesize_mb}M 最小限制",
+                    )
 
         # 过滤质量
         if filter_args.get("restype"):
@@ -123,6 +138,12 @@ class IndexerFilterEngine:
                 return False, 0, f"{meta_info.org_string} 不符合促销要求"
             if downloadvolumefactor and dl_factor not in ("*", str(downloadvolumefactor)):
                 return False, 0, f"{meta_info.org_string} 不符合促销要求"
+
+        # 只订阅免费：download_volume_factor==0 视为免费(free/2xfree)
+        # downloadvolumefactor 为 None 表示无法判断(站点未开启解析)，保守跳过(搜索会补充)
+        if filter_args.get("free"):
+            if downloadvolumefactor is None or float(downloadvolumefactor) != 0.0:
+                return False, 0, f"{meta_info.org_string} 非免费种子，仅订阅免费"
 
         # 过滤包含
         if filter_args.get("include"):
@@ -276,4 +297,8 @@ class IndexerFilterEngine:
                 e_num = [e_num]
             if not set(e_num).issuperset(set(media_info.get_episode_list())):
                 return False
-        return not (year_str and str(media_info.year) != str(year_str))
+        # 年份允许 ±1 年偏差（如订阅 S1 2025，匹配 S2 2026 的种子）
+        if year_str and str(media_info.year).isdigit() and str(year_str).isdigit():
+            if abs(int(media_info.year) - int(year_str)) > 1:
+                return False
+        return True

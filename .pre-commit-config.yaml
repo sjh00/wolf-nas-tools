@@ -14,3 +14,11 @@ repos:
         language: system
         types: [python]
         pass_filenames: true
+
+      - id: scan-secrets
+        name: scan-secrets
+        entry: uv run python scripts/scan_secrets.py
+        language: system
+        types: [text]
+        pass_filenames: true
+        always_run: true

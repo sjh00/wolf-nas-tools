@@ -12,14 +12,32 @@ import difflib
 import re
 
 import log
+from app.core.settings import settings
 from app.db.repositories.config_repo_adapter import FilterGroupRepositoryAdapter, FilterRuleRepositoryAdapter
+from app.domain.enums import ProgressKey
 from app.domain.mediatypes import MediaType
 from app.indexer.core.batch_identifier import BatchIdentifier
 from app.indexer.core.filter_engine import IndexerFilterEngine
+from app.indexer.core.miss_collector import get_miss_collector
 from app.indexer.core.models import FilterStats, SearchCandidate
 from app.infrastructure.cache_system import get_cache_manager
-from app.media import meta_info
+from app.infrastructure.progress import ProgressTracker
+from app.media.identity.matcher import get_target_matcher
+from app.media.identity.models import EDITION_MARKERS as _EDITION_MARKERS
+from app.media.parser.parse_cache import cached_meta_info
 from app.utils import StringUtils
+
+# 字幕/配音标签前缀（如 "中字攻壳机动队"），会污染名称比较需剥除
+_CN_TAG_PREFIX_RE = re.compile(r"^(?:官方中字|中文字幕|中文字|中字|国配|粤配|日配|简中|繁中|简繁|繁简)")
+
+# 命中置信度低于该值告警（canary：与 IdentityResolver._LOW_CONFIDENCE_WARN 一致）
+_LOW_CONFIDENCE_WARN = 0.65
+
+
+def _strip_cn_tag_prefix(name: str) -> str:
+    """剥除中文名前的字幕/配音标签，剥空时返回原名"""
+    stripped = _CN_TAG_PREFIX_RE.sub("", name).strip()
+    return stripped or name
 
 
 class ResultFilter:
@@ -127,10 +145,36 @@ class ResultFilter:
         if not meta_info or not match_media:
             return False
 
+        # 年份冲突拒绝：种子有年份且与订阅年份偏差超过1年 → 不匹配
+        meta_year = str(meta_info.year or "").strip()
+        match_year = str(match_media.year or "").strip()
+        if meta_year and match_year and meta_year.isdigit() and match_year.isdigit():
+            if abs(int(meta_year) - int(match_year)) > 1:
+                return False
+
+        # 类型冲突拒绝：电影 ≠ 剧集/动漫（互斥），动漫和剧集双向兼容
+        _anime_tv = {MediaType.TV, MediaType.ANIME}
+        _torrent_type = meta_info.type
+        if not _torrent_type or _torrent_type == MediaType.TV:
+            _source = str(meta_info.rev_string or meta_info.org_string or "")
+            if re.search(r"(?i)\[movie[^\[\]]*\]", _source):
+                _torrent_type = MediaType.MOVIE
+        if (
+            _torrent_type
+            and _torrent_type != MediaType.UNKNOWN
+            and match_media.type
+            and match_media.type != MediaType.UNKNOWN
+        ):
+            if not ({_torrent_type, match_media.type} <= _anime_tv):
+                if _torrent_type != match_media.type:
+                    return False
+
         def _norm(name):
             if not name:
                 return ""
-            return StringUtils.handler_special_chars(str(name)).upper().strip()  # type: ignore[union-attr]
+            return _strip_cn_tag_prefix(
+                StringUtils.handler_special_chars(str(name)).upper().strip()  # type: ignore[union-attr]
+            )
 
         # 中文虚词归一化：去掉 "的"/"之"/"与"/"和" 等，解决 "黄泉使者" vs "黄泉的使者"
         def _cn_simplify(name):
@@ -139,6 +183,20 @@ class ResultFilter:
             if not any("\u4e00" <= c <= "\u9fff" for c in name):
                 return name
             return re.sub(r"[\u7684\u4e4b\u4e0e\u548c\u4e4e\u4e4b]", "", name)
+
+        def _has_cjk(s):
+            return bool(re.search(r"[\u3000-\u9fff]", s))
+
+        def _extract_conflicting_year(mi, expected_year):
+            source = mi.org_string or mi.rev_string or ""
+            found = re.findall(r"(?<!\d)(19\d{2}|20[0-4]\d)(?!\d)", str(source))
+            for y in found:
+                if y.isdigit() and expected_year.isdigit():
+                    if abs(int(y) - int(expected_year)) > 1:
+                        return y
+            return None
+
+        _EDITION_SET = _EDITION_MARKERS  # 局部引用，略快
 
         match_names = {
             _norm(match_media.title),
@@ -159,7 +217,12 @@ class ResultFilter:
             return False
 
         if meta_names & match_names:
-            return True
+            # 所有 meta 名都在 match 中才算可靠；否则另一半名包含区分信息
+            if meta_names.issubset(match_names):
+                return True
+            # 有多个名称但未全部匹配 → 存在区分信息，不走快速匹配
+            if len(meta_names) > 1:
+                return False
 
         for mn in meta_names:
             if len(mn) < 3:
@@ -169,22 +232,118 @@ class ResultFilter:
                     continue
                 if mn == mmn:
                     return True
-                # 子串匹配：要求公共子串占较长字符串的比例 >= 50%
-                # 避免 "The Boys" 被 "Miracle The Boys Of" 误匹配
-                if mn in mmn:
-                    if len(mn) / len(mmn) >= 0.5:
-                        return True
-                elif mmn in mn:
-                    if len(mmn) / len(mn) >= 0.5:
-                        return True
-                # 中文虚词归一化后二次匹配
+                # 子串匹配：两个方向用不同阈值
+                # 订阅名 in 种子名（如 "GHOSTINTHESHELL" in "GHOSTINTHESHELLSAC2045S02"）→ 高阈值防误匹配
+                # 种子名 in 订阅名 → 低阈值（订阅更具体）
+                if _has_cjk(mn) == _has_cjk(mmn):
+                    if mmn in mn:
+                        if len(mmn) / len(mn) >= 0.85:
+                            # 非 CJK 精确匹配时，检查 CJK 名称是否含衍生词（特别篇/OVA 等）
+                            if not _has_cjk(mn):
+                                _mcn = _cn_simplify(meta_info.cn_name or meta_info.title or "")
+                                _scn = _cn_simplify(match_media.cn_name or match_media.title or "")
+                                if _mcn and _scn and _has_cjk(_mcn) and _has_cjk(_scn):
+                                    if _scn in _mcn:
+                                        _extra = _mcn[len(_scn) :].strip()
+                                        if _extra and all("\u4e00" <= c <= "\u9fff" for c in _extra):
+                                            if any(m in _extra for m in _EDITION_SET):
+                                                continue
+                            return True
+                    elif mn in mmn:
+                        if len(mn) / len(mmn) >= 0.6:
+                            if not _has_cjk(mn) and meta_info.cn_name and re.search(r"[A-Za-z]", meta_info.cn_name):
+                                continue
+                            # 非 CJK 匹配时，检查 CJK 名称是否含衍生词（特别篇/OVA 等）
+                            if not _has_cjk(mn):
+                                _mcn = _cn_simplify(meta_info.cn_name or meta_info.title or "")
+                                _scn = _cn_simplify(match_media.cn_name or match_media.title or "")
+                                if _mcn and _scn and _has_cjk(_mcn) and _has_cjk(_scn):
+                                    if _scn in _mcn:
+                                        _extra = _mcn[len(_scn) :].strip()
+                                        if _extra and all("\u4e00" <= c <= "\u9fff" for c in _extra):
+                                            if any(m in _extra for m in _EDITION_SET):
+                                                continue
+                            return True
+                # 中文虚词归一化后二次匹配（全中文后缀=元数据标签，宽松；含英文/数字=衍生，严格）
                 mn_simp = _cn_simplify(mn)
                 mmn_simp = _cn_simplify(mmn)
-                if mn_simp and mmn_simp and (mn_simp == mmn_simp or mn_simp in mmn_simp or mmn_simp in mn_simp):
-                    return True
-                # SequenceMatcher 兜底：比例 >= 0.8（避免过宽松）
-                if difflib.SequenceMatcher(None, mn, mmn).ratio() >= 0.8:
-                    return True
+                if mn_simp and mmn_simp:
+                    if mn_simp == mmn_simp:
+                        return True
+                    if _has_cjk(mn_simp) and _has_cjk(mmn_simp):
+                        if mmn_simp in mn_simp:
+                            extra = mn_simp[len(mmn_simp) :]
+                            if extra and all("\u4e00" <= c <= "\u9fff" for c in extra):
+                                threshold = 0.65 if any(m in extra for m in _EDITION_SET) else 0.4
+                            else:
+                                threshold = 0.85
+                            if len(mmn_simp) / len(mn_simp) >= threshold:
+                                if threshold < 0.5:
+                                    _conflict = _extract_conflicting_year(meta_info, match_year)
+                                    if _conflict:
+                                        continue
+                                    if meta_info.en_name:
+                                        _en = _norm(meta_info.en_name)
+                                        _found = False
+                                        for mn in match_names:
+                                            if _has_cjk(mn):
+                                                continue
+                                            if _en == mn or mn in _en:
+                                                if len(mn) / len(_en) >= 0.7:
+                                                    _found = True
+                                                    break
+                                        if not _found:
+                                            continue
+                                return True
+                        if mn_simp in mmn_simp:
+                            extra = mmn_simp[len(mn_simp) :]
+                            if extra and all("\u4e00" <= c <= "\u9fff" for c in extra):
+                                threshold = 0.65 if any(m in extra for m in _EDITION_SET) else 0.4
+                            else:
+                                threshold = 0.85
+                            if len(mn_simp) / len(mmn_simp) >= threshold:
+                                if threshold < 0.5:
+                                    _conflict = _extract_conflicting_year(meta_info, match_year)
+                                    if _conflict:
+                                        continue
+                                    if meta_info.en_name:
+                                        _en = _norm(meta_info.en_name)
+                                        _found = False
+                                        for mn in match_names:
+                                            if _has_cjk(mn):
+                                                continue
+                                            if _en == mn or mn in _en:
+                                                if len(mn) / len(_en) >= 0.7:
+                                                    _found = True
+                                                    break
+                                        if not _found:
+                                            continue
+                                return True
+                    elif mmn_simp in mn_simp or mn_simp in mmn_simp:
+                        if not _has_cjk(mn_simp) and meta_info.cn_name:
+                            cn_norm = _norm(meta_info.cn_name)
+                            _cn_match = False
+                            for _mmn in match_names:
+                                if _has_cjk(_mmn) and (cn_norm == _mmn or _mmn in cn_norm):
+                                    if cn_norm == _mmn or len(_mmn) / len(cn_norm) >= 0.75:
+                                        _cn_match = True
+                                        break
+                            if not _cn_match:
+                                continue
+                        shorter = min(len(mn_simp), len(mmn_simp))
+                        longer = max(len(mn_simp), len(mmn_simp))
+                        if shorter / longer >= 0.5:
+                            return True
+                # SequenceMatcher 兜底：CJK↔CJK 高阈值（防 "攻壳机动队2"→攻壳机动队），
+                # 其他语言保持 0.86
+                shorter_len = min(len(mn), len(mmn))
+                longer_len = max(len(mn), len(mmn))
+                if shorter_len / longer_len >= 0.75:
+                    _both_cjk = _has_cjk(mn) and _has_cjk(mmn)
+                    _seq_threshold = 0.92 if _both_cjk else 0.86
+                    if difflib.SequenceMatcher(None, mn, mmn).ratio() >= _seq_threshold:
+                        if _has_cjk(mn) == _has_cjk(mmn):
+                            return True
 
         return False
 
@@ -194,7 +353,7 @@ class ResultFilter:
             return True
         return bool(a in (MediaType.TV, MediaType.ANIME) and b in (MediaType.TV, MediaType.ANIME))
 
-    def local_filter(self, result_array, filter_args, match_media=None):
+    def local_filter(self, result_array, filter_args, match_media=None, search_name=""):
         """
         第一阶段：本地轻量级过滤
 
@@ -205,9 +364,18 @@ class ResultFilter:
         direct_results = []
         stats = FilterStats()
 
+        def _norm(name):
+            if not name:
+                return ""
+            if isinstance(name, str):
+                return StringUtils.handler_special_chars(name).upper().strip()  # type: ignore[union-attr]
+            return ""
+
         for item in result_array:
             torrent_name = item.get("title")
             description = item.get("description")
+            if torrent_name:
+                torrent_name = re.sub(r"\|\d+(\|\d+)?$", "", torrent_name)
             if not torrent_name:
                 stats.index_error += 1
                 continue
@@ -217,26 +385,25 @@ class ResultFilter:
             seeders = item.get("seeders")
             peers = item.get("peers")
             page_url = item.get("page_url")
-            uploadvolumefactor = (
-                round(float(item.get("uploadvolumefactor")), 1) if item.get("uploadvolumefactor") is not None else 1.0
-            )
-            downloadvolumefactor = (
-                round(float(item.get("downloadvolumefactor")), 1)
-                if item.get("downloadvolumefactor") is not None
-                else 1.0
-            )
+            uv = item.get("uploadvolumefactor")
+            dv = item.get("downloadvolumefactor")
+            uploadvolumefactor = round(float(uv), 1) if uv not in (None, "") else 1.0
+            downloadvolumefactor = round(float(dv), 1) if dv not in (None, "") else 1.0
             imdbid = item.get("imdbid")
             labels = item.get("labels")
             indexer_name = item.get("_indexer_name", "")
             indexer_order = item.get("_indexer_order", 0)
             indexer_public = item.get("_indexer_public", False)
+            # 公开站(BT站)无魔力/分享率系统，种子均为免费
+            if indexer_public:
+                downloadvolumefactor = 0.0
 
             if filter_args.get("seeders") and not indexer_public and str(seeders) == "0":
                 log.info(f"[ResultFilter]{torrent_name} 做种数为0")
                 stats.index_rule_fail += 1
                 continue
 
-            mi = meta_info(title=torrent_name, subtitle=f"{labels} {description}")
+            mi = cached_meta_info(title=torrent_name, subtitle=f"{labels} {description}")
             # 若标题未解析出中文名，尝试从 description 中提取与目标媒体匹配的中文短语
             if not mi.cn_name and description and match_media:
                 desc = str(description)
@@ -253,8 +420,10 @@ class ResultFilter:
                         m_norm = str(StringUtils.handler_special_chars(match_media.cn_name or "")).upper().strip()
                         t_norm = str(StringUtils.handler_special_chars(match_media.title or "")).upper().strip()
                         if p_norm and (p_norm == m_norm or p_norm == t_norm or p_norm in m_norm or m_norm in p_norm):
-                            mi.cn_name = phrase
-                            log.info(f"[ResultFilter]{torrent_name} 从 description 提取中文名: {phrase}")
+                            _, cleaned, _, _, _, _ = StringUtils.get_keyword_from_string(phrase)
+                            # 剥除字幕/配音标签前缀（如 "中字攻壳机动队" → "攻壳机动队"）
+                            mi.cn_name = _strip_cn_tag_prefix(cleaned or phrase)
+                            log.info(f"[ResultFilter]{torrent_name} 从 description 提取中文名: {mi.cn_name}")
                             break
             if not mi.get_name():
                 log.info(f"[ResultFilter]{torrent_name} 无法识别到名称")
@@ -288,6 +457,31 @@ class ResultFilter:
                 continue
 
             if not match_media:
+                # 无 TMDB 匹配时用 filter_args 年份 + search_name 做基础过滤
+                filter_year = str(filter_args.get("year", "") or "").strip()
+                if filter_year and mi.year:
+                    mi_year = str(mi.year).strip()
+                    if mi_year.isdigit() and filter_year.isdigit():
+                        if abs(int(mi_year) - int(filter_year)) > 1:
+                            log.info(
+                                f"[ResultFilter]{torrent_name} 年份冲突 (种子={mi_year}, 搜索={filter_year})，跳过"
+                            )
+                            stats.index_match_fail += 1
+                            continue
+                # search_name 伪匹配：种子名与搜索词差异大时跳过
+                if search_name and mi.get_name():
+                    _sn_norm = _norm(search_name)
+                    _mi_norm = _norm(mi.get_name())
+                    if _sn_norm and _mi_norm and len(_sn_norm) >= 3 and len(_mi_norm) >= 3:
+                        if _sn_norm not in _mi_norm and _mi_norm not in _sn_norm:
+                            sn_ratio = difflib.SequenceMatcher(None, _sn_norm, _mi_norm).ratio()
+                            if sn_ratio < 0.4:
+                                log.info(
+                                    f"[ResultFilter]{torrent_name} 名称不匹配搜索词"
+                                    f" (种子={_mi_norm}, 搜索={_sn_norm}, ratio={sn_ratio:.2f})，跳过"
+                                )
+                                stats.index_match_fail += 1
+                                continue
                 media_info = mi
                 media_info.set_torrent_info(
                     site=indexer_name,
@@ -332,14 +526,15 @@ class ResultFilter:
                 f"meta_name={mi.get_name()}, match_name={match_media.get_name()}"
             )
             if qnm_result:
-                log.info(f"[ResultFilter]{torrent_name} 快速名称匹配成功，跳过TMDB查询")
+                # ADR-014：qnm 降级为召回门，命中不再直通，交 BatchIdentifier 身份层识别
+                log.info(f"[ResultFilter]{torrent_name} 快速名称匹配，走身份层识别")
                 candidates.append(
                     SearchCandidate(
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=True,
-                        media_info=self._media.merge_media_info(mi, match_media),
+                        skip_tmdb=False,
+                        media_info=mi,
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
                         indexer_public=indexer_public,
@@ -347,24 +542,72 @@ class ResultFilter:
                 )
                 continue
 
-            # 快速名称不匹配且无可信 IMDB 时，直接丢弃，避免无意义 TMDB 查询
+            # cn_name 部分匹配但 en_name 别名不同 → 低置信走 TMDB 识别
+            _mi_names = set()
+            for n in (mi.title, mi.cn_name, mi.en_name):
+                if n and isinstance(n, str):
+                    _mi_names.add(StringUtils.handler_special_chars(n).upper().strip())
+            _mm_names = set()
+            for n in (match_media.title, match_media.cn_name, match_media.en_name, match_media.original_title):  # type: ignore[union-attr]
+                if n and isinstance(n, str):
+                    _mm_names.add(StringUtils.handler_special_chars(n).upper().strip())
+            _mi_names.discard("")
+            _mm_names.discard("")
+            if _mi_names & _mm_names:
+                log.info(f"[ResultFilter]{torrent_name} 中文名匹配但英文名不同，低置信走 TMDB")
+                candidates.append(
+                    SearchCandidate(
+                        item=item,
+                        meta_info=mi,
+                        res_order=res_order,
+                        skip_tmdb=False,
+                        media_info=mi,
+                        indexer_name=indexer_name,
+                        indexer_order=indexer_order,
+                        indexer_public=indexer_public,
+                    )
+                )
+                continue
+
             log.info(f"[ResultFilter]{torrent_name} 快速名称不匹配，跳过")
+            get_miss_collector().record(indexer_name, torrent_name, "quick_name_miss")
             stats.index_match_fail += 1
             continue
 
         return candidates, direct_results, stats
 
-    def match_filter(self, candidates, match_media, filter_args):
+    @staticmethod
+    def _use_target_matcher() -> bool:
+        """ADR-014 P3 灰度开关：TargetMatcher 统一判等"""
+        return bool(settings.get("laboratory").get("target_matcher"))
+
+    def match_filter(
+        self,
+        candidates,
+        match_media,
+        filter_args,
+        progress: ProgressTracker | None = None,
+        progress_key=ProgressKey.Search,
+    ):
         """
         第三阶段：TMDB 匹配及后续过滤
 
+        :param progress: 进度追踪器，传入时按处理进度在 85~95 区间细分上报
         :return: (matched_results, stats)
         """
         ret_array = []
         stats = FilterStats()
         media_ident_cache = get_cache_manager().get_or_create("media_ident", "memory", maxsize=2000, ttl=3600)
 
-        for cand in candidates:
+        total = len(candidates)
+        report_step = max(1, total // 10)
+        for idx, cand in enumerate(candidates):
+            if progress and idx and idx % report_step == 0:
+                progress.update_max(
+                    value=85 + int(idx / total * 10),
+                    text=f"TMDB 匹配过滤 {idx}/{total} ...",
+                    ptype=progress_key,
+                )
             item = cand.item
             meta_info = cand.meta_info
             res_order = cand.res_order
@@ -374,14 +617,13 @@ class ResultFilter:
             seeders = item.get("seeders")
             peers = item.get("peers")
             page_url = item.get("page_url")
-            uploadvolumefactor = (
-                round(float(item.get("uploadvolumefactor")), 1) if item.get("uploadvolumefactor") is not None else 1.0
-            )
-            downloadvolumefactor = (
-                round(float(item.get("downloadvolumefactor")), 1)
-                if item.get("downloadvolumefactor") is not None
-                else 1.0
-            )
+            uv = item.get("uploadvolumefactor")
+            dv = item.get("downloadvolumefactor")
+            uploadvolumefactor = round(float(uv), 1) if uv not in (None, "") else 1.0
+            downloadvolumefactor = round(float(dv), 1) if dv not in (None, "") else 1.0
+            # 公开站(BT站)无魔力/分享率系统，种子均为免费
+            if item.get("_indexer_public", False):
+                downloadvolumefactor = 0.0
             enclosure = item.get("enclosure")
             cache_key = BatchIdentifier.build_cache_key(meta_info, torrent_name)
             indexer_name = cand.indexer_name
@@ -399,14 +641,15 @@ class ResultFilter:
                 stats.index_error += 1
                 continue
             else:
-                media_info = media_ident_cache.get(cache_key)
+                cached_info = media_ident_cache.get(cache_key)
+                # 深拷贝：同组候选共享缓存对象，直接引用会导致
+                # 判重塌缩（每组只剩一条）及 torrent_info 互相覆盖
+                media_info = cached_info.model_copy(deep=True) if cached_info is not None else None
                 if media_info is not None:
                     log.info(
                         f"[ResultFilter]{torrent_name} 从缓存获取: {cache_key}, "
                         f"tmdb_id={media_info.tmdb_id}, tmdb_info={media_info.tmdb_info is not None}"
                     )
-                else:
-                    media_info = None
 
                 if not media_info:
                     log.warn(f"[ResultFilter]{torrent_name} ({cache_key}) 识别媒体信息出错！")
@@ -414,6 +657,11 @@ class ResultFilter:
                     continue
 
                 if not media_info.tmdb_info:
+                    # 低置信（仅有中文名）且 TMDB 未识别 → 拒绝，不用回退
+                    if not meta_info.en_name and meta_info.cn_name:
+                        log.info(f"[ResultFilter]{torrent_name} ({cache_key}) 仅中文名低置信匹配 + TMDB 未识别，拒绝")
+                        stats.index_match_fail += 1
+                        continue
                     if (
                         match_media
                         and self._type_compatible(meta_info.type, match_media.type)
@@ -430,8 +678,17 @@ class ResultFilter:
                             f"[ResultFilter]{torrent_name} ({cache_key}) 识别为 {media_info.get_name()} "
                             f"未匹配到媒体信息, quick_name_match={qnm}"
                         )
+                        get_miss_collector().record(indexer_name, torrent_name, "tmdb_no_match")
                         stats.index_match_fail += 1
                         continue
+                elif self._use_target_matcher():
+                    # ADR-014 P3：TargetMatcher 统一判等（ID 判等 + edition 距离，可解释）
+                    result = get_target_matcher().match(media_info, match_media)
+                    if not result.matched:
+                        log.info(f"[ResultFilter]{torrent_name} ({cache_key}) {result.reason}")
+                        stats.index_match_fail += 1
+                        continue
+                    media_info = self._media.merge_media_info(media_info, match_media)
                 elif str(media_info.tmdb_id) != str(match_media.tmdb_id):
                     media_type_str = media_info.type.value if media_info.type else "Unknown"
                     match_type_str = match_media.type.value if match_media.type else "Unknown"
@@ -445,8 +702,8 @@ class ResultFilter:
                 else:
                     media_info = self._media.merge_media_info(media_info, match_media)
 
-            # 恢复原始标题：缓存中的 MediaInfo.from_parser 不含 org_string
-            if not media_info.org_string:
+            # 每条结果保留自己的种子标题（缓存对象的 org_string 是组代表的标题）
+            if meta_info.org_string:
                 media_info.org_string = meta_info.org_string
 
             if filter_args.get("type"):
@@ -503,6 +760,16 @@ class ResultFilter:
                 f"[ResultFilter]{display_name} {description} 识别为 {media_info.get_title_string()} "
                 f"{media_info.get_season_episode_string()} 匹配成功"
             )
+            if 0.0 < getattr(media_info, "confidence", 0.0) < _LOW_CONFIDENCE_WARN:
+                log.warn(
+                    f"[ResultFilter]{display_name} 低置信命中 confidence={media_info.confidence:.2f} "
+                    f"（canary：观察学成别名/边缘评分的可靠性）"
+                )
+            # 只订阅免费：download_volume_factor==0 视为免费(free/2xfree)
+            if filter_args.get("free") and downloadvolumefactor != 0.0:
+                log.info(f"[ResultFilter]{display_name} 非免费种子(dl_factor={downloadvolumefactor})，仅订阅免费，跳过")
+                stats.index_rule_fail += 1
+                continue
             media_info.set_torrent_info(
                 site=indexer_name,
                 site_order=indexer_order,
@@ -522,5 +789,4 @@ class ResultFilter:
                 ret_array.append(media_info)
             else:
                 stats.index_rule_fail += 1
-
         return ret_array, stats

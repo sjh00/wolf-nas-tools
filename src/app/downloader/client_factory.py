@@ -21,7 +21,7 @@ from app.db.repositories.config_repo_adapter import DownloaderRepositoryAdapter
 from app.db.repositories.download_repo_adapter import DownloadSettingRepositoryAdapter
 from app.domain.enums import SystemConfigKey
 from app.downloader.client._base import _IDownloadClient
-from app.downloader.registry import get_all_clients
+from app.downloader.registry import get_all_clients, get_client_class
 from app.utils import ExceptionUtils, NumberUtils, StringUtils, SystemUtils
 from app.utils.json_utils import JsonUtils
 
@@ -179,7 +179,7 @@ class DownloadClientFactory:
             return None
         downloader_conf = self.get_downloader_conf(did)
         if not downloader_conf:
-            log.info("[Downloader]下载器配置不存在")
+            log.info(f"[Downloader]下载器配置不存在: {did}")
             return None
         if not downloader_conf.get("enabled"):
             log.info(f"[Downloader]下载器 {downloader_conf.get('name')} 未启用")
@@ -266,10 +266,12 @@ class DownloadClientFactory:
             conf["is_default"] = str(conf.get("id")) == str(default_id)
         return conf
 
-    def get_downloader_conf_simple(self):
-        """获取简化下载器配置"""
+    def get_downloader_conf_simple(self, brush: bool = False):
+        """获取简化下载器配置；brush=True 时仅返回支持 PT（可用于刷流）的下载器"""
         ret_dict = {}
         for downloader_conf in (self.get_downloader_conf() or {}).values():
+            if brush and not self._supports_brush(downloader_conf.get("type")):
+                continue
             ret_dict[str(downloader_conf.get("id"))] = {
                 "id": downloader_conf.get("id"),
                 "name": downloader_conf.get("name"),
@@ -277,6 +279,14 @@ class DownloadClientFactory:
                 "enabled": downloader_conf.get("enabled"),
             }
         return ret_dict
+
+    @staticmethod
+    def _supports_brush(ctype) -> bool:
+        """下载器是否支持刷流（刷流针对 PT 站，复用 supports_pt 标志）"""
+        if not ctype:
+            return False
+        cls = get_client_class(ctype)
+        return bool(getattr(cls, "supports_pt", True)) if cls else False
 
     def get_download_setting(self, sid=None):
         """获取下载设置，返回数据中包含 is_default 标记"""
@@ -348,6 +358,15 @@ class DownloadClientFactory:
             log.error("[Downloader]下载器连接测试失败")
         return state
 
+    def get_remote_dirs(self, dtype=None, config=None) -> list[str]:
+        """通过下载器 API 读取其已知目录候选列表（临时客户端）"""
+        if not dtype or not config:
+            return []
+        client = self._build_class(ctype=dtype, conf=config)
+        if not client:
+            return []
+        return client.list_remote_dirs()
+
     def get_free_space(self, downloader_id, path: str):
         """获取磁盘剩余空间"""
         if not downloader_id:
@@ -359,10 +378,11 @@ class DownloadClientFactory:
 
     @staticmethod
     def get_download_dir_info(media, downloaddir):
-        """根据媒体信息读取一个下载目录的信息"""
+        """根据媒体信息读取一个下载目录的信息；多个匹配目录按剩余空间均衡选择"""
         if media.type:
+            candidates = []
             for attr in downloaddir or []:
-                if not attr:
+                if not attr or not isinstance(attr, dict):
                     continue
                 if attr.get("type") and attr.get("type") not in (media.type.value, media.type.display_name):
                     continue
@@ -370,13 +390,31 @@ class DownloadClientFactory:
                     continue
                 if not attr.get("save_path") and not attr.get("label"):
                     continue
-                if (
-                    (attr.get("container_path") or attr.get("save_path"))
-                    and os.path.exists(attr.get("container_path") or attr.get("save_path"))
-                    and media.size
-                    and SystemUtils.get_free_space(attr.get("container_path") or attr.get("save_path"))
-                    < NumberUtils.get_size_gb(StringUtils.num_filesize(media.size))
-                ):
-                    continue
-                return {"path": attr.get("save_path"), "category": attr.get("category"), "label": attr.get("label")}
+                path = attr.get("container_path") or attr.get("save_path")
+                if path and os.path.exists(path) and media.size:
+                    try:
+                        if SystemUtils.get_free_space(path) < NumberUtils.get_size_gb(
+                            StringUtils.num_filesize(media.size)
+                        ):
+                            continue
+                    except Exception as e:  # noqa: BLE001
+                        log.debug(f"[Downloader]剩余空间检查失败: {e}")
+                candidates.append(attr)
+            if candidates:
+                if len(candidates) > 1:
+
+                    def _free(attr) -> float:
+                        p = attr.get("container_path") or attr.get("save_path")
+                        try:
+                            if not p or not os.path.exists(p):
+                                return 0
+                            return SystemUtils.get_free_space(p) or 0
+                        except Exception as e:  # noqa: BLE001
+                            log.debug(f"[Downloader]剩余空间检查失败: {e}")
+                            return 0
+
+                    best = max(candidates, key=_free)
+                    return {"path": best.get("save_path"), "category": best.get("category"), "label": best.get("label")}
+                c = candidates[0]
+                return {"path": c.get("save_path"), "category": c.get("category"), "label": c.get("label")}
         return {"path": None, "category": None, "label": None}

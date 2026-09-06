@@ -1,8 +1,11 @@
 import contextlib
+import os
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 import log
 from api.deps import (
@@ -21,6 +24,7 @@ from api.deps import (
     require_any_permission,
     require_permission,
 )
+from app.core.error_codes import ErrorCode
 from app.core.exceptions import (
     DomainError,
     ResourceNotFoundError,
@@ -42,6 +46,7 @@ from app.services.media_service import (
     TransferHistoryService,
 )
 from app.services.search_service import Searcher
+from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
 from app.utils.response import fail, success
 
 router = APIRouter()
@@ -132,6 +137,7 @@ class GetCategoryConfigRequest(BaseModel):
 
 class GetDownloadedRequest(BaseModel):
     page: int | None = None
+    page_size: int | None = Field(default=30, ge=1, le=200)
 
 
 class GetTransferHistoryRequest(BaseModel):
@@ -170,6 +176,18 @@ class DirListRequest(BaseModel):
     backend_id: str | None = None
 
 
+class MkdirRequest(BaseModel):
+    path: str
+    name: str
+    backend_id: str = "local"
+
+
+class FileBatchRequest(BaseModel):
+    files: list[str]
+    dest_dir: str
+    backend_id: str = "local"
+
+
 class TmdbBlacklistRequest(BaseModel):
     tmdb_id: str | None = None
     media_type: str | None = None
@@ -186,9 +204,9 @@ def download_subtitle(
 ):
     try:
         svc.download_subtitle(path=req.path, name=req.name)
-        return success(msg="字幕下载任务已提交，正在后台运行。")
+        return success(message="字幕下载任务已提交，正在后台运行。")
     except (ResourceNotFoundError, ServiceError, DomainError) as e:
-        return fail(code=-1, msg=e.message)
+        return fail(code=ErrorCode.OPERATION_FAILED, msg=e.message)
 
 
 @router.post("/season/episodes", response_model=CommonResponse, summary="获取剧集列表")
@@ -255,8 +273,8 @@ def media_path_scrap(
 ):
     msg = svc.scrap_media_path(path=req.path, backend_id=req.backend_id)
     if msg.startswith("请"):
-        return fail(code=-1, msg=msg)
-    return success(msg=msg)
+        return fail(code=ErrorCode.OPERATION_FAILED, msg=msg)
+    return success(message=msg)
 
 
 @router.post("/person", response_model=CommonResponse, summary="获取演员信息")
@@ -323,7 +341,7 @@ def name_test(
     svc: MediaInfoService = Depends(get_media_info_service),
 ):
     if not req.name:
-        return fail(code=-1)
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED)
     result = svc.name_test(name=req.name, subtitle=req.subtitle)
     return success(data=result)
 
@@ -390,7 +408,7 @@ def get_downloaded(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: Downloader = Depends(get_downloader_service),
 ):
-    items = svc.get_download_history(page=req.page or 1)
+    items = svc.get_download_history(page=req.page or 1, num=req.page_size or 30)
     if items:
         return success(
             data=[
@@ -406,6 +424,7 @@ def get_downloaded(
                     "image": item.POSTER,
                     "overview": item.TORRENT,
                     "enclosure": item.ENCLOSURE,
+                    "season_episode": item.SE or "",
                     "date": item.DATE,
                     "site": item.SITE,
                 }
@@ -423,7 +442,7 @@ def get_library_mediacount(
     result = svc.get_media_count()
     if result:
         return success(data=result)
-    return fail(code=-1, msg="媒体库服务器连接失败")
+    return fail(code=ErrorCode.MEDIA_SERVER_ERROR, msg="媒体库服务器连接失败")
 
 
 @router.post("/library/history", response_model=CommonResponse, summary="获取播放历史")
@@ -455,43 +474,63 @@ def get_library_home(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    server_success = False
-    media_counts = {}
-    try:
-        result = svc.get_media_count()
-        if result:
-            media_counts = result
-            server_success = True
-    except Exception as e:  # noqa: BLE001
-        log.debug(f"[MediaLibrary]获取媒体数量失败: {e}")
+    # 6 项数据均为独立的媒体服务器请求，并发获取以降低整体耗时
+    def _media_counts():
+        try:
+            return svc.get_media_count() or None
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[MediaLibrary]获取媒体数量失败: {e}")
+            return None
 
-    activity = []
-    with contextlib.suppress(Exception):
-        activity = svc.get_play_history() or []
+    def _activity():
+        with contextlib.suppress(Exception):
+            return svc.get_play_history() or []
+        return []
 
-    library_spaces = {}
-    try:
-        space_info = svc.get_space_info()
-        library_spaces = {
-            "UsedPercent": space_info.used_percent,
-            "FreeSpace": space_info.free_space,
-            "UsedSpace": space_info.used_space,
-            "TotalSpace": space_info.total_space,
-        }
-    except Exception as e:  # noqa: BLE001
-        log.debug(f"[MediaLibrary]获取空间信息失败: {e}")
+    def _spaces():
+        try:
+            space_info = svc.get_space_info()
+            return {
+                "UsedPercent": space_info.used_percent,
+                "FreeSpace": space_info.free_space,
+                "UsedSpace": space_info.used_space,
+                "TotalSpace": space_info.total_space,
+            }
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[MediaLibrary]获取空间信息失败: {e}")
+            return {}
 
-    libraries = []
-    with contextlib.suppress(Exception):
-        libraries = svc.get_libraries() or []
+    def _libraries():
+        with contextlib.suppress(Exception):
+            return svc.get_libraries() or []
+        return []
 
-    resumes = []
-    with contextlib.suppress(Exception):
-        resumes = svc.get_resume() or []
+    def _resumes():
+        with contextlib.suppress(Exception):
+            return svc.get_resume() or []
+        return []
 
-    latests = []
-    with contextlib.suppress(Exception):
-        latests = svc.get_latest() or []
+    def _latests():
+        with contextlib.suppress(Exception):
+            return svc.get_latest() or []
+        return []
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        f_counts = executor.submit(_media_counts)
+        f_activity = executor.submit(_activity)
+        f_spaces = executor.submit(_spaces)
+        f_libraries = executor.submit(_libraries)
+        f_resumes = executor.submit(_resumes)
+        f_latests = executor.submit(_latests)
+
+        counts_result = f_counts.result()
+        server_success = counts_result is not None
+        media_counts = counts_result or {}
+        activity = f_activity.result()
+        library_spaces = f_spaces.result()
+        libraries = f_libraries.result()
+        resumes = f_resumes.result()
+        latests = f_latests.result()
 
     return success(
         data={
@@ -527,11 +566,13 @@ def get_recommend(
 
 @router.post("/search/results", response_model=CommonResponse, summary="获取搜索结果")
 def get_search_result(
+    req: dict | None = None,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: Searcher = Depends(get_searcher_service),
     result_svc: SearchResultService = Depends(get_search_result_service),
 ):
-    session_id = TokenCache.get(f"search_session:{current_user.user_id}")
+    req = req or {}
+    session_id = req.get("session_id") or TokenCache.get(f"search_session:{current_user.user_id}")
     search_results = svc.get_search_results(session_id)
     result = result_svc.group_search_results(search_results)
     return success(data={"total": result.total, "result": result.result})
@@ -635,7 +676,7 @@ def update_category_config(
     svc: MediaFileService = Depends(get_media_file_service),
 ):
     msg = svc.update_category_config(items=req.config or [])
-    return success(msg=msg)
+    return success(message=msg)
 
 
 @router.post("/dir/list", response_model=CommonResponse, summary="获取目录列表")
@@ -648,6 +689,84 @@ def dir_list(
     try:
         result = svc.get_dir_list(req.path or "", req.backend_id or "")
         return success(data=result)
+    except (ValidationError, ResourceNotFoundError, ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+@router.post("/dir/mkdir", response_model=CommonResponse, summary="创建目录")
+def make_dir(
+    req: MkdirRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    try:
+        target = svc.make_dir(parent=req.path, name=req.name, backend_id=req.backend_id)
+        return success(data={"path": target}, message="创建成功")
+    except (ValidationError, ResourceNotFoundError, ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+@router.post("/files/move", response_model=CommonResponse, summary="移动文件")
+def move_files(
+    req: FileBatchRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    try:
+        msg = svc.move_or_copy_files(req.files, req.dest_dir, backend_id=req.backend_id, move=True)
+        return success(message=msg)
+    except (ValidationError, ResourceNotFoundError, ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+@router.post("/files/copy", response_model=CommonResponse, summary="复制文件")
+def copy_files(
+    req: FileBatchRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    try:
+        msg = svc.move_or_copy_files(req.files, req.dest_dir, backend_id=req.backend_id, move=False)
+        return success(message=msg)
+    except (ValidationError, ResourceNotFoundError, ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+@router.get("/file/download", summary="下载文件")
+def download_file(
+    path: str = Query(..., min_length=1),
+    backend_id: str = Query("local"),
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    stream, _info = svc.open_download(path, backend_id)
+
+    def _iter():
+        try:
+            while chunk := stream.read(1024 * 1024):
+                yield chunk
+        finally:
+            stream.close()
+
+    quoted = urllib.parse.quote(os.path.basename(path))
+    return StreamingResponse(
+        _iter(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=utf-8''{quoted}"},
+    )
+
+
+@router.post("/file/upload", response_model=CommonResponse, summary="上传文件")
+async def upload_file(
+    file: UploadFile = File(...),
+    path: str = Form(...),
+    backend_id: str = Form("local"),
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    try:
+        target = svc.save_upload(dest_dir=path, name=file.filename or "", stream=file.file, backend_id=backend_id)
+        return success(data={"path": target}, message="上传成功")
     except (ValidationError, ResourceNotFoundError, ServiceError, DomainError) as e:
         return fail(msg=e.message)
 
@@ -796,3 +915,46 @@ def update_media_library_path(
     """更新媒体库路径"""
     svc.update_path(req.path_type, req.old_path, req.new_path, req.backend)
     return success()
+
+
+# ---------- 重命名格式：字段目录 / 校验 / 预览 ----------
+
+
+class NameFormatPreviewRequest(BaseModel):
+    format: str
+    media_type: str = "tv"
+    values: dict = {}
+
+
+class NameFormatValidateRequest(BaseModel):
+    format: str
+
+
+@router.get("/name_format/fields", response_model=CommonResponse, summary="重命名格式字段目录")
+def name_format_fields(
+    current_user=Depends(require_any_permission("setting:view", "setting:update")),
+):
+    """返回可按分组插入的占位符字段目录。"""
+    return success(data={"groups": field_groups(), "fields": FIELD_CATALOG})
+
+
+@router.post("/name_format/validate", response_model=CommonResponse, summary="校验重命名格式")
+def name_format_validate(
+    req: NameFormatValidateRequest,
+    current_user=Depends(require_any_permission("setting:view", "setting:update")),
+):
+    return success(data=validate(req.format))
+
+
+@router.post("/name_format/preview", response_model=CommonResponse, summary="预览重命名格式")
+def name_format_preview(
+    req: NameFormatPreviewRequest,
+    current_user=Depends(require_any_permission("setting:view", "setting:update")),
+):
+    mtype = "movie" if str(req.media_type).lower() in ("movie", "电影") else "tv"
+    return success(
+        data={
+            "segments": render_path(req.format, mtype, req.values),
+            "validate": validate(req.format),
+        }
+    )

@@ -1,6 +1,9 @@
 """转移领域事件处理器."""
 
+from typing import Any
+
 import log
+from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.downloader.client_factory import DownloadClientFactory
 from app.events import Event, on_event
@@ -12,6 +15,7 @@ from app.events.payloads import (
     SubtitleDownloadPayload,
     TransferFailPayload,
 )
+from app.media.parser import RegexParser
 from app.services.transfer_pipeline import TransferPipeline
 
 
@@ -46,6 +50,8 @@ def handle_download_completed(
     event: Event,
     download_client_factory: DownloadClientFactory | None = None,
     transfer_pipeline: TransferPipeline | None = None,
+    download_history_repo: Any = None,
+    media_cache: Any = None,
 ) -> None:
     """下载完成事件处理器 — 触发文件转移."""
     payload = event.payload
@@ -57,6 +63,36 @@ def handle_download_completed(
         if not downloader_conf:
             log.warn(f"[Event]下载器配置不存在: {payload.downloader_id}")
             return
+
+        # 从下载历史中读取订阅时记录的 TMDB 信息，供转移/刮削直接使用
+        tmdb_info = None
+        media_type = ""
+        season = None
+        fallback_episode = None
+        try:
+            if download_history_repo:
+                history = download_history_repo.get_by_downloader(payload.downloader_id, payload.task_id)
+            else:
+                history = DownloadHistoryRepositoryAdapter().get_by_downloader(payload.downloader_id, payload.task_id)
+            if history and history.tmdb_id:
+                tmdb_id = history.tmdb_id
+                media_type = history.media_type or ""
+                if media_cache:
+                    tmdb_info = media_cache.get_tmdb_info(mtype=media_type, tmdbid=tmdb_id)
+                if history.season_episode:
+                    parsed = RegexParser().parse(str(history.season_episode))
+                    if parsed:
+                        if parsed.season:
+                            season = parsed.season
+                        if parsed.episode:
+                            fallback_episode = parsed.episode
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Event]读取下载历史TMDB信息失败: {e}")
+
+        if season is None and payload.name:
+            parsed = RegexParser().parse(str(payload.name))
+            if parsed and parsed.season:
+                season = parsed.season
 
         name = downloader_conf.get("name", "")
         operation = str(downloader_conf.get("rmt_mode") or "")
@@ -83,6 +119,10 @@ def handle_download_completed(
             source_id=name,
             file_paths=[payload.path],
             operation=operation,
+            tmdb_info=tmdb_info,
+            media_type=media_type,
+            season=season,
+            fallback_episode=fallback_episode,
             post_process=_post_process,
         )
         success, message = transfer_pipeline.process(task)
@@ -98,6 +138,8 @@ def register_download_completed_handler(
     event_bus: EventBus,
     transfer_pipeline: TransferPipeline,
     download_client_factory: DownloadClientFactory | None = None,
+    download_history_repo: Any = None,
+    media_cache: Any = None,
 ) -> None:
     """注册下载完成事件处理器，外部显式注入依赖。"""
 
@@ -106,6 +148,8 @@ def register_download_completed_handler(
             event,
             download_client_factory=download_client_factory,
             transfer_pipeline=transfer_pipeline,
+            download_history_repo=download_history_repo,
+            media_cache=media_cache,
         )
 
     event_bus.subscribe(DOWNLOAD_COMPLETED, _handler)

@@ -13,6 +13,8 @@ class _IDownloadClient(metaclass=ABCMeta):
     client_id = ""
     client_type = ""
     client_name = ""
+    # 是否支持 PT（私有站点）种子下载。aria2/迅雷等不支持时，私有站点种子将被拦截
+    supports_pt: bool = True
 
     _client_config: dict = {}
     download_dir: list = []
@@ -95,24 +97,28 @@ class _IDownloadClient(metaclass=ABCMeta):
         """获取需要转移的种子列表。子类可覆盖 _get_content_subpath 来自定义路径计算。"""
         torrents = self.get_completed_torrents(ids=ids) or []
         trans_tasks = []
+        tag_filtered = 0
+        no_path = 0
         for torrent in torrents:
             labels = torrent.labels or []
-            display_name = torrent.name or torrent.id or "未知种子"
             if "已整理" in labels:
                 continue
             if tag and tag not in labels:
-                log.debug(f"[{self.client_name}]{self.name} 开启标签隔离，{display_name} 未包含指定标签：{tag}")
+                tag_filtered += 1
                 continue
             path = torrent.save_path
             if not path:
-                log.debug(f"[{self.client_name}]{self.name} 未获取到 {display_name} 下载保存路径")
+                no_path += 1
                 continue
             true_path, replace_flag = self.get_replace_path(path, self.download_dir)
             if match_path and not replace_flag:
-                log.debug(f"[{self.client_name}]{self.name} 开启目录隔离，{display_name} 未匹配下载目录范围")
                 continue
             subpath = self._get_content_subpath(torrent) or torrent.name or ""
             trans_tasks.append({"path": os.path.join(true_path, subpath).replace("\\", "/"), "id": torrent.id})
+        if tag_filtered:
+            log.debug(f"[{self.client_name}]{self.name} 标签隔离：{tag_filtered} 个种子未包含指定标签：{tag}（已忽略）")
+        if no_path:
+            log.debug(f"[{self.client_name}]{self.name} {no_path} 个种子未获取到下载保存路径")
         return trans_tasks
 
     def _get_content_subpath(self, torrent: Torrent) -> str | None:
@@ -129,15 +135,15 @@ class _IDownloadClient(metaclass=ABCMeta):
         remove_torrents_ids: list[str] = []
 
         for torrent in torrents:
-            if strategy.ratio is not None and torrent.ratio <= strategy.ratio:
+            if strategy.ratio and torrent.ratio <= strategy.ratio:
                 continue
-            if strategy.seeding_time is not None and torrent.seeding_time <= strategy.seeding_time * 3600:
+            if strategy.seeding_time and torrent.seeding_time <= strategy.seeding_time * 3600:
                 continue
             if strategy.size_range is not None:
                 minsize, maxsize = strategy.size_range
                 if torrent.size >= maxsize or torrent.size <= minsize:
                     continue
-            if strategy.upload_avs is not None and torrent.avg_upload_speed >= strategy.upload_avs * 1024:
+            if strategy.upload_avs and torrent.avg_upload_speed >= strategy.upload_avs * 1024:
                 continue
             if strategy.savepath_key and not re.findall(strategy.savepath_key, torrent.save_path or "", re.I):
                 continue
@@ -154,7 +160,7 @@ class _IDownloadClient(metaclass=ABCMeta):
                 {
                     "id": torrent.id,
                     "name": torrent.name,
-                    "site": StringUtils.get_url_sld(torrent.trackers[0]) if torrent.trackers else "",
+                    "site": StringUtils.get_site_domain(torrent.trackers[0]) if torrent.trackers else "",
                     "size": torrent.size,
                 }
             )
@@ -171,7 +177,7 @@ class _IDownloadClient(metaclass=ABCMeta):
                             {
                                 "id": torrent.id,
                                 "name": torrent.name,
-                                "site": StringUtils.get_url_sld(torrent.trackers[0]) if torrent.trackers else "",
+                                "site": StringUtils.get_site_domain(torrent.trackers[0]) if torrent.trackers else "",
                                 "size": torrent.size,
                             }
                         )
@@ -234,6 +240,21 @@ class _IDownloadClient(metaclass=ABCMeta):
     @abstractmethod
     def get_download_dirs(self) -> list[str]:
         """获取下载目录清单"""
+
+    def list_remote_dirs(self) -> list[str]:
+        """获取下载器已知的目录候选列表（用于 UI 浏览选择保存目录）"""
+        dirs: list[str] = []
+        try:
+            dirs.extend(d for d in (self.get_download_dirs() or []) if d)
+        except Exception as e:
+            log.debug(f"[{self.client_name}]{self.name} 读取下载目录失败: {e}")
+        try:
+            torrents, error_flag = self.get_torrents()
+            if not error_flag:
+                dirs.extend(t.save_path for t in torrents if t.save_path)
+        except Exception as e:
+            log.debug(f"[{self.client_name}]{self.name} 读取种子保存路径失败: {e}")
+        return sorted(set(dirs))
 
     @staticmethod
     def get_replace_path(path: str, downloaddir: list | None) -> tuple[str, bool]:
@@ -303,6 +324,19 @@ class _IDownloadClient(metaclass=ABCMeta):
     @abstractmethod
     def get_free_space(self, path: str) -> int | None:
         """获取剩余空间"""
+
+    def get_torrent_trackers(self, torrent_hash: str) -> list[str]:
+        """获取种子 tracker URL 列表"""
+        return []
+
+    def add_torrent_trackers(self, torrent_hash: str, urls: list[str] | str) -> None:
+        """添加 tracker"""
+
+    def remove_torrent_trackers(self, torrent_hash: str, urls: list[str] | str) -> None:
+        """移除 tracker"""
+
+    def edit_torrent_tracker(self, torrent_hash: str, old_url: str, new_url: str) -> None:
+        """替换 tracker"""
 
     @abstractmethod
     def _map_status(self, raw_state: Any) -> TorrentStatus:

@@ -61,6 +61,13 @@ class DownloaderCore:
 
     # ---------- 生命周期（由外部 SystemLifecycleService 控制） ----------
 
+    def refresh_downloaders(self) -> None:
+        """刷新下载器配置缓存（插件注册/注销下载器客户端后调用）"""
+        try:
+            self._client_factory._refresh()
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[Downloader]刷新下载器缓存失败: {e}")
+
     def start_service(self):
         """启动转移任务调度"""
         self._transfer_coordinator.start_service(self.transfer)
@@ -258,6 +265,20 @@ class DownloaderCore:
             downloader_id=downloader_id, download_limit=download_limit, upload_limit=upload_limit
         )
 
+    def get_torrent_trackers(self, tid, downloader_id=None):
+        return self._download_core.get_torrent_trackers(tid=tid, downloader_id=downloader_id)
+
+    def add_torrent_trackers(self, tid, urls, downloader_id=None):
+        return self._download_core.add_torrent_trackers(ids=tid, urls=urls, downloader_id=downloader_id)
+
+    def edit_torrent_tracker(self, tid, old_url, new_url, downloader_id=None):
+        return self._download_core.edit_torrent_tracker(
+            ids=tid, old_url=old_url, new_url=new_url, downloader_id=downloader_id
+        )
+
+    def remove_torrent_trackers(self, tid, urls, downloader_id=None):
+        return self._download_core.remove_torrent_trackers(ids=tid, urls=urls, downloader_id=downloader_id)
+
     # ---------- 存在性检查 ----------
 
     def check_exists_medias(self, meta_info, no_exists=None, total_ep=None) -> tuple[bool, dict, Any]:
@@ -280,8 +301,8 @@ class DownloaderCore:
     def get_downloader_conf(self, did=None):
         return self._client_factory.get_downloader_conf(did=did)
 
-    def get_downloader_conf_simple(self):
-        return self._client_factory.get_downloader_conf_simple()
+    def get_downloader_conf_simple(self, brush: bool = False):
+        return self._client_factory.get_downloader_conf_simple(brush=brush)
 
     def get_downloader(self, downloader_id=None):
         return self._client_factory.get_client(did=downloader_id)
@@ -291,6 +312,9 @@ class DownloaderCore:
 
     def get_status(self, dtype=None, config=None):
         return self._client_factory.get_status(dtype=dtype, config=config)
+
+    def get_remote_dirs(self, dtype=None, config=None) -> list[str]:
+        return self._client_factory.get_remote_dirs(dtype=dtype, config=config)
 
     def get_free_space(self, downloader_id, path: str):
         return self._client_factory.get_free_space(downloader_id=downloader_id, path=path)
@@ -339,6 +363,71 @@ class DownloaderCore:
         )
         self._refresh_all_factories()
         return ret
+
+    def upsert_downloader(
+        self,
+        did: int | None = None,
+        name: str = "",
+        dtype: str = "",
+        config_overlay: dict | None = None,
+        enabled: bool | None = None,
+        is_default: bool = False,
+    ) -> tuple[str, str, bool]:
+        """统一下载器新增/更新入口：合并现有配置并保留管理字段，供 Agent 工具与 manifest 复用.
+
+        did 有值→更新（name/type 缺省保留现状，enabled=None 保留现状）；
+        did 为空→新增（需 name 与 dtype）。is_default 时同步设为默认下载器。
+        返回 (显示名, 类型, 是否新增)；失败抛 ValueError（含“下载器不存在”等提示）。
+        """
+        did = int(did or 0) or None
+        if did:
+            current = self.get_downloader_conf(did=did) or {}
+            if not current:
+                raise ValueError(f"下载器不存在: {did}")
+            merged = dict(current.get("config") or {})
+            merged.update({k: v for k, v in (config_overlay or {}).items() if v is not None})
+            target_name = name or current.get("name") or ""
+            target_type = current.get("type") or ""
+            enabled_val = current.get("enabled") if enabled is None else (1 if enabled else 0)
+            self.update_downloader(
+                did=did,
+                name=target_name,
+                enabled=enabled_val,
+                dtype=target_type,
+                transfer=current.get("transfer", 0),
+                only_wolf_nas=current.get("only_wolf_nas", 0),
+                match_path=current.get("match_path", 0),
+                rmt_mode=current.get("rmt_mode", ""),
+                config=merged,
+                download_dir=current.get("download_dir") or [],
+            )
+            if is_default:
+                self.set_default_downloader_id(str(did))
+            return target_name, target_type, False
+
+        if not name or not dtype:
+            raise ValueError("新增下载器需提供 name 与 dtype（类型如 qbittorrent/transmission）")
+        merged = dict(config_overlay or {})
+        enabled_val = 1 if (enabled is None or enabled) else 0
+        self.update_downloader(
+            did=None,
+            name=name,
+            enabled=enabled_val,
+            dtype=dtype,
+            transfer=0,
+            only_wolf_nas=0,
+            match_path=0,
+            rmt_mode="",
+            config=merged,
+            download_dir=[],
+        )
+        if is_default:
+            fresh = self.get_downloader_conf() or {}
+            for k, v in fresh.items():
+                if v.get("name") == name:
+                    self.set_default_downloader_id(str(k))
+                    break
+        return name, dtype, True
 
     def delete_downloader(self, did):
         ret = self._download_core.delete_downloader(did=did)
