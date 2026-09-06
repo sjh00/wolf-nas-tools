@@ -31,7 +31,7 @@ class TestDropScalarOverrides:
         """AGENT=1 标量环境下，yaml 中的 agent 配置仍应生效"""
         cfg = tmp_path / "c.yaml"
         cfg.write_text("agent:\n  enabled: true\n  default_provider: deepseek\n", encoding="utf-8")
-        monkeypatch.setenv("NEXUS_MEDIA_CONFIG", str(cfg))
+        monkeypatch.setenv("WOLFNAS_CONFIG", str(cfg))
         monkeypatch.setenv("AGENT", "1")
         s = AppSettings()
         assert s.agent.enabled is True

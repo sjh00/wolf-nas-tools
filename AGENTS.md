@@ -38,7 +38,7 @@ backend/
 
 ## 配置优先级
 环境变量 > `.env` > `data/config.yaml`（可选，自动发现）
-- `NEXUS_MEDIA_CONFIG` 已降级为可选，未设置时自动查找 `./data/config.yaml`
+- `WOLFNAS_CONFIG` 已降级为可选，未设置时自动查找 `./data/config.yaml`
 - 无配置文件时纯 `.env` + 默认值也可运行
 - SQLite 路径由 `DATABASE__SQLITE_PATH` 控制（默认 `data/user.db`），测试强制使用临时文件隔离
 

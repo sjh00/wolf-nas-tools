@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 # 必须在导入项目模块前设置，避免初始化真实数据库
-os.environ.setdefault("NEXUS_MEDIA_CONFIG", os.path.join(tempfile.gettempdir(), "nexus_media_tool_config.yaml"))
+os.environ.setdefault("WOLFNAS_CONFIG", os.path.join(tempfile.gettempdir(), "wolfnas_tool_config.yaml"))
 os.environ.setdefault("DATABASE__TYPE", "sqlite")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
