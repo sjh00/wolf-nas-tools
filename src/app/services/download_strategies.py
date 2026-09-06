@@ -84,17 +84,14 @@ class SeasonPackStrategy:
                         # 只有一季的可能是命名错误，需要打开种子鉴别
                         total_eps = SeasonPackStrategy._get_season_episodes(need_tvs, need_tmdbid, item_season[0])
                         torrent_episodes, torrent_path = get_torrent_episodes_callback(item.enclosure, item.page_url)
-                        # 如果种子实际集数大于等于总集数（或种子无集数信息但total_eps为0），则下载
-                        if torrent_episodes and len(torrent_episodes) >= total_eps:
+                        # 仅在已知总集数且种子集数足够时下载整季包
+                        if torrent_episodes and total_eps > 0 and len(torrent_episodes) >= total_eps:
                             _, download_id, _ = download_callback(item, torrent_file=torrent_path)
-                        elif not torrent_episodes and total_eps == 0:
-                            # 无法判断集数时保守跳过
-                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过")
-                            continue
                         elif not torrent_episodes:
-                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，解析文件数为 0")
+                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过整季匹配")
                             continue
                         else:
+                            # total_eps 未知或集数不足
                             continue
                     else:
                         _, download_id, _ = download_callback(item)
@@ -184,7 +181,10 @@ class EpisodeStrategy:
                 total_episodes = tv.get("total_episodes")
                 # 缺失整季的转化为缺失集
                 if not need_episodes:
-                    need_episodes = list(range(1, total_episodes + 1))
+                    if not total_episodes:
+                        # 总集数未知时无法展开为集列表，留给后续逻辑或跳过
+                        continue
+                    need_episodes = list(range(1, int(total_episodes) + 1))
                 for item in download_list:
                     if item.type == MediaType.MOVIE:
                         continue

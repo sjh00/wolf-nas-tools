@@ -33,7 +33,7 @@ from app.events.constants import DOWNLOAD_FAILED
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
-from app.services.download_event_queue import download_event_queue
+from app.services.download_event_queue import download_event_queue, put_download_event
 from app.services.download_service import DownloadService
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.filetransfer_service import FileTransferService as FileTransfer
@@ -293,7 +293,7 @@ def download(
             )
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
-            download_event_queue.put(
+            put_download_event(
                 {"event": DOWNLOAD_FAILED, "data": {"title": f"下载ID:{req.id}", "reason": str(e)}}
             )
 
@@ -325,7 +325,7 @@ def download_link(
             )
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
-            download_event_queue.put({"event": DOWNLOAD_FAILED, "data": {"title": req.title or "", "reason": str(e)}})
+            put_download_event({"event": DOWNLOAD_FAILED, "data": {"title": req.title or "", "reason": str(e)}})
 
     ThreadExecutor(name="download").submit(_do_download)
     return success(msg="下载任务已提交")
@@ -372,7 +372,7 @@ def download_torrent(
             )
             if not result.success:
                 log.warn(f"[Download]下载失败: {result.message}")
-                download_event_queue.put(
+                put_download_event(
                     {"event": DOWNLOAD_FAILED, "data": {"title": req.title, "reason": result.message}}
                 )
             else:

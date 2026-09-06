@@ -129,8 +129,9 @@ class BrushTorrentLifecycle:
                         if torrent.id in delete_ids:
                             delete_ids.remove(torrent.id)
 
+                # delete_ids 中剩余的是下载器中已消失（删除成功）的种子
                 if update_torrents:
-                    update_torrents = [t for t in update_torrents if t[2] not in delete_ids]
+                    update_torrents = [t for t in update_torrents if t[2] in delete_ids]
                 if update_torrents:
                     self._repo.update_brushtask_torrent_state(update_torrents)
                 else:

@@ -96,26 +96,61 @@ class DownloadCore:
     # ---------- 媒体存在性检查 ----------
 
     def check_exists_medias(self, meta_info, no_exists=None, total_ep=None):
-        """检查媒体是否已存在于媒体库中."""
+        """检查媒体是否已存在于媒体库中.
+
+        :return: (exist_flag, no_exists_dict, extra)
+            - 电影: exist_flag 表示库中已有；no_exists 保持调用方传入结构
+            - 剧集: exist_flag 表示本季集已齐；no_exists 为
+              {tmdb_id: [{season, episodes, total_episodes}, ...]}，并与入参合并
+        """
         if meta_info.type == MediaType.MOVIE:
             exists = self._filetransfer.get_no_exists_medias(meta_info)
             if exists:
-                return True, {}, None
-            return False, {}, None
+                return True, no_exists or {}, None
+            return False, no_exists or {}, None
+
+        season_raw = meta_info.get_season_seq()
+        try:
+            season = int(season_raw) if season_raw not in (None, "") else 1
+        except (TypeError, ValueError):
+            season = 1
+
+        if isinstance(total_ep, dict):
+            # 兼容 int / str 季号键（调用方常用 {1: 12}，get_season_seq 返回 "1"）
+            total = total_ep.get(season)
+            if total is None:
+                total = total_ep.get(str(season))
+            if total is None and season_raw not in (None, ""):
+                total = total_ep.get(season_raw)
         else:
-            season = meta_info.get_season_seq()
-            if isinstance(total_ep, dict):
-                total = total_ep.get(season)
-            else:
-                total = total_ep
-            if not total:
-                total = meta_info.total_episodes
-            if not total:
-                return False, no_exists or {}, None
-            no_exists_result = self._filetransfer.get_no_exists_medias(meta_info, season=season, total_num=total)
-            if no_exists_result:
-                return False, no_exists_result, None
-            return True, {}, None
+            total = total_ep
+        if not total:
+            total = meta_info.total_episodes
+        if not total:
+            return False, no_exists or {}, None
+
+        missing_episodes = self._filetransfer.get_no_exists_medias(
+            meta_info, season=season, total_num=int(total)
+        )
+        result = dict(no_exists or {})
+        if missing_episodes:
+            season_entry = {
+                "season": season,
+                "episodes": missing_episodes,
+                "total_episodes": int(total),
+            }
+            existing = list(result.get(meta_info.tmdb_id) or [])
+            replaced = False
+            for i, entry in enumerate(existing):
+                if entry.get("season") == season:
+                    existing[i] = season_entry
+                    replaced = True
+                    break
+            if not replaced:
+                existing.append(season_entry)
+            result[meta_info.tmdb_id] = existing
+            return False, result, None
+        return True, result, None
 
     # ---------- 核心下载方法 ----------
 
@@ -187,7 +222,7 @@ class DownloadCore:
         # 2. 电视剧整季匹配
         if need_tvs:
             need_seasons = SeasonPackStrategy.build_need_seasons(need_tvs)
-            _, _, need_tvs = SeasonPackStrategy.find_season_packs(
+            pack_items, _, need_tvs = SeasonPackStrategy.find_season_packs(
                 download_list=download_list,
                 need_seasons=need_seasons,
                 need_tvs=need_tvs,
@@ -195,6 +230,9 @@ class DownloadCore:
                 download_callback=_download_callback,
                 get_torrent_episodes_callback=self.get_torrent_episodes,
             )
+            for item in pack_items:
+                if item not in download_items:
+                    download_items.append(item)
 
         # 3. 电视剧单集匹配
         if need_tvs:

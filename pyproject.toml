@@ -72,9 +72,14 @@ dependencies = [
     "defusedxml>=0.7.1",
     "ruff>=0.15.17",
     "fast-bencode>=1.1.7",
-    "uvloop>=0.22.1",
+    "uvloop>=0.22.1; sys_platform != 'win32'",
     "orjson>=3.11.9",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
