@@ -184,3 +184,70 @@ class TestQbittorrentSync:
         assert len(tasks) == 1
         assert tasks[0]["id"] == "hash1"
         assert tasks[0]["path"] == "/downloads/movie.mkv"
+
+
+class TestQbittorrentAddTorrent:
+    """qBittorrent 添加任务：传入下载目录时必须尊重该目录."""
+
+    @pytest.fixture
+    def client(self):
+        with patch.object(Qbittorrent, "connect"):
+            with patch.object(Qbittorrent, "init_torrent_management"):
+                with patch("qbittorrentapi.Client") as mock_qbc_cls:
+                    mock_qbc = MagicMock()
+                    mock_qbc_cls.return_value = mock_qbc
+                    qb = Qbittorrent(
+                        config={
+                            "host": "127.0.0.1",
+                            "port": "8080",
+                            "username": "admin",
+                            "password": "adminadmin",
+                            "torrent_management": "auto",
+                        }
+                    )
+                    qb.qbc = mock_qbc
+                    return qb, mock_qbc
+
+    def test_add_torrent_honors_download_dir(self, client):
+        """即使下载器配置了自动管理，传入 download_dir 也必须强制 is_auto=False 并透传 save_path."""
+        qb, mock_qbc = client
+        mock_qbc.torrents_add.return_value = "Ok."
+        ret = qb.add_torrent(
+            content=b"torrent-bytes",
+            download_dir="/做种2",
+        )
+        assert ret is True
+        _, kwargs = mock_qbc.torrents_add.call_args
+        assert kwargs.get("save_path") == "/做种2"
+        assert kwargs.get("use_auto_torrent_management") is False
+
+
+class TestGetDownloadingTorrents:
+    def test_get_downloading_excludes_completed(self):
+        """已完成（progress=1，pausedUP 等）的任务不应计入正在下载数"""
+        from app.downloader.client.qbittorrent import Qbittorrent
+        from app.schemas.download import Torrent, TorrentStatus
+        
+
+        downloading = Torrent()
+        downloading.progress = 0.5
+        downloading.status = TorrentStatus.Downloading
+        completed_paused = Torrent()
+        completed_paused.progress = 1.0
+        completed_paused.status = TorrentStatus.Paused
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        qb.qbc = MagicMock()
+        with patch.object(Qbittorrent, "get_torrents", return_value=([downloading, completed_paused], False)):
+            result = qb.get_downloading_torrents()
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].progress == 0.5
+
+    def test_get_downloading_returns_none_on_error(self):
+        from app.downloader.client.qbittorrent import Qbittorrent
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        qb.qbc = MagicMock()
+        with patch.object(Qbittorrent, "get_torrents", return_value=([], True)):
+            assert qb.get_downloading_torrents() is None

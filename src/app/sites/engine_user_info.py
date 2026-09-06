@@ -47,7 +47,7 @@ def prefetch_user_profile(
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = _get_rate_limit_kwargs(engine, site_def)
         client = HttpClient(
-            config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
+            config=HttpClientConfig(proxy_url=proxy_url),
             rate_limiter=rate_limiter_engine,
         )
         if method == "POST":
@@ -59,13 +59,14 @@ def prefetch_user_profile(
             res = client.post(url=req_url, data=post_data, headers=headers, auth=auth, **rl_kwargs)
         else:
             params = profile_cfg.get("params") or None
+            headers.pop("Content-Type", None)
             res = client.get(url=req_url, params=params, headers=headers, auth=auth, **rl_kwargs)
         parsed = res.json()
-        log.warn(f"[prefetch]{site_def.name} status={res.status_code} keys={list(parsed.keys())[:5]}")
+        log.debug(f"[SiteEngine]{site_def.name} status={res.status_code} keys={list(parsed.keys())[:5]}")
         if "data" in parsed and isinstance(parsed["data"], dict):
-            log.warn(f"[prefetch]{site_def.name} data keys={list(parsed['data'].keys())[:10]}")
+            log.debug(f"[SiteEngine]{site_def.name} data keys={list(parsed['data'].keys())[:10]}")
         return site_def, parsed
     except Exception as e:  # noqa: BLE001
-        log.debug(f"[engine_user_info]忽略异常: {e}")
-    log.warn(f"[prefetch]{site_def.name if site_def else '?'} FAIL")
+        log.debug(f"[SiteUserInfo]忽略异常: {e}")
+    log.warn(f"[SiteEngine]{site_def.name if site_def else '?'} FAIL")
     return site_def, None

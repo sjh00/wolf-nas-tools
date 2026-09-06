@@ -10,6 +10,12 @@ if TYPE_CHECKING:
     from app.events.bus import EventBus
     from app.infrastructure.queue.base import MessageQueue
     from app.infrastructure.thread import ThreadExecutor
+    from app.media.identity.builder import IdentityIndexBuilder
+    from app.media.identity.graph import EditionGraph
+    from app.media.identity.index import AliasIndex
+    from app.media.identity.matcher import TargetMatcher
+    from app.media.identity.remapper import EpisodeRemapper
+    from app.media.identity.resolver import IdentityResolver
     from app.media.service import MediaService
     from app.mediaserver.media_server import MediaServer
     from app.message.message import Message
@@ -53,6 +59,7 @@ class InfrastructureObjects:
     plugin_registry: PluginRegistry
     apikey_service: APIKeyService
     indexer_site_config_repo: IndexerSiteConfigRepositoryAdapter
+    indexer_helper: Any
 
 
 @dataclass(frozen=True)
@@ -106,11 +113,13 @@ class ServiceObjects:
     net_test_service: Any
     progress_service: Any
     web_search_service: Any
+    search_orchestrator: Any
     backup_restore_service: Any
     user_manage_service: Any
     tmdb_blacklist_service: Any
     download_service: Any
     plugin_framework_service: Any
+    plugin_market_service: Any
     storage_backend_service: Any
     search_result_service: Any
     transfer_history_service: Any
@@ -127,3 +136,15 @@ class CoordinatorObjects:
     subscription_monitor: SubscriptionMonitor
     system_lifecycle: SystemLifecycleService
     tool_executor: Any
+
+
+@dataclass(frozen=True)
+class IdentityObjects:
+    """ADR-014 媒体身份解析组件（共享 AliasIndex / EditionGraph 依赖）。"""
+
+    alias_index: AliasIndex
+    edition_graph: EditionGraph
+    identity_resolver: IdentityResolver
+    target_matcher: TargetMatcher
+    identity_builder: IdentityIndexBuilder
+    episode_remapper: EpisodeRemapper

@@ -14,6 +14,7 @@ from app.sites import engine_tools
 from app.sites.engine import SiteDefinition
 from app.utils.config_tools import get_proxies
 from app.utils.json_utils import JsonUtils
+from app.utils.string_utils import StringUtils
 
 
 class ConfigApiUserInfo:
@@ -108,7 +109,7 @@ class ConfigApiUserInfo:
             if val is not None:
                 setattr(self, field_name, val)
 
-        log.warn(
+        log.debug(
             f"[ConfigApiUserInfo]{self.site_name} profile: "
             f"upload={self.upload} download={self.download} seeding={self.seeding} "
             f"bonus={self.bonus} username={self.username}"
@@ -214,7 +215,7 @@ class ConfigApiUserInfo:
         base = self._def.api.base_url if self._def.api else ""
         path = endpoint_cfg.get("path", "").lstrip("/")
         url = f"{base.rstrip('/')}/{path}" if path else base.rstrip("/")
-        log.warn(f"[ConfigApiUserInfo]{self.site_name} _api_call url={url}")
+        log.debug(f"[ConfigApiUserInfo]{self.site_name} _api_call url={url}")
         engine = self._site_engine
         headers, auth = engine._build_auth(
             self._def,
@@ -232,7 +233,7 @@ class ConfigApiUserInfo:
         rate_limiter = getattr(engine, "site_limiter", None)
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(engine, self._def)
-        client = HttpClient(config=HttpClientConfig(proxy_url=proxy_url, timeout=30), rate_limiter=rate_limiter_engine)
+        client = HttpClient(config=HttpClientConfig(proxy_url=proxy_url), rate_limiter=rate_limiter_engine)
         try:
             if method == "POST":
                 data = JsonUtils.dumps(body or {}, separators=(",", ":"))
@@ -247,6 +248,7 @@ class ConfigApiUserInfo:
                 params = (
                     {k: v.format(page="1") if isinstance(v, str) else v for k, v in params.items()} if params else None
                 )
+                headers.pop("Content-Type", None)
                 res = client.get(url=url, params=params, headers=headers, auth=auth, **rl_kwargs)
             return res.json()
         except Exception:
@@ -301,6 +303,8 @@ class ConfigApiUserInfo:
         transform = field_cfg.get("transform")
         if transform == "map_value":
             return (field_cfg.get("map") or {}).get(str(val), str(val))
+        if transform == "timestamp_to_date":
+            return StringUtils.timestamp_to_date(val)
         return val
 
     @staticmethod
@@ -331,6 +335,7 @@ def _api_factory(
     session=None,
     api_key=None,
     bearer_token=None,
+    browser_persistent=False,
 ):
     engine = site_engine
     site_def, resp = engine.prefetch_user_profile(

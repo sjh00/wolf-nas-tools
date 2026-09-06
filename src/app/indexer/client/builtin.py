@@ -18,7 +18,6 @@ from app.domain.enums import ProgressKey, SearchType, SystemConfigKey
 from app.indexer.client._base import _IIndexClient
 from app.indexer.configuration import IndexerHelper
 from app.indexer.schema import IndexerConfigSchema
-from app.infrastructure.chrome import ChromeClient
 from app.infrastructure.progress import ProgressTracker
 from app.sites.engine import SiteEngine
 from app.sites.searcher_factory import create_searcher
@@ -28,6 +27,9 @@ from app.utils.config_tools import get_ua
 from app.utils.json_utils import JsonUtils
 
 _STATS_LOCK = Lock()
+
+# 关键字搜索时的最大翻页数（安全上限，防止站点异常时无限翻页）
+_MAX_SEARCH_PAGES = 5
 
 
 class BuiltinIndexer(_IIndexClient):
@@ -39,7 +41,7 @@ class BuiltinIndexer(_IIndexClient):
 
     client_id = "builtin"
     client_type = "builtin"
-    client_name = "内置索引器"
+    client_name = "BuiltinIndexer"
     config_schema = IndexerConfigSchema(
         name="内置索引器",
         icon_url="/static/img/indexer/indexer.jpg",
@@ -59,7 +61,6 @@ class BuiltinIndexer(_IIndexClient):
         progress_helper: ProgressTracker | None = None,
         download_repo: DownloadRepository | None = None,
         system_config: SystemConfig | None = None,
-        drissionpage_helper: ChromeClient | None = None,
         site_config_repo: IndexerSiteConfigRepositoryAdapter | None = None,
         idx_config_repo: IndexerConfigRepositoryAdapter | None = None,
     ):
@@ -69,7 +70,6 @@ class BuiltinIndexer(_IIndexClient):
         self._progress = progress_helper or ProgressTracker()
         self._download_repo = download_repo or DownloadRepository()
         self._system_config = system_config or SystemConfig()
-        self._drissionpage_helper = drissionpage_helper or ChromeClient()
         self._site_engine = site_engine
         self._site_config_repo = site_config_repo or IndexerSiteConfigRepositoryAdapter()
         self._idx_config_repo = idx_config_repo or IndexerConfigRepositoryAdapter()
@@ -99,8 +99,6 @@ class BuiltinIndexer(_IIndexClient):
         ret_indexers = []
         enabled_names = set(n.lower() for n in self._site_config_repo.list_enabled_names())
         _indexer_domains = []
-
-        chrome_ok = self._drissionpage_helper.get_status()
 
         engine_sites = []
         for s in self._site_engine.all_sites():
@@ -146,7 +144,7 @@ class BuiltinIndexer(_IIndexClient):
             if not is_public and not has_auth:
                 continue
 
-            render = False if not chrome_ok else site.get("chrome")
+            render = bool(site.get("chrome"))
             indexer = self._indexer_helper.get_indexer(
                 url=url,
                 siteid=site.get("id"),
@@ -161,6 +159,8 @@ class BuiltinIndexer(_IIndexClient):
                 public=is_public,
                 proxy=bool(site.get("proxy")),
                 render=render,
+                chrome=site.get("chrome"),
+                browser_render=site.get("browser_render"),
             )
             if indexer:
                 if indexer_id and (str(indexer.id) == str(indexer_id) or site.get("name") == indexer_id):
@@ -213,23 +213,33 @@ class BuiltinIndexer(_IIndexClient):
 
         result_array = []
         error_flag = False
+        last_error = ""
         mtype = match_media.type if (match_media and match_media.tmdb_info) else None
         try:
-            error_flag, result_array = self.__search_via_engine(search_word=search_word, indexer=indexer, mtype=mtype)
+            error_flag, result_array, last_error = self.__search_via_engine(
+                search_word=search_word, indexer=indexer, mtype=mtype, paginate=True
+            )
         except Exception as err:
             error_flag = True
+            last_error = str(err)
             log.warn(f"[{self.client_name}]{indexer.name} 搜索失败: {err}")
+        # 站点级失败（超时/HTTP 错误等被 searcher 吞掉、不抛异常）同样计为失败
+        if not error_flag and last_error:
+            error_flag = True
 
-        seconds = round((datetime.datetime.now() - start_time).seconds, 1)
+        seconds = round((datetime.datetime.now() - start_time).total_seconds(), 1)
 
         # 索引统计
         with _STATS_LOCK:
             self._download_repo.insert_indexer_statistics(
-                indexer=indexer.name, itype=self.client_id, seconds=seconds, result="N" if error_flag else "Y"
+                indexer=indexer.name,
+                itype=self.client_id,
+                seconds=int(seconds),
+                result="N" if error_flag else "Y",
             )
 
         if len(result_array) == 0:
-            log.warn(f"[{self.client_name}]{indexer.name} 关键词 {key_word} 未搜索到数据")
+            log.debug(f"[{self.client_name}]{indexer.name} 关键词 {key_word} 未搜索到数据")
             self._progress.update(ptype=progress_key, text=f"{indexer.name} 关键词 {key_word} 未搜索到数据")
             return []
         else:
@@ -247,7 +257,7 @@ class BuiltinIndexer(_IIndexClient):
 
         return result_array
 
-    def list(self, index_id, page=0, keyword=None):
+    def list(self, index_id, page=0, page_size=100, keyword=None):
         """
         根据站点ID搜索站点首页资源
         """
@@ -261,28 +271,75 @@ class BuiltinIndexer(_IIndexClient):
         log.warn(f"[BuiltinIndexer]list 找到站点: {indexer.name} (id={indexer.id}, domain={indexer.domain})")  # type: ignore[union-attr]
         start_time = datetime.datetime.now()
 
-        error_flag, result_array = self.__search_via_engine(search_word=keyword, indexer=indexer, page=page)
+        result_array: list = []
+        error_flag = False
+        last_error = ""
+        try:
+            error_flag, result_array, last_error = self.__search_via_engine(
+                search_word=keyword, indexer=indexer, page=page, page_size=page_size
+            )
+        except Exception as e:
+            error_flag = True
+            last_error = str(e)
+            log.warn(f"[{self.client_name}]{indexer.name} list 失败: {e}")  # type: ignore[union-attr]
+        # 站点级失败（超时/HTTP 错误等被 searcher 吞掉、不抛异常）同样计为失败
+        if not error_flag and last_error:
+            error_flag = True
 
-        seconds = round((datetime.datetime.now() - start_time).seconds, 1)
+        seconds = round((datetime.datetime.now() - start_time).total_seconds(), 1)
         with _STATS_LOCK:
             self._download_repo.insert_indexer_statistics(
                 indexer=indexer.name,  # type: ignore[union-attr]
                 itype=self.client_id,
-                seconds=seconds,
+                seconds=int(seconds),
                 result="N" if error_flag else "Y",  # type: ignore[union-attr]
             )
         return result_array
 
-    def __search_via_engine(self, search_word, indexer, mtype=None, page=0):
+    def __search_via_engine(self, search_word, indexer, mtype=None, page=0, paginate=False, page_size=100):
+        """执行站点搜索，返回 (error_flag, result_array, last_error) — last_error 为局部值，避免并发共享污染"""
         engine = self._site_engine
         site_def = engine.get_by_id(str(indexer.id)) or engine.get_by_url(indexer.domain or "")
         if not site_def or not (site_def.api or site_def.html):
-            return True, []
+            return True, [], ""
         user_config = self._build_user_config(indexer)
         searcher = create_searcher(indexer.domain, site_engine=self._site_engine, user_config=user_config)
         if not searcher:
-            return True, []
-        result_array = searcher.search(keyword=search_word, page=page, mtype=mtype)
+            return True, [], ""
+
+        # 分页拉取：关键字搜索时循环翻页直到无更多结果，避免海贼王等长剧集只取到首页
+        result_array = []
+        try:
+            if not paginate:
+                result_array = searcher.search(keyword=search_word, page=page, mtype=mtype, page_size=page_size)
+            else:
+                seen: set = set()
+                first_page_count = None
+                cur_page = page
+                while cur_page - page < _MAX_SEARCH_PAGES:
+                    batch = searcher.search(keyword=search_word, page=cur_page, mtype=mtype)
+                    if not batch:
+                        break
+                    new_count = 0
+                    for it in batch:
+                        key = (it.get("title", ""), it.get("enclosure", "") or it.get("size", ""))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        result_array.append(it)
+                        new_count += 1
+                    # 站点忽略翻页参数返回重复数据，停止
+                    if new_count == 0:
+                        break
+                    if first_page_count is None:
+                        first_page_count = len(batch)
+                    if len(batch) < first_page_count:
+                        break
+                    cur_page += 1
+        finally:
+            # 站点级失败原因（HTTP 状态码 / 异常类型）作为局部返回值透传
+            last_error = getattr(searcher, "last_error", "") or ""
+
         for item in result_array:
             if "indexer" not in item:
                 item["indexer"] = indexer.id or indexer.siteid
@@ -294,10 +351,15 @@ class BuiltinIndexer(_IIndexClient):
                 if site_def.detail_page_url and tid:
                     detail = site_def.detail_page_url.format(tid=tid)
                     if detail.startswith("/"):
-                        domain = site_def.domain
-                        detail = f"https://{domain}{detail}" if domain else detail
+                        # 详情页地址优先使用用户配置的站点域名（签到域名/别名），回退站点规范域名
+                        base = (getattr(indexer, "domain", "") or "").rstrip("/")
+                        if not base and site_def.domain:
+                            base = (
+                                site_def.domain if site_def.domain.startswith("http") else f"https://{site_def.domain}"
+                            )
+                        detail = f"{base}{detail}" if base else detail
                     item["page_url"] = detail
-        return False, result_array
+        return False, result_array, last_error
 
     @staticmethod
     def _build_user_config(indexer):
@@ -309,6 +371,9 @@ class BuiltinIndexer(_IIndexClient):
             "domain": getattr(indexer, "domain", "") or "",
             "api_key": getattr(indexer, "api_key", "") or "",
             "bearer_token": getattr(indexer, "bearer_token", "") or "",
+            "chrome": getattr(indexer, "chrome", False),
+            "browser_render": getattr(indexer, "browser_render", False),
+            "browser_persistent": getattr(indexer, "browser_persistent", False),
         }
         if indexer.headers and not user_config.get("api_key") and not user_config.get("bearer_token"):
             try:

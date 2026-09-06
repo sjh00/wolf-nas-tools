@@ -1,5 +1,1003 @@
 # 版本历史
 
+## v4.16.1 (2026-09-06)
+
+### 修复
+- 刷流删种/停种条件语义反转修复：`freestatus`/`stopfree` 现为“Free 到期才删/停”——仍免费保留做种，变非免费才触发（此前前端存值 `Y` 命中恒删/恒停，免费种子刚进即被删/停）
+- 刷流重复进种：RSS enclosure 为一次性签名链接（sign 每轮变化）时改为按详情页 `/detail/{id}` tid 去重；新增“近期已删除种子”记忆，删除过的种子 RSS 再现时跳过，杜绝 进→删 死循环
+- 配套新增删种/停种到期语义与去重回归测试
+
+## v4.16.0 (2026-09-05)
+
+### 功能
+- 插件市场：远程源（官方源一键添加/自定义源）、catalog 同步/审计门禁（sha256 + SAST）、目录浏览与详情懒加载、定时自动同步、可更新检测与安装/更新/启用/卸载全链路，市场页完整落地（来源/分类标签筛选、SAST 预检弹窗）
+- 站点级免费活动补判时间窗兼容 ISO 与 epoch 秒/毫秒，M-Team 全站免费活动期间刷流选种/删停种正确生效
+
+### 修复
+- RSS 轮询单条资源异常不再中断整轮：识别与逐条处理补兜底并落完整堆栈；过滤引擎对空 rev_string 条目不再把 None 传入正则
+- 插件注册表保存清单改为同 id 更新，修复残留清单导致安装 Duplicate PRIMARY
+- qBittorrent 磁力支持 32 位 base32 infohash；添加失败必记 qB 原始返回（重复种子会提示 Fails.）
+- Jackett 索引器列表请求补 apikey，避免登录会话失效时空列表
+- 下载任务引用已删除下载器时自动清理历史并聚合日志，消除"下载器配置不存在"每 5s 刷屏
+- 前端日志页选择来源/级别后返回"共 0 条"实为 24h 全量扫描超时：改 mmap 检索并加命中截断（truncated 标记与提示）
+- 移动端侧栏/布局恢复模板行为（logo 旁按钮抽屉展开菜单 + 遮罩），与官方表现一致
+
+### 性能
+- 日志写入治理：缓存命中/未命中、标签隔离、消息模板渲染等高频 DEBUG 收敛或移除，日写入量降 10 倍以上
+- 日志默认级别改为 INFO；轮转大小与保留天数支持配置并在设置页开放
+- 启动自动清理超期轮转日志
+
+## v4.15.2 (2026-09-03)
+
+### 修复
+- M-Team 全站免费活动期间种子上传者折扣徽标未更新（大量仍显示 50%/普通），刷流“只看免费”误拒导致不进种：种子详情按站点级活动规则（`promotionRule`，含起止时间有效期校验）补判免费，活动结束即失效
+
+## v4.15.1 (2026-09-03)
+
+### 功能
+- 识别历史列表海报富化：按 TMDBID 自动解析海报（TMDB 缓存优先，缺失回源一次并进程内去重），前端卡片可直接展示
+
+## v4.15.0 (2026-09-03)
+
+### 功能
+- 站点抓取全面支持"直连优先 → 失败/反爬挑战自动 nexus-chrome 降级"：种子详情、用户信息、HTML 搜索统一口径；直连非 2xx（403/429）也视为失败触发降级；仅对已开启浏览器自动化的站点生效
+- 内置索引器 HTML 站点搜索同步"直连优先 → chrome 降级"（chrome 开启时）
+- 已下载列表接口开放 page_size（默认 30，上限 200）
+- 索引器单站搜索自适应超时支持环境变量调整（`NEXUS_MEDIA_INDEXER_TIMEOUT` 上限默认 45s、`NEXUS_MEDIA_INDEXER_TIMEOUT_MIN` 下限默认 15s）
+
+### 修复
+- nexus-chrome 会话清理真正生效：`ChromeTransport.close()` 长期被 `httpx2.BaseTransport.close()`（空实现）遮蔽，非持久会话永不删除导致会话/标签页堆积；现降级请求完成后即关闭会话，用完即删
+- 浏览器持久会话开关（browser_persistent）全链路透传：需长期保持认证态（挑战/2FA 已过）的站点可开启，会话跨请求复用、避免每次重新过盾
+- 刷流删种落库元组解包错误修复
+
+### 性能
+- 刷流详情属性并入统一缓存 + RSS 并发预取，任务生命周期取实时状态，降低站点限流压力与重复抓取
+
+## v4.14.1 (2026-09-03)
+
+### 修复
+- Rousi 签到失败时记录底层异常原因（疑似签到已生效但响应异常，便于定位）
+- HR"未知不下载"仅对实际限制 HR 的规则生效：#/N/空（不限）不再抓详情或误停下载（修复无 HR 站点受影响）
+
+## v4.14.0 (2026-09-02)
+
+### 功能
+- AI 助手接入系统配置能力：配置读写、消息通知渠道、插件启停与配置、下载器/媒体服务器/索引器/刮削、媒体库目录、目录同步、批量配置清单（config_apply_manifest），附对话式配置向导
+- 系统日志检索支持"近 N 小时"时间窗口（默认 24h），按文件修改时间跳过旧日志；AI 助手可查磁盘历史日志
+
+### 修复
+- 刷流任务删除加固：站点/下载器已删时删除不再被构建异常阻断（DB 行照删）
+- 启动时自动清理站点已删除的刷流任务（孤儿任务不再隐藏且反复注册）
+- 刷流选种"排除已订阅"规则：rss_sites 兼容 JSON/逗号存储、media_info.site 赋站点名，修复崩溃导致规则静默失效
+- 刷流种子详情属性抓取失败按"未知"处理：不再把仍免费的种子误判为免费到期而反复删种/停种，HR 未知不再下载
+- qBittorrent 添加种子失败时记录下载器实际返回信息，便于定位
+- 精简高频噪音日志（站点/索引器正常结果、进度追踪、分布式锁等），真实告警不再被淹没
+
+### 性能
+- 删种规则不依赖 free/hr 时不再逐种子抓取详情页，降低站点限流压力
+
+## v4.13.0 (2026-09-02)
+
+### 功能
+- 刷流详情支持浏览器自动化：指纹 + Cookie + 渲染，可过 Cloudflare/2FA 站点
+- 站点管理新增"保持浏览器会话"开关（浏览器会话按站点持久可选）
+
+### 修复
+- M-Team/Rousi 刷流识别：标签解析、tid 提取、RSS 域名匹配
+- 刷流任务删除加固（构建失败不阻断删除）
+- 下载器种子状态字段补全：平均上传速度准确值 + 缓存，做种种 ratio/上传/做种时间
+- 日志来源统一与噪音抑制（HTTP/websockets）
+
+## v4.12.2 (2026-09-01)
+
+### 修复
+- **日志来源统一化**：日志调用处统一为规范组件名（大小写、中英混用、小写模块名/函数名噪音），来源下拉不再杂乱
+- **日志噪音抑制**：屏蔽 httpx2/httpcore2/websockets 的 DEBUG 帧与追踪日志（HTTP 请求追踪、keepalive PING/PONG），避免刷屏与磁盘膨胀
+- **日志页筛选**：筛选/搜索模式下停止实时流，避免未过滤日志污染搜索结果
+
+## v4.12.1 (2026-09-01)
+
+### 功能
+- **系统日志支持全量搜索与导出**：搜索与导出不再受内存缓冲约 2000 条限制，改为读取磁盘日志文件（含轮转文件）全文检索；新增来源全量列表接口供下拉筛选
+
+### 修复
+- **PostgreSQL/MySQL 数据库兼容**：
+  - 过滤规则初始化 `INSERT OR IGNORE` 适配错误修复（PostgreSQL `ON CONFLICT` 前残留分号导致语法错误；恢复规则组直接执行原始 SQL 未适配）
+  - 刷流任务体积统计 `cast` 为 INTEGER 在 PostgreSQL 下超过 2^31 溢出，改用 BIGINT
+- **系统日志页来源筛选下拉闪烁修复**：来源选项改为稳定累积集合驱动，不再随实时日志流每次刷新重建导致无法选中
+
+## v4.12.0 (2026-09-01)
+
+### 功能
+- **消息通知渠道全面插件化**：除 Telegram/微信/内置消息页外，全部第三方渠道（Bark/Chanify/Gotify/IYUU/ntfy/PushDeer/PushPlus/Server酱/Slack/Synology Chat/Webhook）迁移为插件，按需启用；第三方依赖随插件 manifest 自动安装；渠道图标随插件分发
+- **新增飞书消息插件**：企业自建应用长连接双向交互（搜索/订阅/下载/卡片按钮分页），带图通知（海报随通知推送）
+- **新增钉钉消息插件**：Stream 长连接交互 + 会话精准回复（无需群机器人）+ 机器人单聊主动通知 + 图片海报
+- **Slack / Synology Chat 交互渠道迁移至插件公开回调**（apikey + IP 白名单校验），旧回调地址自动重定向
+- **下载器插件化**：迅雷 / Aria2 迁移为插件；不支持 PT（私有站点种子自动拦截），不可用于刷流
+- **媒体服务器插件化框架**：注册表/测试连接/生命周期开放，新媒体服务器类型（如极影视）可经插件接入
+- **站点匹配支持主站与 RSS 域名分离**：用户配置的 RSS 域名自动识别种子归属，功能访问始终走主站
+- **Docker Compose 按部署场景拆分**：基础（SQLite+Redis）/MySQL/PostgreSQL 三个独立文件；密码统一走 `.env` 必填校验；数据库迁移由后端启动自动执行（移除独立 migration 容器，消除 Web UI 误报）
+
+### 修复
+- **刷流多项修复**：
+  - 存活天数（alive_time）删种规则时区错误（naive/aware 相减）修复，规则恢复正常生效
+  - H&R 数量上限改为实时统计下载器中带 HR 标签的做种数（此前进程累计只增不减，达上限后永久封死）
+  - 下载器不可达不再误判为"0 个下载中"放行；删种流程不再误清种子记录（`get_torrents` 不可达返回 None）
+  - 删种统计计数取反修复（此前删除失败的被计为已删除）
+  - 未完成但暂停（pausedDL/stoppedDL）的种子正确归入下载中，dltime/pending_time 规则生效
+  - hr_time 规则加 HR 门控（非 HR 种子不再按 HR 做种时间被误删）
+  - 已删除种子可重新进种（去重查询过滤删除记录）；下载失败种子不再被缓存 1 小时，可重试
+  - processed 缓存按任务隔离，任务间不再互相影响；dlcount 加下载器级互斥，并发不超额
+- **qbittorrent 下载中任务数**不再把已完成（暂停做种）的任务计入（刷流同时下载数规则精确）
+
+### 重构
+- **插件框架渠道扩展点**：插件公开回调注册、渠道标识字符串化、`get_search_types` 动态化、回调安全加固（真实来源 IP、body 限流、依赖白名单）
+- **消息/下载器插件生命周期统一**：启用按需加载（防双连接）、禁用记录随动停用、渠道/下载器实例由用户手动创建
+- **内置消息页渠道**（WebMessage）保留核心，图标/说明完善
+
+## v4.11.10 (2026-08-31)
+
+### 性能
+- **转移-刮削解耦**：刮削（NFO/图片/FFmpeg）从转移逐文件热路径移出，改为后台异步队列（3 并发）；目录同步刮削同步异步化。转移吞吐不再被刮削的网络调用/FFmpeg 阻塞，刮削失败不再影响转移
+- **图片下载全局限速**：所有刮削来源（异步队列/整库/手动）的图片 CDN 请求并发封顶 4，避免大批量刮削请求突发
+
+### 功能
+- **nexus-chrome 增强**：支持可选 API 鉴权（`AUTH_PASSWORD`，启用后需在实验室「访问凭证（API Key）」配置）；数据统一持久化到宿主机 `./data/chrome`（指纹数据库/会话/指纹画像/浏览器用户数据），重建容器不丢失；旧版本数据迁移见安装文档
+
+## v4.11.9 (2026-08-31)
+
+### 性能
+- **TMDB 识别优化**：识别结果改为 Redis 持久缓存（7 天，重启不丢），未命中结果负缓存 1 天；新增全局识别并发信号量（8）；批量识别并发 2→8；TMDB 限速 2.5/s→4/s、等待超时 30s→60s。实测批量识别冷启动 ~1.6 条/s，重复识别秒级完成
+- **订阅搜索分批限额**：每轮最多处理 20 个订阅（`subscribe.batch_limit` 可调），其余保持 PENDING 下一轮继续，避免大批量订阅一次性挤占 TMDB 全局预算导致交互式搜索变慢
+
+### 修复
+- **重新识别跳过无效项**：未识别项路径已不存在（已转移/删除）的直接跳过，重复 ID 去重，避免无效识别
+
+## v4.11.8 (2026-08-30)
+
+### 修复
+- **刷流优惠状态变化后不再被永久忽略**：已处理种子缓存由永久 set 改为 TTL（1 小时）过期，种子上架后转免费/2X 等时变状态变化可重新评估进种（此前首次评估未免费则被永久缓存，优惠开始后也不再处理）
+
+## v4.11.7 (2026-08-30)
+
+### 修复
+- **刷流任务站点标识统一解析**：缓存建立站点配置 id/名称双向索引，`get_sites` 按数字 DB id 或配置 id/名称一致解析，修复 TTG、ourbits 等以站点配置 id 创建的任务在刷流重启后消失的问题
+- **站点 id 统一为 DB 主键**：启动迁移把刷流任务配置中 id/名称形式的 SITE 修正为 DB id，后续所有查询统一走 DB 主键，消除多源不一致
+
+## v4.11.6 (2026-08-30)
+
+### 修复
+- **刷流任务加载容错**：单个任务构建失败跳过不中断整个加载循环，避免重启后只剩部分任务（之前某任务异常会中断加载）
+- **num_filesize 对非大小文本不再报错**：站点页面结构变化导致大小字段捕获到日期时间时，直接返回 0，不再记录 `could not convert string to float` 错误刷屏
+
+## v4.11.5 (2026-08-30)
+
+### 修复
+- **RBAC 初始化懒加载报错**：创建角色/用户后 ORM 实例已游离，访问 `permissions`/`menus`/`users`/`roles` 触发 `DetachedInstanceError`（日志刷屏）。改为创建后重新查询并预加载关联，消除游离实例懒加载
+
+## v4.11.4 (2026-08-30)
+
+### 新增
+- **nexus-chrome 认证支持**：nexus-chrome 启用 `AUTH_PASSWORD` 后，浏览器自动化请求自动携带凭证（API Key / 管理 token）。凭证统一读取实验室配置 `chrome_admin_token`（复用该字段，同时兼作画像配置中心推送凭证）
+- 实验室设置新增「访问凭证（API Key）」配置项（系统设置 → 基础设置 → 实验室）
+- 文档：configuration/installation 补充凭证配置说明
+
+### 修复
+- 设置模型补 `chrome_admin_token` 字段（此前保存实验室配置时该值会被丢弃）
+
+## v4.11.3 (2026-08-29)
+
+### 变更
+- 版本号与前端同步至 4.11.3（本次为前端修复：图表渲染无限递归导致浏览器内存暴涨/OOM，后端无功能改动）
+
+## v4.11.2 (2026-08-29)
+
+### 修复
+- **刷流任务重启后丢失**：任务列表查询改 LEFT JOIN，站点被删除/ID 不匹配的任务不再被过滤（之前 INNER JOIN 导致任务在数据库存在但重启后从界面消失）
+- **站点数据刷新时间**：支持逗号分隔多个时间点（如 `00:05,12:00,18:00`），热重载自动清理多时间任务
+
+### 优化
+- **站点数据统计精确化**：每日 00:05 抓取"日界快照"作为当天历史基准（对齐自然日），配合 6 小时周期刷新保持实时值；前一天增量 = 当天日界值 - 前一天日界值，当天增量 = 实时值 - 当天日界值
+
+## v4.11.1 (2026-08-29)
+
+### 修复
+- **观众(audiences.me)签到误报失败**：签到页 Turnstile 通过后显示"今天已经签到过了"，成功标记未匹配导致误报"人机验证未完成"；新增签到成功/已签标记，配合 nexus-chrome 复选框定位修复
+- **未配置 nexus-chrome 时指纹同步误报失败**：改为正常跳过（不再返回"指纹同步失败（nexus-chrome 不可达或未配置）"）
+
+## v4.11.0 (2026-08-28)
+
+### 特性
+- **多后端存储与转移**：同后端转移走服务端 COPY/MOVE 免本地暂存；多后端镜像转移/上传（串行队列，已启用后端均完整收到结果）；手动转移支持远程存储源并显式指定目标后端
+- **蓝光原盘远程源**：后端感知检测 + 整盘复制
+- **多后端剧集目录**：更新时优先选择已有该剧集的目录
+- **下载目录均衡**：下载器多保存路径按剩余空间均衡选择
+
+### 修复
+- **存储后端实测修复**：SMB/OpenList/WebDAV 的 move/rename、跨目录复制、非标准端口、中文路径上传与空目录
+- **消息通知竞态**：客户端类定义时自动注册，修复启动竞态导致通知失效
+- **本地刮削整理重命名为英文**：TMDB 语言改为线程本地存储，消除并发（识别/别名补取）覆盖导致的英文标题写入
+
+### 变更
+- **HTTP 客户端迁移**：httpx 全面迁移至 httpx2
+
+### 文档
+- 部署文档补充容器间网络互通排查（连不上 mysql/网桥残留导致超时）；compose 示例显式声明网桥、mysql 健康检查并等待就绪
+
+## v4.10.2 (2026-08-27)
+
+### 特性
+- **站点配置更新源可配置**：新增 `pt.sites_update_url` 配置（支持 `PT__SITES_UPDATE_URL` 环境变量），可指向自建站点配置源；默认仍为 nexus-media-sites 官方 release
+- **站点 id 统一小写**：14 个站点 id 规范化（U2→u2、PANDA→panda、HDKylin→hdkylin 等）；配套 Alembic 迁移自动重映射存量数据（索引器配置/刷流/订阅/用户 RSS），`get_by_id` 兼容旧大小写，升级无需手动干预
+- **站点配置 schema 完善**：补齐解析器实际读取的字段（nested 模式 torrents、html_field 扩展、torrent_attr.response、user_info 等），新增 validate.py 语义检查（重复 id/未知键/废弃过滤器）
+
+### 修复
+- **站点配置缺陷**：chdbits `defualt_value` 拼写错误、ourbits 字符串过滤器（后端解析器不支持）修复
+- **站点配置清理**：移除 95 个站点中不生效的废弃过滤器（trim/dateparse 等）
+
+## v4.10.1 (2026-08-27)
+
+### 特性
+- **YemaPT 适配新版开放 API**：搜索/用户信息/下载迁移到 `/openApi/*`（AuthKey 认证）；`api_chained` 下载支持 POST 与下载凭证 URL 编码
+
+### 修复
+- **WebDAV 目录列表**：href 去服务器前缀 + URL 解码（中文/空格文件夹名不再乱码或为空）；请求路径百分号编码（进入含空格/中文的子目录不再返回空）；exists 支持 HEAD 405 回退 PROPFIND
+- **目录同步监控**：远程源与本地不存在目录跳过文件系统观察器、仅追加已成功启动的观察器（修复监控反复启停、线程 join 异常）
+
+## v4.10.0 (2026-08-27)
+
+### 特性
+- **媒体身份识别体系（ADR-014）**：统一身份解析/匹配分层（别名索引、edition 图谱、IdentityResolver、TargetMatcher），灰度开关控制渐进转正；订阅匹配与搜索过滤接入统一判等，quick_name_match 降级为召回
+- **识别链路增强**：置信度端到端透传、外部解析 Work 学成回写（冷→热闭环）、集数重映射覆盖 RSS/分组路径、identity 模块 DI 收敛
+
+### 修复
+- **英文标题识别失效**：identify_batch 去重/组装键归一化不一致致英文标题 lookup 结果丢失，修复后恢复
+- **站点解析修复**：Rousi 自动签到适配 Peergo 新架构；移除 rousi.zip 重复定义；FRDS 做种统计；audiences.me 加入日期 / hhanclub 用户名
+
+## v4.9.0 (2026-08-26)
+
+### 特性
+- **RBAC 安全加固**：默认管理员删除/改名后不再重启复活；禁止删除最后一个超级管理员、禁用或删除内置 superadmin 角色；超管判定改为角色制，清理无用 is_superadmin 字段
+- **首次登录提示**：仍使用初始默认密码时强制引导修改
+- **资源搜索**：新增分辨率过滤维度；失效搜索会话的进度条不再挂死
+- **TMDB 搜索**：失败与无结果可区分提示，不再误报"未找到相关媒体"
+
+### 修复
+- 订阅签到误报"挑战未通过"：挑战特征收窄避免命中内嵌 Turnstile，增加内嵌验证等待与真实指纹画像
+- 标题解析将 "100-nin"、"The 100 Girlfriends" 误判为集号
+
+## v4.8.3 (2026-08-24)
+
+### 特性
+- **Agent 网页搜索**：新增 web_search 工具，通过内置 Chrome 搜索 Google/Bing/Baidu，主引擎不可达时自动降级
+- **站点资源每页数量**：`page_size` 透传站点请求，前端选择值直达站点
+
+### 修复
+- **首次加载请求超时**：启动初始化移入后台线程，未就绪时快速返回 503，前端自动退避重试、就绪后自动恢复；指纹同步与图片代理同步调用移入线程池，不再独占事件循环；路由初始化失败兜底服务不可用页，插件资源加载增加超时与退避；瞬时网络故障不再误踢登录
+- **高清杜比（hddolby）搜索**：API 改用 application/json 提交、剔除空数组参数、Content-Type 去 charset，修复非空分类返回 500、每页仅 10 条分页失效与空关键词浏览回归
+- **站点资源分页**：返回 `has_more`（前端不再用幽灵 +1 计数），API 站每页数量按站点实际参数名（pageSize/size 等）覆盖
+- **转移历史去重加固**：仅信任源路径存在的历史记录，目标存在性检查支持存储后端
+- **索引器统计竞态**：`last_error` 共享实例属性被并发搜索污染，成功搜索被误记失败
+
+### 安全
+- **nexus-chrome VNC_PASSWORD 必填**：禁止使用默认密码，未设置时 compose 启动报错提示
+
+## v4.8.2 (2026-08-18)
+
+### 特性
+- **铃铛未读角标可关闭**：通知弹窗新增「未读角标」开关（localStorage 持久化），关闭后隐藏铃铛红色数字/圆点，通知列表功能不受影响
+
+### 修复
+- **移动端指纹保护**：站点已由桌面端指纹设置时，移动端提交仅同步独立画像（`user_{id}_mobile`），不设置默认画像、不覆盖站点 UA/请求头，避免 PC/移动指纹交替触发站点风控（API 返回 `site_skipped`/`site_skip_reason` 标识）
+- **自动化浏览器污染指纹**：前端跳过 `navigator.webdriver` / HeadlessChrome 等自动化/无头浏览器提交，防止测试会话覆盖真实浏览器指纹
+
+## v4.8.1 (2026-08-18)
+
+### 修复
+- **浏览器指纹未写入站点 UA/高级请求头**：指纹同步误写入索引器配置表（`INDEXER_SITE_CONFIG.DEFAULT_SETTINGS`），而运行时站点请求、索引器搜索与前端维护页读取的站点配置表（`CONFIG_SITE`）未生效；现改为写入站点配置表（`NOTE.ua` / `NOTE.headers` / `HEADERS` 列），启用状态取自索引器配置，仅覆盖 UA 相关键、保留用户自定义认证头
+- **UA 重复展示**：指纹 UA 仅写入站点「认证信息-User-Agent」字段，高级请求头不再重复写入 User-Agent（保留 sec-ch-ua / Accept / Sec-Fetch-* 等 Client Hints）
+- **移动端指纹覆盖桌面端**：站点已由桌面端指纹设置时，移动端提交仅同步独立画像（`user_{id}_mobile`），不设置默认画像、不覆盖站点 UA/请求头，避免 PC/移动指纹交替触发站点风控（API 返回 `site_skipped`/`site_skip_reason` 标识）
+- **自动化浏览器污染指纹**：前端跳过 `navigator.webdriver` / HeadlessChrome 等自动化/无头浏览器提交，防止测试会话覆盖真实浏览器指纹
+
+## v4.8.0 (2026-08-18)
+
+### 特性
+- **Agent 推理强度与思考模式**：全局配置 `agent.reasoning_effort`（low/high/max，默认 high）与 `agent.disable_thinking`，统一作用于对话、媒体识别、意图解析、记忆抽取等所有 LLM 调用；聊天按次覆盖（推理强度下拉 + 深度思考开关），OpenAI 兼容/Ollama/Gemini 均映射原生推理参数，模型不支持时自动剥离降级
+- **前端 CI 提速**：去掉 windows 矩阵、pnpm 缓存改为 PR 也写入
+
+### 修复
+- **4.7.0 启动失败**：浏览器指纹路由 `request: Request | None` 参数使 FastAPI 构建路由时报 `Invalid args for response field`，应用无法启动（现改为必选 `Request`）
+
+## v4.7.0 (2026-08-18)
+
+### 特性
+- **Agent 工具扩充至 40 个**：新增下载历史、站点状态、订阅详情、刷流状态、数据总览、转移历史、用户 RSS、知识库状态、索引器统计、删种/存储状态、识别词管理（增删改）、插件运行
+- **浏览器指纹注入站点**：指纹 UA 与高级请求头更新到站点配置，区分 API / HTML 站点（Accept、Sec-Fetch-*、Client Hints）
+- **Agent 多轮上下文恢复**：历史会话重新加载，修复"可以/继续"无法接续上文
+- **索引器统计细化**：超时/HTTP 失败正确计入失败（原全部计成功），耗时精确到秒级小数；首页新增成功/失败/耗时组合图
+- 启动 ASCII Banner（Spring Boot 风格）
+
+### 修复
+- 订阅下载动漫入库失败：转移时从父目录名/下载历史 SE 提取集号兜底；转移失败不再误报成功
+- 站点高级请求头保留用户自定义认证头（仅覆盖 UA 相关键）
+
+## v4.6.3 (2026-08-16)
+
+### 修复
+- **订阅续订断点推导**：从订阅起点推导续订点（支持中途订阅——订阅从第 N 集开始跟踪时，历史只有 N 之后的集，现从 N 数起而非从第 1 集），`current_ep` 随转移/刷新同步推进（首个待下载集），历史推导只向前不倒退，避免重新订阅重复下载已转移剧集
+- **订阅进度显示**：转移完成事件同步推进 `current_ep`（此前只更新缺失集数 `lack`，`current_ep` 停在订阅创建值导致前端进度显示卡住）
+- **Telegram 消息 HTML 转义**：媒体通知改用 `parse_mode=HTML` + 转义，文件名/番号中的 `_ [ ] ~ #` 等特殊字符不再触发 Telegram 400 "can't parse entities"、也不再显示原始符号
+- **Telegram 发布通知渲染**：GitHub Release 通知的 changelog（markdown）转 Telegram 兼容 HTML（加粗、列表圆点、代码等宽、链接可点击），不再显示原始 markdown 符号
+- **站点维护部分编辑保留认证**：维护页只编辑部分字段时，未携带的 cookie/headers/api_key 等保留存量，不再被覆盖清空
+- **内置索引器站点资源接口异常**：`list()` 路径 `last_error` 未初始化导致 `/api/site/sites/resources` 报错
+- **星空站点签到**：star-space 访问首页即签到（服务端自动），补签配置（`p_index/index.php` + 登录态判定），修复签到失败
+
+## v4.6.2 (2026-08-14)
+
+### 修复
+- **中文名缺失**：TMDB detail 返回英文名时，中文名现从 `translations`（zh-CN/zh/zh-TW）兜底提取（原仅查 `alternative_titles`），并放宽 `update_tmdbinfo_cn_title` 触发条件匹配所有中文语言配置（zh-CN/zh-Hans 等），下载/入库通知正确显示中文标题
+- **TMDB 缓存版本化**：`TMDBCache` key 增加 `TMDB_CACHE_VERSION`，中文名补全逻辑变更后旧缓存（存英文名）自动作废重建，避免 7 天 TTL 内持续显示英文标题
+- **订阅搜索站点回退**：订阅未配置 `search_sites` 时回退默认订阅设置的站点（原空列表覆盖 → 0 站点搜索），RSS 未配置 `rss_sites` 时同样回退默认而非轮询全部站点
+- **Agent 会话并发竞态**：`get_or_create` 并发创建同一会话时撞唯一约束，现捕获 `IntegrityError` 回滚重查，消除偶发 500
+- **消息通知模板兜底**：Web 等客户端无模板配置或空模板（`{}`）时回退默认模板，内置消息页入库/下载通知正确显示 emoji（此前纯文本）
+- **搜索进度失败站点汇总**："搜索完成"文本现附带失败站点（错误/超时）汇总
+- **集数补全**：`total_episodes` 从解析集信息补全（单集=1、多集范围=差+1），修复"共 0 集"显示
+- **前端刷新状态**：订阅卡片点击"刷新"后轮询拉取列表（最多 5 次），"搜索中"状态及时显示，无需手动刷新页面；消息中心单图通知改为企业微信图文卡片样式（图片横幅 + 文字区，固定最大宽度）
+
+## v4.6.1 (2026-08-14)
+
+### 特性
+- **Web 消息未读轻量接口**：新增 `GET /api/agent/message/unread`（未读列表 + 未读数单请求），通知栏下拉不再拉全量历史
+- **配置热重载全面覆盖**：保存配置即生效，无需重启——
+  - **Agent RAG / 知识库 / 长程记忆**：embedding / vector_store / rag / memory 配置变更时自动重建（`agent_reload`），废弃原"必须重启才可用"
+  - **Agent LLM Provider**：default_provider / providers 的 api_key / api_url / model 变更热刷新
+  - **定时任务**：`pt.ptrefresh_date_cron`、`subscribe.queue_interval`、`media.mediasync_interval` / `sync_transfer_interval`、agent 记忆 ttl 等变更时自动重注册默认定时任务
+  - **媒体服务器类型切换**：emby ↔ jellyfin 切换无需重启（连接参数本就懒读生效）
+  - ConfigReloader 支持快照对比（仅实际变更才重建）+ 失败隔离（单步骤失败不影响其他）
+
+### 修复
+- **ConfigReloader**：修复重建步骤返回 `None` 时覆盖上下文字段的 bug（媒体服务器被置空导致定时任务重注册级联失败），仅非 None 时赋值
+- **搜索季解析**：支持英文季/集格式（`S02` / `S2` / `Season 2` / `S02E06` / `E06`），修复搜索只返回 S01 的问题（此前仅识别中文"第X季"）
+
+### 其他
+- 知识库自动更新 handler 改为可重入注册（配置热重载重复调用不会重复订阅事件）
+
+## v4.6.0 (2026-08-13)
+
+
+### 特性
+- **AI 助手（消息中心）**：基于 pydantic-ai 重构 Agent 引擎——多步工具循环、推理内容实时 SSE 推送、工具调用事件流式下发（同名工具多次调用时步骤正确配对）、思考过程面板支持
+- **Web 消息通道**：通知/回复持久化到 `AGENT_WEB_MESSAGE`（刷新/重启后恢复），内置消息中心页面
+- **Agent 记忆**：会话/消息/长程语义记忆模型与迁移（`AGENT_CONVERSATION` / `AGENT_MESSAGE` / `AGENT_WEB_MESSAGE`）
+- 知识库 ingest handler 与内置文档读取接口
+- 已下载记录返回季集信息（`season_episode` 字段）
+
+### 修复
+- **媒体识别**：移除发布组剥离列表误伤真实片名的 `sparks`；抽取 `_post_process` 公共后处理统一 `identify`/`identify_batch`/`identify_files`，消除"识别测试正常但转移识别错"的路径差异；副标题英文名仅在主标题缺失时采用，避免无意义目录名覆盖真实标题
+- **下载优先规则**：`_dedup`、搜索展示排序、RSS 订阅初步排序统一尊重「做种数优先/站点优先」设置，做种数优先时做种数提到站点顺序前
+- **刷流**：等待时间规则改用进种时长并覆盖 Pending/Queued 等待态（原用未活动时间导致等待种子永不触发删种）
+- **浏览器**：挑战检测收敛为强特征并与 nexus-chrome 服务端对齐，修复普通页面文案（正在/请稍候/由 Cloudflare 提供）误判导致的 120s 空轮询
+- **测试环境**：`DATABASE__SQLITE_PATH` 配置真正生效，测试改用隔离临时库（修复全量测试清空真实 `data/user.db` 的问题）
+
+### 其他
+- 代码规范：统一将延迟导入移至文件顶部（ruff PLC0415）
+- DEBUG 模式默认关闭，生产环境不暴露 `/docs` API 文档
+- 文档全面完善：新增 AI 助手、过滤规则、资源搜索、服务与调度、存储后端、用户与权限等文档页，更新全部截图（敏感信息打码）
+
+## v4.6.0 (2026-08-13)
+
+### 特性
+- **AI 助手（消息中心）**：基于 pydantic-ai 重构 Agent 引擎——多步工具循环、推理内容实时 SSE 推送、工具调用事件流式下发（同名工具多次调用时步骤正确配对）、思考过程面板支持
+- **Web 消息通道**：通知/回复持久化到 `AGENT_WEB_MESSAGE`（刷新/重启后恢复），内置消息中心页面
+- **Agent 记忆**：会话/消息/长程语义记忆模型与迁移（`AGENT_CONVERSATION` / `AGENT_MESSAGE` / `AGENT_WEB_MESSAGE`）
+- 知识库 ingest handler 与内置文档读取接口
+- 已下载记录返回季集信息（`season_episode` 字段）
+
+### 修复
+- **媒体识别**：移除发布组剥离列表误伤真实片名的 `sparks`；抽取 `_post_process` 公共后处理统一 `identify`/`identify_batch`/`identify_files`，消除"识别测试正常但转移识别错"的路径差异；副标题英文名仅在主标题缺失时采用，避免无意义目录名覆盖真实标题
+- **下载优先规则**：`_dedup`、搜索展示排序、RSS 订阅初步排序统一尊重「做种数优先/站点优先」设置，做种数优先时做种数提到站点顺序前
+- **刷流**：等待时间规则改用进种时长并覆盖 Pending/Queued 等待态（原用未活动时间导致等待种子永不触发删种）
+- **浏览器**：挑战检测收敛为强特征并与 nexus-chrome 服务端对齐，修复普通页面文案（正在/请稍候/由 Cloudflare 提供）误判导致的 120s 空轮询
+- **测试环境**：`DATABASE__SQLITE_PATH` 配置真正生效，测试改用隔离临时库（修复全量测试清空真实 `data/user.db` 的问题）
+
+### 其他
+- 代码规范：统一将延迟导入移至文件顶部（ruff PLC0415）
+- DEBUG 模式默认关闭，生产环境不暴露 `/docs` API 文档
+- 文档全面完善：新增 AI 助手、过滤规则、资源搜索、服务与调度、存储后端、用户与权限等文档页，更新全部截图（敏感信息打码）
+
+## v4.5.0 (2026-08-08)
+
+### 特性
+- 重命名格式：新增独立「重命名」配置入口（配合前端芯片式格式构建器），后端新增字段目录 / 格式校验 / 实时预览 API（`GET/POST /api/media/name_format/*`）；格式串支持可选片段语法 `{field:模板}`（字段为空时整段消失），新增 `source`（片源）/`media_type`（类型）/`category`（分类）占位符
+- 浏览器指纹：支持登录同步真实浏览器指纹画像，后台流程（站点定时刷新 / RSS 自动化等无用户上下文场景）复用该指纹；`render_normalize` 从 `browser_mode` 抽取独立模块
+- 转移：`{en_title}` / `{episode_title}` 占位符在真实转移路径（`MediaExistenceChecker`）正确渲染，与设置页预览一致
+
+### 修复
+- 识别：公开站站点标记（`[EZTVx.to]`、`www.UIndex.org`、裸域名水印等）在 UnifiedParser 前置剥离，转移与媒体搜索入口行为一致，不再抢占片名；`meta_info` 清洗正则补齐常见短顶级域
+- 识别：自定义识别词（屏蔽 / 替换 / 集偏移）接入转移识别链路（`identify` / `identify_batch` / `identify_files`），与 `meta_info` 一致，命中时输出 info 日志
+- 订阅：RSS 轮询懒更新 TMDB 总集数（优先季详情集数，规避主详情 `episode_count` 滞后），订阅自动补齐新增集
+- 订阅：订阅完成后保留下载历史，重新订阅不再重复下载已完成的剧集（洗版订阅除外，仍允许升级重下）
+
+### 其他
+- HTTP 客户端迁移至 httpx2（httpx 分支续作，API 兼容）；项目改为源码运行（移除打包构建配置，`run.py` 注入 `src` 路径，pytest 配置 `pythonpath`）
+
+### 测试
+- 新增重命名格式渲染/校验/路径预览、识别词接入转移链路、站点标记剥离、meta_info 站点标记回归测试；全量测试通过（2200+）
+
+## v4.4.5 (2026-08-04)
+
+### 特性
+- 文件管理器：新增目录创建（`POST /media/dir/mkdir`）、文件批量移动/复制（`/media/files/move`、`/media/files/copy`）、文件下载（`GET /media/file/download`）与上传（`POST /media/file/upload`）接口；`MediaFileService` 抽取 `_resolve_backend` 统一后端解析，新增文件名安全校验与批量操作部分失败聚合
+
+### 修复
+- 识别：`search_tv_by_season` 首轮命中校验目标季存在，修复同名真人剧抢占动漫条目（如《更衣人偶坠入爱河》S02 误识别为日韩剧）
+- 识别：multi search 降级由「取首个名称命中」改为按名称/季/体量评分选优，稳定区分同名条目
+- 识别：集名粘连修复剥离前缀中的发布组方括号与末尾年份，修复年份粘入片名导致 TMDB 查不到（如 `KAIJU.GIRL.CARAMELISE.2026`）
+- 识别：元数据 token 补充 `ASSx2/SSAx2` 字幕轨标记，修复 `[WebRip 1080p HEVC-10bit AAC ASSx2]` 整段被误作片名
+- 识别：前置发布组括号支持多组联合发布（`[Studio A&GroupB]`）及 fansub/raws/kissaten 特征词的带空格组名（如 `[Studio GreenTea&LoliHouse]`）
+- 转移：修复字幕语言正则字符类缺失闭括号导致 `PatternError` 中断字幕转移
+- 转移：目标字幕已存在且大小不一致时改用序号标签（`.1`/`.2`…），不再对已存在路径硬链接报 `File exists`；单条字幕失败不再中断主文件与其他字幕转移
+- 转移：字幕/音轨转移新增 `dst_backend` 参数，目标判断与写入均走 StorageBackend（远程存储 link 自动降级 copy），与主文件转移路径一致
+
+### 前端
+- 文件管理：页面对齐真实文件管理器交互重设计
+- 订阅：搜索页/详情页订阅确认弹窗「编辑」按钮无效修复，打开编辑弹窗前拉取默认订阅设置预填
+- 订阅：编辑弹窗先加载站点选项再填表单，修复默认订阅站点（rss_sites/search_sites）被空选项过滤清空
+
+### 测试
+- 新增字幕/音轨转移本地与远程后端用例 11 例、按季搜索季校验与四例解析回归用例；全量测试通过（2100+）
+
+## v4.4.4 (2026-08-03)
+
+### 修复
+- 初始化：`_execute_raw` 改用 `exec_driver_sql` 原样下发 SQL，修复正则非捕获分组 `(?:简体|…)` 被 `text()` 误解析为绑定参数导致默认过滤规则初始化失败、「中字」规则组（1002）从未创建的问题（自 v4.4.1 起）；`init_filter.sql` 的 NOTE 列 NULL 改为空串以兼容严格模式数据库
+- 过滤规则：`get_filterrules` 弃用按 NULL 结尾的正则文本解析，改为 SQLAlchemy 内存引擎执行后读回结构化数据，修复 `/api/filter/rules` 报 `list index out of range`
+- 删种：任务更新由「先删后插」改为原子 UPDATE，修复更新失败产生重复任务、任务 ID 每次变更导致调度任务反复重建的问题；tid 对应记录不存在时回退为新增
+- 删种：预览接口无符合条件种子时返回空列表而非错误，前端不再误报红色错误提示
+- 删种：候选筛选中分享率/做种时间/平均上传速度为 0 时不再参与过滤（原 `is not None` 判定使 0 值条件误生效）；候选列表站点列改用注册域名展示（去除 tracker 子域）
+- 插件：刷新媒体库/Webhook 订阅事件名 `media.transfered` 修正为实际发布的 `media.transfer_finished`，修复入库后媒体库从不刷新、Webhook 收不到转移完成通知
+- 插件：种子标记 PT 判定改为查询并遍历全部 tracker（原仅判定首个 tracker 且限 5 条）
+
+### 前端
+- 下载：自动删种任务页面整体重构，卡片式布局与刷流规则页统一，条件标签差异化配色，卡片底部操作栏（执行/预览/编辑/删除）+ 启用开关快捷切换，新增/编辑弹窗分组表单与字段帮助提示
+
+### 测试
+- 新增过滤规则初始化执行、规则组解析、删种任务原子更新回归测试；全量测试通过（2100+）
+
+## v4.4.3 (2026-08-03)
+
+### 修复
+- 识别：`name_extractor` 不再把字幕标签（`[JPSC_JPTC]`/`[SRT]` 等）当作片名，纯数字括号（集号）不再被当成标题
+- 识别：新增罗马数字季标解析（`Ⅲ`/`III` → 对应季数），修复 `Mushoku Tensei Ⅲ` 类命名识别为 S01 而非正确季
+- 识别：`compare_tmdb_names` 子串匹配阈值由 0.95 放宽至 0.85，兼容动漫罗马音标题的 `-kun/-chan/-san` 后缀
+- 识别：multi-search 降级新增英文名/全部别名比对（`_match_tmdb_candidate`），修复英文标题匹配不到中文 TMDB 名的问题（如 The King of Devil Beasts → 克雷瓦提斯）
+- 识别：`identify_files` 补全 `set_tmdb_info` 调用、改用完整 TMDB detail（含 origin_country/genres），修复动漫类型误判为 tv、剧集/电影分类落到根目录的问题
+- 识别：`set_tmdb_info` 兼容 TMDB `genres` 字段（原仅读 `genre_ids`），修复部分动漫因缺 genre_ids 被识别为 tv
+- 识别：电影分类改用 movie 规则（`rule_map.get("movie")`），修复电影被归入 anime 规则导致分类为空、入库到 Movie 根目录（现正确进动画/华语/外语电影子目录）
+- 转移：`_do_transfer_file` 结合转移历史去重（tmdb+季+集），修复目标路径规则变化导致已入库剧集重复入库
+- 转移：已存在（转移历史/目标文件已存在）不再计为失败，且不再进入消息聚合，修复「入库失败」误报与重复推送「已入库」消息
+- 转移：`total_episodes` 按识别季集数正确设置，修复多集转移消息显示单集（`S01 E04`）而非「共 N 集」
+- 转移：黑名单插入去重，避免定时转移每周期重复插入导致表膨胀
+- 转移：聚合目录多条下载记录同属一部剧时使用其 TMDB 提示，修复聚合目录无法识别
+- 目录同步：`_do_transfer` 支持处理文件夹内媒体文件（含真实媒体文件时），修复文件夹下载（如单集文件夹）不自动转移
+- 签到：新增 FRDS（朋友）专属签到配置，访问首页 `index.php` 即完成签到（该站无 `attendance.php`），修复误走通用 fallback 的 `attendance.php` 导致 404「请检查站点连通性」
+
+### 文档
+- 修正安装文档端口（前端 8080 / 后端 3000:8080）、Redis 配置（移除 redis.conf 挂载，改为实际命令）、数据库配置与迁移机制、目录挂载（NEXUS_MEDIA_DATA、/media）
+- 新增开箱即用的简单 docker-compose 示例（前后端+Redis+MySQL 推荐版 / 仅前后端 SQLite 体验版）
+- 同步修正 docker/readme.md、development.md、notifications.md、faq.md 中的端口引用
+
+### 测试
+- 全量测试通过（2118 passed）；新增字幕标签剥离、罗马数字季标、批量识别类型判定等回归测试
+
+## v4.4.2 (2026-08-02)
+
+### 修复
+- 匹配：识别缓存命中时用当前解析重建资源字段（org_string/发布组/分辨率/音视频），不再返回首次缓存种子的过期资源字段。TMDB 身份（tmdb_id/名称/年份/海报）仍来自缓存避免重复查 TMDB
+- 识别：名称识别测试 `name_test` 用 `cache=False`，始终返回当前输入的资源字段，避免展示首次缓存的错误资源信息
+- 解析：剥离 FRDS `mUHD` 源标记（`name_extractor._META_TOKEN_RE` 新增 `muhd`），修复 `Green.Book...mUHD-FRDS.mkv` 识别为 `Green Book Muhd`（名称残留 → TMDB 搜不到）
+- 解析：多括号标题（中/英/日 + 发布注释）的方括号层提取不再被自由文本层覆盖（`_extract_free_text` 仅填充缺失名称），修复 `[剧场版 鬼灭之刃...][自壓(付相關專輯)]` 取成发行注释
+- 前端：服务面板 → 新增缓存管理弹窗（`GET/POST /system/caches`），列出各缓存键数/占用/命中率统计，支持单个或全部清理
+- 前端：缓存管理弹窗改为内联面板 NModal `v-model:show`（修复子组件 `:show` 导致弹窗内联渲染在页面底部）
+- 前端：服务面板整体重构，使用 `tabler-theme.css` 颜色系统（统计卡片加图标 + 服务卡片彩色标记 + Tabler 阴影/圆角/过渡）
+- 前端：名称识别测试 `nameTestApi` 支持 `subtitle` 参数，传 description 提高多语言标题命中率
+- 前端：未识别列表识别弹窗先打开再请求（加载动画可见），修复加载期间无动画
+- 前端：`discovery/index.vue` 推荐项跳转搜索页字段 `mediaType` → `media_type`，修复类型字段引用错误
+- 前端：订阅（影视/剧集）页面移除未使用的 `startSearchSSE` 解构，修复 typecheck 报错
+- 签到：浏览器签到直接访问签到页 `attendance.php`（不再首页+点击）；等待签到页 WAF/雷池挑战清除后判定；串行化浏览器签到（消除并发竞争）
+- 签到：`browser_transport` 关闭时删除对应 chrome 会话；docker-compose 缩短 chrome SESSION_TTL 为 30 分钟
+
+### 特性
+- 搜索：新增 `GET /search/progress/{session_id}` SSE 进度流，WEB 搜索进度按会话隔离推送
+- 系统：新增 `GET /system/caches`（缓存列表与统计）、`POST /system/caches/clear`（按名或全部清理缓存）
+
+### 测试
+- 全量测试通过（2116 passed）；新增 mUHD 剥离、多括号标题不覆盖、批量识别拉丁名直通回归测试
+
+## v4.4.1 (2026-08-01)
+
+### 修复
+- 匹配：媒体 en_name 不再被日文/中文原名污染（`set_tmdb_info` 仅存拉丁名），缺拉丁名时补取 TMDB 英文标题，修复日漫（如克雷瓦提斯）搜索词缺英文名导致中字资源搜不到
+- 匹配：批量识别在 match_media 已知时，拉丁名（英文名）严格匹配即直通，不再因短中文名前缀被「全名共识」否决（修复中英双名种子误拒）
+- 签到：浏览器签到改为直接访问签到页 `attendance.php`（GET 即完成签到），不再首页查找+点击，且等待签到页自身 WAF/雷池挑战清除后再判定，修复「已签到却误报失败」
+- 签到：串行化浏览器签到（模块级锁），消除并发启动多个浏览器会话导致的 WAF 挑战超时误报
+- 签到：`_PAGE_WAIT_TIMEOUT` 由 120s 放宽到 180s，给慢挑战更多余量
+- 订阅：订阅搜索始终自动下载，不再受「搜索后自动下载」开关影响；WEB/手动搜索仍按开关决定
+- 过滤：中字过滤规则重写，覆盖简体/繁體/中字/国语/国配/双语/CHS/CHT/内封中字等更全字幕标记，避免动漫中字资源漏过
+- 浏览器会话：HTTP 浏览器 transport 关闭时删除对应 chrome 会话，避免 `audiences:xxx` 等会话长时间残留（配合缩短 chrome SESSION_TTL）
+
+### 特性
+- 搜索：新增 `GET /search/progress/{session_id}` SSE 进度流，WEB 搜索进度按会话隔离推送
+- 站点资源：资源列表支持 TMDB 识别（前端「识别」按钮，复用 `/media/name_test`），资源列表服务附加解析级识别字段
+- 前端：站点资源列表每个资源新增「识别」按钮，点击弹窗显示完整识别结果（名称/tmdbid/海报/季集/年份/资源质量）
+
+### 热修复（4.4.1 hotfix）
+- 未识别列表：识别弹窗改为先打开再请求（加载动画可见），修复「识别测试」加载期间无加载动画
+
+### 测试
+- 全部通过；新增批量识别拉丁名直通、en_name 补全等测试
+
+## v4.4.0 (2026-07-31)
+
+### 特性
+- 搜索：新增 `SearchOrchestrator` + `SearchContext`，统一 Web/交互式/订阅三条搜索路径
+- 搜索：SSE 进度推送 `GET /search/progress/{session_id}`，前端不再轮询，进度按 session 隔离
+- 解析：统一解析器替换 anitopy（ADR-019），合并动漫/影视解析为单一流程
+- 数据库：下载历史/订阅描述迁移 TEXT，转移历史新增种子字段与索引
+
+### 修复
+- 搜索：`search_medias_for_web` 异常保护 try/finally，后台线程异常不再导致进度卡死
+- 搜索：进度跨 session 串扰导致 SSE 提前返回，`get_progress` 改为 per-session 键 + 全局详细进度双读
+- 搜索：豆瓣详情失败降级回退标题识别，不再炸掉整个搜索
+- 解析：`~...~` 日文副标题提取为 episode_title，不再污染 cn_name
+- 解析：剔除【生】【附日字】等全角元数据标签
+- 解析：后缀剥词保护剩余标题词，修复 `A Ma` 等短标题被剥空
+- 解析：片假名/平假名标题（如 ブラックトリック）判为 anime
+- 解析：标题含 H264/x264 视频编码时不再误判为纯音频
+- 匹配：en_name 精确/子串命中时校验 cn_name 衍生词（特别篇/OVA），拦截攻壳系列噪声
+- 搜索：修复 `search_year` 未定义变量、`remap` 缺少 `end_episode` 参数
+
+### 热修复（4.4.0 hotfix）
+- 转移：`_lookup_download_record` 对目录/父目录聚合下载记录增加计数判断，杜绝整目录错误套用单个 TMDBID（批量误识别为同一剧）
+- 解析：季集号（SxxExx）后的集标题切分为 episode_title，不再并入主标题（`Medalist.S02E09.It.Begins` → Medalist）
+- 解析：预处理器不再剥离含空格的英文片名括号（`[Silent_Witch]` → 不再误判为 "12"）
+- 解析：移除 `watch` 元数据 token 误判（`Witch Watch` 不再被剥词）
+- 识别：修复 `identify_files` 去重 key 与组装 key 格式不一致，逐文件 TMDB 识别结果不再丢失
+- 转移：标题有效性防呆——纯数字、过短、TMDBID=0 的识别结果拒绝入库，进未识别列表
+- 转移：自动同步（监控/目录同步）不再覆盖媒体库已存在文件，仅手动转移可覆盖
+- 转移：转移成功后无条件更新未识别状态，未识别列表不再残留
+- 转移：`/api/sync/unknown/delete` 支持 `ids` 字段（前端批量删除未识别）
+- 消息：`transfer_finished` 通知模板补充季集显示（单集 `S01 E05`、多集 `S01 共N集`）
+- 签到：配置浏览器自动化的站点无专用 handler 时直接走浏览器签到，修复 HTTP 过盾失败误报
+- 订阅：编辑订阅不再清空已配置的站点/集数（更新时 None 字段保留原值），修复站点设置刷新后消失
+- 过滤：默认过滤规则改为幂等补齐（每次启动执行 INSERT OR IGNORE），新增独立「中字」分组（1002）
+- 下载：HTML 站点种子下载始终携带站点 cookie（sign 预签名启发式仅对 API 站点生效），修复天空/HDSky 下载失败
+- 搜索：WEB 搜索未显式指定站点时应用默认订阅设置的 search_sites（默认为空则不搜索）
+- 搜索：`_filter_indexers` 站点过滤空列表 → 不搜索（订阅未配置站点不再搜全站）
+- 订阅：新增订阅时空数组也应用默认订阅设置的站点；已有订阅站点为空时搜索回退默认设置
+- 前端：消息通知模板「重置」仅恢复默认模板，不再清空用户渠道配置/推送开关，修复重置崩溃
+
+### 测试
+- 2114 项全部通过；新增统一解析器、真实标题、动漫标题、集标题切分、订阅更新保留字段等测试
+
+## v4.3.16 (2026-07-24)
+
+### 修复
+- 匹配：`quick_name_match` 类型互斥 — MOVIE 种子不再匹配 TV/ANIME 订阅
+- 匹配：`SequenceMatcher` 收紧（0.8→0.86, 0.7→0.75）防同名衍生（如 SAC_2045 匹配 2026 剧集）
+- 匹配：CJK `_cn_simplify` 分级阈值 — 全中文后缀含衍生词（剧场版/特别篇/OVA）→高阈值 0.65，含英文字母（SAC/GIG/TV）→高阈值 0.65，纯元数据（简繁内封字幕）→低阈值 0.4
+- 匹配：英文名 `mn in mmn` 通过时检查 cn_name 是否含英文字母后缀，防止 SAC/ARISE/GIG 等绕过
+- 匹配：低置信（仅中文名）`quick_name_match` 通过后仍走 TMDB 识别，`match_filter` 中 TMDB 未识别时拒绝而非回调
+- 匹配：`org_string` 兜底检测 `[Movie]` 标签，补解析器遗漏的类型判定
+- 匹配：`_EDITION_MARKERS` 词表（剧场版/特别篇/总集篇/特别版/OVA/OAD）强制高阈值
+- 匹配：非 CJK `_cn_simplify` 子串加最小比率 ≥0.5，防极端短名误入长名
+- 解析：`init_episode` 排除 `^\d+bit$`，防止 `10bit`/`8bit` 被解析为 S01 E10/E08
+- TMDB：`cn_name`/`en_name` 按字符类型判定而非绑定 `original_language`，`en_name` 不再受 `ja`/`zh` 影响
+- TMDB：新增 `get_tmdb_zh_title(language="zh-CN")` 自动填充中文标题
+- 订阅：搜索时懒更新 TMDB 总集数 — 延迟更新的剧集自动同步到订阅，防止提前完成
+- 转移：`existence_checker` 文件扫码名称匹配改为多语言子串（cn_name/en_name/title）
+- 转移：已下载检测新增 `TRANSFER_HISTORY` DB 查询优先，按 tmdb_id+season 查已转移剧集，跳过文件名语言匹配
+
+### 测试
+- 新增 39 个 `TestQuickNameMatch` 用例覆盖攻壳机动队全系列（SAC/ARISE/INNOCENCE/GIG/剧场版/特别篇/2026全集）+ Chainsmoker Cat
+
+## v4.3.15 (2026-07-23)
+
+### 修复
+- TMDB：`search_tv`/`_fuzzy_match` 多候选匹配从「取第一个 anime」改为综合评分（名称相似度 + 关键词重叠 + 季号匹配 + 已完结加权），解决同名衍生作品被新版覆盖的问题
+- TMDB：无集号标记时自动交叉搜索 TV/Movie，用 `_fetch_allnames` + 综合评分比较选出最优类型
+- TMDB：`search_multi_infos` 降级路径增加 `compare_tmdb_names` 名称校验，不再盲取第一个类型匹配的条目
+- 解析：动漫名清洗增加年份（1900-2030）和批量关键词（Complete/全集/合集/Season N）剥离，解决搜索名过长导致 TMDb 返回 0 结果的问题
+- 下载：`add_torrent_and_get_id` 种子已在 qBittorrent 时返回真实 hash 而非 `"EXISTS"`，不再跳过历史写入导致下载页不可见
+- 订阅：`is_exists_download_history_by_tmdb`（不限 STATE）改为 `is_completed_by_tmdb`（仅 STATE=completed），已删除/失败的种子允许重新下载
+
+### 优化
+- 解析：原始标题含批量关键词（`COMPLETE/全集/合集/BATCH/PACK/SEASON`）时跳过跨类型 Movie 搜索，减少不必要的 API 调用
+- 下载：文件列表 ≥3 个递进编号文件判定为 TV，1 个文件判定为 Movie，类型不一致时输出 warn
+
+### 测试
+- 新增 `TestScoreFuzzyMatch`：综合评分 6 个维度（精确匹配、模糊区分、季号加分/惩罚、已完结、关键词重叠）
+- 新增 `TestBatchKeywordsRE`：12 种批量关键词模式匹配
+- 新增 `TestInferTypeFromFiles`：文件列表类型推断 13 种模式
+
+## v4.3.14 (2026-07-22)
+
+### 修复
+- 签到：修复浏览器回退逻辑对已有专用 handler 的站点（如 FreeFarm）仍然触发 Chrome 回退的问题，增加 `is_dedicated` 判断和 `get_chrome_server_url()` 可用性检查
+- 签到：浏览器挑战等待检测加入雷池 WAF 特征（`slg-bg`、`slg-box`、`雷池`、`安全拦截`），避免误判为页面已加载
+- 签到：修复 `QuestionAnswerAgent.ready` 在 AI 服务未配置时 `None.ready` 空指针崩溃
+
+## v4.3.13 (2026-07-22)
+
+### 修复
+- 签到：修复 API 响应中 `\uXXXX` Unicode 转义导致 `already_markers`/`success_markers` 匹配失败的问题（如 pterclub 猫站签到成功却被判定为失败）
+- 签到：修复 `_http.py` 中 `config.get("success_markers") or DEFAULT` 把显式空列表 `[]` 当作 falsy 回退到默认标记的问题，导致 homepage-only 站点（ssd/春天、tnode/ZhuQue）永远无法匹配
+- 签到：修复 HDSky/FreeFarm/Opencd/Tjupt 等 handler 签到 URL 使用 `signurl`（仅有域名），缺少各自的签到页路径（`/showup.php`、`/attendance.php` 等），导致签到请求发送到错误的 URL
+- 签到：修复 HDSky handler 签到失败时错误提示为 "未获取到验证码"（实际已获取），改为显示服务器实际返回消息
+- 签到：修复 FreeFarm handler `_check_cookie("login.php")` 误判 cookie 失效（页面正常也包含该字样），改为检查登录表单特征（`type="password"` 等）
+- 签到：修复 Browser signin handler 固定 `time.sleep(10/15)` 等待 Cloudflare 五秒盾不可靠的问题，改为动态轮询等页面稳定（最长 120s）
+- 签到：修复 U2/Tnode handler 硬编码域名（`u2.dmhy.org`、`zhuque.in`），改为从 `ctx.site_url` 动态推导
+- 签到：修复 `_api.py` / `_wrap_auth` 使用 api_key 时手动拼接 `{header_name: api_key}` header 而非使用 `ApiKeyAuth` 认证类
+- 签到：修复 `_types.py`（BakatestQaHandler）和 `hdsky.py` 中 `cookies=CookieAuth._parse_cookies(cookie)` 裸传 cookies，改为 `auth=CookieAuth(cookie)`
+- 签到：新增 HDUpt 签到 handler、新增 hhanclub/ssd 签到配置、删除已停运的 hdchina handler 及站点配置
+
+- RSS：修复 TTG/Ourbits/Zhuque/Starspace 等 handler 将 `cookies=ctx.cookie` raw string 传 `httpx.Client.request()` 导致 cookie 未生效、请求被拒绝（报 "请检查站点连通性"）
+- RSS：修复 MTeam handler 误用 `ctx.headers` 取 API key（实际在 `ctx.api_key` 独立字段），改为 `ApiKeyAuth`
+- RSS：修复 YemaPT handler 站点定义配置为 cookie 认证但不传 `CookieAuth`、只读 `ctx.headers` 的问题
+- RSS：修复 `_api.py` marker 匹配同样存在 Unicode 转义失败的问题
+- RSS：修复 `_api.py` api_key 认证手动拼接 header 而非使用 `ApiKeyAuth`，且未从站点定义 `api.auth.header_name` 回退获取 header 名
+- RSS：MTeam/TTG/YemaPT/HDHome 从专用 handler 改为纯配置驱动的泛型 handler
+- RSS：新增 rousi RSS 配置（Bearer 认证 + API endpoint）
+- RSS：修复 `_api.py` `_resolve_auth` 未从站点定义获取 auth header_name 回退的问题
+
+### 清理
+- 删除已停运站点 hdchina（handler + 站点配置）
+- nexus-chrome：修复 `Session.close_tab()` 吞掉 `tab.close()` 异常导致孤儿 tab 累积；添加 CDP `Target.CloseTarget` 回退关闭
+
+## v4.3.12 (2026-07-22)
+
+### 修复
+- 插件中心：修复 `PluginRegistry.scan()` 每次请求都扫描内置插件并写入数据库，导致"已安装插件"页面加载慢/超时的问题；改为 60 秒节流，且 manifest 未变化时跳过数据库写入，保留热更新能力
+- 启动速度：将 `plugin_sandbox.load_all()`、插件菜单同步、消息客户端初始化/菜单刷新从 lifespan 同步执行改为后台异步任务，缩短 `app.state.ready` 为 `true` 前的 503 窗口，减少前后端连接不上的情况
+- 消息交互：修复 `MessageCommandHandler` 只识别 `/ptr` `/ptt` 等精确斜杠命令，中文"订阅""搜索""下载"及 `/rss` `/ssa` 等订阅类命令被当作插件命令或漏到无响应分支的问题；现在统一路由到 `MessageSearchService` 并立即回复"正在搜索/订阅"
+- 刮削：修复 `Scraper._scrape_tv` / `_scrape_movie` 所有步骤共用一个 try/except，任意一步（douban API、TMDB 季详情、fanart 图片下载等）抛异常即终止整条刮削，导致 TV/动漫即使元数据配置已全开，下载完成转移后仍没有任何 NFO/图片生成；现在每个步骤独立 try/except 容错，单步失败只记日志不影响其他刮削输出
+- HTTP 图片下载：修复 `HttpClient.request` 中用 `or` 短路表达式 pop `raise_exception`，`raise_for_status` 的默认 `True` 使 `or` 右侧永远不执行，导致 `raise_exception` 参数泄露到 `httpx.Client.request()` 引发 `TypeError`；改为分别 pop 后逻辑或
+
+### 测试
+- 新增 `PluginRegistry.scan` 节流与 manifest 未变化跳过写入的单元测试
+- 新增 `message_webhook` 企业微信文本消息与 click 菜单事件路由的单元测试
+- 新增 `Scraper` 配置热加载回归测试
+
+## v4.3.11 (2026-07-22)
+
+### 修复
+- 消息客户端：修复 `active_interactive_clients` 用字符串 `search_type` 作为 key，但 Telegram / 微信 / Slack / Synology Chat 的 Webhook 与 `MessageDispatcher` 使用 `SearchType` 枚举查询，导致所有交互式客户端都匹配不到、提示未配置的问题
+- 企业微信消息：修复 `GET /wechat` 与 `POST /wechat` 只读取 `signature` 参数，而加密模式下企业微信实际发送 `msg_signature`，导致 URL 验证/消息接收签名验证失败的问题
+- 消息交互：修复 `message_webhook` 处理消息时创建 `MessageCommandHandler` 未传入 `thread_executor`，导致搜索/订阅命令被提交到线程池后未执行、用户发送消息无响应的问题
+- 下载通知：修复搜索结果合并到原匹配媒体时 `TmdbLookup.merge_media_info` 没有复制 `poster_path`/`backdrop_path`/`fanart_*` 等图片字段，导致下载通知的 `media_info` 缺失图片、使用 TMDB 占位图的问题
+- 文件识别：修复 `MediaService.identify_files` 批量识别文件时，从 TMDB 查回的结果没有写入 `poster_path`/`backdrop_path` 的问题
+- 订阅匹配：修复 `SubscribeMatcher` 中电影种子在 `rss_movies` 不匹配后仍可能落入电视剧订阅匹配的问题，导致订阅电视剧却下载到同名电影资源（RSS 订阅同样走此匹配器，同步修复）
+
+### 测试
+- 新增 `message_webhook` 路由企业微信 `msg_signature` / `signature` 参数兼容的单元测试
+- 新增 `TmdbLookup.merge_media_info` 图片字段合并的单元测试
+- 新增 `SubscribeMatcher` 电影/电视剧订阅类型隔离的单元测试
+
+## v4.3.10 (2026-07-21)
+
+### 修复
+- RBAC 登录日志：用户不存在时 `user_id` 由 `0` 改为 `NULL`，并允许 `RBAC_USER_LOGIN_LOGS.USER_ID` 为 nullable，修复外键约束失败导致登录异常报 `IntegrityError`
+- 企业微信消息：代理地址 `default_proxy` 缺少 scheme 时自动补全为 `https://`，修复 `unknown url type` 错误
+- 企业微信消息：新增 `GET /wechat` URL 验证与 `POST /wechat` 消息接收，支持 Token 签名校验和 AES 加密消息解密，返回 `success` 响应
+- Telegram：新增 `secret_token` 配置，支持 Telegram 官方 `X-Telegram-Bot-Api-Secret-Token` 头部验证；同时修复 webhook 模式下 `_webhook_url` 从未被赋值的 bug
+- 消息客户端：修复 `delete_message_client` 返回 `None` 导致 API 返回失败、前端无法删除消息客户端的问题
+- 消息客户端：修复 `upsert_client` 修改时删除旧记录再插入新记录导致 ID 变化、产生重复客户端的问题，改为存在 `cid` 时直接更新原记录
+- 消息客户端：修复 `ClientManager._ensure_loaded()` 只加载一次、不刷新已有客户端 `interactive`/`enabled` 状态的问题，导致开启交互后仍提示 `WeChat client not configured`
+
+### 数据库迁移
+- 新增迁移：将 `RBAC_USER_LOGIN_LOGS.USER_ID` 改为 nullable
+
+### 测试
+- 新增 `WeChat` 代理地址规范化、URL 验证、消息解析/解密单元测试
+- 新增 `Telegram` Webhook URL 构造与 `secret_token` 单元测试
+
+### 修复
+- 自动删种：修复 `filter_status` 按下载器支持状态校验导致 `Stopped` 等全局状态保存失败的问题
+- 自动删种：修复 `RemoveStrategy.from_dict` 未将字符串状态转换为 `TorrentStatus` 枚举，导致状态过滤不生效的问题
+
+### 测试
+- 新增 `TorrentRemoverService` 与 `RemoveStrategy` 状态校验/转换单元测试
+
+## v4.3.8 (2026-07-20)
+
+### 修复
+- 删除任务：`TORRENT_REMOVE_TASK.NOTE` 列改为 nullable，修复插入时 `NOT NULL constraint failed` 错误
+- 自动签到：前端历史记录请求文件路径从 `signin_history.json` 修正为 `history.json`，解决签到历史页面空白问题
+
+## v4.3.7 (2026-07-20)
+
+### 修复
+- IYUU 自动辅种：补充 `run()` 方法，支持调度任务/插件框架手动立即执行
+- 系统日志：初始加载与 SSE 本地缓存上限从 200 条提升到 1000 条
+- 自动签到：403/HTML/468 回退浏览器逻辑细化，异常时自动回退浏览器；Bakatest 问答路径类型加固；API 站点也允许使用通用 HTTP 回退
+- TorrentMark 插件：manifest 配置项缺失逗号格式修复
+
+## v4.3.6 (2026-07-19)
+
+### 修复
+- IYUU 辅种：站点引擎解析下载链接（genDlToken/api/HTML 统一）、`sites` 留空不辅种、`start_torrents` 补 `downloader_id`
+- 刷流 `DOWNLOAD_ID` 为空时跳过入库（修复 NOT NULL 约束）
+- CookieCloud 混合认证站点 cookie 校验改用 HTML 登录态
+- 自动转移做种：下载器选择改多选、`progress` 判准修正、路径容错
+- 下载联动删除：`PluginContext.read_plugin_data` 跨插件恢复转种/辅种完整清理
+- 自动签到：403/HTML/468 自动回退浏览器、U2 handler 大小写匹配、chdbits xpath 空结果守卫
+- `PluginContext.read_plugin_data` 跨插件数据读取 API
+- speedlimiter / torrentmark manifest 补 `downloaders` 字段
+
+## v4.3.5 (2026-07-19)
+
+### 修复
+- RateLimitEngine 限流解析支持 `1/2s`/`1/30s` 等分数间隔格式
+- RateLimitEngine token_bucket 路径补 `timeout>0` 阻塞循环（Redis/Memory 双后端统一）
+- Redis 限流后端 backend_rate 修正（不再乘 1000，Lua 脚本内部已处理 ms→s 转换）
+- Redis 后端 NOSCRIPT 异常重载脚本重试
+- IYUU 默认限流调整为 `1/30s`（匹配 reportExisting ~1 次/分钟的限制，避免触发冷却封禁）
+
+## v4.3.4 (2026-07-19)
+
+### 修复
+- IYUU reportExisting JSON body 发送方式修复（缺少 `sid_list`）
+- IYUU API 默认限流从 `5/s` 调整为 `1/2s`，避免服务端限流
+
+## v4.3.3 (2026-07-18)
+
+### 新增
+- 插件自定义 API 框架：`PluginContext.register_api(path, handler)` + 通用调度路由 `GET/POST /plugins/{id}/api/{path}`，支持插件声明式注册自定义接口，按 HTTP method 控制 view/manage 权限，sandbox 卸载时自动清理
+- IYUU 自动辅种插件绑定站点功能：前端鉴权页面（`frontend/index.mjs` DI render 组件，列表+行内输入+持久化徽章），后端 API（bindable_sites/bind_site）+ `bound_sites.json` 持久化记录；辅种任务 IYUU API 与站点级限流；manifest 补充 downloaders/sites 配置项
+- IYUU 自动辅种插件适配当前服务层架构：`add_torrent`/`exists_torrents` 改为通过下载器客户端实例调用；种子下载链接补全 host+schema、剥离凭证占位符；`_can_seeding` TorrentStatus 枚举判定；`_resolve_local_site` 支持 HTML 站点定义按名称匹配本地配置
+- Depth Studio（dstudio.me）与 Sunny（sunnypt.top）站点 HTML 配置（NexusPHP table 模板，分类 401-409）
+
+### 修复
+- CookieCloud 混合认证站点（api_key/bearer 类型）cookie 校验失败：改为按站点认证类型分流——纯 cookie/csrf 走引擎 test_connection，api_key/bearer 走 HTML 首页登录态校验
+- 刷流已存在于下载器的种子（qb EXISTS 分支 DOWNLOAD_ID 为 None）插入 `SITE_BRUSH_TORRENTS` 触发 NOT NULL 约束，改为跳过入库
+
+### 测试
+- 新增 CookieCloud 插件校验、IYUU 插件（辅种+绑定+解析）、插件 API 注册表与调度路由、刷流入库测试（4 个测试文件，全量 1187 通过）
+
+## v4.3.2 (2026-07-18)
+
+### 新增
+- 下载器设置支持浏览选择目录：新增 `/download/downloaders/browse_dirs` 端点，通过下载器 API 读取默认保存路径、分类路径及已有种子保存路径；下载保存目录从下载器浏览选择，Nexus Media 访问目录支持本地/存储后端浏览选择
+- 下载器客户端新增 `list_remote_dirs` 能力：qBittorrent（默认保存路径 + 分类路径 + 种子路径）、Transmission（会话目录 + 种子路径）、Aria2（全局下载目录）
+
+### 修复
+- 修复目录同步保存后目的目录丢失、点击编辑变新增一列的问题（前端请求字段 `id`/`target` 与后端契约 `sid`/`dest` 不一致）
+- 修复目录同步列表目的目录、同步方式、目标后端显示不正确的问题（读取字段与后端返回 `dest`/`operation`/`dst_backend_id` 不一致）
+- 修复服务面板同步目录列表为空的问题
+
+### 测试
+- 新增下载器 `list_remote_dirs` 单元测试与 `browse_dirs` 路由测试
+
+## v4.3.1 (2026-07-16)
+
+### 新增
+- 探索页媒体卡片新增类型、国家/地区、语言元数据标签展示
+- 探索页支持类型、地区、语言筛选，Bangumi 数据补默认元数据以支持筛选
+- 刮削设置新增配置持久化：读取/保存到数据库 `system_dict`
+- 后端新增 `/system/config/scraper` 读取与 `/system/config/scraper/save` 写入端点
+
+### 优化
+- 推荐服务统一解析豆瓣 overview 和 TMDB 元数据并按白名单过滤
+- 完善 `media_metadata` 领域模块：统一类型、国家/地区、语言映射与聚合
+
+### 修复
+- 修复 Bangumi 推荐数据缺失 genres/countries/languages 导致筛选为空
+- 修复豆瓣 overview 解析演员名混入类型的问题
+- 修复 HDDolby API 分页请求 content-type 格式
+- 修复 btschool 站点配置 int 字段导致的 Jinja 渲染错误
+
+## v4.3.0 (2026-07-15)
+
+### 重构
+- 自动签到（autosignin）插件站点驱动重构：签到 URL 从站点引擎动态读取，不再硬编码；新增配置驱动流程，支持 API、HTTP 和浏览器自动化三种通用签到方式（ADR-018）
+- 自动生成 RSS（autogenrss）插件重构：内置站点生成器迁移到插件本地 handler 与注册表模式
+
+### 新增
+- 新增通用 HTTP 签到配置回退 `__fallback_http__.json`
+- 新增 `haidan`、`hares`、`hdarea`、`pterclubnet`、`yemapt` 等站点签到配置
+- 新增 `crabpt`、`railgunpt`、`xingtan` 站点定义配置
+- 新增 `hdchina`、`ttg`、`u2` 动态 token/表单处理 handler
+
+### 优化
+- 统一浏览器自动化传输：`HttpClient` 在 `is_browser` 模式下直接通过 `BrowserModeConfig` 访问浏览器，上层无需额外分支
+- 优化自动签到日志输出，包含站点解析、handler 选择、失败详情和重试名称
+- Docker 构建优化：使用 `uv sync --frozen --no-cache --no-install-package nexus-media` 避免构建挂起
+- 容器服务命名规范化：`nexus-media-chrome` → `nexus-chrome`、`nexus-media-ocr` → `nexus-verify`
+- 实验室设置页布局优化：服务开关与地址输入成对展示，禁用态随开关联动
+
+### 修复
+- 修复 M-Team `localStorage` 域名解析从硬编码 `m-team.io` 改为实际站点域名
+- 修复 CookieCloud `localStorage` 同步同时兼容 `dict` 和 `list` 格式
+- 修复 `btschool` 签到路径和成功判定（`index.php?action=addbonus` + 不存在 “每日签到” 按钮）
+- 修复 `rousi` 签到使用 `x-sign-token` 认证头
+- 修复签到历史文件路径为 `history.json`
+- 修复失败站点自动进入重试列表逻辑，避免 `retry_keyword` 误过滤
+- 修复站点 ID 识别日志显示正确的定义 ID（`audiences`、`m-team`、`rousi`、`btschool`）
+- 修复 Plex 客户端若干 pyright 类型报错（空值访问、返回类型不一致）
+
+### 测试
+- 新增 autosignin API/HTTP handler 测试、配置存储测试
+- 新增 autogenrss 插件测试
+- 新增 OCR 基础设施测试
+
+
+### 优化
+- 统一浏览器自动化传输：`HttpClient` 在 `is_browser` 模式下直接通过 `BrowserModeConfig` 访问浏览器，上层无需额外分支
+- 优化自动签到日志输出，包含站点解析、handler 选择、失败详情和重试名称
+- Docker 构建优化：使用 `uv sync --frozen --no-cache --no-install-package nexus-media` 避免构建挂起
+- 容器服务命名规范化：`nexus-media-chrome` → `nexus-chrome`、`nexus-media-ocr` → `nexus-verify`
+- 实验室设置页布局优化：服务开关与地址输入成对展示，禁用态随开关联动
+
+### 修复
+- 修复 M-Team `localStorage` 域名解析从硬编码 `m-team.io` 改为实际站点域名
+- 修复 CookieCloud `localStorage` 同步同时兼容 `dict` 和 `list` 格式
+- 修复 `btschool` 签到路径和成功判定（`index.php?action=addbonus` + 不存在 “每日签到” 按钮）
+- 修复 `rousi` 签到使用 `x-sign-token` 认证头
+- 修复签到历史文件路径为 `history.json`
+- 修复失败站点自动进入重试列表逻辑，避免 `retry_keyword` 误过滤
+- 修复站点 ID 识别日志显示正确的定义 ID（`audiences`、`m-team`、`rousi`、`btschool`）
+- 修复 Plex 客户端若干 pyright 类型报错（空值访问、返回类型不一致）
+
+### 测试
+- 新增 autosignin API/HTTP handler 测试、配置存储测试
+- 新增 autogenrss 插件测试
+- 新增 OCR 基础设施测试
+- 新增 `ocr_server_enabled` 远程 provider 测试
+
+## v4.2.8 (2026-07-11)
+
+### 新增
+- 网页自动化（浏览器过盾）原生集成到 `HttpClient`：站点开启 `chrome` 开关后，抓取请求自动经 Chrome 服务器过盾（Cloudflare / 五秒盾 / 雷池）并复用 Cookie，上层调用点无需改动（ADR-017）
+- 新增站点级 `browser_render` 开关：可选返回浏览器渲染后的 DOM（适配 JS 前端渲染站点），渲染 HTML 解析前自动剥离 tbody 归一化，现有直接子选择器规则无需修改
+- 新增 `BrowserSession` / `AsyncBrowserSession` 交互式浏览器会话客户端，用于签到等多步流程（navigate / click / input / execute / fetch）
+- 实验室配置新增 `chrome_enabled` 全局开关（站点级仍需单独开启 `chrome`）
+
+### 优化
+- 签到（autosignin）、企业微信 IP 变更、自动生成 RSS 等插件改用新的 `BrowserSession` 交互客户端
+- 索引器透传 `chrome` / `browser_render` 站点配置，浏览器模式判定不再依赖全局 Chrome 探活
+- `HttpClientConfig` 默认超时提升，适配浏览器过盾耗时
+
+### 修复
+- 修复 Alembic 迁移 `oxrva77k36j6` 父节点挂接错误导致迁移链分叉出多个 head，`alembic upgrade head` 失败、迁移无法执行
+- `DOWNLOAD_SETTING.NOTE` 列改为可空，避免下载设置备注为空时写入失败
+- 备份时 `config.yaml` 不存在（纯环境变量运行）导致备份中断，改为存在才复制
+- 移除失效的旧 `ChromeClient`（仍在调用已下线的 `/tabs` 接口）
+
+## v4.2.7 (2026-07-10)
+
+### 修复
+- 修复刷流删种规则所有 lambda 被调用时缺少 `rv` 参数（`rule_value` 未传入 `check_func`），导致删种功能完全不生效
+- 修复删种规则 `values` 字典缺少 `hr` 键，HR 规则在 and 模式下错误阻止所有删种
+- 修复 `check_range_rule` 非数字规则值导致 `ValueError`，单条种子异常影响整批删种处理
+- 修复停种任务无异常守卫，单条种子异常会杀死整个停种调度周期
+- 修复 `avg_upspeed` 倍数错误（`1024**3` → `1024`），用户配置的 KB/s 阈值被放大百万倍，平均上传速度删种/停种规则永不生效
+- 修复 `dateutil.parser` 隐式导入依赖其他模块加载顺序
+
+### 测试
+- 新增 `BrushRuleEngine` 单元测试 114 条，覆盖 `check_range_rule` / `check_remove_rule` / `check_stop_rule` / `check_rss_rule` / 解析格式化
+- 新增跨天时间段测试 10 条（如 `22:00-06:00`），验证刷流时间段跨天逻辑正确
+
+## v4.2.6 (2026-07-08)
+
+### 修复
+- 修复文件名开头方括号中文剧名被误删（如 `[虚颜]` 只剩英文名，导致刮削匹配错误影片）
+- 修复修改用户名导致权限丢失，支持修改用户名；编辑资料不再因空角色列表清空角色
+- 修复 CookieCloud 同步后站点测试/搜索仍使用规范域名而非用户配置域名
+- 修复 API 站点（M-Team/Zhuque）测试连接空 body 导致误报
+- 修复菜单设置与插件菜单重启后被重置为默认
+- 修复订阅卡片悬停闪烁、右边缘截断、移动端末尾卡片偏大
+- 修复 Bangumi/TMDB 网页搜索/图片下载器等境外请求未走代理
+- 修复代理在 socks5 及 https 键配置时调用方取不到
+- 修复 cookiecloud 站点去重（按站点 id 保留最后一条并防止重复新增），同步结果标注具体域名
+
+### 新增
+- 订阅 TMDB 信息贯穿下载/转移/刮削全链路，文件转移与刮削可直接使用订阅时确认的 TMDB 身份，避免依赖文件名解析
+- 菜单管理增加「重置到初始状态」功能，支持恢复误修改的内置菜单
+- 菜单新增 IS_BUILTIN 字段区分内置与用户自建菜单；删除内置菜单后记录墓碑，重启不重建
+
+### 优化
+- 代理配置归一化：`app.proxies` 中 `http`/`https` 任一键配置即全局生效，支持 socks5/socks5h
+
+## v4.2.5 (2026-07-08)
+
+### 新增
+- 站点维护新增「批量测试」：可勾选站点后并发测试连通性，展示成功率、延时与失败原因
+- CookieCloud 同步支持域名择优：在同步域名 / 当前签到域名 / 配置别名中，按可用性、稳定性（成功率）与延时自动选择最优域名（带迟滞防抖）
+
+### 修复
+- 媒体详情「已订阅」显示具体订阅的季；探索 / 详情 / 资源搜索页多季电视剧支持追加与管理订阅（勾选订阅、取消勾选退订）
+- 修复多季订阅退订不生效（季号存储格式 `S01` 与前端 `1` 不匹配导致删除条件不命中）
+- 资源搜索：切换页面再返回时恢复当前搜索进度与结果，而非展示上一次的旧结果；修复「正在搜索」标题为空
+- 资源搜索海报卡片点击进入媒体详情，不再直接触发搜索
+- 站点测试连接、搜索、详情页链接改用用户配置的站点域名（签到域名 / 别名），不再固定使用站点规范域名
+- 修复 API 站点（M-Team / Zhuque 等）测试连接误报密钥失效 / 连接失败：POST 空 body 改为发送 `{}`，登录判定兼容 `code` / `status` 成功响应
+- 用户管理修改用户名后权限丢失：编辑资料不再因空角色列表清空角色；支持修改用户名；修复邮箱校验属性名错误
+- CookieCloud 站点去重（按站点定义 id 保留最后一条并防止重复新增），同步结果标注具体域名，仅在 Cookie 实际变化时记为「已更新」，新增站点优先级递增避免重复
+
+### 优化
+- 媒体库首页接口并发获取媒体数量 / 播放历史 / 空间 / 媒体库 / 继续观看 / 最新入库，显著降低耗时并放宽前端超时
+- 资源搜索 1000+ 结果卡顿优化：分组分页渲染（默认 30 条，可加载更多），折叠分组不渲染
+- 「更多推荐」页卡片统一为通用媒体卡片
+- 订阅季选择框改为从左到右自适应网格；修复电视剧订阅管理页卡片竖排、订阅卡片悬停闪烁、右边缘悬浮面板被截断、移动端末尾卡片偏大等布局问题
+- 移除重复站点配置 `ptchdbits.json`，并入 `chdbits` 的域名别名
+
+## v4.2.4 (2026-07-07)
+
+### 新增
+- 电影/电视剧订阅支持「只订阅免费」：订阅可设置仅匹配免费/促销资源
+
+### 修复
+- 修复免费/促销状态识别错误，避免非免费资源被误判
+
+## v4.2.3 (2026-07-07)
+
+### 修复
+- 修复 M-Team RSS 订阅下载失败：预签名下载链接（dlv2 的 `sign` 参数自带认证）不再附加站点 API Key，避免被当作 API 认证返回 JSON 错误；enclosure 链接过期时自动用详情页 tid 重新申请新链接重试
+- 修复插件框架加载时从未注册 manifest 声明的事件钩子，导致 `on_hook`（`plugin.config_changed` 等）全部失效
+- 修复 RBAC 角色查询在 session 关闭后访问懒加载关系触发 `DetachedInstanceError` 刷屏日志，改为 `selectinload` 预加载
+- 修复搜索进度任务完成后返回 0 导致前端轮询无法结束
+- 修复搜索结果制作组为空时显示空按钮，改为显示"未知"
+- 修复媒体搜索有结果时仍显示"未找到相关媒体"空状态
+- 修复多站点做种数据解析（hhanclub/hdsky/star-space/织梦等 NexusPHP 站点）：自动检测表头列索引、支持 JS 分页、用户详情页汇总提取、修复字符串逐字符遍历导致的 IP 统计错误
+
+### 新增
+- 内置索引器关键字搜索支持自动翻页（最多 5 页），修复海贼王等长剧集只能获取首页 100 条数据的问题
+- 新增「站点分享率监控」插件：定时检查各站点分享率，低于阈值发送通知，自动排除第三方索引器
+- 新增「Tracker 管理」插件：批量替换下载器中种子的 tracker 地址，支持正则匹配
+- 应用层 DNS 映射：`HttpClient`/`AsyncHttpClient` 支持 `host_mapping` 及全局映射注册，请求时动态解析无需重建连接池
+- `customhosts` 插件改为应用层 DNS 映射，无需 root 权限修改 `/etc/hosts`
+- `PluginContext` 新增 `get_plugin_config`/`set_plugin_config` 跨插件配置 API
+- 下载器客户端补充 tracker 增删改方法
+- 站点详细数据对无上传下载的不活跃站点整行降低透明度标识
+
+### 优化
+- `cloudflarespeedtest` 替换 hosts 前检查域名是否 Cloudflare 托管，避免非 CF 站点 SSL 握手失败
+- 预签名下载链接判断改为配置驱动（`download.presigned`）
+- 插件质量统一整改（18 个）：手动运行绕过启用检查、移除「立即运行一次」冗余开关、补充协作式线程停止
+- 下载器/站点 API 支持 `source` 过滤，排除第三方索引器站点
+- 更新项目依赖
+
+## v4.2.2 (2026-07-06)
+
+### 修复
+- 修复插件首次启用菜单不加载：`RBACMenu.to_dict()` 在 session 关闭后访问 `children` 触发 `DetachedInstanceError`，异常被静默吞掉导致角色菜单分配失败。改为 `object_session(self) is not None` 检查
+- 修复 `HttpClient` / `AsyncHttpClient` keep-alive 模式下连接复用导致远程返回陈旧数据
+- 修复 `CookieCloud` 插件 `re.match` → `re.search` 关键词匹配失效、同步时未正确遍历所有站点、域名别名匹配不完整
+- 修复站点 favicon 下载时未处理连接超时导致引擎初始化阻塞
+- 修复站点图标缓存 key 未区分域名导致不同站点图标错乱
+- 修复 `IndexerSiteConfig` 缺少适配器导致刷流取种异常
+- 修复图片代理路由 `/img` 缺少去重逻辑导致重复下载
+- 修复字符串工具 `SPLIT_CHARS` 缺少 `★` 分隔符导致剧集标题识别失败
+- 修复搜索进度在任务完成后返回 0 导致前端轮询永不结束：`ProgressTracker.get_process()` 在 `end()` 后因 `enable=False` 返回 `None`，改为始终返回已有进度详情
+- 修复种子限速参数（上传/下载/分享率/做种时间）为 `None` 时 `float(None)` 报错导致下载记录入库失败
+- 修复种子促销因子（`uploadvolumefactor`/`downloadvolumefactor`）为空字符串时 `float("")` 报错导致搜索结果过滤异常
+- 修复搜索结果 `media_type` 使用 `display_name`（如 "TV Show"）而非 `value`（如 "TV"）导致前端类型筛选失败
+- 修复 WEB 搜索同步阻塞请求线程导致前端超时，改为后台线程池异步执行
+
+### CI
+- 修复 Telegram 发布通知中 changelog 含未转义 HTML 标签导致消息发送失败
+
+### 优化
+- 数据库连接池大幅缩减：`pool_size` 50→10、`max_overflow` 100→10、`pool_recycle` 3600s→1800s，容器内存从 ~782MB 降至 ~480MB（-39%）
+- `SceneChecker` 识别不区分大小写，支持 `★08(abema先行版)★` 等特殊格式的集号提取
+- NFO 生成器支持 `&lt;uniqueid&gt;` 写入 TMDB/IMDB ID
+- 媒体刮削器支持海报多图下载并写入 NFO
+- Docker Compose 所有服务添加日志轮转（`max-size: 10m, max-file: 3`），防止日志撑爆磁盘
+
+### 新增
+- 前端 Docker 镜像新增 `BACKEND_HOST` / `BACKEND_PORT` 环境变量，支持独立 `docker run` 部署时动态指定后端地址
+- Docker 部署文档：修正后端镜像描述（Debian 非 Alpine），新增前端单独部署章节，统一 `installation.md` 与 `docker/readme.md`
+
 ## v4.2.1 (2026-07-05)
 
 ### 修复

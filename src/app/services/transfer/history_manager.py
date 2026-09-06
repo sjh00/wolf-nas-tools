@@ -48,6 +48,10 @@ class TransferHistoryManager:
     def get_transfer_info_by(self, tmdbid, season=None, season_episode=None):
         return self.transfer_repo.get_transfer_info_by(tmdbid=tmdbid, season=season, season_episode=season_episode)
 
+    def get_contiguous_transferred_episode_by_tmdb(self, tmdbid, season: int | None = None, start: int = 1) -> int:
+        """查询某季已成功转移的连续集数（重订阅续订用，季包保守记 start）."""
+        return self.transfer_repo.get_contiguous_transferred_episode_by_tmdb(tmdbid=tmdbid, season=season, start=start)
+
     def get_transfer_info_by_id(self, logid):
         return self.transfer_repo.get_transfer_info_by_id(logid=logid)
 
@@ -83,6 +87,9 @@ class TransferHistoryManager:
     def get_transfer_unknown_paths(self):
         return self.transfer_repo.get_transfer_unknown_paths()
 
+    def is_transfer_unknown_exists(self, reg_path):
+        return self.transfer_repo.is_transfer_unknown_exists(reg_path)
+
     def get_transfer_unknown_paths_by_page(self, search, page, rownum):
         return self.transfer_repo.get_transfer_unknown_paths_by_page(search=search, page=page, rownum=rownum)
 
@@ -93,6 +100,9 @@ class TransferHistoryManager:
         return self.transfer_repo.insert_transfer_unknown(reg_path, target_dir, operation)
 
     # ---------- 黑名单 ----------
+
+    def insert_transfer_blacklist(self, path):
+        return self.transfer_blacklist_repo.insert(path)
 
     def delete_transfer_blacklist(self, path):
         return self.transfer_repo.delete_transfer_blacklist(path=path)

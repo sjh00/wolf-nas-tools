@@ -3,6 +3,7 @@
 from dataclasses import asdict
 from typing import Any, cast
 
+import log
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SubscribeType, SystemConfigKey
 from app.domain.mediatypes import MediaType
@@ -26,6 +27,8 @@ class SubscribeAddService:
         event_bus,
         system_config,
         web_utils: WebUtils,
+        download_repo=None,
+        transfer_history_manager=None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -34,6 +37,8 @@ class SubscribeAddService:
         self._event_bus = event_bus
         self._system_config = system_config
         self._web_utils = web_utils
+        self._download_repo = download_repo
+        self._transfer_history_manager = transfer_history_manager
 
     @property
     def default_subscribe_setting_tv(self) -> dict | None:
@@ -62,6 +67,7 @@ class SubscribeAddService:
         filter_rule: int | str | None = None,
         filter_include: str | None = None,
         filter_exclude: str | None = None,
+        filter_free: bool | None = None,
         save_path: str | None = None,
         download_setting: int | str | None = None,
         total_ep: int | None = None,
@@ -90,6 +96,7 @@ class SubscribeAddService:
                 default_rule = default_rss_setting.get("rule")
                 default_include = default_rss_setting.get("include")
                 default_exclude = default_rss_setting.get("exclude")
+                default_free = default_rss_setting.get("free")
                 default_download_setting = default_rss_setting.get("download_setting")
                 default_over_edition = default_rss_setting.get("over_edition")
                 default_rss_sites = default_rss_setting.get("rss_sites")
@@ -106,6 +113,8 @@ class SubscribeAddService:
                     filter_include = default_include
                 if filter_exclude is None and default_exclude:
                     filter_exclude = default_exclude
+                if filter_free is None and default_free is not None:
+                    filter_free = bool(default_free)
                 if over_edition is None and default_over_edition:
                     over_edition = 1 if default_over_edition == "1" else 0
                 if download_setting is None and default_download_setting:
@@ -114,9 +123,9 @@ class SubscribeAddService:
                         if str(default_download_setting).replace("-", "").isdigit()
                         else None
                     )
-                if rss_sites is None and default_rss_sites:
+                if not rss_sites and default_rss_sites:
                     rss_sites = default_rss_sites
-                if search_sites is None and default_search_sites:
+                if not search_sites and default_search_sites:
                     search_sites = default_search_sites
 
         rss_sites = rss_sites or []
@@ -169,7 +178,45 @@ class SubscribeAddService:
                     total = total_ep
                 else:
                     total = media_info.total_episodes
-                lack = max(0, total - (current_ep or 0))
+                # 重订阅续订：始终从转移记录/下载历史推导断点（历史推导只向前，不倒退），
+                # 避免重新订阅从头重复下载已下载剧集，或前端传入旧 current_ep 导致进度卡住。
+                # current_ep 语义 = 首个待下载集（与 RSS 兜底 range(current_ep, total+1) 一致）；
+                # 已获得连续 N 集 → 首个待下载 = N+1。转移记录集数最可靠，二者取较大值。
+                if media_info.tmdb_id:
+                    continue_ep = 0
+                    # start = 订阅起点（首个待下载集）：中途订阅从第 N 集开始跟踪时，
+                    # 历史只有 N 之后的集，须从 N 数起而非从第 1 集（否则误判为 0）
+                    sub_start = int(current_ep) if current_ep and str(current_ep).isdigit() else 1
+                    if self._transfer_history_manager:
+                        try:
+                            continue_ep = self._transfer_history_manager.get_contiguous_transferred_episode_by_tmdb(
+                                media_info.tmdb_id, int(season or 1), start=sub_start
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            log.debug(f"[SubscribeAdd] 查询转移历史失败: {e}")
+                    if self._download_repo:
+                        try:
+                            continue_ep = max(
+                                continue_ep,
+                                self._download_repo.get_contiguous_completed_episode_by_tmdb(
+                                    media_info.tmdb_id, int(season or 1), start=sub_start
+                                ),
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            log.debug(f"[SubscribeAdd] 查询下载历史失败: {e}")
+                    if continue_ep > 0:
+                        # 历史推导只向前：取 历史推导点 与 已传入/显式 current_ep 的较大者，
+                        # 避免前端回传旧进度把已转移的集误标回缺失
+                        current_ep = max(current_ep or 0, continue_ep + 1)
+                        log.info(
+                            f"[SubscribeAdd]{media_info.get_title_string()} S{season} "
+                            f"历史记录已有 {continue_ep} 集，从第 {current_ep} 集开始续订"
+                        )
+                if current_ep:
+                    # 首个待下载集为 current_ep → 缺失集数 = total - current_ep + 1
+                    lack = max(0, total - current_ep + 1)
+                else:
+                    lack = total
                 rssid = self._tv_repo.insert(
                     media_info=media_info,
                     total=total,
@@ -184,6 +231,7 @@ class SubscribeAddService:
                     filter_rule=filter_rule,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,
+                    filter_free=filter_free,
                     save_path=save_path,
                     download_setting=download_setting,
                     total_ep=total_ep,
@@ -206,6 +254,7 @@ class SubscribeAddService:
                     filter_team=filter_team,
                     filter_rule=filter_rule,
                     filter_include=filter_include,
+                    filter_free=filter_free,
                     filter_exclude=filter_exclude,
                     save_path=save_path,
                     download_setting=download_setting,
@@ -219,6 +268,8 @@ class SubscribeAddService:
             media_info = meta_info(title=name, mtype=mtype)
             media_info.title = name
             media_info.type = mtype
+            if year:
+                media_info.year = str(year)
             if season:
                 media_info.begin_season = int(season)
             if mtype == MediaType.MOVIE:
@@ -232,6 +283,7 @@ class SubscribeAddService:
                     filter_pix=filter_pix,
                     filter_team=filter_team,
                     filter_rule=filter_rule,
+                    filter_free=filter_free,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,
                     save_path=save_path,
@@ -252,6 +304,7 @@ class SubscribeAddService:
                     filter_restype=filter_restype,
                     filter_pix=filter_pix,
                     filter_team=filter_team,
+                    filter_free=filter_free,
                     filter_rule=filter_rule,
                     filter_include=filter_include,
                     filter_exclude=filter_exclude,

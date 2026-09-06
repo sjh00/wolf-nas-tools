@@ -178,12 +178,23 @@ class SyncEngine:
             cfg = self.get_sync_path_conf(sid)
             if not cfg:
                 continue
+            # watchdog 只能监听本地目录；远程后端源由周期任务 transfer_sync 轮询
+            if cfg.src_backend_id != "local":
+                log.info(f"[Sync]{cfg.source} 远程源，由周期任务轮询")
+                continue
+            if not os.path.isdir(cfg.source):
+                log.error(f"[Sync]{cfg.source} 本地目录不存在，跳过监控")
+                continue
             obs = PollingObserver(timeout=10) if cfg.compatibility else Observer(timeout=10)
+            try:
+                obs.schedule(FileMonitorHandler(cfg.source, self), path=cfg.source, recursive=True)
+                obs.daemon = True
+                obs.start()
+            except Exception as e:
+                log.error(f"[Sync]{cfg.source} 监控启动失败: {e}")
+                continue
             with _observer_lock:
                 self._observers.append(obs)
-            obs.schedule(FileMonitorHandler(cfg.source, self), path=cfg.source, recursive=True)
-            obs.daemon = True
-            obs.start()
             log.info(f"[Sync]{cfg.source} 监控已启动")
 
     def stop(self) -> None:
@@ -257,11 +268,18 @@ class SyncEngine:
             log.error(f"[Sync]{event_path} 同步失败：{e}")
 
     def _do_transfer(self, event_path: str, cfg: SyncPathConfig) -> None:
-        name = os.path.basename(event_path)
-        if name.lower() != "index.bdmv":
-            ext = os.path.splitext(name)[-1].lower()
-            if ext not in RMT_MEDIAEXT:
+        if os.path.isdir(event_path):
+            # 目录：仅当包含真实媒体文件时才交给转移流水线，
+            # 避免空目录/仍在下载（仅 .part/.!qb）的目录每周期反复报错
+            if not PathUtils.get_dir_files(in_path=event_path, exts=RMT_MEDIAEXT):
                 return
+        else:
+            # 单个媒体文件才校验扩展名
+            name = os.path.basename(event_path)
+            if name.lower() != "index.bdmv":
+                ext = os.path.splitext(name)[-1].lower()
+                if ext not in RMT_MEDIAEXT:
+                    return
         task = TransferTask(
             source_type=SourceType.DIRECTORY,
             source_id=cfg.id,

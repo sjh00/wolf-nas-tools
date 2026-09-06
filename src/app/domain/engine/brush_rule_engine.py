@@ -16,13 +16,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import dateutil
+import dateutil.parser
 import pytz
 
 import log
 from app.core.constants import FILTER_LANGUAGE_OPTIONS
 from app.domain.enums import BrushDeleteType, BrushStopType, SwitchState
 from app.domain.mediatypes import MediaType
-from app.utils import ExceptionUtils, StringUtils
+from app.utils import ExceptionUtils, JsonUtils, StringUtils
 
 
 def _calc_alive_hours(add_time: str | None) -> float | None:
@@ -30,7 +31,10 @@ def _calc_alive_hours(add_time: str | None) -> float | None:
         return None
     try:
         dt = dateutil.parser.parse(str(add_time))
-        return (datetime.now(pytz.utc) - dt).total_seconds() / 3600
+        if dt.tzinfo is None:
+            # naive 视为服务器本地时间，统一转 aware 后与 UTC now 相减
+            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return (datetime.now(pytz.utc) - dt.astimezone(pytz.utc)).total_seconds() / 3600
     except Exception:
         return None
 
@@ -64,8 +68,11 @@ class BrushRuleEngine:
         operator = rule_parts[0]
         range_values = rule_parts[1].split(",")
 
-        min_value = float(range_values[0]) * multiplier if range_values[0] else 0.0
-        max_value = float(range_values[1]) * multiplier if len(range_values) > 1 and range_values[1] else None
+        try:
+            min_value = float(range_values[0]) * multiplier if range_values[0] else 0.0
+            max_value = float(range_values[1]) * multiplier if len(range_values) > 1 and range_values[1] else None
+        except (ValueError, TypeError):
+            return True
 
         if operator == "gt" and value < min_value:
             return False
@@ -206,14 +213,32 @@ class BrushRuleEngine:
         # 匹配电视剧
         elif rss_tvs:
             for rss_info in rss_tvs.values():
-                rss_sites = rss_info.get("rss_sites")
-                if rss_sites and media_info.site not in rss_sites:
+                rss_sites = BrushRuleEngine._parse_rss_sites(rss_info.get("rss_sites"))
+                # media_info.site 为空时无法按站点过滤（站点未知不误排除，交由名称匹配决定）
+                if media_info.site and rss_sites and media_info.site not in rss_sites:
                     continue
                 if BrushRuleEngine._match_media(media_info, rss_info, is_tv=True):
                     match_flag = True
                     break
 
         return match_flag
+
+    @staticmethod
+    def _parse_rss_sites(rss_sites: Any) -> list:
+        """兼容订阅 rss_sites 的多种存储格式：JSON 数组字符串 / 逗号分隔字符串 / 列表"""
+        if not rss_sites:
+            return []
+        if isinstance(rss_sites, list):
+            return [str(s) for s in rss_sites]
+        if isinstance(rss_sites, str):
+            try:
+                parsed = JsonUtils.loads(rss_sites)
+                if isinstance(parsed, list):
+                    return [str(s) for s in parsed]
+            except (ValueError, TypeError):
+                pass
+            return [s.strip() for s in rss_sites.split(",") if s.strip()]
+        return [str(rss_sites)]
 
     @staticmethod
     def _match_media(media_info, rss_info: dict, is_tv: bool = False) -> bool:
@@ -276,7 +301,7 @@ class BrushRuleEngine:
             "freespace": params.get("freespace"),
             "alive_time": _calc_alive_hours(params.get("add_time")),
             "freestatus": torrent_attr.get("free", False),
-            "hr": torrent_attr.get("hr"),
+            "hr": torrent_attr.get("hr", False),
             "tracker_error": params.get("tracker_error"),
         }
 
@@ -291,12 +316,15 @@ class BrushRuleEngine:
             "iatime": (BrushDeleteType.IATIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "pending_time": (BrushDeleteType.PENDINGTIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "freespace": (BrushDeleteType.FREESPACE, lambda value, rv: cls.check_range_rule(value, rv, 1024**3)),
+            # freestatus = “Free到期删”：仍免费时不删，Free 到期（非免费）才删；
+            # 该键开关（前端以 'Y' 存储，历史模板也可能为 FREE/NORMAL），
+            # 关闭态已在循环外跳过，这里统一按到期语义判断，杜绝“免费即删”误删。
             "freestatus": (
                 BrushDeleteType.FREESTATUS,
-                lambda value, rv: not value if rv == "FREE" else value if rv == "NORMAL" else True,
+                lambda value, rv: not value,
             ),
             "hr": (BrushDeleteType.HR, lambda value, rv: value if rv == "HR" else not value if rv == "NOHR" else True),
-            "alive_time": (BrushDeleteType.ALIVETIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
+            "alive_time": (BrushDeleteType.ALIVETIME, lambda value, rv: cls.check_range_rule(value, rv, 1)),
             "upspeed": (BrushDeleteType.UPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024)),
             "cur_upspeed": (BrushDeleteType.UPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024)),
             "tracker_error": (
@@ -316,6 +344,11 @@ class BrushRuleEngine:
         for rule, (delete_type, check_func) in rule_checks.items():
             rule_value = remove_rule.get(rule)
             if rule_value in ("#", SwitchState.OFF.value, None, ""):
+                continue
+
+            # hr_time 规则仅对 HR 种子生效，非 HR 种子在两种模式下都跳过
+            if rule == "hr_time" and not params.get("torrent_attr", {}).get("hr"):
+                log.info("[删种规则] hr_time 仅对 HR 种子生效，跳过非 HR 种子")
                 continue
 
             value = values.get(rule)
@@ -375,9 +408,11 @@ class BrushRuleEngine:
                 # UI 单位为 KB/S，下载器提供 bytes/s
                 lambda rv: cls.check_range_rule(values["avg_upspeed"], rv, 1024),
             ),
+            # stopfree = “Free到期停”：仍免费不停，Free 到期（非免费）才停；
+            # 前端以 'Y' 存储，历史模板可能为 'ON'，关闭态已在循环外跳过，统一按到期语义判断。
             "stopfree": (
                 BrushStopType.FREEEND,
-                lambda rv: not values["stopfree"] if rv == SwitchState.ON.value else True,
+                lambda rv: not values["stopfree"],
             ),
         }
 

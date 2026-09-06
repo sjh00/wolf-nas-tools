@@ -11,7 +11,6 @@ import time
 from app.core.settings import settings
 from app.plugin_framework.context import PluginContext
 from app.services.system_service import backup as do_backup
-from app.utils import SystemUtils
 from app.utils.path_utils import get_temp_path
 
 from ._autobackup.filestorage_client import FileClientFactory
@@ -47,7 +46,7 @@ class AutoBackupPlugin:
     def run(self):
         """立即运行备份"""
         self.ctx.info("手动触发备份")
-        self._do_backup()
+        self._do_backup(manual=True)
 
     def _start_service(self):
         """启动备份服务"""
@@ -74,9 +73,11 @@ class AutoBackupPlugin:
         with contextlib.suppress(Exception):
             self.ctx.remove_schedule("backup")
 
-    def _do_backup(self):
+    def _do_backup(self, manual=False):
         """执行备份"""
         config = self._get_config()
+        if not config.get("enabled") and not manual:
+            return
         storage_type = config.get("storage_type", "local")
         full = config.get("full", False)
         cnt = config.get("cnt")
@@ -92,10 +93,8 @@ class AutoBackupPlugin:
 
         # 确定本地备份路径
         if storage_type == "local":
-            if SystemUtils.is_docker():
-                bk_path = os.path.join(settings.data_path, "backup_file")
-            else:
-                bk_path = bk_path_cfg or os.path.join(settings.data_path, "backup_file")
+            bk_path = bk_path_cfg or os.path.join(settings.data_path, "backup_file")
+            os.makedirs(bk_path, exist_ok=True)
         else:
             bk_path = os.path.join(get_temp_path(), "backup_temp")
             os.makedirs(bk_path, exist_ok=True)

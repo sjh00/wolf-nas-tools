@@ -17,6 +17,7 @@ from api.deps import (
     require_any_permission,
     require_permission,
 )
+from app.core.error_codes import ErrorCode
 from app.core.system_config import SystemConfig
 from app.domain.enums import SystemConfigKey
 from app.domain.mediatypes import MediaType
@@ -62,6 +63,7 @@ class AddRssMediaRequest(BaseModel):
     filter_rule: str | None = None
     filter_include: str | None = None
     filter_exclude: str | None = None
+    filter_free: bool | None = None
     save_path: str | None = None
     download_setting: str | None = None
     total_ep: int | None = None
@@ -100,6 +102,12 @@ class SubscribeDetailRequest(BaseModel):
     rsstype: str | None = None
 
 
+class SubscribeSeasonsRequest(BaseModel):
+    tmdbid: str | int | None = None
+    name: str | None = None
+    year: str | None = None
+
+
 class GetDefaultSubscribeSettingRequest(BaseModel):
     mtype: str | None = None
 
@@ -113,6 +121,7 @@ class DefaultSubscribeSettingSaveRequest(BaseModel):
     rule: str | None = None
     include: str | None = None
     exclude: str | None = None
+    free: bool | None = None
     download_setting: str | None = None
     rss_sites: list | None = None
     search_sites: list | None = None
@@ -147,6 +156,7 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "filter_rule": req.filter_rule,
         "filter_include": req.filter_include,
         "filter_exclude": req.filter_exclude,
+        "filter_free": req.filter_free,
         "save_path": req.save_path,
         "download_setting": req.download_setting,
     }
@@ -171,10 +181,28 @@ def _build_update_kwargs(req: AddRssMediaRequest) -> dict:
         "filter_rule": req.filter_rule,
         "filter_include": req.filter_include,
         "filter_exclude": req.filter_exclude,
+        "filter_free": req.filter_free,
         "save_path": req.save_path,
         "download_setting": req.download_setting,
         "image": req.image,
     }
+
+
+def _normalize_season(season) -> str | None:
+    """将季号统一为数据库存储格式 "S01"。
+
+    前端传入的季号为纯数字（如 "1"、2），而数据库 SEASON 字段存储为 "S01"。
+    """
+    if season is None:
+        return None
+    s = str(season).strip()
+    if not s:
+        return None
+    if s.upper().startswith("S"):
+        return s.upper()
+    if s.isdigit():
+        return f"S{int(s):02d}"
+    return s
 
 
 def _invoke_for_seasons(
@@ -220,6 +248,16 @@ def add_rss_media(
     kwargs = _build_add_kwargs(req)
     code, msg, media_info = _invoke_for_seasons(req.season, kwargs, svc.add_rss_subscribe)
 
+    # code 0=成功, 9=订阅已存在(幂等)；其余为真实失败，需上报而非伪装成功
+    if code not in (0, 9):
+        return fail(
+            code=ErrorCode.SUBSCRIPTION_FAILED,
+            msg=msg,
+            page=req.page,
+            name=req.name,
+            rssid=None,
+        )
+
     rssid = None
     if media_info:
         rssid = svc.get_subscribe_id(mtype=kwargs["mtype"], title=req.name or "", tmdbid=media_info.tmdb_id)
@@ -242,7 +280,7 @@ def update_rss_media(
 ):
     kwargs = _build_update_kwargs(req)
     if not req.rssid:
-        return fail(code=-1, msg="缺少订阅ID", page=req.page, name=req.name, rssid=None)
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="缺少订阅ID", page=req.page, name=req.name, rssid=None)
 
     code, msg, media_info = _invoke_for_seasons(
         req.season, kwargs, svc.update_rss_subscribe, req.total_ep, req.current_ep
@@ -250,7 +288,13 @@ def update_rss_media(
 
     if code == 0:
         return success(data={"page": req.page, "name": req.name, "rssid": req.rssid})
-    return fail(code=code, msg=msg, page=req.page, name=req.name, rssid=req.rssid)
+    return fail(
+        code=ErrorCode.SUBSCRIPTION_FAILED,
+        msg=msg,
+        page=req.page,
+        name=req.name,
+        rssid=req.rssid,
+    )
 
 
 @router.post("/history/delete", response_model=CommonResponse, summary="删除 RSS 历史")
@@ -272,7 +316,9 @@ def re_rss_history(
     parsed = MediaType.from_string(req.type or "")
     rtype = MediaType.MOVIE.value if parsed == MediaType.MOVIE else MediaType.TV.value
     code, msg = svc.redo(rssid=req.rssid, rtype=rtype)
-    return fail(code=code, msg=msg)
+    if code == 0:
+        return success(message=msg)
+    return fail(code=ErrorCode.SUBSCRIPTION_FAILED, msg=msg)
 
 
 @router.post("/refresh", response_model=CommonResponse, summary="刷新 RSS 订阅")
@@ -311,7 +357,7 @@ def remove_rss_media(
         svc.delete_subscribe(
             mtype=MediaType.TV,
             title=name or "",
-            season=str(req.season) if req.season is not None else None,
+            season=_normalize_season(req.season),
             rssid=rssid,
             tmdbid=tmdbid,
         )
@@ -472,6 +518,20 @@ def get_tv_rss_list(
 ):
     result = svc.get_subscribe_tvs()
     return success(data=list(result.values()) if isinstance(result, dict) else result)
+
+
+@router.post("/tv/seasons", response_model=CommonResponse, summary="获取电视剧已订阅季列表")
+def get_tv_subscribed_seasons(
+    req: SubscribeSeasonsRequest,
+    user: str = Depends(require_any_permission("subscription:view", "subscription:manage")),
+    svc: SubscribeService = Depends(get_subscribe_service),
+):
+    seasons = svc.get_subscribe_seasons(
+        tmdbid=str(req.tmdbid) if req.tmdbid is not None else None,
+        title=req.name,
+        year=req.year,
+    )
+    return success(data={"seasons": seasons})
 
 
 @router.post("/history/clear", response_model=CommonResponse, summary="清空 RSS 历史")

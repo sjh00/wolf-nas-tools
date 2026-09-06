@@ -3,7 +3,6 @@ RBAC 领域实体
 包含用户、角色、权限、菜单等实体
 """
 
-import contextlib
 from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Optional
@@ -22,7 +21,6 @@ class RBACUserEntity:
     nickname: str | None
     avatar: str | None
     status: int
-    is_superadmin: int
     last_login_at: datetime | None
     last_login_ip: str | None
     created_at: datetime | None
@@ -48,7 +46,6 @@ class RBACUserEntity:
             nickname=getattr(orm_model, "NICKNAME", None),
             avatar=getattr(orm_model, "AVATAR", None),
             status=getattr(orm_model, "STATUS", 1),
-            is_superadmin=getattr(orm_model, "IS_SUPERADMIN", 0),
             last_login_at=getattr(orm_model, "LAST_LOGIN_AT", None),
             last_login_ip=getattr(orm_model, "LAST_LOGIN_IP", None),
             created_at=getattr(orm_model, "CREATED_AT", None),
@@ -70,7 +67,6 @@ class RBACUserEntity:
             "nickname": self.nickname,
             "avatar": self.avatar,
             "status": self.status,
-            "is_superadmin": self.is_superadmin,
             "last_login_at": self.last_login_at.strftime("%Y-%m-%d %H:%M:%S") if self.last_login_at else None,
             "last_login_ip": self.last_login_ip,
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None,
@@ -106,14 +102,20 @@ class RBACRoleEntity:
         menus = []
         users_count = 0
 
-        with contextlib.suppress(Exception):
+        try:
             perms = [p.to_dict() for p in orm_model.permissions]
+        except Exception as e:
+            log.debug(f"[RBAC] 获取角色权限失败 (role_id={orm_model.ID}): {e}")
 
-        with contextlib.suppress(Exception):
+        try:
             menus = [m.to_dict() for m in orm_model.menus]
+        except Exception as e:
+            log.debug(f"[RBAC] 获取角色菜单失败 (role_id={orm_model.ID}): {e}")
 
-        with contextlib.suppress(Exception):
+        try:
             users_count = len(list(orm_model.users))
+        except Exception as e:
+            log.debug(f"[RBAC] 获取角色用户数失败 (role_id={orm_model.ID}): {e}")
 
         return cls(
             id=orm_model.ID,
@@ -227,6 +229,7 @@ class RBACMenuEntity:
     active_icon: str | None
     badge: str | None
     badge_type: str | None
+    is_builtin: int
     created_at: datetime | None
     updated_at: datetime | None
 
@@ -258,6 +261,7 @@ class RBACMenuEntity:
             active_icon=getattr(orm_model, "ACTIVE_ICON", None),
             badge=getattr(orm_model, "BADGE", None),
             badge_type=getattr(orm_model, "BADGE_TYPE", None),
+            is_builtin=getattr(orm_model, "IS_BUILTIN", 0),
             created_at=getattr(orm_model, "CREATED_AT", None),
             updated_at=getattr(orm_model, "UPDATED_AT", None),
         )
@@ -301,7 +305,7 @@ class RBACUserLoginLogEntity:
     """RBAC登录日志实体"""
 
     id: int
-    user_id: int
+    user_id: int | None
     username: str
     login_ip: str | None
     login_location: str | None

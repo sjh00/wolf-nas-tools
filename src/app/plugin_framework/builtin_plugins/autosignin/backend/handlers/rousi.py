@@ -1,96 +1,104 @@
-import time
+"""Rousi（rousi.pro，Peergo 架构）自动签到。
 
-from app.infrastructure.cache_system.cookiecloud_adapter import CookiecloudAdapter
-from app.infrastructure.http.auth import BearerAuth
-from app.infrastructure.http.client import HttpClientError
+新架构流程：
+1. GET /api/v1/session（带 cookie）→ 获取 csrf_token
+2. POST /api/v1/me/attendance，带 x-csrf-token + 随机 idempotency-key，body {"mode":"fixed"}
+"""
+
+import uuid
+
+from app.infrastructure.http.auth import CookieAuth
 from app.plugin_framework.builtin_plugins.autosignin.backend.handlers.base import (
     SigninResult,
     SiteSigninContext,
     SiteSigninHandler,
 )
+from app.utils import StringUtils
 from app.utils.json_utils import JsonUtils
 
 
-class Rousi(SiteSigninHandler):
-    site_url = "rousi.pro"
+class RousiSigninHandler(SiteSigninHandler):
+    site_id = "rousi"
 
-    def _get_sign_token(self, site_info: dict) -> str | None:
-        local_storage = CookiecloudAdapter().get_local_storage("rousi.pro")
-        if local_storage:
-            token = local_storage.get("token")
-            if token:
-                return token
-
-        headers = site_info.get("headers")
-        if headers:
-            if isinstance(headers, str):
-                try:
-                    headers = JsonUtils.loads(headers)
-                except Exception:
-                    headers = None
-
-            if isinstance(headers, dict):
-                for key in headers:
-                    if key.lower() in ["x-sign-token", "sign-authorization", "x-sign-authorization"]:
-                        token = headers[key]
-                        if token and token.startswith("Bearer "):
-                            token = token[7:]
-                        return token
-                for key in headers:
-                    if key.lower() == "authorization":
-                        auth = headers[key]
-                        if auth and auth.startswith("Bearer "):
-                            return auth[7:]
-                        elif auth:
-                            return auth
-        return None
+    _ALREADY_MARKERS = ("已签到", "已经签到", "今日已签到", "already", "today")
 
     def signin(self, ctx: SiteSigninContext) -> SigninResult:
         site = ctx.site
-        signurl = ctx.site_url
+        cookie = ctx.cookie
+        if not cookie:
+            return SigninResult.fail(site, SigninResult.COOKIE_EXPIRED)
+
+        base_url = StringUtils.get_base_url(ctx.site_url)
+        client = self._http_client(ctx)
+        auth = CookieAuth(cookie) if cookie else None
         ua = ctx.ua
+        headers = {"User-Agent": ua} if ua else {}
 
-        self._plugin_ctx.emit("site.local_storage_sync", {})
-        time.sleep(10)
-
-        token = self._get_sign_token(ctx.raw)
-        if not token:
-            return SigninResult.fail(site, "无法获取签到token，请检查LocalStorage或站点Headers配置")
-
-        self._plugin_ctx.info(f"{site} 开始签到")
-        client = self._http_client(ctx, timeout=30.0, auth=BearerAuth(token))
-
-        res_text = None
+        # 1. 获取 CSRF Token
         try:
-            res = client.post(
-                url=signurl,
-                data='{"mode":"fixed"}',
-                headers={
-                    "accept": "application/json, text/plain, */*",
-                    "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7",
-                    "content-type": "application/json",
-                    "origin": "https://rousi.pro",
-                    "referer": "https://rousi.pro/",
-                    "User-Agent": ua,
-                },
+            session_res = client.get(url=f"{base_url}/api/v1/session", headers=headers, auth=auth)
+        except Exception as e:  # noqa: BLE001
+            self._plugin_ctx.warn(f"[{site}]获取 session 异常: {e!r}")
+            return SigninResult.fail(site, SigninResult.SITE_UNREACHABLE)
+
+        if session_res.status_code == 401:
+            return SigninResult.fail(site, SigninResult.COOKIE_EXPIRED)
+
+        try:
+            session_data = JsonUtils.loads(session_res.text)
+        except Exception:
+            return SigninResult.fail(site, "获取 session 响应解析失败")
+
+        csrf_token = session_data.get("csrf_token") if isinstance(session_data, dict) else None
+        if not csrf_token:
+            return SigninResult.fail(site, "未获取到 CSRF Token")
+
+        # 2. 签到
+        api_headers = {
+            "x-csrf-token": csrf_token,
+            "idempotency-key": str(uuid.uuid4()),
+            "Content-Type": "application/json",
+            "Origin": base_url,
+            "Referer": f"{base_url}/account/api-key",
+        }
+        if ua:
+            api_headers["User-Agent"] = ua
+
+        try:
+            att_res = client.post(
+                url=f"{base_url}/api/v1/me/attendance",
+                json={"mode": "fixed"},
+                headers=api_headers,
+                auth=auth,
             )
-            res_text = res.text
-        except HttpClientError as e:
-            if e.status_code is not None and e.response_text:
-                res_text = e.response_text
+        except Exception as e:  # noqa: BLE001
+            # 常见于签到已生效但响应异常（如连接中断/5xx），先记录底层原因便于定位
+            self._plugin_ctx.warn(f"[{site}]签到请求异常: {e!r}")
+            return SigninResult.fail(site, SigninResult.REQUEST_FAILED)
 
-        if res_text is None:
-            return SigninResult.fail(site, "获取签到接口响应失败")
+        if att_res.status_code == 401:
+            return SigninResult.fail(site, SigninResult.COOKIE_EXPIRED)
 
         try:
-            res_json = JsonUtils.loads(res_text)
-        except Exception as e:
-            return SigninResult.fail(site, f"解析响应JSON失败: {str(e)}")
+            data = JsonUtils.loads(att_res.text)
+        except Exception:
+            return SigninResult.fail(site, f"签到响应解析失败 HTTP {att_res.status_code}")
 
-        if res_json.get("code") == 0:
+        if not isinstance(data, dict):
+            return SigninResult.fail(site, f"签到接口返回 {att_res.text[:200]}")
+
+        # 3. 结果判断
+        if data.get("attendance_date"):
+            reward = data.get("total_reward")
+            if reward is not None:
+                return SigninResult.custom(True, f"[{site}]签到成功，获得奖励 {reward}")
             return SigninResult.success(site)
-        if res_json.get("code") == 1:
-            message = res_json.get("message", "")
-            if "已签到" in message or "签到" in message:
-                return SigninResult.already(site)
-        return SigninResult.fail(site, f"信息：{res_json.get('message')}")
+
+        if data.get("code") == "attendance_already_claimed":
+            return SigninResult.already(site)
+
+        message = " ".join(str(data.get(k) or "") for k in ("message", "title", "detail"))
+        if any(marker in message for marker in self._ALREADY_MARKERS):
+            return SigninResult.already(site)
+
+        return SigninResult.fail(site, f"签到接口返回 {att_res.text[:200]}")

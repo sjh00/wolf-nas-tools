@@ -3,12 +3,22 @@ Plugin Framework Service
 插件框架 v2 业务服务层
 """
 
+import contextlib
 import os
 import shutil
+import tempfile
 import threading
 import zipfile
 
 import log
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import (
+    PluginError,
+    PluginHotReloadError,
+    PluginInstallingError,
+    PluginManifestInvalidError,
+    PluginNotInstalledError,
+)
 from app.core.settings import settings
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
 from app.db.repositories.rbac_repo_adapter import RBACMenuRepositoryAdapter, RBACRoleRepositoryAdapter
@@ -57,42 +67,69 @@ class PluginFrameworkService:
         if not manifest or not manifest.frontend or not manifest.frontend.routes:
             return
 
-        parent_menu = self._get_plugin_parent_menu()
-        if not parent_menu:
+        root_parent = self._get_plugin_parent_menu()
+        if not root_parent:
             log.warn("[PluginFrameworkService] Plugin 父菜单不存在，跳过菜单同步")
             return
 
-        new_menu_ids = []
+        # 1. 为插件创建父菜单（作为收起项）
+        plugin_parent_code = f"Plugin_{plugin_id}"
+        plugin_parent = self._menu_repo.get_menu_by_code(plugin_parent_code)
+        if not plugin_parent:
+            result = self._menu_repo.create_menu(
+                menu_name=manifest.name,
+                menu_code=plugin_parent_code,
+                parent_id=root_parent.id,
+                path=f"/plugin/{plugin_id}",
+                icon=manifest.icon or "lucide:puzzle",
+                component="",
+                sort_order=100,
+                menu_level=2,
+                permission_code="plugin:view",
+                hide_in_menu=0,
+            )
+            plugin_parent = result if hasattr(result, "id") else self._menu_repo.get_menu_by_code(plugin_parent_code)
+        else:
+            # 与默认菜单一致：仅确保启用与技术路由，保留用户自定义（名称/图标/排序/显隐/父级）
+            parent_updates: dict = {"status": 1}
+            if plugin_parent.path != f"/plugin/{plugin_id}":
+                parent_updates["path"] = f"/plugin/{plugin_id}"
+            self._menu_repo.update_menu(plugin_parent.id, **parent_updates)
+
+        if not plugin_parent:
+            return
+
+        new_menu_ids = [plugin_parent.id]
         for idx, route in enumerate(manifest.frontend.routes):
             if not route.menu:
                 continue
 
-            # 生成唯一 menu_code
             safe_path = route.path.strip("/").replace("/", "_") or "index"
             menu_code = f"Plugin_{plugin_id}_{safe_path}"
-
-            # 已存在则跳过
-            existing = self._menu_repo.get_menu_by_code(menu_code)
-            if existing:
-                if existing.parent_id != parent_menu.id:
-                    # 如果挂错了位置，修正一下
-                    self._menu_repo.update_menu(existing.id, parent_id=parent_menu.id, status=1)
-                new_menu_ids.append(existing.id)
-                continue
-
-            # 计算完整路由路径（与前端 loader.ts 保持一致）
+            menu_name = route.title or manifest.name
+            menu_icon = route.icon or "lucide:puzzle"
             base_path = f"/plugin/{plugin_id}"
             full_path = route.path if route.path.startswith("/") else f"{base_path}/{route.path}"
 
+            existing = self._menu_repo.get_menu_by_code(menu_code)
+            if existing:
+                # 与默认菜单一致：仅确保启用与技术路由，保留用户自定义（名称/图标/排序/显隐/父级）
+                child_updates: dict = {"status": 1}
+                if existing.path != full_path:
+                    child_updates["path"] = full_path
+                self._menu_repo.update_menu(existing.id, **child_updates)
+                new_menu_ids.append(existing.id)
+                continue
+
             result = self._menu_repo.create_menu(
-                menu_name=route.title or manifest.name,
+                menu_name=menu_name,
                 menu_code=menu_code,
-                parent_id=parent_menu.id,
+                parent_id=plugin_parent.id,
                 path=full_path,
-                icon=route.icon or manifest.icon or "lucide:puzzle",
+                icon=menu_icon,
                 component="",
                 sort_order=100 + idx,
-                menu_level=2,
+                menu_level=3,
                 permission_code="plugin:view",
                 hide_in_menu=0,
             )
@@ -101,25 +138,33 @@ class PluginFrameworkService:
                 new_menu_ids.append(menu.id)
                 log.info(f"[PluginFrameworkService] 创建插件菜单: {menu_code} -> {full_path}")
 
-        if new_menu_ids:
+        if len(new_menu_ids) > 1:
             self._assign_menus_to_authorized_roles(new_menu_ids)
 
     def _remove_plugin_menus(self, plugin_id: str) -> None:
         """
-        删除插件对应的 RBAC 菜单。
+        删除插件对应的 RBAC 菜单（含插件父菜单及子路由菜单）。
         """
-        parent_menu = self._get_plugin_parent_menu()
-        if not parent_menu:
-            return
-
-        children = self._menu_repo.get_children_menus(parent_menu.id)
-        prefix = f"Plugin_{plugin_id}_"
+        plugin_parent_code = f"Plugin_{plugin_id}"
+        plugin_parent = self._menu_repo.get_menu_by_code(plugin_parent_code)
         removed = 0
-        for child in children:
-            if child.menu_code.startswith(prefix):
+        if plugin_parent:
+            children = self._menu_repo.get_children_menus(plugin_parent.id)
+            for child in children:
                 self._menu_repo.delete_menu(child.id)
                 removed += 1
-                log.info(f"[PluginFrameworkService] 删除插件菜单: {child.menu_code}")
+            self._menu_repo.delete_menu(plugin_parent.id)
+            removed += 1
+        else:
+            # 兼容旧版：路由菜单直接挂在 Plugin 下
+            root = self._get_plugin_parent_menu()
+            if root:
+                children = self._menu_repo.get_children_menus(root.id)
+                prefix = f"Plugin_{plugin_id}_"
+                for child in children:
+                    if child.menu_code.startswith(prefix):
+                        self._menu_repo.delete_menu(child.id)
+                        removed += 1
         if removed:
             log.info(f"[PluginFrameworkService] 共删除 {removed} 个插件菜单")
 
@@ -174,6 +219,9 @@ class PluginFrameworkService:
                         "is_builtin": bool(orm_model.PATH and "builtin_plugins" in orm_model.PATH),
                         "installed": bool(getattr(orm_model, "INSTALLED", True)),
                         "supports_run": manifest.backend.supports_run,
+                        "has_config": bool(
+                            manifest.frontend and manifest.frontend.settings and manifest.frontend.settings.fields
+                        ),
                         "backend": {
                             "entry": manifest.backend.entry,
                             "api_prefix": manifest.backend.api_prefix,
@@ -202,6 +250,44 @@ class PluginFrameworkService:
                 log.error(f"[PluginFrameworkService] 解析插件清单失败: {e}")
         return plugins
 
+    def list_enabled_agent_tools(self) -> list[dict]:
+        """已启用插件声明的 Agent 工具（供 ToolExecutor 动态合并，作为能力清单）"""
+        tools: list[dict] = []
+        try:
+            orm_list = self._repo.get_all_manifests()
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[PluginFrameworkService]读取插件清单失败，插件工具不可用: {e}")
+            return tools
+        for orm_model in orm_list:
+            if not bool(getattr(orm_model, "ENABLED", False)):
+                continue
+            try:
+                manifest = PluginManifest.from_dict(JsonUtils.loads(str(orm_model.MANIFEST_JSON or "{}")))
+            except Exception:  # noqa: BLE001
+                continue
+            for t in manifest.backend.tools:
+                if not t.name:
+                    continue
+                tools.append(
+                    {
+                        "plugin_id": manifest.id,
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters or {},
+                        "level": t.level,
+                        "permission": t.permission,
+                    }
+                )
+        return tools
+
+    def call_agent_tool(self, plugin_id: str, name: str, arguments: dict):
+        """调用插件 backend.agent_tool(name, arguments)
+
+        插件返回约定为 {success: bool, data: …, error: str}（data 缺省视为成功数据），
+        由 ToolExecutor 统一转换为 ToolResult。
+        """
+        return self._plugin_sandbox.call(plugin_id, "agent_tool", name, arguments)
+
     def get_manifest(self, plugin_id: str) -> PluginManifest | None:
         """获取插件完整 manifest"""
         orm_model = self._repo.get_manifest_by_id(plugin_id)
@@ -216,7 +302,7 @@ class PluginFrameworkService:
             try:
                 return JsonUtils.loads(str(orm_model.CONFIG))
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[plugin_framework_service]忽略异常: {e}")
+                log.debug(f"[PluginFrameworkService]忽略异常: {e}")
         return {}
 
     def get_config_fields(self, plugin_id: str) -> list[dict]:
@@ -257,7 +343,7 @@ class PluginFrameworkService:
         acquired = lock.acquire()
         if not acquired:
             log.info(f"[Plugin]插件安装正在进行中，跳过: {zip_path}")
-            raise RuntimeError("插件安装正在执行中，请稍后再试")
+            raise PluginInstallingError("插件安装正在执行中，请稍后再试")
 
         try:
             return self._do_install(zip_path)
@@ -287,7 +373,7 @@ class PluginFrameworkService:
 
         if not os.path.exists(manifest_path):
             shutil.rmtree(extract_dir)
-            raise ValueError("插件包缺少 manifest.json")
+            raise PluginManifestInvalidError("插件包缺少 manifest.json")
 
         with open(manifest_path, encoding="utf-8") as f:
             manifest_data = JsonUtils.load(f)
@@ -295,7 +381,7 @@ class PluginFrameworkService:
         manifest = PluginManifest.from_dict(manifest_data)
         if not manifest.id or not manifest.name:
             shutil.rmtree(extract_dir)
-            raise ValueError("manifest.json 缺少 id 或 name")
+            raise PluginManifestInvalidError("manifest.json 缺少 id 或 name")
 
         # manifest 所在的真实目录（处理 macOS 压缩的子文件夹情况）
         plugin_root = os.path.dirname(manifest_path)
@@ -345,7 +431,7 @@ class PluginFrameworkService:
             )
             ok = self._repo.update_manifest(entity)
             if not ok:
-                raise RuntimeError("插件清单更新数据库失败")
+                raise PluginError("插件清单更新数据库失败", errcode=ErrorCode.DATABASE_ERROR, http_status=500)
             log.info(f"[PluginFrameworkService] 插件更新成功: {manifest.id}@{manifest.version}")
         else:
             entity = PluginManifestEntity(
@@ -364,7 +450,7 @@ class PluginFrameworkService:
             )
             ok = self._repo.insert_manifest(entity)
             if not ok:
-                raise RuntimeError("插件清单写入数据库失败")
+                raise PluginError("插件清单写入数据库失败", errcode=ErrorCode.DATABASE_ERROR, http_status=500)
             log.info(f"[PluginFrameworkService] 插件安装成功: {manifest.id}@{manifest.version}")
 
         self._get_hook_system().emit("plugin.install", {"plugin_id": manifest.id})
@@ -377,7 +463,7 @@ class PluginFrameworkService:
         acquired = lock.acquire()
         if not acquired:
             log.info(f"[Plugin]插件卸载正在进行中，跳过: {plugin_id}")
-            raise RuntimeError("插件卸载正在执行中，请稍后再试")
+            raise PluginInstallingError("插件卸载正在执行中，请稍后再试")
 
         try:
             self._do_uninstall(plugin_id)
@@ -388,7 +474,7 @@ class PluginFrameworkService:
         """实际卸载逻辑"""
         orm_model = self._repo.get_manifest_by_id(plugin_id)
         if not orm_model:
-            raise ValueError(f"插件未安装: {plugin_id}")
+            raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
 
         old_path = str(orm_model.PATH or "")
         target_dir = old_path
@@ -426,6 +512,52 @@ class PluginFrameworkService:
         self._get_hook_system().emit("plugin.uninstall", {"plugin_id": plugin_id})
         log.info(f"[PluginFrameworkService] 插件卸载成功: {plugin_id}")
 
+    def install_market_plugin(self, zip_bytes: bytes, enabled: bool = True) -> dict:
+        """市场来源安装：写临时 zip → registry.install（默认禁用落盘）→ 可选启用加载
+
+        返回 {plugin_id, name, version}；安装器已做 sha256/SAST 门禁，这里不再重复。
+        """
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="nexus_market_")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(zip_bytes)
+            manifest = self._plugin_registry.install(tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+        if enabled:
+            self.enable(manifest.id)
+            threading.Thread(target=self._do_enable, args=(manifest.id,), daemon=True).start()
+        return {"plugin_id": manifest.id, "name": manifest.name, "version": manifest.version}
+
+    def update_market_plugin(self, zip_bytes: bytes, plugin_id: str) -> dict:
+        """市场来源更新：卸载旧实例（配置保留）→ 装新版本 → 启用加载，并清理旧版本目录
+
+        PLUGIN_CONFIG 按 plugin_id 存储且安装不删除，配置天然跨版本保留。
+        """
+        sandbox = self._plugin_sandbox
+        if sandbox.get_plugin_instance(plugin_id) is not None:
+            sandbox.unload(plugin_id)
+        # registry.install 会 INSERT PLUGIN_MANIFEST（同 id 主键冲突），
+        # 更新前先删除旧清单行（配置 PLUGIN_CONFIG 保留，跨版本不删）
+        try:
+            self._repo.delete_manifest(plugin_id)
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[PluginFrameworkService]更新前清理旧清单失败: {e}")
+        result = self.install_market_plugin(zip_bytes, enabled=True)
+        # 清理同插件旧版本目录（保留配置，仅清文件）
+        try:
+            base = os.path.join(self._plugins_dir, f"{plugin_id}-")
+            new_dir = os.path.join(self._plugins_dir, f"{plugin_id}-{result['version']}")
+            for entry in os.listdir(self._plugins_dir):
+                entry_path = os.path.join(self._plugins_dir, entry)
+                if entry.startswith(base) and os.path.abspath(entry_path) != os.path.abspath(new_dir):
+                    shutil.rmtree(entry_path, ignore_errors=True)
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[PluginFrameworkService]清理旧版本目录失败: {e}")
+        return result
+
     def _do_enable(self, plugin_id: str) -> None:
         """后台线程执行插件加载和初始化"""
         try:
@@ -440,11 +572,33 @@ class PluginFrameworkService:
         except Exception as e:
             log.error(f"[PluginFrameworkService] 插件后台加载异常 {plugin_id}: {e}")
 
+    def refresh_plugin_menus_at_startup(self) -> None:
+        """启动时：同步已启用插件的菜单，清理已卸载插件的残留菜单."""
+        enabled_ids = self._repo.get_enabled_plugin_ids()
+        enabled_codes = {f"Plugin_{pid}" for pid in enabled_ids}
+
+        # 1. 同步已启用插件的菜单
+        for plugin_id in enabled_ids:
+            self._sync_plugin_menus(plugin_id)
+
+        # 2. 清理已卸载/禁用插件的残留菜单（含插件父菜单）
+        parent_menu = self._get_plugin_parent_menu()
+        if not parent_menu:
+            return
+        children = self._menu_repo.get_children_menus(parent_menu.id)
+        for child in children:
+            if not child.menu_code.startswith("Plugin_"):
+                continue
+            belongs_to_enabled = any(child.menu_code.startswith(c) for c in enabled_codes)
+            if not belongs_to_enabled:
+                self._menu_repo.delete_menu(child.id)
+                log.info(f"[PluginFrameworkService] 清理残留菜单: {child.menu_code}")
+
     def enable(self, plugin_id: str) -> None:
         """启用插件（更新数据库和注册表缓存）"""
         orm_model = self._repo.get_manifest_by_id(plugin_id)
         if not orm_model:
-            raise ValueError(f"插件未安装: {plugin_id}")
+            raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
 
         # 首次启用时标记为已安装
         if not getattr(orm_model, "INSTALLED", True):
@@ -466,7 +620,7 @@ class PluginFrameworkService:
         """禁用插件"""
         orm_model = self._repo.get_manifest_by_id(plugin_id)
         if not orm_model:
-            raise ValueError(f"插件未安装: {plugin_id}")
+            raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
 
         sandbox = self._plugin_sandbox
         sandbox.unload(plugin_id)
@@ -551,14 +705,14 @@ class PluginFrameworkService:
         if request_client:
             request_client.close()
         if not self._plugin_sandbox.load(plugin_id):
-            raise ValueError(f"插件 {plugin_id} 加载失败")
+            raise PluginError(f"插件 {plugin_id} 加载失败", errcode=ErrorCode.PLUGIN_LOAD_FAILED)
 
         instance = self._plugin_sandbox._instances.get(plugin_id)
         if not instance:
-            raise ValueError(f"插件 {plugin_id} 实例不存在")
+            raise PluginNotInstalledError(f"插件 {plugin_id} 实例不存在")
 
         if not hasattr(instance, "run"):
-            raise ValueError(f"插件 {plugin_id} 未实现 run() 方法")
+            raise PluginError(f"插件 {plugin_id} 未实现 run() 方法")
 
         threading.Thread(target=instance.run, daemon=True).start()
         log.info(f"[PluginFrameworkService] 插件 {plugin_id} 立即运行任务已启动")
@@ -567,8 +721,8 @@ class PluginFrameworkService:
         """热重载插件（清理缓存后重新加载）"""
         orm_model = self._repo.get_manifest_by_id(plugin_id)
         if not orm_model:
-            raise ValueError(f"插件未安装: {plugin_id}")
+            raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
 
         sandbox = self._plugin_sandbox
         if not sandbox.reload(plugin_id):
-            raise RuntimeError(f"插件 {plugin_id} 热重载失败")
+            raise PluginHotReloadError(f"插件 {plugin_id} 热重载失败")

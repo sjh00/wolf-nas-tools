@@ -7,14 +7,15 @@ import os
 import re
 
 import log
-from app.agent.service import AgentService
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
 from app.core.settings import settings
-from app.domain.enums import SearchType
+from app.domain.enums import SearchType, channel_key
+from app.domain.interfaces.chat import ChatPort
 from app.domain.mediatypes import MediaType
 from app.media import meta_info
 from app.media.service import MediaService
 from app.message import Message
+from app.message.formatter import dialect_for_channel, format_agent_message
 from app.services.downloader_core import DownloaderCore
 from app.services.indexer_service import IndexerService
 from app.services.search_pagination import SearchPaginationManager
@@ -39,7 +40,7 @@ class MessageSearchService:
         site_engine: SiteEngine,
         subscribe_service: SubscribeService,
         media_service: MediaService,
-        agent_service: AgentService,
+        agent_service: ChatPort,
         message: Message,
     ):
         self._downloader = downloader
@@ -49,11 +50,18 @@ class MessageSearchService:
         self._site_engine = site_engine
         self._subscribe_service = subscribe_service
         self._media_service = media_service
-        self._agent_service = agent_service
+        self._chat_port = agent_service
         self._message = message
         self._pagination = SearchPaginationManager(message=message)
 
-    def handle(self, input_str: str, in_from: SearchType, user_id: str, user_name: str | None = None):
+    def handle(
+        self,
+        input_str: str,
+        in_from: SearchType,
+        user_id: str,
+        user_name: str | None = None,
+        user_permissions: list[str] | None = None,
+    ):
         """处理消息中心输入"""
         if not input_str:
             return
@@ -70,7 +78,7 @@ class MessageSearchService:
             return
 
         # 文本输入
-        self._handle_text(input_str, in_from, user_id, user_name)
+        self._handle_text(input_str, in_from, user_id, user_name, user_permissions)
 
     def _handle_pagination(self, direction: str, in_from: SearchType, user_id: str):
         """处理分页导航"""
@@ -146,7 +154,14 @@ class MessageSearchService:
         self._downloader.download(media_info=media_info, in_from=in_from, user_name=user_name)
         self._pagination.clear_media_cache(user_id)
 
-    def _handle_text(self, input_str: str, in_from: SearchType, user_id: str, user_name: str | None = None):
+    def _handle_text(
+        self,
+        input_str: str,
+        in_from: SearchType,
+        user_id: str,
+        user_name: str | None = None,
+        user_permissions: list[str] | None = None,
+    ):
         """处理文本输入"""
         # 判断意图
         intent = self._parse_intent(input_str)
@@ -154,19 +169,32 @@ class MessageSearchService:
         if intent == "DOWNLOAD":
             self._download_from_url(input_str, in_from, user_id, user_name)
         elif intent == "ASK":
-            self._chat(input_str, in_from, user_id)
+            self._chat(input_str, in_from, user_id, user_permissions)
         elif intent == "SUBSCRIBE":
             content = re.sub(r"订阅[:：\s]*", "", input_str)
+            if not content.strip():
+                self._message.send_channel_msg(
+                    channel=in_from, title="请输入要订阅的关键词，例如：订阅 进击的巨人", user_id=user_id
+                )
+                return
             self._search_media(in_from, content, user_id, user_name, "SUBSCRIBE")
         else:
-            content = re.sub(r"(搜索|下载)[:：\s]*", "", input_str)
+            content = re.sub(r"/(rss|ssa)[\s:：]*", "", input_str)
+            content = re.sub(r"(搜索|下载)[:：\s]*", "", content)
+            if not content.strip():
+                self._message.send_channel_msg(
+                    channel=in_from,
+                    title="请输入要搜索/订阅的关键词，例如：搜索 进击的巨人 或 订阅 进击的巨人",
+                    user_id=user_id,
+                )
+                return
             self._search_media(in_from, content, user_id, user_name, "SEARCH")
 
     def _parse_intent(self, input_str: str) -> str:
         """解析用户意图"""
         if input_str.startswith(("http", "magnet")):
             return "DOWNLOAD"
-        if self._agent_service.chat_agent.ready:
+        if self._chat_port.ready:
             return "ASK"
         if input_str.startswith("订阅"):
             return "SUBSCRIBE"
@@ -196,18 +224,25 @@ class MessageSearchService:
         meta_info.set_torrent_info(enclosure=url)
         self._downloader.download(media_info=meta_info, torrent_file=filepath, in_from=in_from, user_name=user_name)
 
-    def _chat(self, question: str, in_from: SearchType, user_id: str):
+    def _chat(self, question: str, in_from: SearchType, user_id: str, user_permissions: list[str] | None = None):
         """AI 对话（支持工具调用）"""
         try:
-            answer = self._agent_service.chat_agent.chat_with_tools(question=question, session_id=str(user_id))
+            answer = self._chat_port.chat_with_tools(
+                question=question,
+                session_id=str(user_id),
+                channel=channel_key(in_from),
+                user_id=str(user_id),
+                user_permissions=user_permissions,
+            )
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
-            log.error(f"[ChatAgent]对话异常: {e}")
+            log.error(f"[AgentChat]对话异常: {e}")
             answer = "AI出错了，请检查LLM配置，如需搜索电影/电视剧，请发送 搜索或下载 + 名称"
         if not answer:
             answer = "AI出错了，请检查LLM配置，如需搜索电影/电视剧，请发送 搜索或下载 + 名称"
-        self._message.send_channel_msg(channel=in_from, title="", text=str(answer).strip(), user_id=user_id)
+        answer_text = format_agent_message(str(answer).strip(), dialect_for_channel(in_from))
+        self._message.send_channel_msg(channel=in_from, title="", text=answer_text, user_id=user_id)
 
     def _search_media(
         self, in_from: SearchType, content: str, user_id: str, user_name: str | None = None, mtype: str = "SEARCH"
@@ -360,7 +395,7 @@ class MessageSearchService:
         if code == 0:
             log.info(f"[Web]{media_info.type.value} {media_info.get_title_string()} 已添加订阅")
         else:
-            if in_from in self._message.get_search_types():
+            if channel_key(in_from) in self._message.get_search_types():
                 log.info(f"[Web]{media_info.title} 添加订阅失败：{msg}")
                 self._message.send_channel_msg(
                     channel=in_from, title=f"{media_info.title} 添加订阅失败：{msg}", user_id=str(user_id or "")

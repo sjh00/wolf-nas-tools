@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
 
 import log
@@ -8,9 +9,11 @@ from app.db.repositories.site_repository import SiteRepository
 from app.domain.entities.site import SiteEntity
 from app.domain.enums import SiteUseType
 from app.domain.interfaces.site_repo import ISiteRepository
+from app.media import meta_info
 from app.schemas.site import (
     SiteActivityDTO,
     SiteAttrDTO,
+    SiteDefinitionDTO,
     SiteDetailDTO,
     SiteHistoryDTO,
     SiteResourcesResultDTO,
@@ -87,6 +90,32 @@ class SiteService:
         )
 
     # ------------------------------------------------------------------
+    # 站点定义
+    # ------------------------------------------------------------------
+    def get_site_definitions(self) -> list[SiteDefinitionDTO]:
+        """返回所有内置站点定义，供前端选择添加站点。"""
+        definitions = []
+        for site in self._site_engine.all_sites():
+            site_type = ""
+            if site.api:
+                site_type = "api"
+            elif site.html:
+                site_type = "html"
+            definitions.append(
+                SiteDefinitionDTO(
+                    id=site.id,
+                    name=site.name,
+                    domain=site.domain,
+                    type=site_type,
+                    public=site.public,
+                    domain_aliases=site.domain_aliases,
+                    encoding=site.encoding,
+                    detail_page_url=site.detail_page_url,
+                )
+            )
+        return sorted(definitions, key=lambda x: x.name)
+
+    # ------------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------------
     def delete_site(self, tid: str | None) -> int | None:
@@ -98,6 +127,7 @@ class SiteService:
                 return 0
             self._site_entity_repo.delete(int(tid))
             self._indexer_site_config_repo.upsert_site(site_name=site.name, source="builtin", enabled=False)
+            self._sites.refresh()
             return 1
         except Exception:
             return 0
@@ -117,7 +147,14 @@ class SiteService:
             site_hr = bool(attr.get("HR"))
         return SiteDetailDTO(site=site_info, site_free=site_free, site_2xfree=site_2xfree, site_hr=site_hr)
 
-    def get_sites(self, rss: bool = False, brush: bool = False, statistic: bool = False, basic: bool = False) -> Any:
+    def get_sites(
+        self,
+        rss: bool = False,
+        brush: bool = False,
+        statistic: bool = False,
+        basic: bool = False,
+        source: str | None = None,
+    ) -> Any:
         # RSS/刷流/统计场景只返回 builtin 站点
         if rss or brush or statistic:
             return self._sites.get_sites(rss=rss, brush=brush, statistic=statistic, public=True)
@@ -141,17 +178,18 @@ class SiteService:
                     "enabled": True,
                     "site_public": engine_by_name.get(s["name"], s.get("public", False)),
                 }
-            for row in config_rows:
-                if row.site_name not in merged and row.source != "builtin":
-                    if not self._is_indexer_enabled(row.source):
-                        continue
-                    merged[row.site_name] = {
-                        "id": str(row.id or 0),
-                        "name": row.site_name,
-                        "source": row.source,
-                        "enabled": bool(row.enabled),
-                        "third_party": True,
-                    }
+            if source != "builtin":
+                for row in config_rows:
+                    if row.site_name not in merged and row.source != "builtin":
+                        if not self._is_indexer_enabled(row.source):
+                            continue
+                        merged[row.site_name] = {
+                            "id": str(row.id or 0),
+                            "name": row.site_name,
+                            "source": row.source,
+                            "enabled": bool(row.enabled),
+                            "third_party": True,
+                        }
             return list(merged.values())
 
         merged = {s["name"]: {**s, "source": "builtin", "third_party": False} for s in builtin}
@@ -290,9 +328,30 @@ class SiteService:
             existing = self._site_entity_repo.get_by_id(int(tid))
             if not existing:
                 return SiteUpdateResultDTO(code=400, msg="站点不存在")
+            # 部分更新：请求显式携带的字段用新值，未携带的保留存量（修复"维护编辑只发部分
+            # 字段时 cookie/headers/api_key/bearer_token 被覆盖成 NULL 导致配置丢失"）
+            explicit_fields: set[str] = set()
+            for data_key, attr in (
+                ("site_name", "name"),
+                ("site_pri", "pri"),
+                ("site_rssurl", "rss_url"),
+                ("site_signurl", "sign_url"),
+                ("site_cookie", "cookie"),
+                ("site_api_key", "api_key"),
+                ("site_bearer_token", "bearer_token"),
+                ("site_headers", "headers"),
+                ("site_note", "note"),
+            ):
+                if data.get(data_key) is not None:
+                    explicit_fields.add(attr)
+            if data.get("site_include") is not None or any(
+                v is not None for v in (rss_enable, brush_enable, statistic_enable)
+            ):
+                explicit_fields.add("rss_uses")
+            entity = self._merge_partial_update(existing, entity, explicit_fields)
             try:
                 self._site_entity_repo.update(entity)
-                if name != existing.name and existing.name:
+                if name and name != existing.name and existing.name:
                     self._site_user_info.update_site_name(name, existing.name)
                 self._sites.refresh()
                 return SiteUpdateResultDTO(code=0)
@@ -300,6 +359,8 @@ class SiteService:
                 log.error(f"[SiteService]更新站点失败: {e}")
                 return SiteUpdateResultDTO(code=500, msg=str(e))
         else:
+            if not self._site_engine.get_by_name(name or ""):
+                return SiteUpdateResultDTO(code=400, msg="站点不存在于站点定义中，无法添加")
             try:
                 self._site_entity_repo.insert(entity)
                 self._sites.refresh()
@@ -307,6 +368,29 @@ class SiteService:
             except Exception as e:
                 log.error(f"[SiteService]新增站点失败: {e}")
                 return SiteUpdateResultDTO(code=500, msg=str(e))
+
+    @staticmethod
+    def _merge_partial_update(existing, entity: SiteEntity, explicit_fields: set[str]) -> SiteEntity:
+        """部分更新合并：显式携带的字段用实体新值，其余保留存量.
+
+        修复：站点维护页只编辑部分字段时，未发送的 cookie/headers/api_key/
+        bearer_token/rssurl/signurl/name 等不能被覆盖为空。
+        """
+        attrs = {
+            "name",
+            "pri",
+            "rss_url",
+            "sign_url",
+            "cookie",
+            "api_key",
+            "bearer_token",
+            "headers",
+            "note",
+            "rss_uses",
+        }
+        for attr in attrs - explicit_fields:
+            setattr(entity, attr, getattr(existing, attr, None))
+        return entity
 
     def update_site_cookie_ua(self, siteid: int | str, cookie: str, ua: str) -> None:
         self._site_entity_repo.update_cookie_ua(int(siteid), cookie, ua)
@@ -381,6 +465,32 @@ class SiteService:
         flag, msg, times = self._site_resolver.test_connection(site_id)
         return SiteTestResultDTO(flag=flag, msg=msg, times=times, code=0 if flag else -1)
 
+    def test_sites_batch(self, site_ids: list[str] | None) -> list[dict[str, Any]]:
+        """批量测试站点连通性。
+
+        并发执行，返回每个站点的 {id, flag, msg, times}。不抛异常，单点失败不影响其他站点。
+        """
+        ids = [str(s) for s in (site_ids or []) if str(s).strip()]
+        if not ids:
+            return []
+
+        def _run(sid: str) -> dict[str, Any]:
+            try:
+                flag, msg, times = self._site_resolver.test_connection(sid)
+            except (ServiceError, DomainError, RepositoryError) as e:
+                flag, msg, times = False, str(e), 0.0
+            except Exception as e:  # noqa: BLE001
+                flag, msg, times = False, f"测试异常: {e}", 0.0
+            return {"id": sid, "flag": flag, "msg": msg, "times": times}
+
+        results: list[dict[str, Any]] = []
+        max_workers = min(5, len(ids))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_run, sid): sid for sid in ids}
+            for future in as_completed(futures):
+                results.append(future.result())
+        return results
+
     # ------------------------------------------------------------------
     # 验证码
     # ------------------------------------------------------------------
@@ -390,9 +500,43 @@ class SiteService:
     # ------------------------------------------------------------------
     # 资源列表
     # ------------------------------------------------------------------
-    def list_site_resources(self, index_id: str, page: int, keyword: str) -> SiteResourcesResultDTO:
-        result = self._indexer_service.list_resources(index_id=index_id, page=page, keyword=keyword)
-        return SiteResourcesResultDTO(success=result.success, data=result.data, msg=result.msg)
+    def list_site_resources(self, index_id: str, page: int, page_size: int, keyword: str) -> SiteResourcesResultDTO:
+        result = self._indexer_service.list_resources(
+            index_id=index_id, page=page, page_size=page_size, keyword=keyword
+        )
+        data = result.data
+        if result.success and isinstance(data, list):
+            for item in data:
+                self._attach_media_ident(item)
+            # 返回 {list, has_more}：has_more 表示本页已满（可能还有下一页），供前端分页导航
+            return SiteResourcesResultDTO(
+                success=True,
+                data={"list": data, "has_more": len(data) >= max(page_size, 1)},
+                msg=result.msg,
+            )
+        return SiteResourcesResultDTO(success=result.success, data=data, msg=result.msg)
+
+    @staticmethod
+    def _attach_media_ident(item: Any) -> None:
+        """为资源列表项附加解析级识别信息（标题离线解析，不走 TMDB）"""
+        if not isinstance(item, dict):
+            return
+        title = item.get("title") or ""
+        if not title:
+            return
+        try:
+            mi = meta_info(title=title, subtitle=item.get("description") or "")
+        except Exception:  # noqa: BLE001
+            return
+        item["media"] = {
+            "name": mi.get_name() or "",
+            "cn_name": mi.cn_name or "",
+            "en_name": mi.en_name or "",
+            "season_episode": mi.get_season_episode_string(),
+            "year": mi.year or "",
+            "type": mi.type.value if mi.type else "",
+            "resource_type": mi.get_resource_type_string(),
+        }
 
     def get_site_download_setting(self, site_name: str | None = None) -> Any:
         """获取站点下载设置（代理到 Sites）"""

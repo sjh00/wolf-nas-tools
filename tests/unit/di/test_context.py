@@ -25,6 +25,7 @@ def test_app_context_fields():
         media_recognizer=MagicMock(),
         search_intent_agent=MagicMock(),
         tool_executor=MagicMock(),
+        search_orchestrator=MagicMock(),
         downloader_core=MagicMock(),
         download_monitor=MagicMock(),
         filetransfer_service=MagicMock(),
@@ -74,6 +75,13 @@ def test_app_context_fields():
         user_rss_service=MagicMock(),
         subscription_monitor=MagicMock(),
         system_lifecycle=MagicMock(),
+        alias_index=MagicMock(),
+        edition_graph=MagicMock(),
+        identity_resolver=MagicMock(),
+        target_matcher=MagicMock(),
+        identity_builder=MagicMock(),
+        episode_remapper=MagicMock(),
+        plugin_market_service=MagicMock(),
     )
     assert ctx.event_bus is not None
     assert ctx.media_service is not None

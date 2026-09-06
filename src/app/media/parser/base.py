@@ -20,10 +20,19 @@ class ParserResult(BaseModel):
     resource_team: str | None = None
     type: MediaType | None = None
     confidence: float = 0.0
+    org_string: str | None = None
 
 
 class BaseParser:
     """解析器基类"""
+
+    # 是否为 LLM 解析器（MediaService 据此决定是否启用 LLM 兜底）
+    is_llm: bool = False
+
+    @property
+    def ready(self) -> bool:
+        """解析器是否可用；本地规则解析器恒可用，LLM 解析器按提供商状态"""
+        return True
 
     def parse(self, title: str, subtitle: str = "") -> ParserResult | None:
         raise NotImplementedError

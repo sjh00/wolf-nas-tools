@@ -13,9 +13,42 @@ from typing import Any
 import ruamel.yaml
 from filelock import FileLock
 from pydantic import BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from app.core.root_path import get_project_root
+
+
+def _drop_scalar_overrides(settings_cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """剔除与嵌套模型字段同名的标量值（如环境变量 AGENT=1），防止其覆盖整个嵌套配置段"""
+    for key in list(data.keys()):
+        field_info = settings_cls.model_fields.get(key)
+        if field_info is None:
+            continue
+        annotation = field_info.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel) and not isinstance(data[key], dict):
+            del data[key]
+    return data
+
+
+class _NestedSafeEnvSource(EnvSettingsSource):
+    """env 源包装：标量同名环境变量不覆盖嵌套模型字段"""
+
+    def __call__(self) -> dict[str, Any]:
+        return _drop_scalar_overrides(self.settings_cls, super().__call__())
+
+
+class _NestedSafeDotEnvSource(DotEnvSettingsSource):
+    """dotenv 源包装：同上"""
+
+    def __call__(self) -> dict[str, Any]:
+        return _drop_scalar_overrides(self.settings_cls, super().__call__())
+
 
 _PROJECT_ROOT = get_project_root()
 
@@ -77,8 +110,10 @@ class AppConfig(BaseModel):
         " (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
     )
     init_files: list[str] = Field(default_factory=list)
+    # 默认分类配置是否已初始化（防止清空后重启被重新导入默认值）
+    category_default_seeded: bool = False
     tmdb_domain: str = "api.themoviedb.org"
-    debug: bool = True
+    debug: bool = False
     tmdb_image_url: str = ""
     enable_image_proxy: int = 1
     cookie_secure: bool = False
@@ -112,7 +147,9 @@ class PtConfig(BaseModel):
     pt_check_interval: int = 3600
     search_rss_interval: int = 6
     download_order: str = "seeder"
-    ptrefresh_date_cron: str = "22:36"
+    ptrefresh_date_cron: str = "00:05"
+    # 站点配置远程更新源（GitHub release API），留空使用内置默认地址
+    sites_update_url: str = ""
 
 
 class SubscribeConfig(BaseModel):
@@ -138,8 +175,20 @@ class LaboratoryConfig(BaseModel):
     search_en_title: bool = True
     show_more_sites: bool = True
     ocr_server_host: str = ""
+    ocr_enabled: bool = True
     search_multi_language: bool = True
+    chrome_enabled: bool = True
     chrome_server_host: str = ""
+    # nexus-chrome 访问凭证（API Key / 管理 token）：nexus-chrome 启用
+    # AUTH_PASSWORD 后必填；也可作为 FP_ADMIN_TOKEN 用于画像配置中心推送。
+    chrome_admin_token: str = ""
+    # 浏览器自动化默认指纹画像：用户登录同步真实浏览器指纹后写入，
+    # 全局后台流程（站点定时刷新 / RSS 自动化等无用户上下文场景）使用该指纹。
+    chrome_fp_profile_id: str = ""
+    # ADR-014 身份解析体系灰度开关
+    identity_index: bool = False  # P1 别名索引（get_all_names 走索引）
+    identity_resolver: bool = False  # P2 统一识别决策流（BatchIdentifier → IdentityResolver）
+    target_matcher: bool = False  # P3 TargetMatcher 统一判等
 
 
 class AgentProviderConfig(BaseModel):
@@ -150,6 +199,74 @@ class AgentProviderConfig(BaseModel):
     model: str = ""
 
 
+class AgentEmbeddingConfig(BaseModel):
+    """Embedding 配置（api_key/api_url 留空继承对应 provider）"""
+
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
+    api_url: str = ""
+    proxy: str | None = None
+    timeout: int = 60
+
+
+class AgentStoreConfig(BaseModel):
+    """向量库存储路径（留空/相对路径基于数据目录解析）"""
+
+    path: str = ""
+
+
+class AgentRagConfig(BaseModel):
+    """RAG 检索参数"""
+
+    chunk_size: int = 800
+    chunk_overlap: int = 100
+    top_k: int = 6
+    rerank_top_k: int = 3
+    namespaces: list[str] = Field(default_factory=lambda: ["media_library", "messages", "faq", "operations"])
+
+
+class AgentShortTermMemoryConfig(BaseModel):
+    """短程记忆配置"""
+
+    store: str = "db"
+    max_tokens: int = 4000
+    ttl_days: int = 30
+
+
+class AgentLongTermMemoryConfig(BaseModel):
+    """长程语义记忆配置（用户偏好/事实，向量库存储）"""
+
+    enabled: bool = False
+    top_k: int = 5
+    extraction: str = "on_session_end"  # on_session_end | on_turn_end | off
+
+
+class AgentMemoryConfig(BaseModel):
+    """记忆配置"""
+
+    max_steps: int = 8
+    short_term: AgentShortTermMemoryConfig = Field(default_factory=AgentShortTermMemoryConfig)
+    long_term: AgentLongTermMemoryConfig = Field(default_factory=AgentLongTermMemoryConfig)
+
+
+class AgentNotifyConfig(BaseModel):
+    """Agent 通知增强配置（通知发送出口按 msg_type 单流替换模板）"""
+
+    enabled: bool = False
+    msg_types: list[str] = Field(
+        default_factory=lambda: [
+            "download_start",
+            "download_fail",
+            "rss_finished",
+            "transfer_finished",
+            "transfer_fail",
+            "site_signin",
+        ]
+    )
+    temperature: float = 0.3
+
+
 class AgentConfig(BaseModel):
     """Agent 配置"""
 
@@ -157,7 +274,17 @@ class AgentConfig(BaseModel):
     default_provider: str = ""
     media_recognizer_enabled: bool = False
     batch_size: int = 100
+    reasoning_effort: str = "high"  # low | high | max（统一作用于所有 Agent LLM 调用）
+    disable_thinking: bool = False  # true = 关闭思考模式
     providers: dict[str, AgentProviderConfig] = Field(default_factory=dict)
+    fallback: list[str] = Field(default_factory=list)
+    embedding: AgentEmbeddingConfig = Field(default_factory=AgentEmbeddingConfig)
+    vector_store: str = "sqlite"
+    sqlite: AgentStoreConfig = Field(default_factory=AgentStoreConfig)
+    lancedb: AgentStoreConfig = Field(default_factory=AgentStoreConfig)
+    rag: AgentRagConfig = Field(default_factory=AgentRagConfig)
+    memory: AgentMemoryConfig = Field(default_factory=AgentMemoryConfig)
+    notify: AgentNotifyConfig = Field(default_factory=AgentNotifyConfig)
 
 
 class DatabaseConfig(BaseModel):
@@ -168,7 +295,7 @@ class DatabaseConfig(BaseModel):
     port: int = 0
     username: str = ""
     password: str = ""
-    database: str = "nas_tools"
+    database: str = "nexus_media"
 
 
 class RedisConfig(BaseModel):
@@ -285,8 +412,8 @@ class AppSettings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
-            env_settings,
-            dotenv_settings,
+            _NestedSafeEnvSource(settings_cls),
+            _NestedSafeDotEnvSource(settings_cls),
             YamlConfigSettingsSource(settings_cls),
         )
 

@@ -29,6 +29,13 @@ class BrushTorrentLifecycle:
         self._message = message
         self._daily_deletes: dict[int, dict] = {}  # task_id → {"date": date, "count": int}
 
+    @staticmethod
+    def _remove_rule_needs_torrent_attr(remove_rule: dict | None) -> bool:
+        """删种规则是否依赖种子详情页属性（free/hr），避免对每颗种子做无谓详情请求消耗站点限流."""
+        if not remove_rule:
+            return False
+        return any(remove_rule.get(key) not in ("#", "N", None, "") for key in ("freestatus", "hr", "hr_time"))
+
     def remove_task_torrents(self, taskid: int | None, taskinfo: dict) -> None:
         if taskinfo.get("state") != BrushTaskState.RUNNING.value:
             return
@@ -67,15 +74,9 @@ class BrushTorrentLifecycle:
             all_ids = {t.id for t in all_torrents}
             absent_ids = set(torrent_ids) - all_ids
 
-            # 按状态分组：已完成的做种 vs 仍在下载中
-            downloading_statuses = {
-                TorrentStatus.Downloading,
-                TorrentStatus.Queued,
-                TorrentStatus.Checking,
-                TorrentStatus.Pending,
-            }
-            completed = [t for t in all_torrents if t.status not in downloading_statuses]
-            downloading = [t for t in all_torrents if t.status in downloading_statuses]
+            # 按完成状态分组：未完成（含暂停 pausedDL/stoppedDL）→ 下载中，已完成 → 做种
+            downloading = [t for t in all_torrents if getattr(t, "progress", 0) < 1.0]
+            completed = [t for t in all_torrents if getattr(t, "progress", 0) >= 1.0]
 
             # 对做种/暂停/已完成的种子评估删种规则
             total_uploaded, total_downloaded, delete_ids, update_torrents = self._process_torrents(
@@ -113,6 +114,7 @@ class BrushTorrentLifecycle:
                 for rid in absent_ids:
                     self._repo.delete_brushtask_torrent(taskid or 0, rid)
 
+            removed_count = 0
             if delete_ids:
                 daily_limit = self._apply_daily_delete_limit(taskid or 0, taskinfo, delete_ids)
                 if daily_limit and not delete_ids:
@@ -122,23 +124,23 @@ class BrushTorrentLifecycle:
                 time.sleep(5)
                 torrents = self._downloader.get_torrents(downloader_id, delete_ids)
                 if torrents is None:
-                    delete_ids = []
-                    update_torrents = []
+                    # 下载器不可达无法确认结果，保守视为全部删除失败（避免误标失管）
+                    failed = set(delete_ids)
                 else:
-                    for torrent in torrents:
-                        if torrent.id in delete_ids:
-                            delete_ids.remove(torrent.id)
-
-                # delete_ids 中剩余的是下载器中已消失（删除成功）的种子
+                    # 删除后仍存在的为失败种子
+                    failed = {t.id for t in torrents}
+                # 成功删除数 = 待删数 - 失败数
+                removed_count = len([tid for tid in delete_ids if tid not in failed])
                 if update_torrents:
-                    update_torrents = [t for t in update_torrents if t[2] in delete_ids]
+                    # 仅成功删除的种子落库（t[2]=download_id），失败的保留
+                    update_torrents = [t for t in update_torrents if t[2] not in failed]
                 if update_torrents:
                     self._repo.update_brushtask_torrent_state(update_torrents)
                 else:
                     log.info(f"[Brush]任务 {task_name} 本次检查未删除下载任务")
 
             self._repo.add_brushtask_upload_count(
-                taskid or 0, total_uploaded, total_downloaded, len(delete_ids) + len(absent_ids)
+                taskid or 0, total_uploaded, total_downloaded, removed_count + len(absent_ids)
             )
         except (ServiceError, RepositoryError, DomainError):
             raise
@@ -167,6 +169,7 @@ class BrushTorrentLifecycle:
         downloader_id = taskinfo.get("downloader")
         download_dir = taskinfo.get("savepath")
 
+        need_attr = self._remove_rule_needs_torrent_attr(remove_rule)
         for torrent in torrents:
             torrent_id = torrent.id
             total_uploaded += torrent.uploaded
@@ -174,10 +177,15 @@ class BrushTorrentLifecycle:
 
             enclosure = torrent_id_maps.get(torrent_id)
             torrent_url, torrent_attr = (None, {})
-            if enclosure:
+            if enclosure and need_attr:
                 torrent_url, torrent_attr = self._helper.get_torrent_attr(
-                    site_info if isinstance(site_info, dict) else {}, enclosure
+                    site_info if isinstance(site_info, dict) else {}, enclosure, use_cache=False
                 )
+                if torrent_attr is None:
+                    # 详情属性抓取失败（限流/网络等）：不能据此判定“免费到期”而误删，
+                    # 本轮跳过该种子，下个周期再评估
+                    log.warn(f"[Brush]任务 {task_name} 种子 {torrent.name} 属性未知（详情抓取失败），跳过本轮删种判断")
+                    continue
 
             torrent_params = {
                 "seeding_time": torrent.seeding_time,
@@ -195,7 +203,13 @@ class BrushTorrentLifecycle:
                 torrent_params.update(
                     {
                         "dltime": torrent.download_time,
-                        "pending_time": torrent.iatime if torrent.status == TorrentStatus.Pending else None,
+                        # 等待时间 = 进种时长（download_time），覆盖 Pending/Queued 等待态；
+                        # 不能用 iatime（未活动时间）：从未活动的等待种子 iatime 为 0，等待时间永远不会触发
+                        "pending_time": (
+                            torrent.download_time
+                            if torrent.status in (TorrentStatus.Pending, TorrentStatus.Queued)
+                            else None
+                        ),
                     }
                 )
 
@@ -276,49 +290,56 @@ class BrushTorrentLifecycle:
 
         stopfree_enabled = stop_rule and stop_rule.get("stopfree") == SwitchState.ON.value
         for torrent in torrents:
-            torrent_id = torrent.id
-            torrent_name = torrent.name
-            add_time = torrent.add_time
-            enclosure = torrent_id_maps.get(torrent_id)
-            if not enclosure:
-                continue
-            torrent_attr = {}
-            if stopfree_enabled:
-                torrent_url, torrent_attr = self._helper.get_torrent_attr(
-                    site_info if isinstance(site_info, dict) else {}, enclosure
-                )
-                log.debug(f"[Brush]{torrent_url} 解析详情 {torrent_attr}")
+            try:
+                torrent_id = torrent.id
+                torrent_name = torrent.name
+                add_time = torrent.add_time
+                enclosure = torrent_id_maps.get(torrent_id)
+                if not enclosure:
+                    continue
+                torrent_attr = {}
+                if stopfree_enabled:
+                    torrent_url, torrent_attr = self._helper.get_torrent_attr(
+                        site_info if isinstance(site_info, dict) else {}, enclosure, use_cache=False
+                    )
+                    if torrent_attr is None:
+                        # 属性未知（抓取失败）：不据此执行停种，等待下轮
+                        log.warn(f"[Brush]{torrent_name} 属性未知（详情抓取失败），跳过本轮停种判断")
+                        continue
+                    log.debug(f"[Brush]{torrent_url} 解析详情 {torrent_attr}")
 
-            need_stop, stop_type = BrushRuleEngine.check_stop_rule(
-                stop_rule,
-                params={
-                    "ratio": round(torrent.ratio or 0, 2),
-                    "uploaded": torrent.uploaded,
-                    "seeding_time": torrent.seeding_time,
-                    "avg_upspeed": torrent.avg_upload_speed,
-                    **torrent_attr,
-                },
-            )
-            if need_stop:
-                if isinstance(stop_type, list):
-                    stop_type_str = ", ".join(t.value for t in stop_type)
-                else:
-                    stop_type_str = stop_type.value
-                log.info(f"[Brush]{torrent_name} 触发停种条件：{stop_type_str}，暂停任务...")
-                self._downloader.stop_torrents(downloader_id, [torrent_id])
-                self._repo.insert_brush_event(
-                    task_id=taskid or 0,
-                    task_name=task_name,
-                    torrent_name=torrent_name or "",
-                    download_id=torrent_id or "",
-                    action="stop",
-                    reason=stop_type_str,
-                    downloader_name=downlaod_name,
-                    site_name=site_info.get("name", "") if isinstance(site_info, dict) else "",
-                    torrent_url=torrent_page_url_maps.get(torrent_id, ""),
+                need_stop, stop_type = BrushRuleEngine.check_stop_rule(
+                    stop_rule,
+                    params={
+                        "ratio": round(torrent.ratio or 0, 2),
+                        "uploaded": torrent.uploaded,
+                        "seeding_time": torrent.seeding_time,
+                        "avg_upspeed": torrent.avg_upload_speed,
+                        **torrent_attr,
+                    },
                 )
-                if sendmessage:
-                    self._send_stop_message(task_name, torrent_name, downlaod_name, add_time)
+                if need_stop:
+                    if isinstance(stop_type, list):
+                        stop_type_str = ", ".join(t.value for t in stop_type)
+                    else:
+                        stop_type_str = stop_type.value
+                    log.info(f"[Brush]{torrent_name} 触发停种条件：{stop_type_str}，暂停任务...")
+                    self._downloader.stop_torrents(downloader_id, [torrent_id])
+                    self._repo.insert_brush_event(
+                        task_id=taskid or 0,
+                        task_name=task_name,
+                        torrent_name=torrent_name or "",
+                        download_id=torrent_id or "",
+                        action="stop",
+                        reason=stop_type_str,
+                        downloader_name=downlaod_name,
+                        site_name=site_info.get("name", "") if isinstance(site_info, dict) else "",
+                        torrent_url=torrent_page_url_maps.get(torrent_id, ""),
+                    )
+                    if sendmessage:
+                        self._send_stop_message(task_name, torrent_name, downlaod_name, add_time)
+            except Exception as e:
+                ExceptionUtils.exception_traceback(e)
 
         if stopfree_enabled:
             self._resume_free_torrents(
@@ -353,8 +374,12 @@ class BrushTorrentLifecycle:
             if not enclosure:
                 continue
             torrent_url, torrent_attr = self._helper.get_torrent_attr(
-                site_info if isinstance(site_info, dict) else {}, enclosure
+                site_info if isinstance(site_info, dict) else {}, enclosure, use_cache=False
             )
+            if torrent_attr is None:
+                # 属性未知（抓取失败）：暂不启动，等待下轮确认
+                log.warn(f"[Brush]{torrent.name} 属性未知（详情抓取失败），暂不自动启动")
+                continue
             if torrent_attr.get("free"):
                 self._downloader.start_torrents(downloader_id, [torrent.id])
                 log.info(f"[Brush]{torrent.name} 已恢复免费，自动启动")

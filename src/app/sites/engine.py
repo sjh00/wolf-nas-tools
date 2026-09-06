@@ -11,19 +11,33 @@ import re
 import time
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+import dateutil.parser
 from lxml import etree
 
 import log
 from app.core.root_path import get_project_root
+from app.infrastructure.chrome.challenge import is_challenge
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
 from app.sites import engine_connection, engine_download, engine_tools, engine_user_info
+from app.sites.utils import is_logged_in
 from app.utils import JsonUtils
+from app.utils.browser_mode import build_browser_mode
 from app.utils.config_tools import get_proxies
+
+
+class TorrentAttrFetchError(Exception):
+    """种子详情属性抓取失败（网络错误/限流/页面为空等）。
+
+    调用方应把属性视为“未知”，不得当作“非免费/非HR”处理，
+    以免在抓取失败时误判（如把仍免费的种子判定为免费到期而删种）。
+    """
+
 
 # ---- 数据模型 ----
 
@@ -40,6 +54,7 @@ class DownloadConfig:
     params: dict[str, str] | None = None
     download_url: str | None = None
     selectors: dict | None = None
+    presigned: bool = False
 
 
 @dataclass
@@ -71,6 +86,7 @@ class SiteHtmlConfig:
     conf: dict = field(default_factory=dict)
     browse: dict | None = None
     parser_type: str = "flat"
+    test_connection: str | None = None
 
 
 @dataclass
@@ -81,6 +97,8 @@ class SiteDefinition:
     name: str = ""
     domain: str = ""
     domain_aliases: list[str] = field(default_factory=list)
+    # RSS 专用域名（仅用于识别 RSS 种子归属，功能访问仍走主站 domain）
+    rss_domains: list[str] = field(default_factory=list)
     tid_pattern: str = r"\d+"
     encoding: str = "UTF-8"
     public: bool = False
@@ -98,9 +116,16 @@ class SiteDefinition:
         if not url or not self.domain:
             return False
         url_lower = url.lower()
-        if self.domain.lower() in url_lower:
+        domain_lower = self.domain.lower()
+        if domain_lower in url_lower or url_lower in domain_lower:
             return True
-        return any(alias.lower() in url_lower for alias in self.domain_aliases)
+        url_stripped = url_lower.replace("www.", "")
+        domain_stripped = domain_lower.replace("www.", "")
+        if domain_stripped in url_stripped or url_stripped in domain_stripped:
+            return True
+        if any(alias.lower() in url_lower or url_lower in alias.lower() for alias in self.domain_aliases):
+            return True
+        return any(rss.lower() in url_lower or url_lower in rss.lower() for rss in self.rss_domains)
 
     @classmethod
     def from_dict(cls, data: dict) -> "SiteDefinition":
@@ -109,6 +134,7 @@ class SiteDefinition:
         d.name = data.get("name", data.get("id", ""))
         d.domain = data.get("domain", "")
         d.domain_aliases = data.get("domain_aliases", [])
+        d.rss_domains = data.get("rss_domains", [])
         d.tid_pattern = data.get("tid_pattern", r"\d+")
         d.encoding = data.get("encoding", "UTF-8")
         d.public = data.get("public", False)
@@ -128,6 +154,7 @@ class SiteDefinition:
                 conf=html.get("conf", {}),
                 browse=html.get("browse"),
                 parser_type=html.get("parser_type", "flat"),
+                test_connection=html.get("test_connection"),
             )
         if data.get("download"):
             dl = data["download"]
@@ -140,6 +167,7 @@ class SiteDefinition:
                 params=dl.get("params"),
                 download_url=dl.get("download_url"),
                 selectors=dl.get("selectors"),
+                presigned=dl.get("presigned", False),
             )
         if data.get("torrent_attr"):
             d.torrent_attr = data["torrent_attr"]
@@ -250,13 +278,37 @@ class SiteEngine:
             self._domain_index[site_def.domain.lower()] = site_def
             for alias in site_def.domain_aliases:
                 self._domain_index[alias.lower()] = site_def
+            for rss in site_def.rss_domains:
+                self._domain_index[rss.lower()] = site_def
+
+    def register_rss_domain(self, site_key: str, rss_domain: str) -> None:
+        """注册用户配置的 RSS 域名到站点匹配索引（RSS 种子识别用）.
+
+        用户站点配置的 RSS 链接域名与主站不一致时，RSS 种子 URL 据此识别站点归属；
+        功能访问（搜索/详情/属性解析）仍走站点定义的主站 domain。
+        """
+        if not rss_domain:
+            return
+        site = self.get_by_name(site_key) or self._sites.get(site_key)
+        if not site:
+            return
+        self._domain_index[rss_domain.lower()] = site
+        if rss_domain not in site.rss_domains:
+            site.rss_domains.append(rss_domain)
 
     def register(self, site_def: SiteDefinition):
         self._sites[site_def.id] = site_def
         self._index_site(site_def)
 
     def get_by_id(self, site_id: str) -> SiteDefinition | None:
-        return self._sites.get(site_id)
+        if not site_id:
+            return None
+        site = self._sites.get(site_id)
+        if site:
+            return site
+        # 兼容存量数据中的大小写差异（站点 id 已统一为小写）
+        lowered = site_id.lower()
+        return self._sites.get(lowered) if lowered != site_id else None
 
     def get_by_url(self, url: str) -> SiteDefinition | None:
         if not url:
@@ -273,6 +325,15 @@ class SiteEngine:
 
     def get_by_domain(self, domain: str) -> SiteDefinition | None:
         return self._domain_index.get(domain.lower()) if domain else None
+
+    def get_by_name(self, name: str) -> SiteDefinition | None:
+        if not name:
+            return None
+        name_lower = name.lower()
+        for site in self._sites.values():
+            if site.name.lower() == name_lower or site.id.lower() == name_lower:
+                return site
+        return None
 
     def all_sites(self) -> list[SiteDefinition]:
         return list(self._sites.values())
@@ -322,6 +383,67 @@ class SiteEngine:
 
     # ---- 种子属性检查 ----
 
+    @staticmethod
+    def _match_attr_value(extracted, expected, match_type: str = "exact") -> bool:
+        """按匹配方式判断 API 返回值与期望值是否匹配（exact / contains）."""
+        if match_type == "contains":
+            return bool(expected and expected in str(extracted or ""))
+        if isinstance(extracted, (int, float)):
+            try:
+                return extracted == float(expected)
+            except (TypeError, ValueError):
+                return str(extracted) == expected
+        return str(extracted) == expected
+
+    @staticmethod
+    def _attr_rule_active(text: str, resp_cfg: dict, prefix: str) -> bool:
+        """校验站点级活动规则时间窗是否覆盖当前时刻（可选配置）.
+
+        站点级活动（如“全站免费”）可能在种子徽标未更新的情况下生效，
+        是否生效以规则自身的 startTime/endTime 为准：
+        - 未配置 *_start_key / *_end_key 时不校验时间窗；
+        - 配置了但字段缺失或不可解析时视为活动未生效，
+          避免活动结束后遗留规则导致长期误判免费。
+        """
+        start_key = resp_cfg.get(f"{prefix}_start_key", "")
+        end_key = resp_cfg.get(f"{prefix}_end_key", "")
+        if not start_key and not end_key:
+            return True
+        try:
+            now = datetime.now(timezone.utc)
+            if start_key:
+                start_val = JsonUtils.get_json_object(text, start_key)
+                if not start_val:
+                    return False
+                if SiteEngine._parse_rule_time(start_val) > now:
+                    return False
+            if end_key:
+                end_val = JsonUtils.get_json_object(text, end_key)
+                if not end_val:
+                    return False
+                if SiteEngine._parse_rule_time(end_val) <= now:
+                    return False
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _parse_rule_time(value: Any) -> datetime:
+        """解析站点活动时间字段，兼容 ISO 字符串与 epoch 秒/毫秒（数字或数字字符串）.
+
+        返回 aware UTC 时间；无法解析时抛错由调用方按活动未生效处理。
+        """
+        try:
+            numeric = float(str(value).strip())
+            ts = numeric / 1000.0 if numeric > 1e12 else numeric
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (TypeError, ValueError):
+            parsed = dateutil.parser.parse(str(value))
+            if parsed.tzinfo is None:
+                # naive 视为服务器本地时间
+                parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            return parsed.astimezone(timezone.utc)
+
     def resolve_torrent_attr(
         self,
         torrent_url,
@@ -331,11 +453,13 @@ class SiteEngine:
         ua=None,
         headers=None,
         proxy=False,
+        chrome=False,
+        browser_persistent=False,
     ):
         ret = {"free": False, "2xfree": False, "hr": False, "peer_count": 0, "labels": ""}
         site = self.get_by_url(torrent_url)
         if not site:
-            log.debug(f"[engine]resolve_torrent_attr 未匹配站点, url={torrent_url[:100]}")
+            log.debug(f"[SiteEngine]resolve_torrent_attr 未匹配站点, url={torrent_url[:100]}")
             return ret
         user_config = {
             "cookie": cookie or "",
@@ -344,12 +468,14 @@ class SiteEngine:
             "ua": ua or "",
             "proxy": proxy,
             "headers": headers or {},
+            "chrome": chrome,
+            "browser_persistent": bool(browser_persistent),
         }
 
         if site.api and site.torrent_attr:
             tid = self._extract_tid(torrent_url, site)
             if not tid:
-                log.debug(f"[engine]resolve_torrent_attr TID提取失败, url={torrent_url[:100]}")
+                log.debug(f"[SiteEngine]resolve_torrent_attr TID提取失败, url={torrent_url[:100]}")
                 return ret
             cfg = site.torrent_attr
             base = site.api.base_url.rstrip("/")
@@ -371,7 +497,7 @@ class SiteEngine:
                 rate_limiter_engine = rate_limiter.engine if rate_limiter else None
                 rl_kwargs = engine_tools._get_rate_limit_kwargs(self, site)
                 client = HttpClient(
-                    config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
+                    config=HttpClientConfig(proxy_url=proxy_url),
                     rate_limiter=rate_limiter_engine,
                 )
                 if method == "POST":
@@ -396,31 +522,48 @@ class SiteEngine:
                 text = res.text
                 free_path = cfg.get("response", {}).get("free_key", "")
                 free_val = cfg.get("response", {}).get("free_value", "")
+                free_match = cfg.get("response", {}).get("free_match", "exact")
                 if free_path and free_val:
                     extracted = JsonUtils.get_json_object(text, free_path)
-                    if isinstance(extracted, (int, float)):
-                        try:
-                            if extracted == float(free_val):
-                                ret["free"] = True
-                        except ValueError:
-                            if str(extracted) == free_val:
-                                ret["free"] = True
-                    elif str(extracted) == free_val:
+                    if self._match_attr_value(extracted, free_val, free_match):
                         ret["free"] = True
                 free2x_path = cfg.get("response", {}).get("2xfree_key", "")
                 free2x_val = cfg.get("response", {}).get("2xfree_value", "")
+                free2x_match = cfg.get("response", {}).get("2xfree_match", "exact")
                 if free2x_path and free2x_val:
                     extracted2x = JsonUtils.get_json_object(text, free2x_path)
-                    if isinstance(extracted2x, (int, float)):
-                        try:
-                            if extracted2x == float(free2x_val):
-                                ret["free"] = True
-                                ret["2xfree"] = True
-                        except ValueError:
-                            if str(extracted2x) == free2x_val:
-                                ret["free"] = True
-                                ret["2xfree"] = True
-                    elif str(extracted2x) == free2x_val:
+                    if self._match_attr_value(extracted2x, free2x_val, free2x_match):
+                        ret["free"] = True
+                        ret["2xfree"] = True
+                resp_cfg = cfg.get("response", {})
+                # 站点级活动（如“全站免费”）：
+                # 部分站点活动期间不逐种更新徽标（如 M-Team 全站 FREE 时多数种子仍显示
+                # 上传者自设的折扣），此时以详情返回的全站活动规则补判免费。
+                if not ret["free"]:
+                    site_free_path = resp_cfg.get("site_free_key", "")
+                    site_free_val = resp_cfg.get("site_free_value", "")
+                    site_free_match = resp_cfg.get("site_free_match", "exact")
+                    if (
+                        site_free_path
+                        and site_free_val
+                        and self._attr_rule_active(text, resp_cfg, "site_free")
+                        and self._match_attr_value(
+                            JsonUtils.get_json_object(text, site_free_path), site_free_val, site_free_match
+                        )
+                    ):
+                        ret["free"] = True
+                if not ret["2xfree"]:
+                    site_2x_path = resp_cfg.get("site_2xfree_key", "")
+                    site_2x_val = resp_cfg.get("site_2xfree_value", "")
+                    site_2x_match = resp_cfg.get("site_2xfree_match", "exact")
+                    if (
+                        site_2x_path
+                        and site_2x_val
+                        and self._attr_rule_active(text, resp_cfg, "site_2xfree")
+                        and self._match_attr_value(
+                            JsonUtils.get_json_object(text, site_2x_path), site_2x_val, site_2x_match
+                        )
+                    ):
                         ret["free"] = True
                         ret["2xfree"] = True
                 peer_path = cfg.get("response", {}).get("peer_count_key", "")
@@ -431,8 +574,19 @@ class SiteEngine:
                         ret["peer_count"] = str(val) if val else ""
                     else:
                         ret["peer_count"] = int(val) if val else 0
+                labels_path = cfg.get("response", {}).get("labels_key", "")
+                if labels_path:
+                    labels_val = JsonUtils.get_json_object(text, labels_path)
+                    if isinstance(labels_val, (list, tuple)):
+                        ret["labels"] = ",".join(str(x) for x in labels_val if x)
+                    elif labels_val:
+                        ret["labels"] = str(labels_val)
+            except TorrentAttrFetchError:
+                raise
             except Exception as e:  # noqa: BLE001
-                log.debug(f"[engine]忽略异常: {e}")
+                # 抓取异常：属性视为“未知”，交由上层决定（避免误判为“非免费”）
+                log.debug(f"[SiteEngine]种子属性抓取异常: {e}")
+                raise TorrentAttrFetchError(f"种子详情抓取失败: {e}") from e
             return ret
 
         if site.html and site.html.conf:
@@ -445,7 +599,7 @@ class SiteEngine:
                 detail_url = torrent_url
             html_txt = self._fetch_page(detail_url, user_config)
             if not html_txt:
-                return ret
+                raise TorrentAttrFetchError(f"种子详情页抓取为空, url={detail_url[:120]}")
             if JsonUtils.is_valid_json(html_txt):
                 for xp in conf.get("2XFREE", []):
                     if str(JsonUtils.get_json_object(html_txt, xp.split("=")[0])) == xp.split("=")[1]:
@@ -490,20 +644,57 @@ class SiteEngine:
         rate_limiter = getattr(self, "site_limiter", None)
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(self, site)
+        cookie = user_config.get("cookie", "")
         if site and site.api:
             auth_headers, auth = engine_tools._build_auth(self, site, user_config)
             headers.update(auth_headers)
+            if cookie:
+                auth = CookieAuth(cookie)
         else:
-            cookie = user_config.get("cookie", "")
             auth = CookieAuth(cookie) if cookie else None
-        try:
-            res = HttpClient(
-                config=HttpClientConfig(proxy_url=proxy_url, timeout=30),
-                rate_limiter=rate_limiter_engine,
-            ).get(url=url, headers=headers, auth=auth, **rl_kwargs)
-            return res.text
-        except Exception:
-            return None
+
+        # 站点开启浏览器自动化：HttpClient 挂载 ChromeTransport，
+        # 用实验室指纹画像自动导航，挑战页可绕过；请求携带 cookie（CookieAuth）
+        # render_html=True：让 nexus-chrome 渲染页面后返回，而非挑战页原始 body
+        def _request(with_browser) -> str | None:
+            # 浏览器模式请求用完即关（release）：非持久会话立即删除，
+            # 避免 nexus-chrome 会话/标签页在进程退出前持续堆积
+            client = None
+            try:
+                client = HttpClient(
+                    config=HttpClientConfig(proxy_url=proxy_url, browser=with_browser),
+                    rate_limiter=rate_limiter_engine,
+                )
+                res = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
+                if not res.is_success:
+                    return None
+                return res.text
+            except Exception:
+                return None
+            finally:
+                if client is not None and with_browser is not None:
+                    client.close()
+
+        # 站点需开启“浏览器自动化”才会尝试 chrome 降级；否则仅直连
+        text = _request(None)
+        if (text is None or is_challenge(text)) and site and user_config.get("chrome"):
+            try:
+                text = _request(
+                    build_browser_mode(
+                        site_info={
+                            "chrome": True,
+                            "ua": ua,
+                            "browser_render": True,
+                            "browser_persistent": bool(user_config.get("browser_persistent")),
+                        },
+                        site_key=site.id,
+                        proxy_url=proxy_url,
+                        render_html=True,
+                    )
+                )
+            except Exception:
+                text = None
+        return text
 
     # ---- 连接测试 ----
 
@@ -518,12 +709,20 @@ class SiteEngine:
                 return False, "站点未配置连接测试端点", 0
             start = time.time()
             result = engine_tools._call_endpoint(self, test_cfg, site, user_config, {})
-            latency = int((time.time() - start) * 1000)
-            if result is not None:
-                return True, "连接成功", latency
-            return False, "连接失败", latency
+            latency = round(time.time() - start, 3)
+            if result is None:
+                return False, "连接失败", latency
+            raw = JsonUtils.dumps(result, separators=(",", ":")) if not isinstance(result, str) else result
+            if not is_logged_in(raw):
+                auth_type = (site.api.auth.get("type") if site.api.auth else "") or ""
+                if auth_type in ("cookie", "csrf"):
+                    return False, "Cookie失效", latency
+                if auth_type == "bearer":
+                    return False, "Token失效", latency
+                return False, "密钥失效", latency
+            return True, "连接成功", latency
         if site.html:
-            return engine_connection.test_html_connection(self, site, user_config)
+            return engine_connection.test_html_connection(self, site, user_config, base_url=url)
         return False, "未配置 API 或 HTML 端点", 0
 
     # ---- 用户信息 ----
@@ -544,6 +743,7 @@ class SiteEngine:
         session=None,
         api_key=None,
         bearer_token=None,
+        browser_persistent=False,
     ):
         for factory in self._user_info_factories:
             result = factory(
@@ -559,6 +759,7 @@ class SiteEngine:
                 session=session,
                 api_key=api_key,
                 bearer_token=bearer_token,
+                browser_persistent=browser_persistent,
             )
             if result:
                 return result
@@ -685,6 +886,14 @@ def get_tid_by_url(url: str, site_engine: SiteEngine) -> str | None:
     """从下载链接提取种子 ID"""
     if not url:
         return None
+    # 优先提取显式 tid 参数：部分站点 RSS 链接同时含 tid 与 uid（如 M-Team dlv2）
+    explicit = re.search(r"(?:[?&])tid=(\d+)", url)
+    if explicit:
+        return explicit.group(1)
+    # 从 URL 路径的数字段取最后一个（种子 id 通常在路径末尾，避免 RSS token/uid 干扰）
+    path_segments = [s for s in urlparse(url).path.split("/") if s.isdigit()]
+    if path_segments:
+        return path_segments[-1]
     site_def = site_engine.get_by_url(url)
     if site_def and site_def.download and site_def.download.type in ("api", "api_chained"):
         pattern = site_def.tid_pattern if site_def.tid_pattern else r"\d+"

@@ -7,6 +7,7 @@ import importlib
 import os
 import re
 import shutil
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import Future, wait
 from typing import Any
@@ -190,15 +191,55 @@ class SyncService:
         tmdbid: int | None = None,
         season: int | None = None,
         need_fix_all: bool = False,
+        src_backend_id: str = "local",
+        dst_backend_id: str = "",
     ) -> ManualTransferResultDTO:
         """
         手工转移文件
         验证参数后提交后台线程执行，避免 API 超时
+        支持 webdav/openlist 等远程存储源：先暂存到本地临时目录再走本地转移管道
         """
         inpath = os.path.normpath(inpath)
         if outpath:
             outpath = os.path.normpath(outpath)
-        if not os.path.exists(inpath):
+        # 目标后端（用于判断是否同源后端）
+        dst_backend_obj = self._resolve_dst_backend_by_dest(outpath or "", dst_backend_id or None)
+        if src_backend_id and src_backend_id != "local":
+            src_backend = self._resolve_backend(src_backend_id)
+            if not src_backend or not src_backend.exists(inpath):
+                return ManualTransferResultDTO(success=False, message="输入路径不存在")
+            # 同后端：无需下载暂存，直接走后端服务端复制
+            if dst_backend_obj is not None and str(getattr(dst_backend_obj, "id", "")) == str(src_backend_id):
+                episode = None
+                if episode_format:
+                    episode = (
+                        EpisodeFormat(episode_format, episode_details or "", episode_part or "", episode_offset or ""),
+                        need_fix_all,
+                    )
+                tmdb_info = None
+                if tmdbid:
+                    tmdb_info = self._media_cache.get_tmdb_info(mtype=media_type or MediaType.MOVIE, tmdbid=tmdbid)
+                    if not tmdb_info:
+                        return ManualTransferResultDTO(success=False, message="识别失败，无法查询到TMDB信息")
+                self._submit_manual_transfer(
+                    inpath,
+                    syncmod,
+                    outpath,
+                    media_type,
+                    episode,
+                    min_filesize,
+                    tmdb_info,
+                    season,
+                    dst_backend_obj,
+                    src_backend=src_backend,
+                )
+                return ManualTransferResultDTO(success=True, message="转移任务已提交，正在后台执行")
+            # 跨后端远程源：暂存到本地临时目录
+            staged = self._stage_remote_source(inpath, src_backend_id)
+            if not staged:
+                return ManualTransferResultDTO(success=False, message="输入路径不存在")
+            inpath = staged
+        elif not os.path.exists(inpath):
             return ManualTransferResultDTO(success=False, message="输入路径不存在")
 
         episode = None
@@ -215,9 +256,26 @@ class SyncService:
                 return ManualTransferResultDTO(success=False, message="识别失败，无法查询到TMDB信息")
 
         # 根据目的目录查找目标后端
-        dst_backend = self._resolve_dst_backend_by_dest(outpath or "")
+        dst_backend = dst_backend_obj or self._resolve_dst_backend_by_dest(outpath or "")
 
-        # 提交后台线程执行转移，避免 API 超时
+        return self._submit_manual_transfer(
+            inpath, syncmod, outpath, media_type, episode, min_filesize, tmdb_info, season, dst_backend
+        )
+
+    def _submit_manual_transfer(
+        self,
+        inpath: str,
+        syncmod,
+        outpath: str | None,
+        media_type,
+        episode,
+        min_filesize: int | None,
+        tmdb_info,
+        season: int | None,
+        dst_backend,
+        src_backend=None,
+    ) -> ManualTransferResultDTO:
+        """提交后台线程执行转移，避免 API 超时"""
         self._thread_executor.submit(
             self._filetransfer.transfer_media,
             SyncType.MAN,
@@ -233,14 +291,20 @@ class SyncService:
             min_filesize,
             True,
             False,
+            src_backend,
             dst_backend,
         )
 
         return ManualTransferResultDTO(success=True, message="转移任务已提交，正在后台执行")
 
-    def _resolve_dst_backend_by_dest(self, dest: str):
-        """根据目的目录查找对应同步配置的目标后端实例"""
-        dst_backend_id = self._filetransfer.get_sync_backend_by_dest(dest)
+    def _resolve_dst_backend_by_dest(self, dest: str, dst_backend_id: str | None = None):
+        """根据目的目录查找对应同步配置的目标后端实例；dst_backend_id 显式指定时优先使用"""
+        if dst_backend_id:
+            dst_backend_id = str(dst_backend_id)
+            if dst_backend_id == "local":
+                return None
+        else:
+            dst_backend_id = self._filetransfer.get_sync_backend_by_dest(dest)
         if dst_backend_id == "local":
             return None
         try:
@@ -260,8 +324,71 @@ class SyncService:
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[sync_service]忽略异常: {e}")
+            log.debug(f"[Sync]忽略异常: {e}")
         return None
+
+    def _resolve_backend(self, backend_id: str):
+        """按 id 解析存储后端实例，失败返回 None"""
+        try:
+            entity = self._storage_backend_repo.get_by_id(int(backend_id))
+            if not entity:
+                return None
+            info = StorageBackendFactory.get_config_info(entity.type)
+            stype, cls = info if info else (StorageType.LOCAL, LocalStorageConfig)
+            config = cls(id=str(entity.id), name=entity.name, type=stype, enabled=entity.enabled)
+            for k, v in entity.config.items():
+                if hasattr(config, k):
+                    setattr(config, k, v)
+            return StorageBackendFactory.create(config)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]解析存储后端失败: {e}")
+        return None
+
+    def remote_path_exists(self, path: str, backend_id: str) -> bool:
+        """远程存储源路径是否存在"""
+        backend = self._resolve_backend(backend_id)
+        if not backend:
+            return False
+        try:
+            return bool(backend.exists(path))
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]远程路径检查失败: {e}")
+        return False
+
+    def _stage_remote_source(self, remote_path: str, backend_id: str) -> str:
+        """递归下载远程源（文件或目录）到本地临时目录，返回本地路径；失败返回空串"""
+        backend = self._resolve_backend(backend_id)
+        if not backend:
+            return ""
+        try:
+            local_root = tempfile.mkdtemp(prefix="nm_stage_")
+            if not backend.exists(remote_path):
+                return ""
+            info = backend.stat(remote_path)
+            local_target = os.path.join(local_root, os.path.basename(remote_path.rstrip("/")) or "source")
+            if info and not info.is_dir:
+                os.makedirs(os.path.dirname(local_target), exist_ok=True)
+                with open(local_target, "wb") as f, backend.read_stream(remote_path) as src:
+                    shutil.copyfileobj(src, f)
+                return local_target
+            self._stage_remote_dir(backend, remote_path, local_target)
+            return local_target
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[Sync]远程源暂存失败: {e}")
+        return ""
+
+    def _stage_remote_dir(self, backend, remote_path: str, local_dir: str) -> None:
+        """递归暂存远程目录"""
+        os.makedirs(local_dir, exist_ok=True)
+        for fi in backend.list_dir(remote_path):
+            rel = os.path.basename(fi.path.rstrip("/"))
+            local_item = os.path.join(local_dir, rel or "item")
+            if fi.is_dir:
+                self._stage_remote_dir(backend, fi.path, local_item)
+            else:
+                os.makedirs(os.path.dirname(local_item), exist_ok=True)
+                with open(local_item, "wb") as f, backend.read_stream(fi.path) as src:
+                    shutil.copyfileobj(src, f)
 
     # ---------- 重新识别 ----------
 
@@ -287,6 +414,10 @@ class SyncService:
                     path = unknowninfo.path
                     dest_dir = str(unknowninfo.dest or "")
                     operation = unknowninfo.mode or ""
+                    # 路径已不存在（已转移/已删除）的未识别项直接跳过，避免无效识别
+                    if not path or not os.path.exists(path):
+                        log.info(f"[ReIdentify]未识别项路径不存在，跳过：{path}")
+                        return
                 elif flag == "history":
                     transinfo = self._filetransfer.get_transfer_info_by_id(wid)
                     if not transinfo:
@@ -319,12 +450,13 @@ class SyncService:
 
         def _do_re_identify():
             try:
+                # 去重，避免同一路径重复识别
+                unique_ids = list(dict.fromkeys(ids))
                 if self._thread_executor is None:
-                    for wid in ids:
+                    for wid in unique_ids:
                         _do_one(wid)
                 else:
-                    futures = [self._thread_executor.submit(_do_one, wid) for wid in ids]
-                    from concurrent.futures import wait
+                    futures = [self._thread_executor.submit(_do_one, wid) for wid in unique_ids]
 
                     wait(futures)
             finally:
@@ -469,7 +601,7 @@ class SyncService:
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[sync_service]忽略异常: {e}")
+            log.debug(f"[Sync]忽略异常: {e}")
         return None
 
     @classmethod

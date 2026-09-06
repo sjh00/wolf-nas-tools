@@ -1,5 +1,6 @@
 """Subscribe query service - 订阅查询与删除."""
 
+import re
 from typing import Any
 
 from app.domain.mediatypes import MediaType
@@ -37,6 +38,7 @@ class SubscribeQueryService:
             filter_rule = rss_movie.FILTER_RULE
             filter_include = rss_movie.FILTER_INCLUDE
             filter_exclude = rss_movie.FILTER_EXCLUDE
+            filter_free = bool(rss_movie.FILTER_FREE)
             download_setting = rss_movie.DOWNLOAD_SETTING
             save_path = rss_movie.SAVE_PATH
             fuzzy_match = rss_movie.FUZZY_MATCH == 1
@@ -75,6 +77,7 @@ class SubscribeQueryService:
                 "filter_rule": filter_rule,
                 "filter_include": filter_include,
                 "filter_exclude": filter_exclude,
+                "filter_free": filter_free,
                 "save_path": save_path,
                 "download_setting": download_setting,
                 "fuzzy_match": fuzzy_match,
@@ -105,6 +108,7 @@ class SubscribeQueryService:
             filter_rule = rss_tv.FILTER_RULE
             filter_include = rss_tv.FILTER_INCLUDE
             filter_exclude = rss_tv.FILTER_EXCLUDE
+            filter_free = bool(rss_tv.FILTER_FREE)
             download_setting = rss_tv.DOWNLOAD_SETTING
             save_path = rss_tv.SAVE_PATH
             total_ep = rss_tv.TOTAL_EP
@@ -150,6 +154,7 @@ class SubscribeQueryService:
                 "filter_rule": filter_rule,
                 "filter_include": filter_include,
                 "filter_exclude": filter_exclude,
+                "filter_free": filter_free,
                 "save_path": save_path,
                 "download_setting": download_setting,
                 "total": rss_tv.TOTAL,
@@ -168,6 +173,40 @@ class SubscribeQueryService:
     def get_subscribe_tv_episodes(self, rssid: int | None) -> Any:
         """查询数据库中订阅的电视剧缺失集数"""
         return self._tv_episode_repo.get(int(rssid or 0))
+
+    def get_subscribe_seasons(
+        self,
+        tmdbid: str | None = None,
+        title: str | None = None,
+        year: str | None = None,
+    ) -> list[int]:
+        """获取某部剧集已订阅的季号列表
+
+        SEASON 存储格式为 "S01" 或 "S01-S03"（区间），此处解析为季号整数列表。
+        优先按 tmdbid 匹配，其次按名称(+年份)匹配。
+        """
+        seasons: set[int] = set()
+        tmdbid_str = str(tmdbid) if tmdbid else ""
+        for rss_tv in self._tv_repo.get_all():
+            matched = False
+            if tmdbid_str and str(rss_tv.tmdb_id) == tmdbid_str:
+                matched = True
+            elif not tmdbid_str and title and rss_tv.name == title:
+                matched = not year or str(rss_tv.year) == str(year)
+            if not matched:
+                continue
+            seasons.update(self._parse_season_numbers(rss_tv.season))
+        return sorted(seasons)
+
+    @staticmethod
+    def _parse_season_numbers(season_str: str | None) -> list[int]:
+        """将 "S01" / "S01-S03" 解析为季号整数列表"""
+        if not season_str:
+            return []
+        nums = [int(n) for n in re.findall(r"S(\d+)", season_str, flags=re.IGNORECASE)]
+        if len(nums) == 2 and nums[0] <= nums[1]:
+            return list(range(nums[0], nums[1] + 1))
+        return nums
 
     def check_history(self, type_str: str, name: str, year: str | None, season: str | None) -> bool:
         """检查订阅历史是否存在"""

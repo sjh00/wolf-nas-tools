@@ -3,10 +3,12 @@ JWT 认证路由
 提供登录、刷新 Token、登出、获取当前用户信息
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 
 from api.deps import get_auth_service, get_current_user, get_rbac_service
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AuthError
 from app.core.settings import AppSettings
 from app.schemas.auth import LoginResponse, UserContext
 from app.schemas.common import CommonResponse
@@ -30,8 +32,11 @@ async def login(
     """
     user_ctx = auth_service.authenticate(form_data.username, form_data.password)
     if not user_ctx:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误", headers={"WWW-Authenticate": "Bearer"}
+        raise AuthError(
+            "用户名或密码错误",
+            errcode=ErrorCode.PASSWORD_INCORRECT,
+            http_status=401,
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     tokens = AuthService.create_token_pair(user_ctx)
@@ -60,11 +65,19 @@ async def refresh_token(
     """
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供 Refresh Token")
+        raise AuthError(
+            "未提供 Refresh Token",
+            errcode=ErrorCode.REFRESH_TOKEN_INVALID,
+            http_status=401,
+        )
 
     tokens = auth_service.refresh_access_token(refresh_token)
     if not tokens:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh Token 无效或已过期")
+        raise AuthError(
+            "Refresh Token 无效或已过期",
+            errcode=ErrorCode.REFRESH_TOKEN_INVALID,
+            http_status=401,
+        )
 
     # Token 轮换：同时刷新 Refresh Token
     response.set_cookie(
@@ -104,7 +117,6 @@ async def get_current_user_info(
                 "user_id": 0,
                 "level": 0,
                 "permissions": [],
-                "is_superadmin": False,
                 "roles": [],
             },
         }
@@ -122,7 +134,9 @@ async def get_current_user_info(
             "avatar": avatar,
             "level": user.level,
             "permissions": user.permissions,
-            "is_superadmin": user.is_superadmin,
+            # 超管按角色代码判定（角色代码不可通过接口修改）
+            "is_superadmin": any(r.role_code == "superadmin" for r in roles) if roles else False,
+            "is_default_password": rbac_service.is_default_password(user.user_id),
             "roles": [role.role_name for role in roles] if roles else [],
         },
     }

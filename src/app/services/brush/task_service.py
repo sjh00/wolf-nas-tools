@@ -52,7 +52,7 @@ class BrushTaskService:
         self._brush_rule_repo = brush_rule_repo
         self._media_service = media_service
         self._brush_tasks: dict = {}
-        self._torrents_cache: set = set()
+        self._torrents_cache: dict[str, float] = {}
 
         self._helper = BrushTaskHelper(
             repo=self._repo,
@@ -153,7 +153,67 @@ class BrushTaskService:
         if not brushtasks:
             return
         for task in brushtasks:
-            self._brush_tasks[str(task.ID)] = self._build_task_dict(task)
+            try:
+                self._brush_tasks[str(task.ID)] = self._build_task_dict(task)
+            except Exception as e:
+                # 单个任务构建失败不能中断整个加载，否则重启后只剩部分任务
+                log.error(f"[Brush]任务 {task.ID} ({task.NAME}) 构建失败，已跳过: {e}")
+        # 一次性数据迁移：把 SITE 为配置 id/名称的任务修正为 DB 主键 id
+        self._migrate_site_ids(brushtasks)
+        # 自动清理孤儿任务：站点已被删除的刷流任务（无法运行、列表中不可见）
+        self._cleanup_orphan_tasks()
+
+    def _cleanup_orphan_tasks(self) -> None:
+        """清理“站点已删除”的刷流任务：此类任务无法运行且列表中不可见，
+        删除后也不会再于重启时被注册进调度。仅在确有其他任务正常加载时执行，避免误删。"""
+        if not self._brush_tasks:
+            return
+        try:
+            rows = self._repo.get_brushtasks()
+            if not rows:
+                return
+        except Exception as e:
+            log.warn(f"[Brush]孤儿任务清理查询失败，跳过: {e}")
+            return
+        cleaned = 0
+        for task in rows:
+            tid = task.ID
+            if str(tid) in self._brush_tasks:
+                continue  # 能正常构建（站点存在），不属于孤儿
+            site = str(task.SITE or "")
+            site_id = site if site.isdigit() else self._sites.resolve_site_db_id(site)
+            try:
+                exists = bool(site_id and self._sites.get_sites(siteid=site_id))
+            except Exception as e:
+                log.warn(f"[Brush]孤儿任务 {tid} 站点检查异常，跳过清理: {e}")
+                continue
+            if exists:
+                continue  # 站点仍在但构建失败（如下载器缺失）——保留，避免误删
+            try:
+                self._repo.delete_brushtask(tid)
+                self._stop_task_jobs(tid)
+                self._brush_tasks.pop(str(tid), None)
+                cleaned += 1
+                log.warn(f"[Brush]检测到刷流任务 {tid} ({task.NAME}) 的站点已删除，自动清理该任务及其种子/事件记录")
+            except Exception as e:
+                log.warn(f"[Brush]自动清理孤儿任务 {tid} 失败: {e}")
+        if cleaned:
+            log.info(f"[Brush]启动时自动清理了 {cleaned} 个站点已删除的刷流任务")
+
+    def _migrate_site_ids(self, tasks) -> None:
+        """兼容历史数据：SITE 存了站点配置 id/名称（如 "ttg"）的任务统一修正为 DB 主键 id."""
+        for task in tasks:
+            site = str(task.SITE or "")
+            if not site or site.isdigit():
+                continue
+            db_id = self._sites.resolve_site_db_id(site)
+            if not db_id:
+                continue
+            try:
+                self._repo.update_brushtask_site(task.ID, str(db_id))
+                log.info(f"[Brush]任务 {task.NAME} 站点标识已从 {site} 修正为 DB id {db_id}")
+            except Exception as e:
+                log.warn(f"[Brush]任务 {task.NAME} 站点标识修正失败: {e}")
 
     def _reload_single_task(self, task_id):
         task_rows = self._repo.get_brushtasks(brush_id=task_id)
@@ -162,7 +222,13 @@ class BrushTaskService:
             self._brush_tasks.pop(str(task_id), None)
             return
         task = task_rows[0] if isinstance(task_rows, (list, tuple)) else task_rows
-        task_dict = self._build_task_dict(task)
+        try:
+            task_dict = self._build_task_dict(task)
+        except Exception as e:
+            log.error(f"[Brush]任务 {task.ID} ({task.NAME}) 构建失败，已跳过: {e}")
+            self._stop_task_jobs(task.ID)
+            self._brush_tasks.pop(str(task.ID), None)
+            return
         self._stop_task_jobs(task.ID)
         self._brush_tasks[str(task.ID)] = task_dict
         cron = str(task.INTEVAL).strip()
@@ -203,7 +269,7 @@ class BrushTaskService:
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[task_service]加载规则模板 {rule_id}/{field_name} 失败: {e}")
+            log.debug(f"[Brush]加载规则模板 {rule_id}/{field_name} 失败: {e}")
         return default
 
     def _build_task_dict(self, task) -> dict:
@@ -294,19 +360,24 @@ class BrushTaskService:
         self._stop_task_jobs(brushtask_id)
         task = self._brush_tasks.get(str(brushtask_id))
         if not task:
-            task_rows = self._repo.get_brushtasks(brush_id=brushtask_id)
-            if task_rows:
-                row = task_rows[0] if isinstance(task_rows, (list, tuple)) else task_rows
-                task = self._build_task_dict(row)
+            # 任务不在缓存中（如删除的站点/下载器引用导致构建失败），DB 行必须仍能被删除
+            try:
+                task_rows = self._repo.get_brushtasks(brush_id=brushtask_id)
+                if task_rows:
+                    row = task_rows[0] if isinstance(task_rows, (list, tuple)) else task_rows
+                    task = self._build_task_dict(row)
+            except Exception as e:
+                log.warn(f"[BrushTask]删除任务 {brushtask_id} 构建信息失败，仅删除 DB 记录: {e}")
+                task = None
         downloader_id = task.get("downloader") if task else None
         if downloader_id:
-            torrents = self._repo.get_brushtask_torrents(brushtask_id, active=False)
-            delete_ids = [t.DOWNLOAD_ID for t in torrents if t.DOWNLOAD_ID and t.DOWNLOAD_ID != "0"]
-            if delete_ids:
-                try:
+            try:
+                torrents = self._repo.get_brushtask_torrents(brushtask_id, active=False)
+                delete_ids = [t.DOWNLOAD_ID for t in torrents if t.DOWNLOAD_ID and t.DOWNLOAD_ID != "0"]
+                if delete_ids:
                     self._downloader.delete_torrents(downloader_id=downloader_id, ids=delete_ids, delete_file=True)
-                except Exception as e:
-                    log.warn(f"[BrushTask]删除任务 {brushtask_id} 的下载器种子失败: {e}")
+            except Exception as e:
+                log.warn(f"[BrushTask]删除任务 {brushtask_id} 的下载器种子失败: {e}")
         ret = self._repo.delete_brushtask(brushtask_id or 0)
         self._brush_tasks.pop(str(brushtask_id), None)
         return ret

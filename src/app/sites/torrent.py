@@ -1,7 +1,7 @@
 import datetime
 import os.path
 import re
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 from bencode import bdecode
 
@@ -88,7 +88,15 @@ class Torrent:
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(engine, site_def)
 
-        if site_def and site_def.api:
+        # 预签名下载链接自带认证(如 M-Team RSS dlv2 的 sign 参数)，
+        # 不能再附加站点 API Key，否则站点会当作 API 认证并返回 JSON 错误。
+        # 优先读站点配置 download.presigned；仅对 API 站点回退到 sign 参数启发式判断。
+        # HTML 站点即使 URL 带 sign（防盗链 token）仍需要登录 cookie，不能跳过。
+        is_presigned = bool(site_def and site_def.download and site_def.download.presigned)
+        if not is_presigned and site_def and site_def.api:
+            is_presigned = bool(parse_qs(urlparse(url).query).get("sign"))
+
+        if site_def and site_def.api and not is_presigned:
             user_config = {
                 "cookie": cookie or "",
                 "api_key": api_key or "",
@@ -98,6 +106,8 @@ class Torrent:
             }
             auth_headers, auth = engine_tools._build_auth(engine, site_def, user_config)
             headers.update(auth_headers)
+        elif is_presigned:
+            auth = None
         else:
             auth = CookieAuth(cookie)
 
@@ -289,7 +299,6 @@ class Torrent:
 
         # 排序函数，合集优先、标题、站点、资源类型、做种数量
         def get_sort_str(x):
-            from app.domain.mediatypes import MediaType
 
             episode_list = x.get_episode_list() if hasattr(x, "get_episode_list") else []
             episode_count = max(len(episode_list), getattr(x, "total_episodes", 0))
@@ -305,24 +314,25 @@ class Torrent:
                 collection_priority = 0
             season_len = str(len(x.get_season_list())).rjust(2, "0")
             episode_len = str(len(episode_list)).rjust(4, "0")
-            # 排序：合集、标题、资源类型、站点、做种、季集
+            # 排序：合集、资源规则、做种/站点（按下载顺序设置）、季集、标题（标题仅作平局决胜）
+            # res_order/site_order = 100-pri（pri 越小优先级越高，主站通常配 1），降序即 pri 小在前
             if download_order == "seeder":
                 return "{}{}{}{}{}{}".format(
                     str(collection_priority).rjust(1, "0"),
-                    str(x.title).ljust(100, " "),
                     str(x.res_order).rjust(3, "0"),
                     str(x.seeders).rjust(10, "0"),
                     str(x.site_order).rjust(3, "0"),
                     f"{season_len}{episode_len}",
+                    str(x.title).ljust(100, " "),
                 )
             else:
                 return "{}{}{}{}{}{}".format(
                     str(collection_priority).rjust(1, "0"),
-                    str(x.title).ljust(100, " "),
                     str(x.res_order).rjust(3, "0"),
                     str(x.site_order).rjust(3, "0"),
                     str(x.seeders).rjust(10, "0"),
                     f"{season_len}{episode_len}",
+                    str(x.title).ljust(100, " "),
                 )
 
         # 匹配的资源中排序分组选最好的一个下载

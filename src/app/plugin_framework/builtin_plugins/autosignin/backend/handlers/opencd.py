@@ -16,7 +16,7 @@ from app.utils.json_utils import JsonUtils
 
 
 class Opencd(SiteSigninHandler):
-    site_url = "open.cd"
+    site_id = "opencd"
 
     def signin(self, ctx: SiteSigninContext) -> SigninResult:
         site = ctx.site
@@ -71,7 +71,19 @@ class Opencd(SiteSigninHandler):
         times = 0
         ocr_result = None
         while times <= 3:
-            ocr_result = OcrRecognizer().get_captcha_text(image_url=img_get_url, cookie=cookie, ua=ua)
+            try:
+                ocr_result = (
+                    OcrRecognizer()
+                    .recognize(
+                        {"task_type": "captcha", "image_url": img_get_url},
+                        cookie=cookie,
+                        ua=ua,
+                    )
+                    .text
+                    or ""
+                )
+            except Exception:
+                ocr_result = ""
             self._plugin_ctx.debug(f"ocr识别{site}验证码 {ocr_result}")
             if ocr_result and len(ocr_result) == 6:
                 self._plugin_ctx.info(f"ocr识别{site}验证码成功 {ocr_result}")
@@ -82,9 +94,10 @@ class Opencd(SiteSigninHandler):
 
         if ocr_result:
             data = {"imagehash": img_hash, "imagestring": ocr_result}
+            signin_url = base_url + "/plugin_sign-in.php?cmd=signin"
             try:
                 sign_res = client.post(
-                    url=signurl,
+                    url=signin_url,
                     data=data,
                     headers={"User-Agent": ua} if ua else None,
                     auth=CookieAuth(cookie) if cookie else None,

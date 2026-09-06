@@ -3,6 +3,7 @@
 支持令牌桶和滑动窗口两种算法，Redis/内存双后端，支持等待模式.
 """
 
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -13,17 +14,16 @@ from app.infrastructure.redis import RedisStore
 
 
 def _parse_rate(rate: str) -> tuple[float, int]:
-    """解析速率字符串，如 '10/m' -> (10, 60), '2.5/s' -> (2.5, 1).
+    """解析速率字符串，如 '10/m' -> (10, 60), '2.5/s' -> (2.5, 1), '1/2s' -> (1, 2)."""
 
-    :return: (count, window_seconds)
-    """
-    parts = rate.split("/")
-    if len(parts) != 2:
+    m = re.match(r"^(\d+\.?\d*)/(\d+\.?\d*)?([smhd])?$", rate.strip())
+    if not m:
         raise ValueError(f"Invalid rate format: {rate}")
-    count = float(parts[0])
-    unit = parts[1].lower()
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    window = multipliers.get(unit, 60)
+    count = float(m.group(1))
+    interval = float(m.group(2)) if m.group(2) else 1.0
+    unit = m.group(3) or "s"
+    multipliers: dict[str, int] = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    window = int(interval * multipliers.get(unit, 60))
     return count, window
 
 
@@ -191,19 +191,26 @@ class RedisTokenBucketBackend(RateLimitBackend):
         return self._redis.script_load(self._TOKEN_BUCKET_SCRIPT)
 
     def acquire(self, key, rate, burst, tokens, timeout) -> bool:
+        """原子化获取许可。NOSCRIPT 时自动重载脚本重试。"""
         if not self._redis.is_available():
             return True
         now_ms = int(time.time() * 1000)
-        try:
-            if self._script_sha is None:
-                self._script_sha = self._load_script()
-            if self._script_sha:
-                result = self._redis.evalsha(self._script_sha, 1, key, rate, burst, tokens, now_ms)
-                return bool(result)
-            return True
-        except Exception as e:
-            log.debug(f"RedisTokenBucketBackend 限流检查失败 {key}: {e}")
-            return True
+        for _ in range(2):
+            try:
+                if self._script_sha is None:
+                    self._script_sha = self._load_script()
+                if self._script_sha:
+                    result = self._redis.evalsha(self._script_sha, 1, key, rate, burst, tokens, now_ms)
+                    return bool(result)
+                return True
+            except Exception as e:
+                err = str(e)
+                if "NOSCRIPT" in err:
+                    self._script_sha = None
+                    continue
+                log.warn(f"RedisTokenBucketBackend 限流异常 {key}: {e}")
+                return True
+        return True
 
     def get_status(self, key=None) -> dict:
         return {}
@@ -255,8 +262,17 @@ class RateLimitEngine:
             if self._sliding_window_backend is None:
                 self._sliding_window_backend = MemorySlidingWindowBackend()
             return self._sliding_window_backend.acquire(key, rate_per_sec, burst, tokens, timeout)
-        # Redis 脚本将 rate 视为毫秒速率，内存后端使用秒速率
-        backend_rate = rate_per_sec * 1000 if isinstance(self._backend, RedisTokenBucketBackend) else rate_per_sec
+        # 引擎层统一补阻塞循环（仅 timeout>0 时生效，兼容 timeout=None 非阻塞语义）
+        # Lua 脚本内部已处理 ms→s 转换，rate 应为每秒令牌数
+        backend_rate = rate_per_sec
+        if timeout is not None and timeout > 0:
+            deadline = time.time() + timeout
+            while True:
+                if self._backend.acquire(key, backend_rate, burst, tokens, 0):
+                    return True
+                if time.time() >= deadline:
+                    return False
+                time.sleep(0.05)
         return self._backend.acquire(key, backend_rate, burst, tokens, timeout)
 
     def try_acquire(self, key: str, rate: str = "10/m", tokens: int = 1) -> bool:
