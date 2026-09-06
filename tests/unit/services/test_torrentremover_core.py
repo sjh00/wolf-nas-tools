@@ -28,7 +28,7 @@ def _base_task_data(**overrides):
         "interval": 60,
         "enabled": 0,
         "samedata": 0,
-        "only_nexus_media": 1,
+        "only_wolf_nas": 1,
         "ratio": 0,
         "seeding_time": 0,
         "upload_avs": 0,

@@ -430,6 +430,9 @@ class TransferPathResolver:
         format_dict = self.get_format_dict(media_info, media_service)
         dir_name = render(self._movie_dir_rmt_format, format_dict)
         file_name = render(self._movie_file_rmt_format, format_dict)
+        # 额外内容/花絮：归档到 <主目录>/extras/ 子目录，与正片分离
+        if media_info and media_info.note.get("is_extras"):
+            dir_name = os.path.join(dir_name, "extras")
         return dir_name, file_name
 
     def get_tv_dest_path(self, media_info, media_service=None):
@@ -438,6 +441,9 @@ class TransferPathResolver:
         dir_name = render(self._tv_dir_rmt_format, format_dict)
         season_name = render(self._tv_season_rmt_format, format_dict)
         file_name = render(self._tv_file_rmt_format, format_dict)
+        # 额外内容/花絮：剧集季目录固定为 extras/，与正片分离
+        if media_info and media_info.note.get("is_extras"):
+            season_name = "extras"
         return dir_name, season_name, file_name
 
     def get_dest_path_by_info(self, dest, meta_info, media_service):

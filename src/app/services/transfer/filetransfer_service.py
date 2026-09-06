@@ -995,6 +995,9 @@ class FileTransferService:
         src_backend=None,
         dst_backend=None,
     ):
+        # 额外内容/花絮：写入 note 标记，供路径解析落盘到 extras 子目录、下游事件区分
+        if media.type != MediaType.ANIME and PathUtils.is_extras(file_item):
+            media.note["is_extras"] = True
         dir_exist_flag, ret_dir_path, file_exist_flag, ret_file_path = self._existence.is_media_exists(
             dist_path, media, dst_backend
         )

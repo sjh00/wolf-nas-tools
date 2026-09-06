@@ -137,7 +137,7 @@ class TestPydanticChatAgent:
         # 隔离 checkpoint 目录，避免读到真实 data 目录残留历史
         from app.agent import pydantic_agent as pa
 
-        monkeypatch.setattr(pa.settings, "nexus_media_data", str(tmp_path / "data"))
+        monkeypatch.setattr(pa.settings, "wolfnas_data", str(tmp_path / "data"))
 
     def test_multi_step_tool_loop(self, tmp_path):
         svc = _FakeSvc()
