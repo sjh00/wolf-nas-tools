@@ -8,7 +8,7 @@ class TestSiteConfigUpdaterUrlResolution:
     def test_default_url_falls_back_to_constant(self, tmp_path):
         updater = SiteConfigUpdater(config_dir=str(tmp_path))
         assert updater._release_api_url == SITES_DATA_URL
-        assert updater._repo_base == "https://github.com/linyuan0213/nexus-media-sites"
+        assert updater._repo_base == "https://github.com/sjh00/wolf-nas-tools"
 
     def test_constructor_url_override(self, tmp_path):
         url = "https://api.github.com/repos/linyuan0213/nexus-media-sites/releases/latest"
@@ -40,7 +40,7 @@ class TestSiteConfigUpdaterFindAsset:
         updater = SiteConfigUpdater(config_dir=str(tmp_path))
         release = {"tag_name": "v20260827", "assets": []}
         assert updater._find_asset_url(release) == (
-            "https://github.com/linyuan0213/nexus-media-sites/releases/download/v20260827/sites-config.zip"
+            "https://github.com/sjh00/wolf-nas-tools/releases/download/v20260827/sites-config.zip"
         )
 
     def test_no_repo_base_and_no_assets_returns_none(self, tmp_path):

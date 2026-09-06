@@ -35,6 +35,8 @@ _RE_FPS_HZ = re.compile(r"\d+\s*(FPS|HZ)\b", re.IGNORECASE)
 _RE_DATE = re.compile(r"\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}")
 _RE_YEAR_RANGE = re.compile(r"([\s.]+)(\d{4})-(\d{4})")
 _RE_LEADING_BRACKET = re.compile(r"^[\[【](.+?)[\]】]")
+# 额外内容/花絮后缀（BONUS.DISC、extras-N）：识别标题时剔除，避免混入正式标题/集数
+_RE_BONUS_SUFFIX = re.compile(r"[\._ ]BONUS[\._ ]DISC|\.extras-\d+", re.IGNORECASE)
 # 语言/字幕/制作/类别标记 — 出现在方括号中时应视为标签而非标题
 _LANGUAGE_SUBTITLE_RE = re.compile(
     r"[粤粵][语語]|[国國][语語]|日[语語]|繁[体體]|简[体體]|外挂|内嵌|内封|多[语語]|双[语語]"
@@ -63,6 +65,8 @@ def prepare_title(title: str) -> str:
     title = _RE_AUDIO_BITRATE.sub("", title)
     title = _RE_DATE.sub("", title)
     title = _RE_YEAR_RANGE.sub(r"\1\2", title)
+    # 剔除 BONUS.DISC / .extras-N 花絮后缀，避免被当成正式标题/集数识别
+    title = _RE_BONUS_SUFFIX.sub("", title)
     # 下划线转空格（保留 SAC_2045、x265_10bit 等字母数字间有意义连接，其余拆开）
     title = re.sub(r"(?<![A-Za-z])_|_(?!\d)", " ", title)
 

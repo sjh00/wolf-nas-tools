@@ -133,6 +133,8 @@ class TestParseResults:
 class TestWebSearchHandler:
     def test_returns_results(self):
         with patch(
+            "app.agent.tools.handlers.search._validate_url", side_effect=lambda u: u
+        ), patch(
             "app.agent.tools.handlers.search._open_session",
             return_value=_FakeSession(html=_GOOGLE_HTML),
         ):
@@ -154,6 +156,8 @@ class TestWebSearchHandler:
 
     def test_limit_clamped(self):
         with patch(
+            "app.agent.tools.handlers.search._validate_url", side_effect=lambda u: u
+        ), patch(
             "app.agent.tools.handlers.search._open_session",
             return_value=_FakeSession(html=_GOOGLE_HTML),
         ):
@@ -179,6 +183,8 @@ class TestWebSearchHandler:
     def test_fallback_to_next_engine_on_failure(self):
         """主引擎（google）不可达 → 自动降级到 bing"""
         with patch(
+            "app.agent.tools.handlers.search._validate_url", side_effect=lambda u: u
+        ), patch(
             "app.agent.tools.handlers.search._open_session",
             side_effect=[RuntimeError("google blocked"), _FakeSession(html=_BING_HTML)],
         ):
@@ -191,6 +197,8 @@ class TestWebSearchHandler:
     def test_fallback_on_empty_results(self):
         """主引擎无结果（人机验证页）→ 降级到下一引擎"""
         with patch(
+            "app.agent.tools.handlers.search._validate_url", side_effect=lambda u: u
+        ), patch(
             "app.agent.tools.handlers.search._open_session",
             side_effect=[_FakeSession(html="<html><body>consent</body></html>"), _FakeSession(html=_BING_HTML)],
         ):
