@@ -86,7 +86,7 @@ def upgrade() -> None:
 
     # 尝试从配置文件迁移现有媒体服务器配置到数据库
     try:
-        config_path = os.environ.get("NEXUS_MEDIA_CONFIG")
+        config_path = os.environ.get("WOLFNAS_CONFIG") or os.environ.get("NEXUS_MEDIA_CONFIG")
         if config_path:
             with open(config_path, encoding="utf-8") as cf:
                 cfg = ruamel.yaml.YAML().load(cf)

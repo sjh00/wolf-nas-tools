@@ -1,15 +1,15 @@
-# Nexus Media MySQL 完整版：前后端 + Redis + MySQL + OCR + Chrome
+# WolfNas MySQL 完整版：前后端 + Redis + MySQL + OCR + Chrome
 # 启动：docker compose -f docker-compose.mysql.yml up -d
 # 必填：.env 中设置 MYSQL_ROOT_PASSWORD、MYSQL_PASSWORD、VNC_PASSWORD（禁止使用默认密码）
 services:
   frontend:
-    image: linyuan0213/nexus-media-web:latest
+    image: sjh00/wolf-nas-web:latest
     ports:
       - 8080:8080
     restart: always
-    container_name: nexus-media-web
+    container_name: wolfnas-web
     networks:
-      - nexus-media-network
+      - wolfnas-network
     depends_on:
       backend:
         condition: service_healthy
@@ -17,7 +17,7 @@ services:
 
   # 后端：MySQL，启动时自动执行 alembic 迁移（镜像内置）
   backend:
-    image: linyuan0213/nexus-media:latest
+    image: sjh00/wolf-nas:latest
     ports:
       - 3000:8080
     volumes:
@@ -25,23 +25,23 @@ services:
       # 替换为你的实际媒体目录，例如：
       # - /mnt/media:/media
     restart: always
-    hostname: nexus-media
-    container_name: nexus-media
+    hostname: wolfnas
+    container_name: wolfnas
     networks:
-      nexus-media-network:
+      wolfnas-network:
         aliases:
           - backend
     environment:
       PUID: "0"
       PGID: "0"
       UMASK: "000"
-      NEXUS_MEDIA_DATA: /data
+      WOLFNAS_DATA: /data
       DATABASE__TYPE: mysql
       DATABASE__HOST: mysql
       DATABASE__PORT: "3306"
-      DATABASE__USERNAME: nexus_media
+      DATABASE__USERNAME: wolfnas
       DATABASE__PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD（禁止使用默认密码）}
-      DATABASE__DATABASE: nexus_media
+      DATABASE__DATABASE: wolfnas
       REDIS__HOST: redis
       REDIS__PORT: "6379"
       REDIS__DB: "0"
@@ -59,24 +59,24 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: nexus-media-redis
+    container_name: wolfnas-redis
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
     volumes:
       - ./data/redis_data:/data
     command: redis-server --save "" --appendonly no --dir /data
 
   mysql:
     image: mysql:8.4
-    container_name: nexus-media-mysql
+    container_name: wolfnas-mysql
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD（禁止使用默认密码）}
-      - MYSQL_DATABASE=nexus_media
-      - MYSQL_USER=nexus_media
+      - MYSQL_DATABASE=wolfnas
+      - MYSQL_USER=wolfnas
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD（禁止使用默认密码）}
       - TZ=Asia/Shanghai
     volumes:
@@ -94,22 +94,22 @@ services:
       - --collation-server=utf8mb4_unicode_ci
 
   # OCR / 站点验证（可选）
-  nexus-verify:
-    image: linyuan0213/nexus-verify:latest
-    container_name: nexus-verify
+  wolfnas-verify:
+    image: sjh00/wolf-nas-verify:latest
+    container_name: wolfnas-verify
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
     ports:
       - 9300:9300
 
   # Chrome 自动化（可选）
-  nexus-chrome:
-    image: linyuan0213/nexus-chrome:latest
-    container_name: nexus-chrome
+  wolfnas-chrome:
+    image: sjh00/wolf-nas-chrome:latest
+    container_name: wolfnas-chrome
     restart: always
     networks:
-      - nexus-media-network
+      - wolfnas-network
     shm_size: 2g
     environment:
       - VNC_PASSWORD=${VNC_PASSWORD:?请在 .env 中设置 VNC_PASSWORD（禁止使用默认密码 password）}
@@ -127,6 +127,6 @@ services:
       - 6080:6080
 
 networks:
-  nexus-media-network:
+  wolfnas-network:
     driver: bridge
-    name: nexus-media-network
+    name: wolfnas-network
