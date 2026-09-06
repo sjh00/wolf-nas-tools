@@ -260,6 +260,7 @@ class BrushRuleEngine:
         if not remove_rule:
             return False, BrushDeleteType.NOTDELETE
 
+        torrent_attr = params.get("torrent_attr") or {}
         values = {
             "time": params.get("seeding_time"),
             "hr_time": params.get("seeding_time"),
@@ -268,11 +269,14 @@ class BrushRuleEngine:
             "dltime": params.get("dltime"),
             "avg_upspeed": params.get("avg_upspeed"),
             "upspeed": params.get("upspeed"),
+            # 前端/任务表单字段为 cur_upspeed，与 upspeed 同义
+            "cur_upspeed": params.get("upspeed"),
             "iatime": params.get("iatime"),
             "pending_time": params.get("pending_time"),
             "freespace": params.get("freespace"),
             "alive_time": _calc_alive_hours(params.get("add_time")),
-            "freestatus": params.get("torrent_attr", {}).get("free", False),
+            "freestatus": torrent_attr.get("free", False),
+            "hr": torrent_attr.get("hr"),
             "tracker_error": params.get("tracker_error"),
         }
 
@@ -282,7 +286,8 @@ class BrushRuleEngine:
             "ratio": (BrushDeleteType.RATIO, lambda value, rv: cls.check_range_rule(value, rv)),
             "uploadsize": (BrushDeleteType.UPLOADSIZE, lambda value, rv: cls.check_range_rule(value, rv, 1024**3)),
             "dltime": (BrushDeleteType.DLTIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
-            "avg_upspeed": (BrushDeleteType.AVGUPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024**3)),
+            # UI 单位为 KB/S，下载器提供 bytes/s
+            "avg_upspeed": (BrushDeleteType.AVGUPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024)),
             "iatime": (BrushDeleteType.IATIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "pending_time": (BrushDeleteType.PENDINGTIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "freespace": (BrushDeleteType.FREESPACE, lambda value, rv: cls.check_range_rule(value, rv, 1024**3)),
@@ -293,6 +298,7 @@ class BrushRuleEngine:
             "hr": (BrushDeleteType.HR, lambda value, rv: value if rv == "HR" else not value if rv == "NOHR" else True),
             "alive_time": (BrushDeleteType.ALIVETIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "upspeed": (BrushDeleteType.UPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024)),
+            "cur_upspeed": (BrushDeleteType.UPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024)),
             "tracker_error": (
                 BrushDeleteType.TRACKERERROR,
                 lambda value, rv: bool(value) if rv in (SwitchState.ON.value, "Y") else True,
@@ -322,7 +328,7 @@ class BrushRuleEngine:
                     return False, BrushDeleteType.NOTDELETE
                 continue
 
-            matched = check_func(value)
+            matched = check_func(value, rule_value)
             if matched:
                 triggered_types.append(delete_type)
                 log.info(f"[删种规则] {rule} 触发: 当前={value}, 规则={rule_value}")
@@ -366,7 +372,8 @@ class BrushRuleEngine:
             ),
             "avg_upspeed": (
                 BrushStopType.AVGUPSPEED,
-                lambda rv: cls.check_range_rule(values["avg_upspeed"], rv, 1024**3),
+                # UI 单位为 KB/S，下载器提供 bytes/s
+                lambda rv: cls.check_range_rule(values["avg_upspeed"], rv, 1024),
             ),
             "stopfree": (
                 BrushStopType.FREEEND,

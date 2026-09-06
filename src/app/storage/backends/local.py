@@ -66,8 +66,11 @@ class LocalStorageBackend(StorageBackend):
             os.mkdir(rp)
 
     def remove(self, path: str, recursive: bool = False) -> None:
+        if not path or path in ("/", "\\"):
+            raise ValueError("不能删除根目录")
         rp = self._resolve(path)
-        if not rp or rp == "/":
+        # Unix: dirname('/') == '/'；Windows: dirname('E:\\') == 'E:\\'
+        if not rp or os.path.dirname(rp) == rp:
             raise ValueError("不能删除根目录")
         if os.path.isdir(rp):
             if recursive:

@@ -74,20 +74,25 @@ class BrushService:
         remove_rule_id = data.get("brushtask_remove_rule_id") or None
         stop_rule_id = data.get("brushtask_stop_rule_id") or None
 
-        if rss_rule_id or remove_rule_id or stop_rule_id:
+        # 仅清空已绑定规则模板的那一类；其余继续使用内联字段
+        if rss_rule_id:
             rss_rule = {}
-            remove_rule = {}
-            stop_rule = {}
-            rss_rule = {}
-            remove_rule = {}
-            stop_rule = {}
         else:
             rss_rule = {k: data.get(v) for k, v in _RSS_RULE_FIELDS.items()}
+
+        if remove_rule_id:
+            remove_rule = {}
+        else:
             remove_rule = {k: data.get(v) for k, v in _REMOVE_RULE_FIELDS.items()}
-            stop_rule = {
-                k: (SwitchState.ON.value if data.get(v) else SwitchState.OFF.value)
-                for k, v in _STOP_RULE_FIELDS.items()
-            }
+
+        if stop_rule_id:
+            stop_rule = {}
+        else:
+            # stopfree 为开关；ratio/uploadsize/seedtime/avg_upspeed 为范围规则原值
+            stop_rule = {k: data.get(v) for k, v in _STOP_RULE_FIELDS.items()}
+            stop_rule["stopfree"] = (
+                SwitchState.ON.value if data.get(_STOP_RULE_FIELDS["stopfree"]) else SwitchState.OFF.value
+            )
 
         brushtask_totalsize = data.get("brushtask_totalsize")
         try:
