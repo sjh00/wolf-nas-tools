@@ -857,6 +857,31 @@ def search_files(
     )
 
 
+@router.get("/search/versions", response_model=CommonResponse, summary="查询作品的全部版本文件")
+def search_versions(
+    tmdb_id: int = Query(..., ge=1),
+    svc: FileIndexService = Depends(get_file_index_service),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+):
+    """列出某作品（tmdb_id）在媒体库中的全部版本文件：规格、是否存在、硬链接兄弟。
+
+    用于下载前提示"已存在多个版本"及文件管理界面"多版本筛选"。
+    """
+    versions = svc.get_versions(tmdb_id=tmdb_id)
+    return success(data={"tmdb_id": tmdb_id, "items": versions, "total": len(versions)})
+
+
+@router.get("/library/duplicates", response_model=CommonResponse, summary="列出存在多版本/重复文件的作品")
+def library_duplicates(
+    limit: int = Query(100, ge=1, le=500),
+    svc: FileIndexService = Depends(get_file_index_service),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+):
+    """以整个媒体库为基础，列出所有存在多个版本/重复文件的作品（同一 tmdb_id 多个落盘文件）。"""
+    duplicates = svc.list_duplicates(limit=limit)
+    return success(data={"items": duplicates, "total": len(duplicates)})
+
+
 class MediaPathAddRequest(BaseModel):
     path_type: str
     path: str
