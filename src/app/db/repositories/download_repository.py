@@ -113,6 +113,18 @@ class DownloadRepository(BaseRepository):
             db.commit()
             return count
 
+    def delete_download_history_by_ids(self, ids: list[int]) -> int:
+        """按主键 ID 列表删除下载历史（按文件锚点清理用，仅删除指定记录）"""
+        if not ids:
+            return 0
+        with self.session() as db:
+            query = db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.ID.in_(ids))
+            count = query.count()
+            if count:
+                query.delete(synchronize_session="fetch")
+                db.commit()
+            return count
+
     def insert_download_history(self, media_info: Any, downloader: str, download_id: str, save_dir: str) -> None:
         """
         新增下载历史

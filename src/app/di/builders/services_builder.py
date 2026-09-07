@@ -56,6 +56,7 @@ from app.services.file_index_service import FileIndexService
 from app.services.filter_service import FilterService
 from app.services.indexer_service import IndexerService
 from app.services.media_config_service import MediaConfigService
+from app.services.media_cleanup_service import MediaCleanupService
 from app.services.media_file_service import MediaFileService
 from app.services.media_info_service import MediaInfoService
 from app.services.media_library_service import MediaLibraryService
@@ -344,6 +345,15 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         download_history_repo=DownloadHistoryRepositoryAdapter(),
     )
 
+    # 按文件锚点清理媒体库/做种/记录/下载器任务（压制替换场景）
+    media_cleanup_service = MediaCleanupService(
+        cleanup_service=cleanup_service,
+        history_manager=history_manager,
+        downloader_core=downloader_core,
+        download_repo=DownloadHistoryRepositoryAdapter(),
+        event_bus=event_bus,
+    )
+
     plugin_framework_service = PluginFrameworkService(
         repo=PluginFrameworkRepository(),
         menu_repo=RBACMenuRepositoryAdapter(),
@@ -563,6 +573,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         user_manage_service=user_manage_service,
         tmdb_blacklist_service=tmdb_blacklist_service,
         download_service=download_service,
+        media_cleanup_service=media_cleanup_service,
         plugin_framework_service=plugin_framework_service,
         plugin_market_service=plugin_market_service,
         storage_backend_service=storage_backend_service,
