@@ -9,6 +9,7 @@ from app.di.builders.agent_builder import AgentRagObjects
 from app.di.models import BusinessFacades, CoordinatorObjects, InfrastructureObjects, ServiceObjects
 from app.media import MediaCache
 from app.message.agent_enhancer import AgentMessageEnhancer
+from app.services.media_library_monitor import MediaLibraryMonitorService
 from app.services.rss_processor import RssHelper
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.handlers import (
@@ -114,6 +115,10 @@ def build_coordinators(
         downloader=downloader_core,
         file_index_service=file_index_service,
         subscription_monitor=subscription_monitor,
+        media_library_monitor=MediaLibraryMonitorService(
+            media_file_service=services.media_file_service,
+            thread_executor=thread_executor,
+        ),
         site_userinfo=site_userinfo,
         subscribe_service=subscribe_service,
         media_server=media_server,
