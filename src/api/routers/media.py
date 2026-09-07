@@ -860,6 +860,20 @@ def search_files(
     )
 
 
+@router.post("/index/refresh", response_model=CommonResponse, summary="构建文件索引")
+def refresh_file_index(
+    svc: FileIndexService = Depends(get_file_index_service),
+    current_user=Depends(require_permission("library:manage")),
+):
+    """手动构建文件索引（后台线程执行，非阻塞）。
+
+    文件索引在后台扫描媒体库 + 同步源目录，为文件管理界面的"全盘搜索"提供 O(1) 检索。
+    默认不自动扫描（避免频繁唤醒休眠盘），需用户在此手动触发构建。
+    """
+    svc.refresh()
+    return success(message="索引构建已触发")
+
+
 @router.get("/search/versions", response_model=CommonResponse, summary="查询作品的全部版本文件")
 def search_versions(
     tmdb_id: int = Query(..., ge=1),
