@@ -203,5 +203,36 @@ class SubscribeService:
                     )
                 break
 
+    def update_subscribe_tv_lack_by_episodes(self, rssid, downloaded_episodes: list[int]) -> bool:
+        """手动下载完成后回写电视剧订阅：从当前缺失集减去本次下载的集。
+
+        :param rssid: 订阅 ID
+        :param downloaded_episodes: 本次手动下载覆盖的集号列表
+        :return: True 表示该季已全部集齐（标为完成），False 表示仍缺集（更新缺失集）
+        """
+        if not rssid:
+            return False
+        downloaded = {int(e) for e in downloaded_episodes if str(e).isdigit()}
+        if not downloaded:
+            return False
+        current_missing = self._tv_episode_repo.get(int(rssid)) or []
+        lack = sorted(set(int(e) for e in current_missing) - downloaded)
+        if lack:
+            log.info(
+                f"[Subscribe]更新电视剧订阅 rssid={rssid} 缺失集数 {len(current_missing)} -> {len(lack)}"
+            )
+            self._tv_repo.update_state(
+                title=None, year=None, season=None, rssid=rssid, state=SubscribeState.RUNNING.value
+            )
+            self._tv_repo.update_lack(
+                title=None, year=None, season=None, rssid=rssid, lack_episodes=lack
+            )
+            return False
+        log.info(f"[Subscribe]电视剧订阅 rssid={rssid} 全部集数已下载完成")
+        self._tv_repo.update_state(
+            title=None, year=None, season=None, rssid=rssid, state=SubscribeState.COMPLETED.value
+        )
+        return True
+
     def truncate_rss_episodes(self):
         self._tv_episode_repo.delete_all()
