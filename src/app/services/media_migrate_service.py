@@ -36,6 +36,48 @@ class MediaMigrateService:
 
     # ---------- 对外入口 ----------
 
+    def detect_orphans(self, tmdb_id: int | None = None) -> dict:
+        """检测孤儿源文件：源文件在磁盘/记录中存在，但下载器中已经没有对应的做种任务。
+
+        用户删除下载记录时，下载器可能因某些原因删除任务但未删除源文件（且无提示），
+        导致源文件残留占用磁盘且难以发现。本方法把这类"有源文件但无下载器任务"的记录标出来。
+
+        :param tmdb_id: 可选，仅检测指定作品；为空则检测全部有源文件的转移记录。
+        :return: {total, orphans: [record...], source_dirs}
+        """
+        records = self._get_records(tmdb_id) if tmdb_id else self._get_all_records()
+        if not records:
+            return {"total": 0, "orphans": [], "source_dirs": []}
+        torrents = self._get_all_torrents()
+        orphan_records = []
+        source_dirs: set[str] = set()
+        for r in records:
+            source_full = self._source_full(r)
+            if not source_full:
+                continue
+            # 源文件必须实际存在于磁盘，才可能是"残留"
+            if not os.path.exists(source_full):
+                continue
+            source_dir = os.path.dirname(source_full)
+            if source_dir:
+                source_dirs.add(source_dir)
+            if not self._has_torrent_for_source(source_full, getattr(r, "SOURCE_FILENAME", ""), torrents):
+                orphan_records.append(
+                    {
+                        "id": getattr(r, "ID", None),
+                        "tmdb_id": getattr(r, "TMDBID", None),
+                        "title": getattr(r, "TITLE", ""),
+                        "year": getattr(r, "YEAR", ""),
+                        "season_episode": getattr(r, "SEASON_EPISODE", ""),
+                        "source_path": getattr(r, "SOURCE_PATH", ""),
+                        "source_filename": getattr(r, "SOURCE_FILENAME", ""),
+                        "source_full": source_full,
+                        "dest_path": getattr(r, "DEST_PATH", ""),
+                        "dest_filename": getattr(r, "DEST_FILENAME", ""),
+                    }
+                )
+        return {"total": len(orphan_records), "orphans": orphan_records, "source_dirs": list(source_dirs)}
+
     def plan_migration(self, tmdb_id: int) -> dict:
         """迁移预览：列出该作品的源目录组 / 媒体库目录组，供前端展示与选择目标盘。"""
         records = self._get_records(tmdb_id)
@@ -56,6 +98,7 @@ class MediaMigrateService:
         target_dest: str,
         cross_drive: bool | None = None,
         move_torrents: bool = True,
+        orphan_policy: str = "migrate",
     ) -> dict:
         """执行作品级迁移。
 
@@ -64,6 +107,10 @@ class MediaMigrateService:
         :param target_dest: 目标盘的媒体库（medialink）目录
         :param cross_drive: 是否强制按"跨盘"处理；None 则自动检测同盘
         :param move_torrents: 是否尝试同步迁移下载器任务（最佳努力）
+        :param orphan_policy: 无下载器做种任务的"孤儿源文件"处理策略：
+            - "migrate"（默认）：随目录一起迁移（保留文件）
+            - "remove"：迁移前物理删除孤儿源文件（清除残留，释放空间）
+            - "skip"：跳过孤儿文件（不迁移也不删除，就留在原盘）
         """
         if not tmdb_id:
             raise ValidationError("缺少作品ID")
@@ -78,10 +125,26 @@ class MediaMigrateService:
         if not source_dirs and not dest_dirs:
             raise ValidationError("该作品没有可迁移的文件目录")
 
+        # 检测孤儿源文件（有源文件但下载器无做种任务）
+        orphan_info = self.detect_orphans(tmdb_id=tmdb_id)
+        orphan_files = [o["source_full"] for o in orphan_info["orphans"]]
+
         # 计算同盘/跨盘
         is_cross = self._determine_cross(source_dirs, dest_dirs, target_source, target_dest, cross_drive)
 
+        # 根据孤儿策略预处理：remove 则物理删除孤儿源文件
+        orphan_removed = []
+        if orphan_policy == "remove" and orphan_files:
+            for f in orphan_files:
+                try:
+                    if os.path.exists(f):
+                        os.remove(f)
+                        orphan_removed.append(f)
+                except Exception as e:  # noqa: BLE001
+                    log.warn(f"[Migrate]删除孤儿源文件失败 {f}: {e}")
+
         migrated_dirs = []
+
         failed = []
         # 1. 迁移源目录组
         for old_dir in source_dirs:
@@ -120,6 +183,9 @@ class MediaMigrateService:
             "failed": failed,
             "updated_records": updated_records,
             "updated_downloads": updated_downloads,
+            "orphan_policy": orphan_policy,
+            "orphan_files": orphan_files,
+            "orphan_removed": orphan_removed,
         }
 
     # ---------- 内部：收集 ----------
@@ -284,3 +350,86 @@ class MediaMigrateService:
             )
         except Exception as e:  # noqa: BLE001
             log.warn(f"[Migrate]下载器 {downloader} 迁移任务 {download_id} 失败：{e}")
+
+    # ---------- 内部：孤儿源文件判定 ----------
+
+    def _get_all_records(self) -> list:
+        """全量获取有源路径的转移记录（分页，避免一次性过多）。"""
+        records: list = []
+        try:
+            for page in range(1, 200):
+                _, page_records = self._history.get_transfer_history(search=None, page=page, rownum=500)
+                if not page_records:
+                    break
+                records.extend([r for r in page_records if getattr(r, "ID", None)])
+                if len(page_records) < 500:
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[Migrate]查询全部转移记录失败: {e}")
+        return records
+
+    @staticmethod
+    def _source_full(record) -> str:
+        """拼接记录的源文件完整路径。"""
+        sp = getattr(record, "SOURCE_PATH", "") or ""
+        sf = getattr(record, "SOURCE_FILENAME", "") or ""
+        if not sp or not sf:
+            return ""
+        return os.path.join(sp, sf)
+
+    def _get_all_torrents(self) -> list[dict]:
+        """拉取所有下载器的任务列表，提取 (save_path, content_path, name, downloader)。"""
+        if not self._downloader_core:
+            return []
+        torrents: list[dict] = []
+        try:
+            downloader_confs = self._downloader_core.get_downloader_conf() or {}
+            for did in downloader_confs.keys():
+                try:
+                    tasks = self._downloader_core.get_torrents(downloader_id=did)
+                except Exception as e:  # noqa: BLE001
+                    log.debug(f"[Migrate]拉取下载器 {did} 任务失败: {e}")
+                    continue
+                if not tasks:
+                    continue
+                for t in tasks:
+                    torrents.append(
+                        {
+                            "id": getattr(t, "id", None),
+                            "name": getattr(t, "name", "") or "",
+                            "save_path": (getattr(t, "save_path", "") or "").replace("\\", "/").rstrip("/"),
+                            "content_path": (getattr(t, "content_path", "") or "").replace("\\", "/"),
+                            "downloader": did,
+                        }
+                    )
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[Migrate]获取下载器任务列表失败: {e}")
+        return torrents
+
+    def _has_torrent_for_source(self, source_full: str, source_filename: str, torrents: list[dict]) -> bool:
+        """源文件是否被任一下载器任务"包含"。
+
+        匹配规则（由宽松到严格，任一命中即视为有任务）：
+        - content_path 等于源文件完整路径（单文件种子）
+        - 源文件落在 content_path（多文件种子顶层目录）之下
+        - 源文件落在 save_path 之下，且任务名匹配源文件名（transmission 无 content_path）
+        - 种子名等于源文件名
+        """
+        if not source_full or not torrents:
+            return False
+        src_full_norm = os.path.normpath(source_full).replace("\\", "/")
+        src_name = source_filename.replace("\\", "/")
+        for t in torrents:
+            cp = t.get("content_path")
+            if cp and os.path.normpath(cp).replace("\\", "/") == src_full_norm:
+                return True
+            if cp and src_full_norm.startswith(os.path.normpath(cp).replace("\\", "/") + "/"):
+                return True
+            sp = t.get("save_path")
+            tname = t.get("name", "") or ""
+            if sp and src_full_norm.startswith(sp + "/"):
+                if src_name and os.path.basename(src_name) in (os.path.basename(tname), tname):
+                    return True
+            if tname and os.path.basename(tname) == os.path.basename(src_name):
+                return True
+        return False
