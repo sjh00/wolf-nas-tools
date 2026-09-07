@@ -439,6 +439,11 @@ def get_media_file_service(app_context: AppContext = Depends(get_app_context)):
     return app_context.media_file_service
 
 
+def get_media_cleanup_service(app_context: AppContext = Depends(get_app_context)):
+    """获取媒体清理服务实例（按文件锚点清理硬链接链）"""
+    return app_context.media_cleanup_service
+
+
 def get_media_library_service(app_context: AppContext = Depends(get_app_context)):
     """获取媒体库服务实例"""
     return app_context.media_library_service

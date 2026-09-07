@@ -229,6 +229,29 @@ class TransferRepository(BaseRepository):
             )
         return [{"tmdb_id": r[0], "title": r[1], "year": r[2], "dir_count": r[3], "file_count": r[4]} for r in rows]
 
+    def get_transfer_logs_by_paths(self, paths: list[str]) -> list[TRANSFERHISTORY]:
+        """按一组文件路径（源或目标）匹配所有转移记录。
+
+        用于"按文件锚点清理"：给定硬链接链上的文件路径，找出涉及它们的全部转移记录
+        （SOURCE_PATH/SOURCE_FILENAME 或 DEST_PATH/DEST_FILENAME 命中任一路径）。
+        """
+        if not paths:
+            return []
+        norm_paths = [os.path.normpath(p) for p in paths if p]
+        if not norm_paths:
+            return []
+        with self.session() as db:
+            return (
+                db.query(TRANSFERHISTORY)
+                .filter(
+                    TRANSFERHISTORY.DEST_PATH.in_(norm_paths)
+                    | TRANSFERHISTORY.DEST_FILENAME.in_([os.path.basename(p) for p in norm_paths])
+                    | TRANSFERHISTORY.SOURCE_PATH.in_(norm_paths)
+                    | TRANSFERHISTORY.SOURCE_FILENAME.in_([os.path.basename(p) for p in norm_paths])
+                )
+                .all()
+            )
+
     def get_contiguous_transferred_episode_by_tmdb(self, tmdbid: int | None, season: int | None, start: int = 1) -> int:
         """
         查询某剧集某季已成功转移的「从订阅起点 start 起连续」的最大集号（重订阅续订用）。
