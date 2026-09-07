@@ -17,6 +17,7 @@ from api.deps import (
     get_media_file_service,
     get_media_info_service,
     get_media_library_service,
+    get_media_migrate_service,
     get_media_recommendation_service,
     get_search_result_service,
     get_searcher_service,
@@ -940,6 +941,58 @@ def media_cleanup(
             source_policy=req.source_policy,
         )
         return success(data=result, message="清理完成")
+    except (ValidationError, ValueError) as e:
+        return fail(msg=str(e))
+    except (ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+class MediaMigrateRequest(BaseModel):
+    tmdb_id: int
+    target_source: str
+    target_dest: str
+    cross_drive: bool | None = None
+    move_torrents: bool = True
+
+
+@router.post("/migrate", response_model=CommonResponse, summary="作品级跨盘归档迁移")
+def media_migrate(
+    req: MediaMigrateRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc=Depends(get_media_migrate_service),
+):
+    """把某作品（tmdb_id）的做种源目录 + 媒体库目录整体迁移到目标盘。
+
+    - 同盘：目录级 move（保留 inode，硬链接关系保持）
+    - 跨盘：复制 -> 校验 -> 删除旧位置（保证不丢文件）
+    迁移后同步更新转移记录 SOURCE/DEST 与下载记录 SAVE_PATH，并尝试迁移下载器任务。
+    target_source / target_dest 为目录同步配置中目标盘的源目录(btstore)与媒体库目录(medialink)。
+    """
+    try:
+        result = svc.migrate(
+            tmdb_id=req.tmdb_id,
+            target_source=req.target_source,
+            target_dest=req.target_dest,
+            cross_drive=req.cross_drive,
+            move_torrents=req.move_torrents,
+        )
+        return success(data=result, message="迁移完成")
+    except (ValidationError, ValueError) as e:
+        return fail(msg=str(e))
+    except (ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+@router.get("/migrate/plan", response_model=CommonResponse, summary="迁移预览（列出源/媒体库目录组）")
+def media_migrate_plan(
+    tmdb_id: int = Query(..., ge=1),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc=Depends(get_media_migrate_service),
+):
+    """列出一个作品的源目录组 + 媒体库目录组，供前端迁移弹窗展示与选择目标盘。"""
+    try:
+        result = svc.plan_migration(tmdb_id=tmdb_id)
+        return success(data=result)
     except (ValidationError, ValueError) as e:
         return fail(msg=str(e))
     except (ServiceError, DomainError) as e:

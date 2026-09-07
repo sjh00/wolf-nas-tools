@@ -306,6 +306,32 @@ class TransferRepository(BaseRepository):
             db.commit()
             return True
 
+    def update_transfer_paths(
+        self,
+        logid: int,
+        new_source_path: str,
+        new_source_filename: str,
+        new_dest_path: str,
+        new_dest_filename: str,
+    ) -> bool:
+        """更新转移记录的源(SOURCE)与目标(DEST)路径（作品级跨盘归档迁移后同步新位置）"""
+        if not logid:
+            return False
+        with self.session() as db:
+            row = db.query(TRANSFERHISTORY).filter(int(logid) == TRANSFERHISTORY.ID).first()
+            if not row:
+                return False
+            if new_source_path is not None:
+                row.SOURCE_PATH = new_source_path
+            if new_source_filename is not None:
+                row.SOURCE_FILENAME = new_source_filename
+            if new_dest_path is not None:
+                row.DEST_PATH = new_dest_path
+            if new_dest_filename is not None:
+                row.DEST_FILENAME = new_dest_filename
+            db.commit()
+            return True
+
     def delete_transfer_logs(self, logids: list[int]) -> None:
         """
         批量删除识别记录
