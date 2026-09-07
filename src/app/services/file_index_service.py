@@ -375,3 +375,94 @@ class FileIndexService:
         except Exception as e:  # noqa: BLE001
             log.debug(f"[FileIndex]硬链接查找失败 {path}: {e}")
             return []
+
+    # ---------- 文件关系分析（源/媒体库一致性） ----------
+
+    def get_file_relations(
+        self,
+        search: str | None = None,
+        state: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        with_hardlinks: bool = False,
+        max_pages: int = 200,
+    ) -> dict:
+        """分析转移记录中源文件与媒体库文件在磁盘上的存在关系。
+
+        状态分类（基于 TRANSFERHISTORY 的 SOURCE_* / DEST_* 在磁盘的存在性）：
+        - only_source: 源文件在，媒体库目标不存在（只有源、无媒体库）
+        - only_dest:   媒体库目标在，源文件不存在（只有媒体库、无源）
+        - both:        源与媒体库目标都在（完整硬链接链）
+        - none:        两者都不存在（均已删除/丢失）
+        - unknown:     记录缺少源或目标路径，无法判定
+
+        返回 {total, items: [relation, ...]}。with_hardlinks=True 时每个文件附带硬链接兄弟路径。
+        """
+        search = (search or "").strip().lower()
+        items = []
+        for p in range(1, max_pages + 1):
+            _, records = self._history_manager.get_transfer_history(search=None, page=p, rownum=500)
+            if not records:
+                break
+            for rec in records:
+                source_path = getattr(rec, "SOURCE_PATH", "") or ""
+                source_filename = getattr(rec, "SOURCE_FILENAME", "") or ""
+                dest_path = getattr(rec, "DEST_PATH", "") or ""
+                dest_filename = getattr(rec, "DEST_FILENAME", "") or ""
+                source_full = os.path.join(source_path, source_filename) if source_path and source_filename else ""
+                dest_full = os.path.join(dest_path, dest_filename) if dest_path and dest_filename else ""
+                if not source_full and not dest_full:
+                    continue
+                source_exists = bool(source_full and os.path.exists(source_full))
+                dest_exists = bool(dest_full and os.path.exists(dest_full))
+                if source_exists and dest_exists:
+                    rel_state = "both"
+                elif source_exists:
+                    rel_state = "only_source"
+                elif dest_exists:
+                    rel_state = "only_dest"
+                elif source_full or dest_full:
+                    rel_state = "none"
+                else:
+                    rel_state = "unknown"
+
+                # 搜索过滤
+                if search:
+                    haystack = (
+                        f"{getattr(rec, 'TITLE', '')} {source_filename} {dest_filename}"
+                    ).lower()
+                    if search not in haystack:
+                        continue
+                if state and state != rel_state:
+                    continue
+
+                rel = {
+                    "id": getattr(rec, "ID", None),
+                    "tmdb_id": getattr(rec, "TMDBID", None),
+                    "title": getattr(rec, "TITLE", ""),
+                    "year": getattr(rec, "YEAR", ""),
+                    "season_episode": getattr(rec, "SEASON_EPISODE", ""),
+                    "state": rel_state,
+                    "source": {"path": source_path, "filename": source_filename, "full_path": source_full, "exists": source_exists},
+                    "dest": {"path": dest_path, "filename": dest_filename, "full_path": dest_full, "exists": dest_exists},
+                }
+                if with_hardlinks:
+                    rel["source"]["hardlinks"] = self._find_hardlinks(source_full) if source_exists else []
+                    rel["dest"]["hardlinks"] = self._find_hardlinks(dest_full) if dest_exists else []
+                items.append(rel)
+            if len(records) < 500:
+                break
+
+        total = len(items)
+        start = max(0, (int(page) - 1) * int(page_size))
+        return {
+            "total": total,
+            "state_counts": {
+                "only_source": sum(1 for r in items if r["state"] == "only_source"),
+                "only_dest": sum(1 for r in items if r["state"] == "only_dest"),
+                "both": sum(1 for r in items if r["state"] == "both"),
+                "none": sum(1 for r in items if r["state"] == "none"),
+                "unknown": sum(1 for r in items if r["state"] == "unknown"),
+            },
+            "items": items[start : start + int(page_size)],
+        }
