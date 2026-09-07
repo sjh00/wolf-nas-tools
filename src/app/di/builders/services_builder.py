@@ -273,7 +273,10 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         storage_backend_repo=StorageBackendRepositoryAdapter(),
     )
 
-    file_index_service = FileIndexService(sync_path_repo=SyncPathRepositoryAdapter())
+    file_index_service = FileIndexService(
+        sync_path_repo=SyncPathRepositoryAdapter(),
+        history_manager=history_manager,
+    )
 
     torrent_remover = TorrentRemoverService(
         repository=TorrentRemoverRepository(config_repo=TorrentRemoveTaskRepositoryAdapter()),

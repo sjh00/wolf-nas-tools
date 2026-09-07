@@ -199,6 +199,36 @@ class TransferRepository(BaseRepository):
                 )
             return None
 
+    def get_multi_version_groups(self, limit: int = 100) -> list[dict]:
+        """
+        统计同一 tmdb_id 下有多个不同文件（多版本/重复）的作品分组。
+
+        以 TRANSFER_HISTORY 的实际落盘文件（DEST_FILENAME）为基础，
+        同一作品（TMDBID）对应多个不同文件即视为存在多个版本/重复文件。
+        仅返回版本数 > 1 的作品，避免全量遍历。
+        注意：判断依据是"文件数>1"（同一目录内多个不同文件也算多版本），
+        而非"目录数>1"——正片+花絮/不同规格常同目录存放。
+        """
+        if not limit or limit <= 0:
+            limit = 100
+        with self.session() as db:
+            rows = (
+                db.query(
+                    TRANSFERHISTORY.TMDBID,
+                    TRANSFERHISTORY.TITLE,
+                    TRANSFERHISTORY.YEAR,
+                    func.count(func.distinct(TRANSFERHISTORY.DEST_PATH)).label("dir_count"),
+                    func.count(func.distinct(TRANSFERHISTORY.DEST_FILENAME)).label("file_count"),
+                )
+                .filter(TRANSFERHISTORY.TMDBID.isnot(None), TRANSFERHISTORY.TMDBID > 0)
+                .group_by(TRANSFERHISTORY.TMDBID, TRANSFERHISTORY.TITLE, TRANSFERHISTORY.YEAR)
+                .having(func.count(func.distinct(TRANSFERHISTORY.DEST_FILENAME)) > 1)
+                .order_by(TRANSFERHISTORY.TITLE.asc())
+                .limit(int(limit))
+                .all()
+            )
+        return [{"tmdb_id": r[0], "title": r[1], "year": r[2], "dir_count": r[3], "file_count": r[4]} for r in rows]
+
     def get_contiguous_transferred_episode_by_tmdb(self, tmdbid: int | None, season: int | None, start: int = 1) -> int:
         """
         查询某剧集某季已成功转移的「从订阅起点 start 起连续」的最大集号（重订阅续订用）。
