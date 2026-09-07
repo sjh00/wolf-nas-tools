@@ -163,6 +163,32 @@ class PathUtils:
         return False
 
     @staticmethod
+    def is_same_filesystem(path1: str, path2: str) -> bool:
+        """
+        判断两个路径是否位于同一文件系统/分区（同盘）。
+
+        - POSIX：比较 os.stat().st_dev（同一设备号=同文件系统）
+        - Windows：比较盘符（os.path.splitdrive）。挂载到子目录的盘可能无法
+          通过盘符判断，此时退化为 st_dev 对比。
+        判断失败（路径不存在/无权限）时返回 False，由调用方兜底。
+        """
+        if not path1 or not path2:
+            return False
+        try:
+            # Windows 先按盘符判断（最常见的跨盘场景）
+            if os.name == "nt":
+                drive1 = os.path.splitdrive(os.path.normpath(path1))[0].upper()
+                drive2 = os.path.splitdrive(os.path.normpath(path2))[0].upper()
+                if drive1 and drive2:
+                    return drive1 == drive2
+            # POSIX / Windows 挂载子目录：用 st_dev 对比
+            dev1 = os.stat(path1).st_dev
+            dev2 = os.stat(path2).st_dev
+            return dev1 == dev2
+        except OSError:
+            return False
+
+    @staticmethod
     def get_bluray_dir(path):
         """
         判断是否蓝光原盘目录，是则返回原盘的根目录，否则返回空

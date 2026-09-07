@@ -120,6 +120,7 @@ class ServiceObjects:
     download_service: Any
     media_cleanup_service: Any
     media_consistency_service: Any
+    media_migrate_service: Any
     plugin_framework_service: Any
     plugin_market_service: Any
     storage_backend_service: Any

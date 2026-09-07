@@ -251,6 +251,40 @@ class DownloaderCore:
             )
         return self._download_core.delete_torrents(downloader_id=downloader_id, ids=ids, delete_file=delete_file)
 
+    def move_torrents_location(self, downloader_id=None, ids=None, new_path=None):
+        """最佳努力迁移下载器任务存储路径（做种源迁移到新盘时调用）。
+
+        不同下载器支持度不同（qbittorrent 支持 torrents_setLocation，transmission 支持
+        torrent-set-location）；客户端不支持时静默返回 False，由调用方提示用户手动迁移。
+        """
+        if not downloader_id or not ids or not new_path:
+            return False
+        client = self._client_factory.get_client(downloader_id)
+        if not client:
+            log.warn(f"[Downloader]下载器 {downloader_id} 未初始化，无法迁移任务路径")
+            return False
+        ids = [ids] if isinstance(ids, str) else list(ids)
+        try:
+            # 优先调用客户端自身方法
+            if hasattr(client, "move_torrents_location"):
+                return bool(client.move_torrents_location(ids, new_path))
+            # qbittorrent：底层 qbc 有 torrents_setLocation
+            qbc = getattr(client, "qbc", None)
+            if qbc is not None and hasattr(qbc, "torrents_setLocation"):
+                qbc.torrents_setLocation(hashes=ids, location=new_path)
+                return True
+            # transmission：底层 tr 客户端
+            tr = getattr(client, "tr", None)
+            if tr is not None and hasattr(tr, "torrent_set_location"):
+                for tid in ids:
+                    tr.torrent_set_location(tid, new_path)
+                return True
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[Downloader]迁移下载器 {downloader_id} 任务路径失败: {e}")
+            return False
+        log.warn(f"[Downloader]下载器 {downloader_id} 不支持迁移任务路径，请手动迁移")
+        return False
+
     def get_files(self, tid, downloader_id=None):
         return self._download_core.get_files(tid=tid, downloader_id=downloader_id)
 

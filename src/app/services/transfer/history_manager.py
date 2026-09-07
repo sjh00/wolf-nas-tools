@@ -75,6 +75,16 @@ class TransferHistoryManager:
             logid=logid, new_dest_path=new_dest_path, new_dest_filename=new_dest_filename
         )
 
+    def update_transfer_paths(self, logid, new_source_path, new_source_filename, new_dest_path, new_dest_filename):
+        """更新转移记录源(SOURCE)与目标(DEST)路径（作品级跨盘归档迁移后同步）"""
+        return self.transfer_repo.update_transfer_paths(
+            logid=logid,
+            new_source_path=new_source_path,
+            new_source_filename=new_source_filename,
+            new_dest_path=new_dest_path,
+            new_dest_filename=new_dest_filename,
+        )
+
     def delete_transfer_logs(self, logids: list[int]) -> None:
         return self.transfer_repo.delete_transfer_logs(logids=logids)
 

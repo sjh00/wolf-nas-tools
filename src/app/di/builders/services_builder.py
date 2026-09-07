@@ -61,6 +61,7 @@ from app.services.media_consistency_service import MediaConsistencyService
 from app.services.media_file_service import MediaFileService
 from app.services.media_info_service import MediaInfoService
 from app.services.media_library_service import MediaLibraryService
+from app.services.media_migrate_service import MediaMigrateService
 from app.services.media_recommendation_service import MediaRecommendationService
 from app.services.plugin_framework_service import PluginFrameworkService
 from app.services.plugin_market_service import PluginMarketService
@@ -362,6 +363,13 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         file_index_service=file_index_service,
     )
 
+    # 作品级跨盘归档迁移（源 + 媒体库整体搬移到目标盘，保持硬链接/智能复制删除）
+    media_migrate_service = MediaMigrateService(
+        history_manager=history_manager,
+        download_repo=DownloadHistoryRepositoryAdapter(),
+        downloader_core=downloader_core,
+    )
+
     plugin_framework_service = PluginFrameworkService(
         repo=PluginFrameworkRepository(),
         menu_repo=RBACMenuRepositoryAdapter(),
@@ -583,6 +591,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         download_service=download_service,
         media_cleanup_service=media_cleanup_service,
         media_consistency_service=media_consistency_service,
+        media_migrate_service=media_migrate_service,
         plugin_framework_service=plugin_framework_service,
         plugin_market_service=plugin_market_service,
         storage_backend_service=storage_backend_service,

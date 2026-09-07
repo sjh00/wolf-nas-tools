@@ -116,6 +116,10 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
         """按主键 ID 列表删除下载历史（按文件锚点清理用）"""
         return self._repo.delete_download_history_by_ids(ids)
 
+    def update_save_path(self, downloader: str, download_id: str, new_save_path: str, tmdb_id: int | None = None) -> int:
+        """更新下载记录保存路径（作品级跨盘归档迁移后同步新位置）"""
+        return self._repo.update_download_save_path(downloader, download_id, new_save_path, tmdb_id=tmdb_id)
+
 
 class DownloadSettingRepositoryAdapter:
     """下载设置仓储适配器"""
