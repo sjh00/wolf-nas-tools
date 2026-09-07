@@ -13,6 +13,7 @@ from api.deps import (
     get_file_index_service,
     get_media_config_service,
     get_media_cleanup_service,
+    get_media_consistency_service,
     get_media_file_service,
     get_media_info_service,
     get_media_library_service,
@@ -907,6 +908,29 @@ def media_cleanup(
         return success(data=result, message="清理完成")
     except (ValidationError, ValueError) as e:
         return fail(msg=str(e))
+    except (ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+class MediaConsistencyCheckRequest(BaseModel):
+    page_size: int = 500
+    max_pages: int = 100
+
+
+@router.post("/consistency/check", response_model=CommonResponse, summary="媒体库一致性校验（跨盘整理感知）")
+def media_consistency_check(
+    req: MediaConsistencyCheckRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc=Depends(get_media_consistency_service),
+):
+    """校验媒体库转移记录与实际磁盘是否一致。
+
+    用户手动跨盘移动（做种源+媒体库文件一起移动）后，转移记录的 DEST 路径会失效。
+    本接口用文件名在文件索引中匹配候选新位置，唯一候选则自动更新记录；否则标注丢失。
+    """
+    try:
+        result = svc.check_library_consistency(page_size=req.page_size, max_pages=req.max_pages)
+        return success(data=result, message="校验完成")
     except (ServiceError, DomainError) as e:
         return fail(msg=e.message)
 

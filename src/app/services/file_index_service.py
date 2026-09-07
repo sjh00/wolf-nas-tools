@@ -267,6 +267,25 @@ class FileIndexService:
             return os.path.dirname(p).replace("\\", "/")
         return None
 
+    def find_by_name(self, name: str, limit: int = 50) -> list[dict]:
+        """按文件名（精确匹配）返回所有存在该文件的条目（含路径/大小）。
+
+        用于"媒体库一致性校验"：跨盘移动后，用原记录的文件名在全盘索引中
+        查找候选新位置。索引项含 name/path/ext/size。
+        """
+        if not name:
+            return []
+        index = self._get_index()
+        results = []
+        for item in index.values():
+            if item.get("is_dir"):
+                continue
+            if item.get("name") == name:
+                results.append(dict(item))
+                if len(results) >= limit:
+                    break
+        return results
+
     # ---------- 多版本 / 重复文件识别 ----------
 
     def _spec_from_filename(self, filename: str) -> str:

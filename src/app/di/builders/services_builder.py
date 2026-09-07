@@ -57,6 +57,7 @@ from app.services.filter_service import FilterService
 from app.services.indexer_service import IndexerService
 from app.services.media_config_service import MediaConfigService
 from app.services.media_cleanup_service import MediaCleanupService
+from app.services.media_consistency_service import MediaConsistencyService
 from app.services.media_file_service import MediaFileService
 from app.services.media_info_service import MediaInfoService
 from app.services.media_library_service import MediaLibraryService
@@ -343,6 +344,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         indexer_service=indexer_service,
         torrent_remover=torrent_remover,
         download_history_repo=DownloadHistoryRepositoryAdapter(),
+        file_index_service=file_index_service,
     )
 
     # 按文件锚点清理媒体库/做种/记录/下载器任务（压制替换场景）
@@ -352,6 +354,12 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         downloader_core=downloader_core,
         download_repo=DownloadHistoryRepositoryAdapter(),
         event_bus=event_bus,
+    )
+
+    # 媒体库一致性校验 / 跨盘整理感知（记录 DEST 与磁盘不一致时修正/标注）
+    media_consistency_service = MediaConsistencyService(
+        history_manager=history_manager,
+        file_index_service=file_index_service,
     )
 
     plugin_framework_service = PluginFrameworkService(
@@ -574,6 +582,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         tmdb_blacklist_service=tmdb_blacklist_service,
         download_service=download_service,
         media_cleanup_service=media_cleanup_service,
+        media_consistency_service=media_consistency_service,
         plugin_framework_service=plugin_framework_service,
         plugin_market_service=plugin_market_service,
         storage_backend_service=storage_backend_service,

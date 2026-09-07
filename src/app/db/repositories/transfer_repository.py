@@ -293,6 +293,19 @@ class TransferRepository(BaseRepository):
         with self.session() as db:
             db.query(TRANSFERHISTORY).filter(int(logid) == TRANSFERHISTORY.ID).delete()
 
+    def update_transfer_dest(self, logid: int, new_dest_path: str, new_dest_filename: str) -> bool:
+        """更新转移记录的目标路径（跨盘整理感知：记录 DEST 已手动移动后同步新位置）"""
+        if not logid:
+            return False
+        with self.session() as db:
+            row = db.query(TRANSFERHISTORY).filter(int(logid) == TRANSFERHISTORY.ID).first()
+            if not row:
+                return False
+            row.DEST_PATH = new_dest_path
+            row.DEST_FILENAME = new_dest_filename
+            db.commit()
+            return True
+
     def delete_transfer_logs(self, logids: list[int]) -> None:
         """
         批量删除识别记录
