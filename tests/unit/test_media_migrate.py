@@ -140,3 +140,76 @@ class TestMigrate:
         assert result["cross_drive"] is True
         assert (target_source / "Movie.A" / "a.mkv").exists()
         assert not (old_src / "a.mkv").exists()  # 复制校验后删除旧
+
+
+class _Torrent:
+    def __init__(self, id, name, save_path, content_path):
+        self.id = id
+        self.name = name
+        self.save_path = save_path
+        self.content_path = content_path
+
+
+def _svc_with_downloader(records, torrents=None, downloader_confs=None):
+    history = MagicMock()
+    history.get_transfer_info_by.return_value = records
+    download_repo = MagicMock()
+    downloader = MagicMock()
+    downloader.get_downloader_conf.return_value = downloader_confs or {"qb": {"id": "qb", "name": "qb"}}
+    downloader.get_torrents.return_value = torrents or []
+    return MediaMigrateService(
+        history_manager=history,
+        download_repo=download_repo,
+        downloader_core=downloader,
+    )
+
+
+class TestHasTorrentForSource:
+    def test_content_path_exact_match(self):
+        svc = _svc_with_downloader([])
+        torrents = [{"id": "h", "name": "Movie.A", "save_path": "/bt", "content_path": "/bt/Movie.A/a.mkv"}]
+        assert svc._has_torrent_for_source("/bt/Movie.A/a.mkv", "a.mkv", torrents) is True
+
+    def test_content_path_multifile_dir(self):
+        svc = _svc_with_downloader([])
+        torrents = [{"id": "h", "name": "Movie.A", "save_path": "/bt", "content_path": "/bt/Movie.A"}]
+        assert svc._has_torrent_for_source("/bt/Movie.A/a.mkv", "a.mkv", torrents) is True
+
+    def test_no_match_is_orphan(self):
+        svc = _svc_with_downloader([])
+        torrents = [{"id": "h", "name": "Other.Movie", "save_path": "/bt2", "content_path": "/bt2/Other.Movie"}]
+        assert svc._has_torrent_for_source("/bt/Movie.A/a.mkv", "a.mkv", torrents) is False
+
+    def test_empty_torrents_is_orphan(self):
+        svc = _svc_with_downloader([])
+        assert svc._has_torrent_for_source("/bt/Movie.A/a.mkv", "a.mkv", []) is False
+
+
+class TestDetectOrphans:
+    def test_detects_orphan_when_no_torrent(self, tmp_path):
+        old_src = tmp_path / "bt" / "Movie.A"
+        old_src.mkdir(parents=True)
+        (old_src / "a.mkv").write_text("x")
+        records = [_Rec(1, 100, str(old_src), "a.mkv", str(tmp_path / "media" / "Movie.A"), "a.mkv")]
+        svc = _svc_with_downloader(records, torrents=[])
+        result = svc.detect_orphans(tmdb_id=100)
+        assert result["total"] == 1
+        assert result["orphans"][0]["source_filename"] == "a.mkv"
+
+    def test_no_orphan_when_torrent_matches(self, tmp_path):
+        old_src = tmp_path / "bt" / "Movie.A"
+        old_src.mkdir(parents=True)
+        (old_src / "a.mkv").write_text("x")
+        records = [_Rec(1, 100, str(old_src), "a.mkv", str(tmp_path / "media" / "Movie.A"), "a.mkv")]
+        torrents = [
+            _Torrent(
+                id="h",
+                name="Movie.A",
+                save_path=str(old_src),
+                content_path=str(old_src / "a.mkv"),
+            )
+        ]
+        svc = _svc_with_downloader(records, torrents=torrents)
+        result = svc.detect_orphans(tmdb_id=100)
+        assert result["total"] == 0
+
