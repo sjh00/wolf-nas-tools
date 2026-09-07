@@ -41,6 +41,11 @@ class DownloadResultDTO:
 
     success: bool = False
     message: str = ""
+    # 下载前多版本提示：为 True 时表示命中"多版本需确认"，此时不推送下载器
+    need_confirm: bool = False
+    # 需确认的版本列表（来自 file_index_service.get_versions）
+    versions: list = field(default_factory=list)
+    tmdb_id: int | None = None
 
 
 @dataclass

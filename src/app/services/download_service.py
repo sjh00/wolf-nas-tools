@@ -46,6 +46,7 @@ class DownloadService:
         indexer_service: IndexerService,
         torrent_remover: TorrentRemover,
         download_history_repo: DownloadHistoryRepositoryAdapter,
+        file_index_service: Any | None = None,
     ):
         self._downloader = downloader
         self._searcher = searcher
@@ -55,6 +56,7 @@ class DownloadService:
         self._indexer_service = indexer_service
         self._torrent_remover = torrent_remover
         self._download_history_repo = download_history_repo
+        self._file_index = file_index_service
 
     # ---------- 下载编排 ----------
 
@@ -68,8 +70,73 @@ class DownloadService:
         """公开方法：解析站点下载链接"""
         return self._resolve_download_url(page_url, enclosure)
 
+    def _check_multi_version(self, media: MediaInfo) -> DownloadResultDTO | None:
+        """下载前多版本检测：若该作品已有 >=2 个磁盘上存在的版本，返回"需确认"。
+
+        返回 None 表示无需确认，可正常推送下载。
+        返回 DownloadResultDTO 且 need_confirm=True，表示命中多版本，不应推送下载器。
+        """
+        tmdb_id = getattr(media, "tmdb_id", None)
+        if not self._file_index or not tmdb_id:
+            return None
+        try:
+            versions = self._file_index.get_versions(tmdb_id=tmdb_id) or []
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Download]多版本检测失败 tmdb={tmdb_id}: {e}")
+            return None
+        # 只统计磁盘上实际存在的版本（多版本指已入库的文件）
+        existing = [v for v in versions if v.get("exists")]
+        if len(existing) >= 2:
+            return DownloadResultDTO(
+                success=False,
+                message="检测到多个已入库的版本，请选择处理方式",
+                need_confirm=True,
+                versions=existing,
+                tmdb_id=tmdb_id,
+            )
+        return None
+
+    def precheck_multi_version(self, title: str, description: str | None = None) -> DownloadResultDTO | None:
+        """API 层同步预检：仅识别并检测多版本，不推送下载器。
+
+        供下载入口在启动后台线程前调用；返回 need_confirm 则前端需先确认。
+        """
+        if not title:
+            return None
+        try:
+            media = self._media.get_media_info(title=title, subtitle=description)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Download]预检识别失败 {title}: {e}")
+            return None
+        if not media:
+            return None
+        return self._check_multi_version(media)
+
+    def precheck_multi_version_by_id(self, dl_id: int) -> DownloadResultDTO | None:
+        """从搜索结果 ID 同步预检多版本（不推送下载器）。"""
+        if not dl_id:
+            return None
+        try:
+            results = self._searcher.get_search_result_by_id(dl_id) or []
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Download]预检搜索结果失败 id={dl_id}: {e}")
+            return None
+        for res in results:
+            title = getattr(res, "TITLE", "") or getattr(res, "TORRENT_NAME", "")
+            subtitle = getattr(res, "DESCRIPTION", "")
+            media = self._media.get_media_info(title=title, subtitle=subtitle)
+            if not media:
+                media = MediaInfo()
+                media.tmdb_id = getattr(res, "TMDBID", 0) or 0
+            elif getattr(res, "TMDBID", None) and not media.tmdb_id:
+                media.tmdb_id = getattr(res, "TMDBID")
+            confirm = self._check_multi_version(media)
+            if confirm and confirm.need_confirm:
+                return confirm
+        return None
+
     def download_from_search_results(
-        self, dl_id: int, dl_dir: str, dl_setting: str, user_name: str
+        self, dl_id: int, dl_dir: str, dl_setting: str, user_name: str, confirm_strategy: str | None = None
     ) -> DownloadResultDTO:
         """从搜索结果批量下载，收集所有结果后返回批量状态."""
         results = self._searcher.get_search_result_by_id(dl_id)
@@ -109,6 +176,12 @@ class DownloadService:
                     res.DOWNLOAD_VOLUME_FACTOR if res.DOWNLOAD_VOLUME_FACTOR is not None else 1.0
                 ),
             )
+            # 下载前多版本检测：命中则要求前端确认，不推送下载器
+            if not confirm_strategy:
+                confirm = self._check_multi_version(media)
+                if confirm and confirm.need_confirm:
+                    return confirm
+
             _, ret, ret_msg = self._downloader.download(
                 media_info=media,
                 download_dir=dl_dir,
@@ -142,6 +215,7 @@ class DownloadService:
         dl_dir: str,
         dl_setting: str,
         user_name: str,
+        confirm_strategy: str | None = None,
     ) -> DownloadResultDTO:
         """从下载链接添加下载"""
         enclosure = self._resolve_download_url(page_url, enclosure)
@@ -165,6 +239,12 @@ class DownloadService:
         media.upload_volume_factor = float(uploadvolumefactor if uploadvolumefactor is not None else 1.0)
         media.download_volume_factor = float(downloadvolumefactor if downloadvolumefactor is not None else 1.0)
         media.seeders = int(seeders or 0)
+
+        # 下载前多版本检测：命中则要求前端确认，不推送下载器
+        if not confirm_strategy:
+            confirm = self._check_multi_version(media)
+            if confirm and confirm.need_confirm:
+                return confirm
 
         _, ret, ret_msg = self._downloader.download(
             media_info=media,
@@ -191,6 +271,7 @@ class DownloadService:
         description: str | None = None,
         site: str | None = None,
         size: int | None = None,
+        confirm_strategy: str | None = None,
     ) -> DownloadResultDTO:
         """从种子文件或 URL 链接添加下载"""
         if not files and not urls:
@@ -217,6 +298,10 @@ class DownloadService:
                     media_info.upload_volume_factor = upload_volume_factor
                 if download_volume_factor is not None:
                     media_info.download_volume_factor = download_volume_factor
+                if not confirm_strategy:
+                    confirm = self._check_multi_version(media_info)
+                    if confirm and confirm.need_confirm:
+                        return confirm
                 _, _, errmsg = self._downloader.download(
                     media_info=media_info,
                     download_dir=dl_dir,
@@ -280,6 +365,10 @@ class DownloadService:
                 if download_volume_factor is not None:
                     media_info.download_volume_factor = download_volume_factor
 
+                if not confirm_strategy:
+                    confirm = self._check_multi_version(media_info)
+                    if confirm and confirm.need_confirm:
+                        return confirm
                 _, _, errmsg = self._downloader.download(
                     media_info=media_info,
                     download_dir=dl_dir,
