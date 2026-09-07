@@ -113,6 +113,7 @@ class SystemLifecycleService:
         downloader: DownloaderCore | None,
         file_index_service: FileIndexService | None,
         subscription_monitor: SubscriptionMonitor | None = None,
+        media_library_monitor=None,
         site_userinfo=None,
         subscribe_service=None,
         media_server=None,
@@ -133,6 +134,7 @@ class SystemLifecycleService:
         self._file_index = file_index_service
         self._download_monitor = download_monitor
         self._subscription_monitor = subscription_monitor
+        self._media_library_monitor = media_library_monitor
         self._site_userinfo = site_userinfo
         self._subscribe_service = subscribe_service
         self._media_server = media_server
@@ -178,6 +180,9 @@ class SystemLifecycleService:
         startup_tasks = [
             ("file_index", self._file_index.start) if self._file_index else None,
             ("sync", self._sync.init),
+            ("media_library_monitor", self._media_library_monitor.start)
+            if self._media_library_monitor
+            else None,
             ("brush", self._brush.start_service) if self._brush else None,
             ("rss_checker", self._rss_checker._refresh) if self._rss_checker else None,
             ("torrent_remover", self._torrent_remover.start_service) if self._torrent_remover else None,
@@ -221,6 +226,9 @@ class SystemLifecycleService:
             ("torrent_remover", self._torrent_remover.stop_service) if self._torrent_remover else None,
             ("downloader", self._downloader.stop_service) if self._downloader else None,
             ("file_index", self._file_index.stop) if self._file_index else None,
+            ("media_library_monitor", self._media_library_monitor.stop)
+            if self._media_library_monitor
+            else None,
         ]
         futures = []
         if self._thread_executor:
