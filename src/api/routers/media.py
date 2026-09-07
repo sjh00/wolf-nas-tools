@@ -953,6 +953,7 @@ class MediaMigrateRequest(BaseModel):
     target_dest: str
     cross_drive: bool | None = None
     move_torrents: bool = True
+    orphan_policy: str = "migrate"  # migrate=随目录迁移; remove=物理删除; skip=跳过
 
 
 @router.post("/migrate", response_model=CommonResponse, summary="作品级跨盘归档迁移")
@@ -967,6 +968,11 @@ def media_migrate(
     - 跨盘：复制 -> 校验 -> 删除旧位置（保证不丢文件）
     迁移后同步更新转移记录 SOURCE/DEST 与下载记录 SAVE_PATH，并尝试迁移下载器任务。
     target_source / target_dest 为目录同步配置中目标盘的源目录(btstore)与媒体库目录(medialink)。
+
+    orphan_policy 控制"无下载器做种任务"的孤儿源文件处理：
+    - migrate: 随目录迁移（保留）
+    - remove: 迁移前物理删除（清除残留）
+    - skip:   跳过不动
     """
     try:
         result = svc.migrate(
@@ -975,6 +981,7 @@ def media_migrate(
             target_dest=req.target_dest,
             cross_drive=req.cross_drive,
             move_torrents=req.move_torrents,
+            orphan_policy=req.orphan_policy,
         )
         return success(data=result, message="迁移完成")
     except (ValidationError, ValueError) as e:
@@ -992,6 +999,26 @@ def media_migrate_plan(
     """列出一个作品的源目录组 + 媒体库目录组，供前端迁移弹窗展示与选择目标盘。"""
     try:
         result = svc.plan_migration(tmdb_id=tmdb_id)
+        return success(data=result)
+    except (ValidationError, ValueError) as e:
+        return fail(msg=str(e))
+    except (ServiceError, DomainError) as e:
+        return fail(msg=e.message)
+
+
+@router.get("/migrate/orphans", response_model=CommonResponse, summary="孤儿源文件（有源文件但下载器无做种任务）")
+def media_migrate_orphans(
+    tmdb_id: int | None = Query(None, ge=1),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc=Depends(get_media_migrate_service),
+):
+    """列出源文件在磁盘/记录中存在，但下载器中已无对应做种任务的文件。
+
+    这些文件通常是删除下载记录时下载器未同步删除源文件造成的残留，占用磁盘且难以发现。
+    tmdb_id 为空则列出全部。
+    """
+    try:
+        result = svc.detect_orphans(tmdb_id=tmdb_id)
         return success(data=result)
     except (ValidationError, ValueError) as e:
         return fail(msg=str(e))
