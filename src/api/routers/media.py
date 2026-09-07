@@ -884,9 +884,35 @@ def library_duplicates(
     return success(data={"items": duplicates, "total": len(duplicates)})
 
 
+@router.get("/library/relations", response_model=CommonResponse, summary="文件关系分析（源/媒体库存在性）")
+def library_relations(
+    search: str = Query(""),
+    state: str = Query(""),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    with_hardlinks: bool = Query(False),
+    svc: FileIndexService = Depends(get_file_index_service),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+):
+    """分析转移记录中做种源文件与媒体库文件在磁盘上的存在关系与硬链接指向。
+
+    state 取值：only_source（只有源无媒体库）/ only_dest（只有媒体库无源）/
+    both（都有）/ none（都没有）。with_hardlinks=true 时附带每个文件的硬链接兄弟路径。
+    """
+    result = svc.get_file_relations(
+        search=search or None,
+        state=state or None,
+        page=page,
+        page_size=page_size,
+        with_hardlinks=with_hardlinks,
+    )
+    return success(data=result)
+
+
 class MediaCleanupRequest(BaseModel):
     file_path: str
     delete_downloader: bool = True
+    source_policy: str = "remove"  # remove=全部删干净; keep=只删媒体库保留源
 
 
 @router.post("/cleanup", response_model=CommonResponse, summary="按文件锚点清理硬链接链")
@@ -895,16 +921,24 @@ def media_cleanup(
     current_user=Depends(require_permission("library:manage")),
     svc=Depends(get_media_cleanup_service),
 ):
-    """以选中的媒体库文件为锚点，清理其硬链接链上的全部关联内容。
+    """以选中的媒体库文件为锚点，清理其硬链接链上的关联内容。
 
-    清理范围 = 该文件及其所有硬链接兄弟（媒体库目标 + 做种源文件）
+    清理范围 = 该文件及其硬链接兄弟（媒体库目标 + 做种源文件）
               + 关联的转移/下载记录 + 下载器任务（含辅种，避免文件不存在报红）。
     保留同一作品（tmdb_id）下其它版本文件（非同一 inode 硬链接）。
+
+    source_policy:
+    - remove: 全部删干净（媒体库+源文件+记录+下载器任务）
+    - keep:   只删媒体库目标，保留源文件/记录/任务（呈现"只有源无媒体库"）
     """
     if not req.file_path:
         return fail(msg="未指定文件路径")
     try:
-        result = svc.cleanup_file_chain(file_path=req.file_path, delete_downloader=req.delete_downloader)
+        result = svc.cleanup_file_chain(
+            file_path=req.file_path,
+            delete_downloader=req.delete_downloader,
+            source_policy=req.source_policy,
+        )
         return success(data=result, message="清理完成")
     except (ValidationError, ValueError) as e:
         return fail(msg=str(e))
