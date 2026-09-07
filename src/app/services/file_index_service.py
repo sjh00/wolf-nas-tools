@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 import log
 from app.core.constants import RMT_MEDIAEXT
@@ -24,6 +25,7 @@ _CACHE_NAME = "file_index"
 _KEY_INDEX = "index"
 _KEY_READY = "ready"
 _KEY_COUNT = "count"
+_KEY_BUILD_TIME = "build_time"
 
 
 class FileIndexService:
@@ -74,6 +76,11 @@ class FileIndexService:
     def indexed_count(self) -> int:
         return self._cache.get(_KEY_COUNT) or 0
 
+    @property
+    def build_time(self) -> float:
+        """最近一次索引构建的时间（Unix 时间戳），未构建过返回 0。"""
+        return float(self._cache.get(_KEY_BUILD_TIME) or 0)
+
     # ---------- 索引构建 ----------
 
     def _build_index_loop(self) -> None:
@@ -112,11 +119,13 @@ class FileIndexService:
             return
         try:
             roots = self._get_root_paths()
+            build_time = time.time()
             if not roots:
                 log.warn("[FileIndex]未配置媒体库或同步源目录，索引为空")
                 self._cache.set(_KEY_INDEX, {})
                 self._cache.set(_KEY_READY, True)
                 self._cache.set(_KEY_COUNT, 0)
+                self._cache.set(_KEY_BUILD_TIME, build_time)
                 return
 
             new_index: dict[str, dict] = {}
@@ -133,6 +142,7 @@ class FileIndexService:
             self._cache.set(_KEY_INDEX, new_index)
             self._cache.set(_KEY_READY, True)
             self._cache.set(_KEY_COUNT, len(new_index))
+            self._cache.set(_KEY_BUILD_TIME, build_time)
             log.info(f"[FileIndex]索引重建完成，共 {len(new_index)} 个文件，根目录: {roots}")
         finally:
             lock.release()
