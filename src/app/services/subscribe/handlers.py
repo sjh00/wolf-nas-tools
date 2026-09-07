@@ -89,7 +89,14 @@ def build_manual_download_subscribe_handler(subscribe_service: SubscribeService)
                 subscribe_service.finish_rss_subscribe(rssid=rssid, media=media_info)
                 log.info(f"[Event]电影 {title} 订阅已完成")
         else:
-            log.info(f"[Event]电视剧订阅更新暂只标记（TODO）: rssid={rssid}")
+            # 电视剧回写：根据本次手动下载的集号更新缺失集，集齐则标记完成
+            downloaded_episodes = [int(e) for e in (media_info.get("episode") or []) if str(e).isdigit()]
+            if not downloaded_episodes:
+                log.info(f"[Event]电视剧订阅更新: 无集号信息，跳过 rssid={rssid}")
+                return
+            completed = subscribe_service.update_subscribe_tv_lack_by_episodes(rssid, downloaded_episodes)
+            if completed:
+                log.info(f"[Event]电视剧 {title} 订阅已完成")
 
     return handle_manual_download_subscribe_update
 
