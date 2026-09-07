@@ -112,6 +112,10 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
     def delete_by_tmdb(self, tmdb_id: str, season_prefix: str | None = None) -> int:
         return self._repo.delete_download_history_by_tmdb(tmdb_id, season_prefix)
 
+    def delete_by_ids(self, ids: list[int]) -> int:
+        """按主键 ID 列表删除下载历史（按文件锚点清理用）"""
+        return self._repo.delete_download_history_by_ids(ids)
+
 
 class DownloadSettingRepositoryAdapter:
     """下载设置仓储适配器"""

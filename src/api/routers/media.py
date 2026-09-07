@@ -12,6 +12,7 @@ from api.deps import (
     get_downloader_service,
     get_file_index_service,
     get_media_config_service,
+    get_media_cleanup_service,
     get_media_file_service,
     get_media_info_service,
     get_media_library_service,
@@ -880,6 +881,34 @@ def library_duplicates(
     """以整个媒体库为基础，列出所有存在多个版本/重复文件的作品（同一 tmdb_id 多个落盘文件）。"""
     duplicates = svc.list_duplicates(limit=limit)
     return success(data={"items": duplicates, "total": len(duplicates)})
+
+
+class MediaCleanupRequest(BaseModel):
+    file_path: str
+    delete_downloader: bool = True
+
+
+@router.post("/cleanup", response_model=CommonResponse, summary="按文件锚点清理硬链接链")
+def media_cleanup(
+    req: MediaCleanupRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc=Depends(get_media_cleanup_service),
+):
+    """以选中的媒体库文件为锚点，清理其硬链接链上的全部关联内容。
+
+    清理范围 = 该文件及其所有硬链接兄弟（媒体库目标 + 做种源文件）
+              + 关联的转移/下载记录 + 下载器任务（含辅种，避免文件不存在报红）。
+    保留同一作品（tmdb_id）下其它版本文件（非同一 inode 硬链接）。
+    """
+    if not req.file_path:
+        return fail(msg="未指定文件路径")
+    try:
+        result = svc.cleanup_file_chain(file_path=req.file_path, delete_downloader=req.delete_downloader)
+        return success(data=result, message="清理完成")
+    except (ValidationError, ValueError) as e:
+        return fail(msg=str(e))
+    except (ServiceError, DomainError) as e:
+        return fail(msg=e.message)
 
 
 class MediaPathAddRequest(BaseModel):
