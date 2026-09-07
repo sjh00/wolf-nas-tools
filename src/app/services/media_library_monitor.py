@@ -20,7 +20,6 @@ from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.utils import ExceptionUtils
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.observers.polling import PollingObserver
 
 _observer_lock = threading.Lock()
 
@@ -60,8 +59,18 @@ class MediaLibraryMonitorService:
     # ---------- 生命周期 ----------
 
     def start(self) -> None:
-        """启动媒体库目录监控（每个媒体库根目录一个 observer）。"""
+        """启动媒体库目录监控（每个媒体库根目录一个 observer）。
+
+        为避免频繁唤醒磁盘：
+        - 使用事件驱动的 Observer（inotify/FSEvents/ReadDirectoryChangesW），
+          只在媒体库目录发生实际文件变化时才唤醒磁盘，不再每 30 秒轮询。
+        - 仅当刮削开关（MediaConfig.nfo_poster）开启时才监听；关闭刮削则跳过
+          监听（文件管理靠 file_index_service 索引即可）。
+        """
         self.stop()
+        if not self._scrape_enabled():
+            log.info("[MediaLibraryMonitor]刮削已关闭，不启动媒体库监控（避免无谓的目录监听）")
+            return
         roots = self._get_library_roots()
         if not roots:
             log.info("[MediaLibraryMonitor]未配置媒体库路径，跳过监控")
@@ -71,7 +80,8 @@ class MediaLibraryMonitorService:
                 log.warn(f"[MediaLibraryMonitor]媒体库目录不存在：{root}")
                 continue
             try:
-                obs = PollingObserver(timeout=30)
+                # 事件驱动，不轮询磁盘（仅在目录内容变化时收到事件）
+                obs = Observer()
                 obs.schedule(_MediaLibraryEventHandler(self, root), path=root, recursive=True)
                 obs.daemon = True
                 obs.start()
@@ -80,7 +90,7 @@ class MediaLibraryMonitorService:
                 continue
             with _observer_lock:
                 self._observers.append(obs)
-            log.info(f"[MediaLibraryMonitor]{root} 监控已启动")
+            log.info(f"[MediaLibraryMonitor]{root} 监控已启动（事件驱动）")
         if self._observers:
             log.info(f"[MediaLibraryMonitor]媒体库监控已启动，共 {len(self._observers)} 个目录")
 
