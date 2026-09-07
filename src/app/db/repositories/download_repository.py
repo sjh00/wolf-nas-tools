@@ -338,6 +338,33 @@ class DownloadRepository(BaseRepository):
                 download_id == DOWNLOADHISTORY.DOWNLOAD_ID,
             ).update({"STATE": state})
 
+    def update_download_save_path(self, downloader: str, download_id: str, new_save_path: str, tmdb_id: int | None = None) -> int:
+        """
+        更新下载记录的保存路径（作品级跨盘归档迁移后同步新位置）。
+        优先按 downloader+download_id 定位；缺少 download_id 时按 tmdb_id 兜底。
+        返回更新条数。
+        """
+        with self.session() as db:
+            q = db.query(DOWNLOADHISTORY)
+            if downloader and download_id:
+                q = q.filter(
+                    downloader == DOWNLOADHISTORY.DOWNLOADER,
+                    download_id == DOWNLOADHISTORY.DOWNLOAD_ID,
+                )
+            elif tmdb_id:
+                q = q.filter(tmdb_id == DOWNLOADHISTORY.TMDBID)
+            else:
+                return 0
+            matched = q.all()
+            if not matched:
+                return 0
+            # 按记录 id 精确更新，避免误伤其它记录
+            ids = [r.ID for r in matched]
+            db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.ID.in_(ids)).update(
+                {"SAVE_PATH": new_save_path}, synchronize_session=False
+            )
+            return len(ids)
+
     def batch_update_download_state(self, items: list[tuple[str, str, str]]) -> None:
         """
         批量更新下载任务状态
