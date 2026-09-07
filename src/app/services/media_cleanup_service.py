@@ -39,10 +39,15 @@ class MediaCleanupService:
 
     # ---------- 对外入口 ----------
 
-    def cleanup_file_chain(self, file_path: str, delete_downloader: bool = True) -> dict:
-        """以 file_path 为锚点清理整条硬链接链。
+    def cleanup_file_chain(self, file_path: str, delete_downloader: bool = True, source_policy: str = "remove") -> dict:
+        """以 file_path 为锚点清理其硬链接链。
 
-        返回统计信息：{deleted_files, deleted_transfer_logs, deleted_torrents}。
+        source_policy 控制"做种源文件"的处理方式：
+        - "remove"（默认）：全部删干净 —— 删媒体库目标 + 做种源文件 + 转移/下载记录 + 下载器任务。
+        - "keep"（不动源）：只删媒体库目标硬链接，保留做种源文件、转移记录、下载器任务，
+          结果在文件管理呈现"只有源、无媒体库"状态，供用户后续自行处理。
+
+        返回统计信息：{deleted_files, deleted_transfer_logs, deleted_torrents, source_policy}。
         """
         if not file_path or not os.path.exists(file_path):
             raise ValueError(f"文件不存在：{file_path}")
@@ -51,7 +56,21 @@ class MediaCleanupService:
         chain_paths = self._find_chain_paths(file_path)
         log.info(f"[Cleanup]硬链接链：{len(chain_paths)} 个文件 -> {chain_paths}")
 
-        # 2. 收集并删除相关转移记录（媒体库目标 + 做种源文件 + 记录）
+        # 2a. "不动源"：只删媒体库目标硬链接，保留源文件/记录/任务
+        if source_policy == "keep":
+            deleted_files = self._delete_dest_files_only(chain_paths)
+            deleted_torrents = []
+            deleted_transfer_logs = 0
+            return {
+                "anchor": file_path,
+                "chain_files": chain_paths,
+                "deleted_files": deleted_files,
+                "deleted_transfer_logs": 0,
+                "deleted_torrents": [],
+                "source_policy": source_policy,
+            }
+
+        # 2b. "全部删干净"（默认）
         deleted_files = []
         deleted_transfer_logs = self._delete_transfer_records(chain_paths, deleted_files)
 
@@ -66,7 +85,64 @@ class MediaCleanupService:
             "deleted_files": deleted_files,
             "deleted_transfer_logs": deleted_transfer_logs,
             "deleted_torrents": deleted_torrents,
+            "source_policy": source_policy,
         }
+
+    # ---------- "不动源"：仅删媒体库目标硬链接 ----------
+
+    def _delete_dest_files_only(self, chain_paths: list[str]) -> list[str]:
+        """仅删除媒体库目标（DEST）硬链接，保留做种源文件与转移记录。
+
+        结果：记录仍在（源在、媒体库缺）→ 文件管理呈现"只有源无媒体库"。
+        """
+        deleted = []
+        try:
+            logs = self._history.get_transfer_logs_by_paths(chain_paths) or []
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[Cleanup]‘不动源’查询转移记录失败: {e}")
+            logs = []
+
+        # 收集待删的媒体库目标路径（DEST_PATH/DEST_FILENAME）
+        dest_paths = []
+        for t in logs:
+            dp = getattr(t, "DEST_PATH", "") or ""
+            df = getattr(t, "DEST_FILENAME", "") or ""
+            if dp and df:
+                dest_paths.append(os.path.join(dp, df))
+
+        if not dest_paths:
+            # 无法从记录定位 DEST 时，删链上"不在媒体库源目录"的文件兜底
+            for p in chain_paths:
+                if os.path.exists(p):
+                    dest_paths.append(p)
+
+        for dest in dest_paths:
+            if not dest or not os.path.exists(dest):
+                continue
+            try:
+                # 复用删媒体文件（保留源，只删目标）
+                self._cleanup.delete_media_file(
+                    os.path.dirname(dest), os.path.basename(dest)
+                )
+                deleted.append(dest)
+                log.info(f"[Cleanup]已删除媒体库目标（保留源）：{dest}")
+                # 发布媒体库文件删除事件，供媒体服务器/下游感知
+                if self._event_bus:
+                    try:
+                        self._event_bus.publish(
+                            Event(
+                                event_type=LIBRARY_FILE_DELETED,
+                                payload=LibraryFileDeletedPayload(
+                                    media_info={}, path=os.path.dirname(dest), filename=os.path.basename(dest)
+                                ),
+                            )
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.debug(f"[Cleanup]事件发布失败 {dest}: {e}")
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Cleanup]删除媒体库目标失败 {dest}: {e}")
+
+        return deleted
 
     # ---------- 硬链接链定位 ----------
 

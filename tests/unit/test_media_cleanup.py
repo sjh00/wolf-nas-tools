@@ -104,3 +104,33 @@ class TestCleanupFileChain:
 
         result = svc.cleanup_file_chain(anchor)
         assert result["deleted_transfer_logs"] == 1
+
+
+class TestSourcePolicyKeep:
+    def test_keep_only_deletes_dest_keeps_source_and_records(self, cleanup_svc, tmp_path):
+        """source_policy='keep'：只删媒体库目标，不删源文件/记录/下载器任务。"""
+        svc = cleanup_svc
+        anchor_path = tmp_path / "Show.mkv"
+        anchor_path.write_text("x")
+        anchor = str(anchor_path)
+        dest_path = tmp_path / "movie" / "Show"
+        dest_path.mkdir(parents=True)
+        dest_file = dest_path / "Show.mkv"
+        dest_file.write_text("x")
+        svc._find_chain_paths = MagicMock(return_value=[os.path.normpath(anchor)])
+        svc._history.get_transfer_logs_by_paths.return_value = [
+            _FakeTransferLog(3, str(tmp_path / "seed"), "Show.mkv", str(dest_path), "Show.mkv")
+        ]
+
+        result = svc.cleanup_file_chain(anchor, source_policy="keep")
+
+        # 只删媒体库目标，不删转移记录，不删下载器任务
+        assert result["deleted_transfer_logs"] == 0
+        assert result["deleted_torrents"] == []
+        assert result["source_policy"] == "keep"
+        svc._cleanup.delete_history.assert_not_called()
+        svc._downloader_core.delete_torrents.assert_not_called()
+        # 调用了 delete_media_file 删目标
+        assert svc._cleanup.delete_media_file.called
+        # 发布媒体库删除事件
+        assert svc._event_bus.publish.called
