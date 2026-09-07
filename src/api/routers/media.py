@@ -856,6 +856,7 @@ def search_files(
             "total": len(results),
             "ready": svc.is_ready,
             "indexed": svc.indexed_count,
+            "build_time": svc.build_time,
         }
     )
 
@@ -872,6 +873,21 @@ def refresh_file_index(
     """
     svc.refresh()
     return success(message="索引构建已触发")
+
+
+@router.get("/index/status", response_model=CommonResponse, summary="文件索引状态")
+def file_index_status(
+    svc: FileIndexService = Depends(get_file_index_service),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+):
+    """返回文件索引的就绪状态、已索引文件数与最近构建时间（Unix 时间戳）。"""
+    return success(
+        data={
+            "ready": svc.is_ready,
+            "indexed": svc.indexed_count,
+            "build_time": svc.build_time,
+        }
+    )
 
 
 @router.get("/search/versions", response_model=CommonResponse, summary="查询作品的全部版本文件")
