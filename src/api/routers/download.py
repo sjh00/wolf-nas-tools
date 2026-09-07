@@ -82,6 +82,7 @@ class DownloadRequest(BaseModel):
     id: int | None = None
     dir: str | None = None
     setting: str | None = None
+    confirm_strategy: str | None = None
 
 
 class DownloadLinkRequest(BaseModel):
@@ -96,6 +97,7 @@ class DownloadLinkRequest(BaseModel):
     downloadvolumefactor: str | None = None
     dl_dir: str | None = None
     dl_setting: str | None = None
+    confirm_strategy: str | None = None
 
 
 class DownloadTorrentRequest(BaseModel):
@@ -110,6 +112,7 @@ class DownloadTorrentRequest(BaseModel):
     description: str | None = None
     site: str | None = None
     size: int | None = None
+    confirm_strategy: str | None = None
 
 
 class FindHardlinksRequest(BaseModel):
@@ -290,6 +293,23 @@ def download(
     if req.id is None:
         return fail(msg="缺少下载ID")
 
+    # 未确认策略时：先同步预检多版本，命中则要求前端确认
+    if not req.confirm_strategy:
+        try:
+            precheck = svc.precheck_multi_version_by_id(dl_id=req.id)
+        except Exception as e:  # noqa: BLE001
+            precheck = None
+        if precheck and precheck.need_confirm:
+            return success(
+                data={
+                    "need_confirm": True,
+                    "message": precheck.message,
+                    "versions": precheck.versions,
+                    "tmdb_id": precheck.tmdb_id,
+                },
+                message=precheck.message,
+            )
+
     def _do_download():
         try:
             svc.download_from_search_results(
@@ -297,6 +317,7 @@ def download(
                 dl_dir=req.dir or "",
                 dl_setting=req.setting or "",
                 user_name=user.nickname or user.username,
+                confirm_strategy=req.confirm_strategy,
             )
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
@@ -314,6 +335,23 @@ def download_link(
     user: UserContext = Depends(require_permission("download:manage")),
     svc: DownloadService = Depends(get_download_service),
 ):
+    # 未确认策略时：先同步预检多版本，命中则要求前端确认
+    if not req.confirm_strategy and req.title:
+        try:
+            precheck = svc.precheck_multi_version(title=req.title, description=req.description)
+        except Exception as e:  # noqa: BLE001
+            precheck = None
+        if precheck and precheck.need_confirm:
+            return success(
+                data={
+                    "need_confirm": True,
+                    "message": precheck.message,
+                    "versions": precheck.versions,
+                    "tmdb_id": precheck.tmdb_id,
+                },
+                message=precheck.message,
+            )
+
     def _do_download():
         try:
             svc.download_from_link(
@@ -329,6 +367,7 @@ def download_link(
                 dl_dir=req.dl_dir or "",
                 dl_setting=req.dl_setting or "",
                 user_name=user.nickname or user.username,
+                confirm_strategy=req.confirm_strategy,
             )
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
@@ -360,6 +399,23 @@ def download_torrent(
     if not req.urls and not req.files:
         return fail(msg="没有种子文件或者种子链接")
 
+    # 未确认策略时：先同步预检多版本，命中则要求前端确认
+    if not req.confirm_strategy and req.title:
+        try:
+            precheck = svc.precheck_multi_version(title=req.title, description=req.description)
+        except Exception as e:  # noqa: BLE001
+            precheck = None
+        if precheck and precheck.need_confirm:
+            return success(
+                data={
+                    "need_confirm": True,
+                    "message": precheck.message,
+                    "versions": precheck.versions,
+                    "tmdb_id": precheck.tmdb_id,
+                },
+                message=precheck.message,
+            )
+
     # 后台线程执行下载（避免网络 IO 阻塞 API 响应）
     def _do_download():
         try:
@@ -376,6 +432,7 @@ def download_torrent(
                 description=req.description or "",
                 site=req.site or "",
                 size=req.size,
+                confirm_strategy=req.confirm_strategy,
             )
             if not result.success:
                 log.warn(f"[Download]下载失败: {result.message}")
