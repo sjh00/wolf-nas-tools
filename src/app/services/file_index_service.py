@@ -39,13 +39,21 @@ class FileIndexService:
     # ---------- 生命周期 ----------
 
     def start(self) -> None:
-        """启动后台索引线程"""
+        """启动后台索引线程。
+
+        为减少对磁盘的反复扫描（避免唤醒休眠盘），默认**不自动**定时扫描，
+        仅在配置 media.file_index_auto=true 时才启动周期性重建；否则由用户在
+        文件管理界面手动触发 refresh()。
+        """
+        if not self._get_auto_index_enabled():
+            log.info("[FileIndex]文件索引自动扫描已关闭（手动/按需），不启动后台线程")
+            return
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._build_index_loop, daemon=True)
         self._thread.start()
-        log.info("[FileIndex]文件索引服务已启动")
+        log.info("[FileIndex]文件索引自动扫描已启动")
 
     def stop(self) -> None:
         """停止后台索引线程"""
@@ -69,12 +77,31 @@ class FileIndexService:
     # ---------- 索引构建 ----------
 
     def _build_index_loop(self) -> None:
-        """后台循环：先立即建一次，之后每 5 分钟重建"""
+        """后台循环：先立即建一次，之后按配置间隔重建（默认不自动启用）。"""
         self._rebuild_index()
+        interval = self._get_index_interval()
+        log.info(f"[FileIndex]文件索引自动重建间隔 {interval} 秒")
         while not self._stop_event.is_set():
-            self._stop_event.wait(300)
+            self._stop_event.wait(interval)
             if not self._stop_event.is_set():
                 self._rebuild_index()
+
+    def _get_auto_index_enabled(self) -> bool:
+        """是否启用文件索引自动扫描（默认关闭，避免频繁唤醒磁盘）。"""
+        try:
+            media = settings.get("media") or {}
+            return bool(media.get("file_index_auto", False))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _get_index_interval(self) -> int:
+        """自动重建间隔（秒）。默认 3600 秒（1 小时），最小 600 秒。"""
+        try:
+            media = settings.get("media") or {}
+            val = int(media.get("file_index_interval", 3600) or 3600)
+            return max(val, 600)
+        except Exception:  # noqa: BLE001
+            return 3600
 
     def _rebuild_index(self) -> None:
         """全量扫描所有根目录，重建索引"""
