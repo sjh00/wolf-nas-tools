@@ -29,11 +29,12 @@ _KEY_COUNT = "count"
 class FileIndexService:
     """文件索引服务"""
 
-    def __init__(self, sync_path_repo):
+    def __init__(self, sync_path_repo, history_manager=None):
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._cache = get_cache_manager().get_or_create(_CACHE_NAME, "memory", maxsize=10, ttl=None)
         self._sync_path_repo = sync_path_repo
+        self._history_manager = history_manager
 
     # ---------- 生命周期 ----------
 
@@ -265,3 +266,93 @@ class FileIndexService:
             p = results[0]["path"]
             return os.path.dirname(p).replace("\\", "/")
         return None
+
+    # ---------- 多版本 / 重复文件识别 ----------
+
+    def _spec_from_filename(self, filename: str) -> str:
+        """从文件名提取一个简短的规格描述（如 2160p/Remux/H265）"""
+        try:
+            from app.media import meta_info
+
+            mi = meta_info(title=filename)
+            parts = [
+                str(getattr(mi, "resource_pix", "") or ""),
+                str(getattr(mi, "resource_effect", "") or "") or str(getattr(mi, "resource_type", "") or ""),
+                str(getattr(mi, "video_encode", "") or ""),
+                str(getattr(mi, "audio_encode", "") or ""),
+            ]
+            return "/".join(p for p in parts if p and p != "None") or "未知规格"
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[FileIndex]规格解析失败 {filename}: {e}")
+            return "未知规格"
+
+    def list_duplicates(self, limit: int = 100) -> list[dict]:
+        """列出全部存在多版本/重复文件的作品（按 tmdb_id 聚合）。
+
+        以 TRANSFER_HISTORY 的落盘文件为基础，同一 tmdb_id 对应多个不同文件即视为多版本。
+        """
+        if not self._history_manager:
+            return []
+        try:
+            groups = self._history_manager.get_multi_version_groups(limit=limit) or []
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[FileIndex]多版本分组查询失败: {e}")
+            return []
+        result = []
+        for g in groups:
+            tmdb_id = g.get("tmdb_id")
+            result.append(
+                {
+                    "tmdb_id": tmdb_id,
+                    "title": g.get("title"),
+                    "year": g.get("year"),
+                    "dir_count": g.get("dir_count"),
+                    "file_count": g.get("file_count"),
+                    "versions": self.get_versions(tmdb_id),
+                }
+            )
+        return result
+
+    def get_versions(self, tmdb_id: int) -> list[dict]:
+        """列出某作品（tmdb_id）的全部版本文件，标注规格、是否存在于磁盘、硬链接兄弟。"""
+        if not self._history_manager or not tmdb_id:
+            return []
+        try:
+            infos = self._history_manager.get_transfer_info_by(tmdbid=tmdb_id) or []
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[FileIndex]查询转移记录失败 tmdb={tmdb_id}: {e}")
+            return []
+        versions = []
+        for info in infos:
+            dest_path = getattr(info, "DEST_PATH", "")
+            dest_filename = getattr(info, "DEST_FILENAME", "")
+            if not dest_path or not dest_filename:
+                continue
+            full = os.path.join(dest_path, dest_filename)
+            exists = os.path.exists(full)
+            version = {
+                "source_filename": getattr(info, "SOURCE_FILENAME", ""),
+                "dest_path": dest_path,
+                "dest_filename": dest_filename,
+                "full_path": full,
+                "season_episode": getattr(info, "SEASON_EPISODE", ""),
+                "date": getattr(info, "DATE", ""),
+                "exists": exists,
+                "spec": self._spec_from_filename(dest_filename),
+                "hardlinks": self._find_hardlinks(full) if exists else [],
+            }
+            versions.append(version)
+        # 按存在性/日期排序：存在的在前、最新在前
+        versions.sort(key=lambda v: (not v["exists"], v["date"] or ""), reverse=False)
+        return versions
+
+    def _find_hardlinks(self, path: str) -> list[str]:
+        """返回文件的硬链接兄弟路径列表（不含自身）"""
+        try:
+            from app.utils.system_utils import SystemUtils
+
+            links = SystemUtils().find_hardlinks(file=path, fdir=os.path.dirname(path)) or []
+            return [l.get("file") for l in links if l.get("file")]
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[FileIndex]硬链接查找失败 {path}: {e}")
+            return []

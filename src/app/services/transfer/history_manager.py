@@ -48,6 +48,10 @@ class TransferHistoryManager:
     def get_transfer_info_by(self, tmdbid, season=None, season_episode=None):
         return self.transfer_repo.get_transfer_info_by(tmdbid=tmdbid, season=season, season_episode=season_episode)
 
+    def get_multi_version_groups(self, limit: int = 100):
+        """统计同一作品存在多个版本/重复文件的作品列表"""
+        return self.transfer_repo.get_multi_version_groups(limit=limit)
+
     def get_contiguous_transferred_episode_by_tmdb(self, tmdbid, season: int | None = None, start: int = 1) -> int:
         """查询某季已成功转移的连续集数（重订阅续订用，季包保守记 start）."""
         return self.transfer_repo.get_contiguous_transferred_episode_by_tmdb(tmdbid=tmdbid, season=season, start=start)
