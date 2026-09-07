@@ -69,6 +69,12 @@ class TransferHistoryManager:
     def delete_transfer_log_by_id(self, logid):
         return self.transfer_repo.delete_transfer_log_by_id(logid=logid)
 
+    def update_transfer_dest(self, logid, new_dest_path, new_dest_filename):
+        """更新转移记录目标路径（跨盘整理感知）"""
+        return self.transfer_repo.update_transfer_dest(
+            logid=logid, new_dest_path=new_dest_path, new_dest_filename=new_dest_filename
+        )
+
     def delete_transfer_logs(self, logids: list[int]) -> None:
         return self.transfer_repo.delete_transfer_logs(logids=logids)
 
