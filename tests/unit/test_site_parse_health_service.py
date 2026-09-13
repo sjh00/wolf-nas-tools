@@ -1,9 +1,14 @@
 """站点解析健康自检服务单元测试."""
 
+import datetime
 from types import SimpleNamespace
 
 from app.services.site_parse_health_service import SiteParseHealthService
 from app.sites.engine import SiteDefinition, TorrentAttrFetchError
+
+
+def _days_ago(days: int) -> str:
+    return (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
 
 
 class _FakeEngine:
@@ -240,7 +245,7 @@ def test_first_abnormal_no_notify_until_second_day():
     engine2 = _FakeEngine({"FREE": ["//b"], "PEER_COUNT": ["//span[@id='seeders']/span[1]"]})
     engine2._selector_stats = {"FREE": 0, "PEER_COUNT": 0}
     cache2 = _FakeCache(engine2)
-    repo2 = _PrevRepo("degraded", "2026-09-06")
+    repo2 = _PrevRepo("degraded", _days_ago(1))
     msg2 = _Msg()
     svc2 = SiteParseHealthService(
         site_cache=cache2,  # type: ignore[arg-type]
@@ -333,12 +338,12 @@ def test_abnormal_continues_silent_until_interval():
             self._detail = detail
 
         def latest(self, site_id):  # type: ignore[override]
-            return _NS(status="degraded", check_date="2026-09-06", detail=self._detail)
+            return _NS(status="degraded", check_date=_days_ago(1), detail=self._detail)
 
     engine = _FakeEngine({"FREE": ["//b"], "PEER_COUNT": ["//span[@id='seeders']/span[1]"]})
     engine._selector_stats = {"FREE": 0, "PEER_COUNT": 0}
     # 上次告警 1 天前（仍在 7 天窗口内）→ 静默
-    repo = _PrevRepo(_json.dumps({"last_alert_date": "2026-09-06"}))
+    repo = _PrevRepo(_json.dumps({"last_alert_date": _days_ago(1)}))
     msg = _Msg()
     svc = SiteParseHealthService(
         site_cache=_FakeCache(engine),  # type: ignore[arg-type]
@@ -352,7 +357,7 @@ def test_abnormal_continues_silent_until_interval():
     assert msg.sent == []
 
     # 上次告警 8 天前（超出间隔）→ 复读推送
-    repo8 = _PrevRepo(_json.dumps({"last_alert_date": "2026-08-30"}))
+    repo8 = _PrevRepo(_json.dumps({"last_alert_date": _days_ago(8)}))
     msg8 = _Msg()
     svc8 = SiteParseHealthService(
         site_cache=_FakeCache(engine),  # type: ignore[arg-type]
