@@ -1,5 +1,22 @@
 # 版本历史
 
+## v4.20.17 (2026-09-13)
+
+### 新增
+
+- 消息治理（去重/聚合）：`MessageGovernor` 在 `sendmsg` 单点按 `msg_type` 治理（immediate / dedup / digest），批量通知（如 1000+ 文件入库失败）折叠为一条摘要；状态经 Redis（不可用降级内存）多实例一致，flush 由调度器 interval 任务驱动，摘要走 `message_digest` 模板；逐条明细仍保留在 Web 消息中心
+
+### 修复
+
+- 下载失败自愈：qBittorrent / Transmission 会话缺失时按需重连；`client_factory` 不缓存未就绪实例；Aria2 / Thunder 句柄缺失时按配置重建
+- 下载错误透明化：站点返回 JSON/HTML（如 M-Team「相同種子當天最多下載10次」）时给出真实原因并标记 `[不可重试]`，终止每 30 分钟的无效重试；改用纯 Python 预校验，避免 bencode C 扩展在截断数据上段错误
+- 配置：`.env` 不再注入 `os.environ`（仅注入启动引导键），恢复「环境变量 > `.env` > config.yaml」语义；`env_file` 改为绝对路径；日志级别默认 `info`
+- 插件：已安装判定兼容历史 `INSTALLED` 标记
+
+### 测试
+
+- 站点解析自检用例改用相对日期，修复日期腐烂导致的断言翻转
+
 ## v4.20.16 (2026-09-12)
 
 ### 修复
