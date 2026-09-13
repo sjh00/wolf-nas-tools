@@ -6,8 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core.exceptions import ServiceError
+from app.schemas.auth import SUPERADMIN_ROLE_CODE
 from app.services.rbac.role_service import RBACRoleService
-from app.services.rbac.user_service import SUPERADMIN_ROLE_CODE, RBACUserService
+from app.services.rbac.user_service import RBACUserService
 
 SUPERADMIN_ROLE = SimpleNamespace(id=1, role_code=SUPERADMIN_ROLE_CODE, status=1)
 NORMAL_ROLE = SimpleNamespace(id=2, role_code="user", status=1)
@@ -22,7 +23,7 @@ def _make_user_service(role_map: dict[int, list], all_users: list):
     repo.get_user_roles.side_effect = lambda uid: role_map.get(uid, [])
     repo.get_all_users.return_value = all_users
     repo.delete_user.return_value = True
-    return RBACUserService(repo)
+    return RBACUserService(repo, data_cleaner=MagicMock())
 
 
 class TestDeleteUserProtection:
@@ -68,7 +69,7 @@ class TestRoleProtection:
     def _make_role_service(self, role):
         repo = MagicMock()
         repo.get_role_by_id.return_value = role
-        return RBACRoleService(repo)
+        return RBACRoleService(repo, data_cleaner=MagicMock())
 
     def test_delete_superadmin_role_forbidden(self):
         svc = self._make_role_service(SimpleNamespace(ROLE_CODE="superadmin", ROLE_NAME="超级管理员"))

@@ -3,6 +3,7 @@
 from typing import Any
 
 import log
+from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAdapter
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SystemConfigKey
 from app.domain.mediatypes import MediaType
@@ -12,6 +13,7 @@ from app.services.subscribe.management.finish_service import SubscribeFinishServ
 from app.services.subscribe.management.query_service import SubscribeQueryService
 from app.services.subscribe.management.refresh_service import SubscribeRefreshService
 from app.services.subscribe.management.update_service import SubscribeUpdateService
+from app.services.subscribe.management.utils import tv_filter_signature
 from app.services.web.utils import WebUtils
 
 
@@ -35,6 +37,7 @@ class SubscribeService:
         system_config: Any,
         download_repo: Any = None,
         transfer_history_manager: Any = None,
+        user_repo: Any = None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -77,6 +80,8 @@ class SubscribeService:
         self._finish_svc = SubscribeFinishService(
             self._movie_repo, self._tv_repo, self._history_repo, self._message, self._event_bus, self._download_repo
         )
+        if user_repo is None:
+            user_repo = RBACUserRepositoryAdapter()
         self._query_svc = SubscribeQueryService(
             self._movie_repo,
             self._tv_repo,
@@ -84,6 +89,7 @@ class SubscribeService:
             self._history_repo,
             self._sites,
             self._indexer_service,
+            user_repo,
         )
         self._refresh_svc = SubscribeRefreshService(self._movie_repo, self._tv_repo, self._tv_episode_repo, self._media)
 
@@ -104,23 +110,23 @@ class SubscribeService:
     def finish_rss_subscribe(self, rssid, media):
         return self._finish_svc.finish_rss_subscribe(rssid, media, self.delete_subscribe)
 
-    def get_subscribe_movies(self, rid=None, state=None):
-        return self._query_svc.get_subscribe_movies(rid, state)
+    def get_subscribe_movies(self, rid=None, state=None, user=None):
+        return self._query_svc.get_subscribe_movies(rid, state, user=user)
 
-    def get_subscribe_tvs(self, rid=None, state=None):
-        return self._query_svc.get_subscribe_tvs(rid, state)
+    def get_subscribe_tvs(self, rid=None, state=None, user=None):
+        return self._query_svc.get_subscribe_tvs(rid, state, user=user)
 
     def get_subscribe_tv_episodes(self, rssid):
         return self._query_svc.get_subscribe_tv_episodes(rssid)
 
-    def get_subscribe_seasons(self, tmdbid=None, title=None, year=None):
-        return self._query_svc.get_subscribe_seasons(tmdbid, title, year)
+    def get_subscribe_seasons(self, tmdbid=None, title=None, year=None, user=None):
+        return self._query_svc.get_subscribe_seasons(tmdbid, title, year, user=user)
 
     def check_history(self, type_str, name, year=None, season=None):
         return self._query_svc.check_history(type_str, name, year, season)
 
-    def delete_subscribe(self, mtype, title=None, year=None, season=None, rssid=None, tmdbid=None):
-        return self._query_svc.delete_subscribe(mtype, title, year, season, rssid, tmdbid)
+    def delete_subscribe(self, mtype, title=None, year=None, season=None, rssid=None, tmdbid=None, user=None):
+        return self._query_svc.delete_subscribe(mtype, title, year, season, rssid, tmdbid, user=user)
 
     def get_subscribe_id(self, mtype, title, year=None, season=None, tmdbid=None):
         return self._query_svc.get_subscribe_id(mtype, title, year, season, tmdbid)
@@ -186,7 +192,37 @@ class SubscribeService:
             return True
         return int(pre_res_order) < int(res_order or 0)
 
+    def _find_tv_siblings(self, rssid, media_info) -> list:
+        """同媒体（TMDB+季）其他用户的订阅（排除主订阅、洗版、过滤要求不同者）"""
+        tmdb = str(getattr(media_info, "tmdb_id", "") or "")
+        season = media_info.get_season_string() if hasattr(media_info, "get_season_string") else ""
+        primary = self._tv_repo.get_all(rssid=rssid)
+        primary_sig = tv_filter_signature(primary[0]) if primary else None
+        siblings = []
+        for row in self._tv_repo.get_all() or []:
+            rid = getattr(row, "id", None)
+            if rid is None or rid == rssid:
+                continue
+            if str(getattr(row, "tmdb_id", "") or "") != tmdb:
+                continue
+            if season and str(getattr(row, "season", "") or "") != str(season):
+                continue
+            if getattr(row, "over_edition", False):
+                continue
+            if primary_sig is not None and tv_filter_signature(row) != primary_sig:
+                continue
+            siblings.append(row)
+        return siblings
+
     def update_subscribe_tv_lack(self, rssid, media_info, seasoninfo):
+        self._apply_tv_lack(rssid, media_info, seasoninfo)
+        # 同媒体其他用户订阅联动更新缺集进度（ADR-021 5.4）
+        for sibling in self._find_tv_siblings(rssid, media_info):
+            self._apply_tv_lack(getattr(sibling, "id", None), media_info, seasoninfo)
+
+    def _apply_tv_lack(self, rssid, media_info, seasoninfo):
+        if not rssid:
+            return
         self._tv_repo.update_state(title=None, year=None, season=None, rssid=rssid, state=SubscribeState.RUNNING.value)
         if not seasoninfo:
             return

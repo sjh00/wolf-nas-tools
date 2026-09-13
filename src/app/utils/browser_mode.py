@@ -31,6 +31,15 @@ def get_chrome_server_url() -> str | None:
     return host.rstrip("/") if host else None
 
 
+def get_default_fp_profile_id() -> str | None:
+    """返回系统配置的默认指纹画像 ID（未配置返回 None）。
+
+    所有后台浏览器会话都应使用同一画像，确保 nexus-chrome 侧复用同一个浏览器实例；
+    混用 None 与画像 ID 会各自建一个实例，导致实例数膨胀。
+    """
+    return str((settings.get("laboratory") or {}).get("chrome_fp_profile_id") or "") or None
+
+
 def get_chrome_api_key() -> str | None:
     """返回 nexus-chrome 访问凭证（复用 laboratory.chrome_admin_token）。
 
@@ -66,7 +75,7 @@ def build_browser_mode(
         return None
 
     if not fp_profile_id:
-        fp_profile_id = str(settings.get("laboratory").get("chrome_fp_profile_id") or "") or None
+        fp_profile_id = get_default_fp_profile_id()
 
     browser = BrowserModeConfig(
         enabled=True,
@@ -75,7 +84,10 @@ def build_browser_mode(
         site_key=site_key,
         fingerprint_profile="stealth",
         fp_profile_id=fp_profile_id,
-        user_agent=site_info.get("ua"),
+        # 指纹画像自带完整 UA/平台；站点 ua 可能与画像平台不一致（如移动画像配桌面
+        # UA），同时下发会造成 UA 与 navigator.platform/WebGL 自相矛盾，被 Cloudflare
+        # 判定为异常。仅在无画像时才用站点 ua 覆盖。
+        user_agent=None if fp_profile_id else site_info.get("ua"),
         proxy_url=proxy_url,
         render_html=render_html if render_html is not None else bool(site_info.get("browser_render")),
         api_key=get_chrome_api_key(),

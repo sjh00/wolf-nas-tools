@@ -240,7 +240,7 @@ class Qbittorrent(_IDownloadClient):
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
-            ExceptionUtils.exception_traceback(err)
+            self._log_conn_error(f"[{self.client_name}]{self.name} 获取种子失败：{err!s}")
             return [], True
 
     def _get_torrents_sync(
@@ -282,11 +282,17 @@ class Qbittorrent(_IDownloadClient):
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
-            ExceptionUtils.exception_traceback(err)
-            # 回退到全量接口
+            self._log_conn_error(f"[{self.client_name}]{self.name} sync 失败，回退全量接口：{err!s}")
             self._sync_rid = 0
             self._sync_torrents = {}
             return self._fallback_get_torrents(status=status, tag=tag)
+
+    def _log_conn_error(self, msg: str) -> None:
+        """连接类错误限流：60 秒内只告警一次，避免轮询刷屏."""
+        now = time.monotonic()
+        if now - getattr(self, "_last_conn_error_at", 0.0) >= 60:
+            self._last_conn_error_at = now
+            log.warn(msg)
 
     def _fallback_get_torrents(
         self,
@@ -297,7 +303,22 @@ class Qbittorrent(_IDownloadClient):
         if not self.qbc:
             return [], True
         status_filter = cast(Any, status) if isinstance(status, str) else None
-        torrents = self.qbc.torrents_info(status_filter=status_filter)
+        torrents = None
+        for attempt in range(2):
+            try:
+                torrents = self.qbc.torrents_info(status_filter=status_filter)
+                break
+            except (InfrastructureError, NetworkError):
+                raise
+            except Exception as err:
+                # 403 会话失效：重登一次后重试；仍失败或连接类错误则优雅降级
+                if attempt == 0 and self._reauth_if_forbidden(err):
+                    continue
+                self._log_conn_error(f"[{self.client_name}]{self.name} 连接失败，本次跳过：{err!s}")
+                self._set_last_add_error(f"qBittorrent 连接失败：{err!s}")
+                return [], True
+        if torrents is None:
+            return [], True
         torrent_list: list[Torrent] = []
         for torrent in torrents:
             torrent_list.append(self.torrent_properties(torrent=torrent))
@@ -622,8 +643,31 @@ class Qbittorrent(_IDownloadClient):
                 use_auto_torrent_management=is_auto,
                 cookie=cookie,
             )
-            ret_ok = bool(qbc_ret and str(qbc_ret).find("Ok") != -1)
-            if not ret_ok:
+            # 兼容 qBittorrent 新旧 Web API 返回值。
+            # 旧版通常返回 "Ok."；qBittorrent 5.2+ 返回 TorrentsAddedMetadata，
+            # 其中 success_count > 0 表示至少有一个种子添加成功。
+            ret_ok = False
+            detail = ""
+            if qbc_ret:
+                success_count = getattr(qbc_ret, "success_count", None)
+                if success_count is not None:
+                    try:
+                        ret_ok = int(success_count or 0) > 0
+                    except (TypeError, ValueError):
+                        ret_ok = False
+                    if not ret_ok:
+                        detail = f"qBittorrent 5.2+ 返回 success_count={success_count}（重复种子/路径非法/已被拒绝）"
+                else:
+                    # 兼容旧版 qBittorrent API
+                    ret_ok = "Ok" in str(qbc_ret)
+                    if not ret_ok:
+                        detail = f"qBittorrent 返回：{qbc_ret!r}"
+            else:
+                detail = "qBittorrent 未返回添加结果（Web API 异常或返回空）"
+            if ret_ok:
+                self._set_last_add_error("")
+            else:
+                self._set_last_add_error(detail)
                 log.warn(
                     f"[{self.client_name}]{self.name} 添加种子失败，"
                     f"qBittorrent 返回: {qbc_ret!r}（重复种子会返回 Fails.，需确认是否已在下载器中）"
@@ -633,6 +677,7 @@ class Qbittorrent(_IDownloadClient):
             raise
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
+            self._set_last_add_error(f"调用 qBittorrent 接口异常：{err!s}")
             return False
 
     def add_torrent_and_get_id(
@@ -833,6 +878,32 @@ class Qbittorrent(_IDownloadClient):
             ExceptionUtils.exception_traceback(err)
             return False
 
+    def get_transfer_statistics(self) -> dict | None:
+        if not self.qbc:
+            return None
+        try:
+            info = self.qbc.transfer_info()
+        except (InfrastructureError, NetworkError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            return None
+        if not info:
+            return None
+
+        def _speed(key: str) -> int:
+            val = info.get(key)
+            return int(val) if isinstance(val, (int, float)) else 0
+
+        dl_limit = _speed("dl_rate_limit")
+        up_limit = _speed("up_rate_limit")
+        return {
+            "download_speed": _speed("dl_info_speed"),
+            "upload_speed": _speed("up_info_speed"),
+            "download_limit": dl_limit if dl_limit > 0 else None,
+            "upload_limit": up_limit if up_limit > 0 else None,
+        }
+
     def recheck_torrents(self, ids: list[str] | str | None = None) -> Any:
         if not self.qbc:
             return False
@@ -864,11 +935,14 @@ class Qbittorrent(_IDownloadClient):
         try:
             tracker_list = self.qbc.torrents_trackers(torrent_hash=torrent_hash)
             return tracker_list
+        except qbittorrentapi.NotFound404Error:
+            # 种子已被删除/清理（删种或整理竞态）：属正常，静默忽略
+            return None
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
-            return
+            return None
 
     def get_torrent_trackers(self, torrent_hash) -> list[str]:
         tracker_list = self._get_torrent_trackers(torrent_hash)
@@ -887,6 +961,8 @@ class Qbittorrent(_IDownloadClient):
             return
         try:
             self.qbc.torrents_add_trackers(torrent_hashes=torrent_hash, urls=urls)
+        except qbittorrentapi.NotFound404Error:
+            return
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
@@ -897,6 +973,8 @@ class Qbittorrent(_IDownloadClient):
             return
         try:
             self.qbc.torrents_remove_trackers(torrent_hashes=torrent_hash, urls=urls)
+        except qbittorrentapi.NotFound404Error:
+            return
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
@@ -907,6 +985,8 @@ class Qbittorrent(_IDownloadClient):
             return
         try:
             self.qbc.torrents_edit_tracker(torrent_hash=torrent_hash, original_url=old_url, new_url=new_url)
+        except qbittorrentapi.NotFound404Error:
+            return
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
@@ -929,6 +1009,23 @@ class Qbittorrent(_IDownloadClient):
             return ""
         return "|".join(errors)
 
+    def _reauth_if_forbidden(self, err: Exception) -> bool:
+        """qB 返回 403 多为会话失效（或登录失败被临时封禁）：尝试重新登录一次。
+
+        返回 True 表示已重新登录成功，调用方可重试原请求。
+        """
+        if not isinstance(err, qbittorrentapi.Forbidden403Error) or not self.qbc:
+            return False
+        try:
+            self.qbc.auth_log_in()
+            log.warn(f"[{self.client_name}]{self.name} 会话失效，已重新登录 qBittorrent")
+            return True
+        except Exception as relogin_err:  # noqa: BLE001
+            self._log_conn_error(
+                f"[{self.client_name}]{self.name} 重新登录失败（可能被 qB 临时封禁或账号密码变更）：{relogin_err!s}"
+            )
+            return False
+
     def _get_torrent_generic_properties(self, torrent_hash):
         if not self.qbc:
             return
@@ -938,7 +1035,17 @@ class Qbittorrent(_IDownloadClient):
         except (InfrastructureError, NetworkError):
             raise
         except Exception as err:
-            ExceptionUtils.exception_traceback(err)
+            if self._reauth_if_forbidden(err):
+                try:
+                    return self.qbc.torrents_properties(torrent_hash=torrent_hash)
+                except Exception as retry_err:  # noqa: BLE001
+                    self._log_conn_error(f"[{self.client_name}]{self.name} 获取种子属性失败：{retry_err!s}")
+                    return
+            # 403/连接类错误降噪：不打印完整堆栈（轮询会刷屏）
+            if isinstance(err, qbittorrentapi.Forbidden403Error):
+                self._log_conn_error(f"[{self.client_name}]{self.name} 获取种子属性被拒绝(403)：{torrent_hash}")
+            else:
+                self._log_conn_error(f"[{self.client_name}]{self.name} 获取种子属性失败：{err!s}")
             return
 
     # 平均上传速度缓存 TTL（秒）：up_speed_avg 为长期平均值，变化缓慢；10 分钟刷新一次足够

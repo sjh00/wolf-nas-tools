@@ -19,6 +19,8 @@ import log
 from app.core.constants import RMT_MEDIAEXT, RMT_MIN_FILESIZE
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
 from app.core.settings import settings
+from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
+from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.domain.enums import ProgressKey, SyncType
 from app.domain.mediatypes import MediaType
@@ -83,6 +85,8 @@ class FileTransferService:
         path_resolver: TransferPathResolver,
         existence_checker: MediaExistenceChecker,
         cleanup_service: TransferCleanupService,
+        download_repo=None,
+        subscribe_repo=None,
     ):
         self.media = media_service
         self.message = message
@@ -101,6 +105,8 @@ class FileTransferService:
         self._path_resolver = path_resolver
         self._existence = existence_checker
         self._history = history_manager
+        self._download_repo = download_repo or DownloadHistoryRepositoryAdapter()
+        self._subscribe_repo = subscribe_repo or SubscribeRepository()
         self._cleanup = cleanup_service
 
         # 从配置读取媒体处理参数
@@ -124,6 +130,33 @@ class FileTransferService:
         self._default_operation = (settings.get("pt") or {}).get("rmt_mode", "copy") or "copy"
 
     # ---------- 路径相关委托方法（公共 API 兼容） ----------
+
+    def _resolve_owner_user_id(self, path: str | None, media=None) -> int | None:
+        """解析入库事件的归属用户（转移通知定向用）。
+
+        优先按源路径查下载历史；历史被清理后回退按订阅（TMDB+季/电影 TMDB）反查，
+        避免用户级入库消息退化为系统级广播。
+        """
+        if path and self._download_repo is not None:
+            try:
+                row = self._download_repo.get_download_history_by_path(path)
+                if row is not None and row.USER_ID is not None:
+                    return int(row.USER_ID)
+            except Exception:  # noqa: BLE001
+                log.debug("[FileTransfer]按路径解析归属失败，回退订阅反查")
+        if media is None or self._subscribe_repo is None:
+            return None
+        try:
+            tmdb_id = str(getattr(media, "tmdb_id", "") or "")
+            if not tmdb_id:
+                return None
+            if getattr(media, "type", None) == MediaType.MOVIE:
+                return self._subscribe_repo.find_movie_owner_user_id(tmdb_id)
+            season = media.get_season_string() if hasattr(media, "get_season_string") else None
+            return self._subscribe_repo.find_tv_owner_user_id(tmdb_id, season)
+        except Exception:  # noqa: BLE001
+            log.debug("[FileTransfer]按订阅解析归属失败")
+            return None
 
     def is_target_dir_path(self, path):
         return self._path_resolver.is_target_dir_path(path)
@@ -210,6 +243,9 @@ class FileTransferService:
 
     def get_transfer_statistics(self, days=30):
         return self._history.get_transfer_statistics(days)
+
+    def get_transfer_series_statistics(self, days=30):
+        return self._history.get_transfer_series_statistics(days)
 
     def get_transfer_unknown_paths(self):
         return self._history.get_transfer_unknown_paths()
@@ -816,6 +852,7 @@ class FileTransferService:
                 self._history.update_transfer_unknown_state(reg_path)
 
                 if media.type == MediaType.MOVIE:
+                    media.user_id = self._resolve_owner_user_id(reg_path, media)
                     self.message.send_transfer_movie_message(
                         in_from, media, exist_filenum, self._path_resolver.movie_category_flag or False
                     )
@@ -823,6 +860,7 @@ class FileTransferService:
                     message_key = f"{media.get_title_string()}-{media.get_season_string()}"
                     if not message_medias.get(message_key):
                         message_medias[message_key] = media
+                        media.user_id = self._resolve_owner_user_id(reg_path, media)
                     if not message_medias[message_key].is_in_episode(media.get_episode_list()):
                         message_medias[message_key].total_episodes += media.total_episodes
                         message_medias[message_key].size += media.size
@@ -832,7 +870,7 @@ class FileTransferService:
                     self._scrape_queue_service.submit_file_scrape(
                         media=media,
                         dir_path=ret_dir_path,
-                        file_name=os.path.basename(ret_file_path or ret_dir_path or ""),
+                        file_name=self._scrape_file_base_name(ret_file_path, ret_dir_path),
                         file_ext=file_ext,
                         dst_backend=dst_backend,
                     )
@@ -870,6 +908,16 @@ class FileTransferService:
             "error_message": error_message,
             "exist_filenum": total_exist_filenum,
         }
+
+    @staticmethod
+    def _scrape_file_base_name(ret_file_path: str | None, ret_dir_path: str | None) -> str:
+        """刮削 NFO 基础名：文件取去扩展名的文件名，目录（蓝光原盘）取目录名。
+
+        直接用含扩展名的文件名会导致生成 `xxx.mkv.nfo`，媒体库无法识别并自行生成 movie.nfo。
+        """
+        if ret_file_path:
+            return os.path.splitext(os.path.basename(ret_file_path))[0]
+        return os.path.basename(ret_dir_path or "")
 
     def _publish_subtitle_download(self, media, ret_file_path, file_ext, bluray):
         self._thread_executor.submit(

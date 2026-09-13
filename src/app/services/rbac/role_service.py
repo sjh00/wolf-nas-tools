@@ -5,15 +5,16 @@ from typing import cast
 import log
 from app.core.exceptions import ResourceAlreadyExistsError, ResourceNotFoundError, ServiceError
 from app.db.models.rbac import RBACRole
-
-SUPERADMIN_ROLE_CODE = "superadmin"
+from app.db.repositories.owned_data_cleanup import get_owned_data_cleaner
+from app.schemas.auth import SUPERADMIN_ROLE_CODE
 
 
 class RBACRoleService:
     """角色管理服务"""
 
-    def __init__(self, role_repo):
+    def __init__(self, role_repo, data_cleaner=None):
         self.role_repo = role_repo
+        self._data_cleaner = data_cleaner
 
     def create_role(
         self,
@@ -64,6 +65,9 @@ class RBACRoleService:
             raise ResourceNotFoundError(f"角色不存在: id={role_id}")
         if str(role.ROLE_CODE or "") == SUPERADMIN_ROLE_CODE:
             raise ServiceError("内置超级管理员角色不可删除")
+        # 显式清理角色归属数据（站点授权，ADR-021 5.7）
+        cleaner = self._data_cleaner or get_owned_data_cleaner()
+        cleaner.purge_role(role_id)
         success = self.role_repo.delete_role(role_id)
         if not success:
             raise ResourceNotFoundError("删除失败")

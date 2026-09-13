@@ -5,7 +5,7 @@ RSS相关模型
 
 from typing import Any
 
-from sqlalchemy import Index, Integer, Sequence, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, Sequence, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -15,6 +15,9 @@ class SubscribeHistory(Base):
     __tablename__ = "SUBSCRIBE_HISTORY"
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
+    USER_ID: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=True, index=True
+    )
     TYPE: Mapped[str] = mapped_column(String(255))
     RSSID: Mapped[str] = mapped_column(String(255), index=True)
     NAME: Mapped[str] = mapped_column(String(255))
@@ -34,8 +37,12 @@ class SubscribeHistory(Base):
 
 class SubscribeMovies(Base):
     __tablename__ = "SUBSCRIBE_MOVIES"
+    __table_args__ = (Index("UQ_SUBSCRIBE_MOVIES_USER_TMDB", "USER_ID", "TMDBID", unique=True),)
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
+    USER_ID: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=True, index=True
+    )
     NAME: Mapped[str] = mapped_column(String(255), index=True)
     YEAR: Mapped[str] = mapped_column(String(255), nullable=True)
     KEYWORD: Mapped[str] = mapped_column(String(255), nullable=True)
@@ -58,6 +65,7 @@ class SubscribeMovies(Base):
     STATE: Mapped[str] = mapped_column(String(255), index=True, nullable=True)
     DESC: Mapped[str] = mapped_column(String(255), nullable=True)
     NOTE: Mapped[str] = mapped_column(Text, nullable=True)
+    ADD_DATE: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
@@ -79,8 +87,12 @@ class SubscribeTorrents(Base):
 
 class SubscribeTvs(Base):
     __tablename__ = "SUBSCRIBE_TVS"
+    __table_args__ = (Index("UQ_SUBSCRIBE_TVS_USER_TMDB_SEASON", "USER_ID", "TMDBID", "SEASON", unique=True),)
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
+    USER_ID: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=True, index=True
+    )
     NAME: Mapped[str] = mapped_column(String(255), index=True)
     YEAR: Mapped[str] = mapped_column(String(255), nullable=True)
     KEYWORD: Mapped[str] = mapped_column(String(255), nullable=True)
@@ -108,6 +120,7 @@ class SubscribeTvs(Base):
     STATE: Mapped[str] = mapped_column(String(255), index=True, nullable=True)
     DESC: Mapped[str] = mapped_column(String(255), nullable=True)
     NOTE: Mapped[str] = mapped_column(Text, nullable=True)
+    ADD_DATE: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
@@ -117,5 +130,8 @@ class SubscribeTvEpisodes(Base):
     __tablename__ = "SUBSCRIBE_TV_EPISODES"
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
+    USER_ID: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=True, index=True
+    )
     RSSID: Mapped[str] = mapped_column(String(255), index=True)
     EPISODES: Mapped[str] = mapped_column(String(255))

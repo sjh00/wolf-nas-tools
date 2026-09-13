@@ -101,7 +101,11 @@ class SearchOrchestrator:
         # 7. 择优下载
         if ctx.auto_download and filtered:
             download_items, left_medias = self._downloader.batch_download(
-                in_from=ctx.search_type, media_list=filtered, need_tvs=ctx.no_exists, user_name=ctx.user_name
+                in_from=ctx.search_type,
+                media_list=filtered,
+                need_tvs=ctx.no_exists,
+                user_name=ctx.user_name,
+                user_id=ctx.user_id,
             )
             if download_items:
                 total = len(media_list)
@@ -116,7 +120,7 @@ class SearchOrchestrator:
         media_info = ctx.match_media
 
         if ctx.filter_args and not media_info:
-            return [ctx.keyword], 1, ctx.filter_args
+            return [ctx.keyword], 1, self._inject_user(ctx, dict(ctx.filter_args))
 
         if not media_info:
             media_info = self._identify_media(ctx)
@@ -136,12 +140,19 @@ class SearchOrchestrator:
             }
             if ctx.filter_args:
                 filter_args.update(ctx.filter_args)
-            return search_names, min(max_workers, 8), filter_args
+            return search_names, min(max_workers, 8), self._inject_user(ctx, filter_args)
         else:
             base = {"season": None, "episode": None, "year": None}
             if ctx.filter_args:
                 base.update(ctx.filter_args)
-            return [ctx.keyword], 1, base
+            return [ctx.keyword], 1, self._inject_user(ctx, base)
+
+    @staticmethod
+    def _inject_user(ctx: SearchContext, filter_args: dict) -> dict:
+        """将搜索归属用户注入 filter_args，供索引器层做站点授权过滤"""
+        if ctx.user_id:
+            filter_args["user_id"] = ctx.user_id
+        return filter_args
 
     def _identify_media(self, ctx: SearchContext) -> Any:
         try:

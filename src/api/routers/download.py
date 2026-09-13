@@ -287,7 +287,7 @@ def delete_torrent_remove_task(
 @router.post("/tasks/add", response_model=CommonResponse, summary="添加下载任务")
 def download(
     req: DownloadRequest,
-    user: UserContext = Depends(require_permission("download:manage")),
+    user: UserContext = Depends(require_any_permission("download:create", "download:manage")),
     svc: DownloadService = Depends(get_download_service),
 ):
     if req.id is None:
@@ -317,6 +317,7 @@ def download(
                 dl_dir=req.dir or "",
                 dl_setting=req.setting or "",
                 user_name=user.nickname or user.username,
+                user_id=user.user_id,
                 confirm_strategy=req.confirm_strategy,
             )
         except Exception as e:
@@ -332,7 +333,7 @@ def download(
 @router.post("/tasks/add_link", response_model=CommonResponse, summary="添加链接下载任务")
 def download_link(
     req: DownloadLinkRequest,
-    user: UserContext = Depends(require_permission("download:manage")),
+    user: UserContext = Depends(require_any_permission("download:create", "download:manage")),
     svc: DownloadService = Depends(get_download_service),
 ):
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
@@ -367,6 +368,7 @@ def download_link(
                 dl_dir=req.dl_dir or "",
                 dl_setting=req.dl_setting or "",
                 user_name=user.nickname or user.username,
+                user_id=user.user_id,
                 confirm_strategy=req.confirm_strategy,
             )
         except Exception as e:
@@ -392,7 +394,7 @@ def resolve_download_url(
 @router.post("/tasks/add_torrent", response_model=CommonResponse, summary="添加种子下载任务")
 def download_torrent(
     req: DownloadTorrentRequest,
-    user: UserContext = Depends(require_permission("download:manage")),
+    user: UserContext = Depends(require_any_permission("download:create", "download:manage")),
     svc: DownloadService = Depends(get_download_service),
 ):
     # 快速校验
@@ -425,6 +427,7 @@ def download_torrent(
                 dl_dir=req.dl_dir or "",
                 dl_setting=req.dl_setting or "",
                 user_name=user.nickname or user.username,
+                user_id=user.user_id,
                 page_url=req.page_url or "",
                 upload_volume_factor=req.upload_volume_factor,
                 download_volume_factor=req.download_volume_factor,
@@ -837,6 +840,15 @@ def get_downloading(
     page_size = min(max(1, page_size), 200)
     result = svc.get_downloading_with_media_info(page=page, page_size=page_size)
     return success(data=result)
+
+
+@router.post("/statistics", response_model=CommonResponse, summary="获取下载器实时速率统计")
+def get_downloader_statistics(
+    req: EmptyRequest = EmptyRequest(),
+    user: str = Depends(require_any_permission("download:view", "download:manage")),
+    svc: DownloadService = Depends(get_download_service),
+):
+    return success(data=svc.get_downloader_speed_statistics())
 
 
 @router.post("/tools/blacklist/clear", response_model=CommonResponse, summary="清空转移黑名单")

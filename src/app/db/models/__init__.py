@@ -84,14 +84,20 @@ from app.db.models.plugin import (
     USERRSSTASKHISTORY,
 )
 
+# Web Push 订阅
+from app.db.models.push_subscription import PushSubscription
+
 # RBAC权限管理模型
 from app.db.models.rbac import (
     RBACMenu,
     RBACOperationLog,
     RBACPermission,
     RBACRole,
+    RBACRoleSite,
     RBACUser,
+    RBACUserChannel,
     RBACUserLoginLog,
+    RBACUserSite,
 )
 
 # 搜索结果模型
@@ -106,6 +112,9 @@ from app.db.models.site import (
     SITEUSERINFOSTATS,
     SITEUSERSEEDINGINFO,
 )
+
+# 站点解析健康度
+from app.db.models.site_parse_health import SiteParseHealth
 
 # 存储后端模型
 from app.db.models.storage_backend import (
@@ -164,6 +173,10 @@ __all__ = [
     # 识别词
     "CUSTOMWORDS",
     "CUSTOMWORDGROUPS",
+    # 站点解析健康度
+    "SiteParseHealth",
+    # Web Push 订阅
+    "PushSubscription",
     # 下载
     "DOWNLOADER",
     "DOWNLOADHISTORY",
