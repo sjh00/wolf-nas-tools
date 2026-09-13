@@ -50,10 +50,15 @@ class MessageDispatcher:
         self._channel_binding_service = None
         self._queue = MessageQueueFactory.create()
         self._queue.register_handler(self._handle_queued_message)
+        self._governor = None
 
     def set_channel_binding_service(self, service) -> None:
         """延迟注入渠道绑定服务"""
         self._channel_binding_service = service
+
+    def set_governor(self, governor) -> None:
+        """注入消息治理层（去重/聚合），在 sendmsg 单点生效."""
+        self._governor = governor
 
     def _handle_queued_message(self, title, text, image, url, user_id, client_id, client_type):
         """队列消息处理器：通过 client_id 找到 client 并发送."""
@@ -116,6 +121,34 @@ class MessageDispatcher:
             template_title, template_text = template_engine.apply_client_template(client, msg_type, variables)
             title = template_title if template_title is not None else title
             text = template_text if template_text else text
+        if self._governor is not None:
+            try:
+                if self._governor.intercept(
+                    client=client,
+                    title=title,
+                    text=text,
+                    image=image,
+                    url=url,
+                    user_id=user_id,
+                    msg_type=msg_type,
+                ):
+                    return True
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Message]治理层异常，改为直接发送: {e!s}")
+        return self.submit_now(client, title, text, image=image, url=url, user_id=user_id)
+
+    def submit_now(
+        self,
+        client,
+        title,
+        text: str | None = None,
+        image: str | None = None,
+        url: str | None = None,
+        user_id: str = "",
+    ) -> bool:
+        """直接入队发送（不经过治理层），供治理层 flush 摘要时回调."""
+        if not client or not client.get("client"):
+            return False
         cname = client.get("name")
         log.info(f"[Message]消息入队 {cname}：title={title}")
         if not self._queue:
