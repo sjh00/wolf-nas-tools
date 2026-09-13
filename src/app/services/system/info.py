@@ -77,6 +77,20 @@ class SystemInfoService:
         except Exception:
             memory_mb = 0
 
+        try:
+            cpu_percent = round(psutil.cpu_percent(interval=0.1), 1)
+            vmem = psutil.virtual_memory()
+            memory_percent = round(vmem.percent, 1)
+            memory_used_mb = round(vmem.used / 1024 / 1024, 1)
+            memory_total_mb = round(vmem.total / 1024 / 1024, 1)
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception:
+            cpu_percent = 0.0
+            memory_percent = 0.0
+            memory_used_mb = 0.0
+            memory_total_mb = 0.0
+
         return SystemInfoDTO(
             version=APP_VERSION,
             python_version=platform.python_version(),
@@ -85,6 +99,10 @@ class SystemInfoService:
             uptime_seconds=int(uptime_seconds),
             start_time=start_time.isoformat() if start_time else None,
             memory_mb=memory_mb,
+            cpu_percent=cpu_percent,
+            memory_percent=memory_percent,
+            memory_used_mb=memory_used_mb,
+            memory_total_mb=memory_total_mb,
         )
 
 
@@ -187,6 +205,7 @@ class WebSearchService:
         tmdbid=None,
         media_type=None,
         session_id: str | None = None,
+        user_id: int | None = None,
     ) -> WebSearchResultDTO:
         """执行WEB搜索"""
         if not search_word:
@@ -203,6 +222,7 @@ class WebSearchService:
             tmdbid=tmdbid,
             media_type=media_type,
             session_id=session_id,
+            user_id=user_id,
         )
         return WebSearchResultDTO(code=ret, msg=ret_msg or "")
 

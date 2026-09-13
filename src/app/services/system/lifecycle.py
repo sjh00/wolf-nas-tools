@@ -23,6 +23,7 @@ from app.services.torrentremover_core import TorrentRemoverService
 from initializer import (
     check_config,
     check_redis,
+    init_channel_bindings,
     init_default_categories,
     init_default_filters,
     init_event_handlers,
@@ -124,8 +125,10 @@ class SystemLifecycleService:
         knowledge_ingestor=None,
         conversation_store=None,
         plugin_market_service=None,
+        message=None,
     ):
         self._scheduler = scheduler_core
+        self._message = message
         self._sync = sync
         self._brush = brush_task_service
         self._rss_checker = rss_checker
@@ -161,6 +164,7 @@ class SystemLifecycleService:
         init_default_categories()
         init_default_filters()
         init_rbac_system()
+        init_channel_bindings()
         init_event_handlers(event_bus=self._event_bus, hook_system=self._hook_system)
         init_message_webhook_apikey(apikey_service=self._apikey_service)
         # 1. 先启动调度器，确保所有后台服务的定时任务可以正常注册
@@ -175,6 +179,7 @@ class SystemLifecycleService:
             knowledge_ingestor=self._knowledge_ingestor,
             conversation_store=self._conversation_store,
             plugin_market_service=self._plugin_market_service,
+            message=self._message,
         )
         # 2. 并行启动各业务服务（此时调度器已运行，init_config 里的 stop/start_job 可正常执行）
         startup_tasks = [

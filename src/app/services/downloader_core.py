@@ -118,6 +118,7 @@ class DownloaderCore:
         proxy=None,
         file_indices=None,
         file_names=None,
+        user_id: int | None = None,
     ):
         return self._download_core.download(
             media_info=media_info,
@@ -134,11 +135,12 @@ class DownloaderCore:
             proxy=proxy,
             file_indices=file_indices,
             file_names=file_names,
+            user_id=user_id,
         )
 
-    def batch_download(self, in_from, media_list, need_tvs=None, user_name=None) -> Any:
+    def batch_download(self, in_from, media_list, need_tvs=None, user_name=None, user_id=None) -> Any:
         return self._download_core.batch_download(
-            in_from=in_from, media_list=media_list, need_tvs=need_tvs, user_name=user_name
+            in_from=in_from, media_list=media_list, need_tvs=need_tvs, user_name=user_name, user_id=user_id
         )
 
     # ---------- 转移 ----------
@@ -363,14 +365,20 @@ class DownloaderCore:
 
     # ---------- 历史记录 ----------
 
-    def get_download_history(self, date=None, hid=None, num=30, page=1):
-        return self._download_core.get_download_history(date=date, hid=hid, num=num, page=page)
+    def get_download_history(self, date=None, hid=None, num=30, page=1, user=None):
+        return self._download_core.get_download_history(date=date, hid=hid, num=num, page=page, user=user)
 
     def get_download_history_by_title(self, title):
         return self._download_core.get_download_history_by_title(title=title)
 
     def get_download_history_by_downloader(self, downloader, download_id):
         return self._download_core.get_download_history_by_downloader(downloader=downloader, download_id=download_id)
+
+    def delete_download_history_by_id(self, hid, user=None) -> bool:
+        return self._download_core.delete_download_history_by_id(hid, user=user)
+
+    def delete_all_download_history(self, user=None) -> int:
+        return self._download_core.delete_all_download_history(user=user)
 
     # ---------- 下载器 CRUD ----------
 

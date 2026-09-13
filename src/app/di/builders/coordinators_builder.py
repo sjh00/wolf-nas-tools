@@ -84,6 +84,7 @@ def build_coordinators(
         matcher=matcher,
         message=message,
         system_config=system_config,
+        site_grant_service=services.site_grant_service,
     )
     indexer_strategy = IndexerSearchStrategy(
         service=subscribe_service,
@@ -128,6 +129,7 @@ def build_coordinators(
         knowledge_ingestor=agent_rag.knowledge_ingestor,
         conversation_store=agent_rag.conversation_store,
         plugin_market_service=services.plugin_market_service,
+        message=message,
     )
 
     # RAG 知识库自动更新：媒体转移完成后节流重建 media_library 命名空间
@@ -162,6 +164,8 @@ def build_coordinators(
         words_service=services.words_service,
         plugin_framework_service=services.plugin_framework_service,
         message_client_service=services.message_client_service,
+        rbac_service=services.rbac_service,
+        site_grant_service=services.site_grant_service,
         media_server_config_service=services.media_server_config_service,
         indexer_config_service=services.indexer_config_service,
         system_config_service=services.system_config_service,

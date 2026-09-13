@@ -7,13 +7,15 @@
 
 import importlib
 import os
+import random
 import re
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import dateutil.parser
 from lxml import etree
@@ -29,6 +31,53 @@ from app.sites.utils import is_logged_in
 from app.utils import JsonUtils
 from app.utils.browser_mode import build_browser_mode
 from app.utils.config_tools import get_proxies
+
+# 详情页/页面抓取限流退避：站点连续返回空/失败时，串行化并放缓后续请求，
+# 避免瞬时并发触发站点风控；恢复正常后自动回到无间隔并发。
+_PAGE_PACE_WINDOW = 180.0
+_PAGE_PACE_MAX_INTERVAL = 6.0
+_page_pace_state: dict[str, dict] = {}
+_page_pace_lock = threading.Lock()
+
+
+def _record_page_fetch_result(site_id: str, ok: bool) -> None:
+    """记录一次页面抓取结果，ok=False 表示空/失败，进入退避窗口"""
+    with _page_pace_lock:
+        st = _page_pace_state.setdefault(site_id, {"last_fail": 0.0, "streak": 0})
+        if ok:
+            st["last_fail"] = 0.0
+            st["streak"] = 0
+            st["slot"] = 0.0
+        else:
+            st["last_fail"] = time.monotonic()
+            st["streak"] = int(st.get("streak", 0)) + 1
+
+
+def _claim_page_fetch_slot(site_id: str, interval: float) -> float:
+    """为一次抓取预约时间片，返回需等待秒数（>0 则调用方 sleep）"""
+    with _page_pace_lock:
+        now = time.monotonic()
+        slot = _page_pace_state.get(site_id, {}).get("slot", 0.0) or 0.0
+        start = max(now, slot)
+        _page_pace_state.setdefault(site_id, {})["slot"] = start + interval
+        return start - now
+
+
+def _page_fetch_interval(site_id: str) -> float:
+    """当前站点是否处于退避窗口；是则返回建议间隔"""
+    with _page_pace_lock:
+        st = _page_pace_state.get(site_id)
+        if not st:
+            return 0.0
+        now = time.monotonic()
+        if now - float(st.get("last_fail", 0.0)) > _PAGE_PACE_WINDOW:
+            st["streak"] = 0
+            return 0.0
+        streak = int(st.get("streak", 0))
+        if streak <= 0:
+            return 0.0
+        base = min(0.8 + (streak - 1) * 1.2, _PAGE_PACE_MAX_INTERVAL)
+        return random.uniform(base * 0.7, base * 1.3)
 
 
 class TorrentAttrFetchError(Exception):
@@ -444,6 +493,89 @@ class SiteEngine:
                 parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
             return parsed.astimezone(timezone.utc)
 
+    def _eval_html_conf(self, html_txt, conf) -> dict | None:
+        """统一评估站点定义 html.conf 的属性选择器（JSON path=value 或 XPath）。
+
+        返回 {"free","2xfree","hr","peer_count","hits":{KEY:n},"doc":etree|None}；
+        HTML 无法解析时返回 None。free/2xfree/hr/peer_count 的唯一求值入口，
+        resolve_torrent_attr 与 html_selector_stats 共享，不再各自硬编码键组。
+        """
+        is_json = JsonUtils.is_valid_json(html_txt)
+        doc = None
+        if not is_json:
+            doc = etree.HTML(html_txt)
+            if doc is None:
+                return None
+
+        def _json_val(path):
+            return JsonUtils.get_json_object(html_txt, path)
+
+        def _match_eq(xp):  # path=value 精确匹配（FREE / 2XFREE）
+            if is_json:
+                path, _, value = xp.partition("=")
+                return str(_json_val(path)) == value
+            return bool(doc.xpath(xp))  # type: ignore[union-attr]
+
+        def _match_truthy(xp):  # 存在且非空（HR）
+            if is_json:
+                return bool(_json_val(xp))
+            return bool(doc.xpath(xp))  # type: ignore[union-attr]
+
+        def _match_exist(xp):  # 存在即命中（PEER_COUNT 命中统计）
+            if is_json:
+                return _json_val(xp) is not None
+            return bool(doc.xpath(xp))  # type: ignore[union-attr]
+
+        free_hits = sum(1 for xp in (conf.get("FREE") or []) if _match_eq(xp))
+        x2_hits = sum(1 for xp in (conf.get("2XFREE") or []) if _match_eq(xp))
+        hr_hits = sum(1 for xp in (conf.get("HR") or []) if _match_truthy(xp))
+        peer_hits = sum(1 for xp in (conf.get("PEER_COUNT") or []) if _match_exist(xp))
+
+        peer_count = 0
+        for xp in conf.get("PEER_COUNT") or []:
+            if is_json:
+                val = _json_val(xp)
+                if val:
+                    peer_count = int(val)
+                    break
+            else:
+                els = doc.xpath(xp)  # type: ignore[union-attr]
+                if els:
+                    txt = "".join(str(t) for t in els[0].itertext())  # type: ignore[union-attr]
+                    peer_count = int("".join(c for c in txt if c.isdigit()) or 0)
+                    break
+
+        # 详情页发布时间（PUBDATE）：刷流时间规则以此为准（若配置了 PUBDATE 选择器）
+        pubdate = None
+        for xp in conf.get("PUBDATE") or []:
+            if is_json:
+                val = _json_val(xp)
+                if val:
+                    pubdate = str(val).strip()
+                    break
+            else:
+                nodes: list = doc.xpath(xp)  # type: ignore[union-attr]
+                if not nodes:
+                    continue
+                first = nodes[0]
+                if isinstance(first, str):
+                    text = first.strip()
+                else:
+                    text = "".join(str(t) for t in first.itertext()).strip()  # type: ignore[union-attr]
+                if text:
+                    pubdate = text
+                    break
+
+        return {
+            "free": free_hits > 0 or x2_hits > 0,
+            "2xfree": x2_hits > 0,
+            "hr": hr_hits > 0,
+            "peer_count": peer_count,
+            "pubdate": pubdate,
+            "hits": {"FREE": free_hits, "2XFREE": x2_hits, "HR": hr_hits, "PEER_COUNT": peer_hits},
+            "doc": doc,
+        }
+
     def resolve_torrent_attr(
         self,
         torrent_url,
@@ -455,12 +587,14 @@ class SiteEngine:
         proxy=False,
         chrome=False,
         browser_persistent=False,
+        detail=None,
     ):
         ret = {"free": False, "2xfree": False, "hr": False, "peer_count": 0, "labels": ""}
         site = self.get_by_url(torrent_url)
         if not site:
-            log.debug(f"[SiteEngine]resolve_torrent_attr 未匹配站点, url={torrent_url[:100]}")
-            return ret
+            # 站点未匹配：属性未知而非"非免费"，避免上层按非免费误删
+            log.warn(f"[SiteEngine]resolve_torrent_attr 未匹配站点, url={torrent_url[:100]}")
+            raise TorrentAttrFetchError(f"未匹配站点: {torrent_url[:100]}")
         user_config = {
             "cookie": cookie or "",
             "api_key": api_key or "",
@@ -475,15 +609,21 @@ class SiteEngine:
         if site.api and site.torrent_attr:
             tid = self._extract_tid(torrent_url, site)
             if not tid:
-                log.debug(f"[SiteEngine]resolve_torrent_attr TID提取失败, url={torrent_url[:100]}")
-                return ret
+                # TID 提取失败（如 RSS 一次性签名链接）：属性未知，不得按"非免费"处理
+                log.warn(f"[SiteEngine]resolve_torrent_attr TID提取失败, url={torrent_url[:100]}")
+                raise TorrentAttrFetchError(f"TID提取失败: {torrent_url[:100]}")
             cfg = site.torrent_attr
             base = site.api.base_url.rstrip("/")
             path = cfg.get("path", "").format(tid=tid)
             url = f"{base}{path}" if path.startswith("/") else path
             body = {k: v.format(tid=tid) for k, v in (cfg.get("body") or {}).items()}
-            headers, auth = engine_tools._build_auth(self, site, user_config)
             method = (cfg.get("method") or "POST").upper()
+            if method == "GET":
+                # GET 接口的查询参数（如 /api/torrent/info?id={tid}）
+                query = {k: v.format(tid=tid) for k, v in (cfg.get("params") or {}).items()}
+                if query:
+                    url = f"{url}?{urlencode(query)}"
+            headers, auth = engine_tools._build_auth(self, site, user_config)
             body_format = cfg.get("body_format", "form")
             if body_format == "json":
                 if method == "POST":
@@ -520,22 +660,33 @@ class SiteEngine:
                 else:
                     res = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
                 text = res.text
-                free_path = cfg.get("response", {}).get("free_key", "")
-                free_val = cfg.get("response", {}).get("free_value", "")
-                free_match = cfg.get("response", {}).get("free_match", "exact")
-                if free_path and free_val:
+                # 非 JSON 响应（302 错误页/限流 HTML 等）：属性未知，不得按"非免费"处理
+                if not JsonUtils.is_valid_json(text):
+                    raise TorrentAttrFetchError(f"详情返回非 JSON（疑似错误页/限流）: {url[:100]}")
+                resp_cfg = cfg.get("response", {})
+                # 业务失败响应（如 {"code":1,"message":"非法用戶端"} 无 data）：
+                # free_key 顶层字段（约定为 data）缺失或为空时视为属性未知，不误判"非免费"
+                free_path = resp_cfg.get("free_key", "")
+                top_key = free_path.split(".")[0] if free_path else ""
+                if top_key:
+                    root = JsonUtils.loads(text)
+                    if isinstance(root, dict) and (top_key not in root or root.get(top_key) is None):
+                        raise TorrentAttrFetchError(f"详情接口无 {top_key} 数据（疑似业务失败）: {str(root)[:120]}")
+                free_val = resp_cfg.get("free_value", "")
+                free_match = resp_cfg.get("free_match", "exact")
+                # free_value 可能为 0（如朱雀 downloadRate==0 表示免费），不能用真值判断
+                if free_path and free_val is not None and free_val != "":
                     extracted = JsonUtils.get_json_object(text, free_path)
                     if self._match_attr_value(extracted, free_val, free_match):
                         ret["free"] = True
                 free2x_path = cfg.get("response", {}).get("2xfree_key", "")
                 free2x_val = cfg.get("response", {}).get("2xfree_value", "")
                 free2x_match = cfg.get("response", {}).get("2xfree_match", "exact")
-                if free2x_path and free2x_val:
+                if free2x_path and free2x_val is not None and free2x_val != "":
                     extracted2x = JsonUtils.get_json_object(text, free2x_path)
                     if self._match_attr_value(extracted2x, free2x_val, free2x_match):
                         ret["free"] = True
                         ret["2xfree"] = True
-                resp_cfg = cfg.get("response", {})
                 # 站点级活动（如“全站免费”）：
                 # 部分站点活动期间不逐种更新徽标（如 M-Team 全站 FREE 时多数种子仍显示
                 # 上传者自设的折扣），此时以详情返回的全站活动规则补判免费。
@@ -581,6 +732,20 @@ class SiteEngine:
                         ret["labels"] = ",".join(str(x) for x in labels_val if x)
                     elif labels_val:
                         ret["labels"] = str(labels_val)
+                # 自检用：输出各配置字段在响应中是否存在（识别字段漂移）
+                if isinstance(detail, dict):
+                    resp = cfg.get("response", {}) or {}
+                    key_map = {
+                        "free": resp.get("free_key"),
+                        "2xfree": resp.get("2xfree_key"),
+                        "peer_count": resp.get("peer_count_key"),
+                        "labels": resp.get("labels_key"),
+                    }
+                    keys = {}
+                    for label, path in key_map.items():
+                        if path:
+                            keys[label] = JsonUtils.get_json_object(text, path) is not None
+                    detail["api_keys"] = keys
             except TorrentAttrFetchError:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -600,63 +765,90 @@ class SiteEngine:
             html_txt = self._fetch_page(detail_url, user_config)
             if not html_txt:
                 raise TorrentAttrFetchError(f"种子详情页抓取为空, url={detail_url[:120]}")
-            if JsonUtils.is_valid_json(html_txt):
-                for xp in conf.get("2XFREE", []):
-                    if str(JsonUtils.get_json_object(html_txt, xp.split("=")[0])) == xp.split("=")[1]:
-                        ret["free"] = True
-                        ret["2xfree"] = True
-                for xp in conf.get("FREE", []):
-                    if str(JsonUtils.get_json_object(html_txt, xp.split("=")[0])) == xp.split("=")[1]:
-                        ret["free"] = True
-                for xp in conf.get("HR", []):
-                    if JsonUtils.get_json_object(html_txt, xp):
-                        ret["hr"] = True
-                for xp in conf.get("PEER_COUNT", []):
-                    val = JsonUtils.get_json_object(html_txt, xp)
-                    ret["peer_count"] = int(val) if val else 0
-            else:
-                doc = etree.HTML(html_txt)
-                if doc is not None:
-                    for xp in conf.get("2XFREE", []):
-                        if doc.xpath(xp):
-                            ret["free"] = True
-                            ret["2xfree"] = True
-                    for xp in conf.get("FREE", []):
-                        if doc.xpath(xp):
-                            ret["free"] = True
-                    for xp in conf.get("HR", []):
-                        if doc.xpath(xp):
-                            ret["hr"] = True
-                    for xp in conf.get("PEER_COUNT", []):
-                        els = doc.xpath(xp)
-                        if els:
-                            txt = "".join(str(t) for t in els[0].itertext())  # type: ignore[union-attr]
-                            ret["peer_count"] = int("".join(c for c in txt if c.isdigit()) or 0)
-                    ret["labels"] = _extract_detail_labels(doc, site)
+            attrs = self._eval_html_conf(html_txt, conf)
+            if attrs is None:
+                raise TorrentAttrFetchError(f"种子详情页解析失败, url={detail_url[:120]}")
+            ret["free"] = attrs["free"]
+            ret["2xfree"] = attrs["2xfree"]
+            ret["hr"] = attrs["hr"]
+            ret["peer_count"] = attrs["peer_count"]
+            if attrs.get("pubdate"):
+                ret["pubdate"] = attrs["pubdate"]
+            if attrs["doc"] is not None:
+                ret["labels"] = _extract_detail_labels(attrs["doc"], site)
         return ret
 
+    def html_selector_stats(self, torrent_url: str, user_config: dict) -> dict:
+        """
+        单次抓取 HTML 站点种子详情页，统一返回：
+        - 各配置选择器命中数（selector 静默失效监控）
+        - 属性值 free/2xfree/hr/peer_value（替代单独的属性解析，避免二次抓取触发反爬）
+        - 登录态 auth（凭据失效/访问受限，不属结构变更）
+        """
+        site = self.get_by_url(torrent_url)
+        if not site or not site.html or not site.html.conf:
+            return {"fetched": False}
+        conf = site.html.conf
+        html_txt, final_url = self._fetch_page_ex(torrent_url, user_config)
+        is_login_redirect = "login" in final_url.lower()
+        if not html_txt:
+            if is_login_redirect:
+                return {"fetched": False, "auth": True}
+            return {"fetched": False, "error": "empty"}
+        if is_login_redirect or not is_logged_in(html_txt):
+            return {"fetched": True, "auth": True}
+        attrs = self._eval_html_conf(html_txt, conf)
+        if attrs is None:
+            return {"fetched": False, "error": "parse"}
+        return {
+            "fetched": True,
+            "selectors": attrs["hits"],
+            "peer_value": attrs["peer_count"],
+            "free": attrs["free"],
+            "hr": attrs["hr"],
+            "pubdate": attrs.get("pubdate"),
+        }
+
     def _fetch_page(self, url, user_config):
+        """抓取页面文本（兼容签名）."""
+        text, _ = self._fetch_page_ex(url, user_config)
+        return text
+
+    def _fetch_page_ex(self, url, user_config) -> tuple[str | None, str]:
+        """抓取页面，返回 (text, final_url)；final_url 供调用方检测登录重定向."""
         ua = user_config.get("ua", "")
         headers = {"User-Agent": ua} if ua else {}
         proxies = get_proxies() if user_config.get("proxy") else None
         proxy_url = proxies.get("http") if proxies else None
         site = self.get_by_url(url)
+        site_id = str(site.id) if site is not None else ""
+        pace_wait = 0.0
+        if site_id:
+            interval = _page_fetch_interval(site_id)
+            if interval > 0:
+                pace_wait = _claim_page_fetch_slot(site_id, interval)
+        if pace_wait > 0:
+            log.debug(f"[SiteEngine]{site_id} 页面抓取空/失败退避，{pace_wait:.1f}s 后重试")
+            time.sleep(pace_wait)
         rate_limiter = getattr(self, "site_limiter", None)
         rate_limiter_engine = rate_limiter.engine if rate_limiter else None
         rl_kwargs = engine_tools._get_rate_limit_kwargs(self, site)
         cookie = user_config.get("cookie", "")
         if site and site.api:
-            auth_headers, auth = engine_tools._build_auth(self, site, user_config)
-            headers.update(auth_headers)
+            # 页面（HTML 详情/搜索页）抓取优先使用会话 cookie；无 cookie 时才回退 API 鉴权，
+            # 避免把 api-key 混发到页面请求（API 详情走 torrent_attr 分支，不经过这里）
             if cookie:
                 auth = CookieAuth(cookie)
+            else:
+                auth_headers, auth = engine_tools._build_auth(self, site, user_config)
+                headers.update(auth_headers)
         else:
             auth = CookieAuth(cookie) if cookie else None
 
         # 站点开启浏览器自动化：HttpClient 挂载 ChromeTransport，
         # 用实验室指纹画像自动导航，挑战页可绕过；请求携带 cookie（CookieAuth）
         # render_html=True：让 nexus-chrome 渲染页面后返回，而非挑战页原始 body
-        def _request(with_browser) -> str | None:
+        def _request(with_browser) -> tuple[str | None, str]:
             # 浏览器模式请求用完即关（release）：非持久会话立即删除，
             # 避免 nexus-chrome 会话/标签页在进程退出前持续堆积
             client = None
@@ -666,20 +858,25 @@ class SiteEngine:
                     rate_limiter=rate_limiter_engine,
                 )
                 res = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
+                final = str(res.url) if getattr(res, "url", None) else url
                 if not res.is_success:
-                    return None
-                return res.text
-            except Exception:
-                return None
+                    log.debug(f"[SiteEngine]页面抓取非 2xx: HTTP {res.status_code} url={str(url)[:80]}")
+                    return None, final
+                return res.text, final
+            except Exception as e:
+                # 鉴权失败被重定向到登录页时，CF 挑战/403 会抛异常且消息含 login URL，
+                # 把异常中的最终地址透传，供自检调用方识别（正常路径不受影响）
+                err_msg = str(e)
+                return None, (err_msg if "login" in err_msg.lower() else url)
             finally:
                 if client is not None and with_browser is not None:
                     client.close()
 
         # 站点需开启“浏览器自动化”才会尝试 chrome 降级；否则仅直连
-        text = _request(None)
+        text, final_url = _request(None)
         if (text is None or is_challenge(text)) and site and user_config.get("chrome"):
             try:
-                text = _request(
+                text2, final2 = _request(
                     build_browser_mode(
                         site_info={
                             "chrome": True,
@@ -692,9 +889,14 @@ class SiteEngine:
                         render_html=True,
                     )
                 )
-            except Exception:
-                text = None
-        return text
+                if text2 is not None:
+                    text, final_url = text2, final2
+            except Exception as e:
+                log.debug(f"[SiteEngine]浏览器降级抓取失败: {e}")
+        if site_id:
+            blocked = text is None and "login" not in str(final_url).lower()
+            _record_page_fetch_result(site_id, ok=not blocked)
+        return text, final_url
 
     # ---- 连接测试 ----
 
@@ -895,10 +1097,13 @@ def get_tid_by_url(url: str, site_engine: SiteEngine) -> str | None:
     if path_segments:
         return path_segments[-1]
     site_def = site_engine.get_by_url(url)
+    # 域名可能含数字（如 u2.dmhy.org 里的 2），剥离 host 后再匹配，避免把域名数字当 tid
+    url_without_host = re.sub(r"^[a-zA-Z]+://[^/]+", "", url)
     if site_def and site_def.download and site_def.download.type in ("api", "api_chained"):
         pattern = site_def.tid_pattern if site_def.tid_pattern else r"\d+"
-        tid = re.findall(pattern, url)
+        tid = re.findall(pattern, url_without_host)
         return tid[-1] if tid else None
     pattern = site_def.tid_pattern if site_def and site_def.tid_pattern else r"id=(\d+)"
-    tid = re.findall(pattern, url)
-    return tid[0] if tid else None
+    tid = re.findall(pattern, url_without_host)
+    # 取最后一个数字（种子 id 一般在链接尾部）
+    return tid[-1] if tid else None

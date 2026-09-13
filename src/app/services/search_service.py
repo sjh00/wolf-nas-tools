@@ -126,7 +126,12 @@ class SearchExecutor:
 
         with ThreadExecutor(max_workers=optimal_workers, name=self._thread_name_prefix) as executor:
             for search_name in search_names:
-                task = executor.submit(search_func, search_name, filter_args, media_info, in_from)
+                try:
+                    task = executor.submit(search_func, search_name, filter_args, media_info, in_from)
+                except RuntimeError as e:
+                    # 应用退出/线程池关闭时提交会抛 RuntimeError，静默跳过，避免订阅处理报错刷屏
+                    log.debug(f"[Search]执行器不可用，跳过搜索：{e}")
+                    continue
                 all_task.append(task)
 
             finish_count = 0
@@ -258,10 +263,10 @@ class SearchResultProcessor:
         finally:
             lock.release()
 
-    def batch_download(self, media_list: list, in_from: SearchType, no_exists: dict, user_name=None):
+    def batch_download(self, media_list: list, in_from: SearchType, no_exists: dict, user_name=None, user_id=None):
         """择优下载"""
         return self._downloader.batch_download(
-            in_from=in_from, media_list=media_list, need_tvs=no_exists, user_name=user_name
+            in_from=in_from, media_list=media_list, need_tvs=no_exists, user_name=user_name, user_id=user_id
         )
 
 
@@ -331,6 +336,7 @@ class Searcher:
         sites: list | None = None,
         filters: dict | None = None,
         user_name=None,
+        user_id: int | str | None = None,
     ) -> tuple[Any, dict, int, int]:
         """
         只搜索和下载一个资源
@@ -357,7 +363,10 @@ class Searcher:
             "seeders": True,
         }
         if filters:
-            filter_args.update(filters)
+            # site 为权威参数，filters 中的同名键忽略，避免空列表覆盖 effective sites
+            filter_args.update({k: v for k, v in filters.items() if k != "site"})
+        if user_id:
+            filter_args["user_id"] = user_id
 
         # 1. 构建搜索词（含关键词 + 多语言名，build_search_names 内已去重）
         search_name_list, max_workers = SearchQueryBuilder.build_search_names(media_info, self.media)
@@ -418,7 +427,7 @@ class Searcher:
 
         # 5. 择优下载
         download_items, left_medias = processor.batch_download(
-            filtered_media_list, in_from or SearchType.WEB, no_exists, user_name
+            filtered_media_list, in_from or SearchType.WEB, no_exists, user_name, user_id=user_id
         )
 
         if not download_items:
@@ -435,10 +444,11 @@ class Searcher:
             return None
         return self.search_repo.get_search_result_by_id(dl_id)
 
-    def get_search_results(self, session_id: str | None = None):
+    def get_search_results(self, session_id: str | None = None, user_id: int | None = None):
+        """获取搜索结果（user_id 非空时按数据归属过滤）"""
         if self.search_repo is None:
             return []
-        return self.search_repo.get_search_results(session_id)
+        return self.search_repo.get_search_results(session_id, user_id=user_id)
 
     def delete_all_search_torrents(self):
         if self.search_repo is None:
@@ -484,14 +494,16 @@ class SearchService:
         sites: list | None = None,
         filters: dict | None = None,
         user_name: str | None = None,
+        user_id: int | str | None = None,
     ) -> SearchOneMediaResultDTO:
         result = self._searcher.search_one_media(
             media_info=media_info,
             in_from=in_from or SearchType.WEB,
             no_exists=no_exists,
-            sites=sites or [],
+            sites=sites,
             filters=filters or {},
             user_name=user_name,
+            user_id=user_id,
         )
         if not result:
             return SearchOneMediaResultDTO()
@@ -506,8 +518,8 @@ class SearchService:
     def get_search_result_by_id(self, dl_id) -> Any:
         return self._searcher.get_search_result_by_id(dl_id)
 
-    def get_search_results(self, session_id: str | None = None) -> Any:
-        return self._searcher.get_search_results(session_id)
+    def get_search_results(self, session_id: str | None = None, user_id: int | None = None) -> Any:
+        return self._searcher.get_search_results(session_id, user_id=user_id)
 
     def delete_all_search_torrents(self) -> None:
         self._searcher.delete_all_search_torrents()

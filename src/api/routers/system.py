@@ -233,6 +233,10 @@ def system_info(
             "uptime_seconds": info.uptime_seconds,
             "start_time": info.start_time,
             "memory_mb": info.memory_mb,
+            "cpu_percent": info.cpu_percent,
+            "memory_percent": info.memory_percent,
+            "memory_used_mb": info.memory_used_mb,
+            "memory_total_mb": info.memory_total_mb,
         }
     )
 
@@ -545,7 +549,7 @@ def sch(
 @router.post("/search", response_model=CommonResponse, summary="WEB资源搜索")
 def search(
     req: SearchRequest,
-    current_user: UserContext = Depends(require_any_permission("setting:view", "setting:update")),
+    current_user: UserContext = Depends(require_permission("search:execute")),
     svc=Depends(get_web_search_service),
     executor=Depends(get_thread_executor),
 ):
@@ -565,6 +569,7 @@ def search(
         tmdbid=req.tmdbid,
         media_type=req.media_type,
         session_id=session_id,
+        user_id=current_user.user_id,
     )
     return success(data={"session_id": session_id})
 
@@ -705,7 +710,7 @@ def set_scraper_config(
     svc=Depends(get_system_config_service),
 ):
     value = req.dict(exclude_none=True)
-    svc.set(SystemConfigKey.UserScraperConf, value)
+    svc.set_merged(SystemConfigKey.UserScraperConf, value)
     return success()
 
 
@@ -863,6 +868,10 @@ def system_status(
             "version": info.version,
             "uptime": info.uptime_seconds,
             "python_version": info.python_version,
+            "cpu_percent": info.cpu_percent,
+            "memory_percent": info.memory_percent,
+            "memory_used_mb": info.memory_used_mb,
+            "memory_total_mb": info.memory_total_mb,
         }
     )
 

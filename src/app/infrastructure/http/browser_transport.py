@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import hashlib
 from typing import Any
+from urllib.parse import quote
 
 import httpx2
 
 import log
+from app.infrastructure.chrome.limits import browser_slot
 from app.infrastructure.http.config import BrowserModeConfig
 from app.utils.render_normalize import normalize_rendered_html
+from app.utils.session_key import to_session_id
 
 
 def _make_session_key(site_key: str, browser: BrowserModeConfig) -> str:
@@ -62,7 +65,7 @@ class _ChromeServerClient:
     def ensure_session(self, session_key: str, browser: BrowserModeConfig) -> dict[str, Any]:
         """幂等创建 session; 409/已存在时返回现有会话."""
         payload = {
-            "session_id": session_key,
+            "session_id": to_session_id(session_key),
             "fingerprint_profile": browser.fingerprint_profile,
             "fp_profile_id": browser.fp_profile_id,
             "user_agent": browser.user_agent,
@@ -79,7 +82,8 @@ class _ChromeServerClient:
     def delete_session(self, session_key: str) -> None:
         """删除会话，关闭对应浏览器标签页；不存在时忽略."""
         try:
-            self._request("DELETE", f"/sessions/{session_key}", raise_for_status=False)
+            # 会话键可能包含 URL（如 https://site），必须编码为单个路径段
+            self._request("DELETE", f"/sessions/{quote(to_session_id(session_key), safe='')}", raise_for_status=False)
         except Exception as e:  # noqa: BLE001
             log.warn(f"[ChromeServer] 删除会话 {session_key} 失败: {e}")
 
@@ -106,7 +110,8 @@ class _ChromeServerClient:
         }
         if cookie:
             payload["cookie"] = cookie
-        return self._request("POST", f"/sessions/{session_key}/request", json=payload)
+        # 会话键可能包含 URL（如 https://site），必须编码为单个路径段，否则路由 404
+        return self._request("POST", f"/sessions/{quote(to_session_id(session_key), safe='')}/request", json=payload)
 
     def close(self) -> None:
         self._client.close()
@@ -181,15 +186,16 @@ class _BaseChromeTransport:
         if request.method in ("POST", "PUT", "PATCH"):
             data = request.content.decode("utf-8") if request.content else None
 
-        payload = self._server.request(
-            self._session_key,
-            self._browser,
-            url=url,
-            method=method,
-            headers=headers or None,
-            data=data,
-            cookie=cookie,
-        )
+        with browser_slot():
+            payload = self._server.request(
+                self._session_key,
+                self._browser,
+                url=url,
+                method=method,
+                headers=headers or None,
+                data=data,
+                cookie=cookie,
+            )
         return self._build_response(request, payload)
 
     def close(self) -> None:
