@@ -20,8 +20,6 @@ from app.core.constants import RMT_MEDIAEXT
 from app.core.settings import settings
 from app.infrastructure.cache_system import get_cache_manager
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
-from app.media import meta_info
-from app.utils.system_utils import SystemUtils
 
 _CACHE_NAME = "file_index"
 _KEY_INDEX = "index"
@@ -330,6 +328,8 @@ class FileIndexService:
     def _spec_from_filename(self, filename: str) -> str:
         """从文件名提取一个简短的规格描述（如 2160p/Remux/H265）"""
         try:
+            from app.media import meta_info  # noqa: PLC0415
+
             mi = meta_info(title=filename)
             parts = [
                 str(getattr(mi, "resource_pix", "") or ""),
@@ -405,6 +405,8 @@ class FileIndexService:
     def _find_hardlinks(self, path: str) -> list[str]:
         """返回文件的硬链接兄弟路径列表（不含自身）"""
         try:
+            from app.utils.system_utils import SystemUtils  # noqa: PLC0415
+
             links = SystemUtils().find_hardlinks(file=path, fdir=os.path.dirname(path)) or []
             return [link.get("file") for link in links if link.get("file")]
         except Exception as e:  # noqa: BLE001
