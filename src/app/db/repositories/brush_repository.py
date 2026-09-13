@@ -6,7 +6,7 @@ Handles brush task and torrent related database operations.
 import time
 from typing import Any
 
-from sqlalchemy import BigInteger, Integer, and_, cast, func, or_
+from sqlalchemy import BigInteger, Integer, and_, case, cast, func, or_
 
 from app.db.models import BRUSHEVENTLOG, CONFIGSITE, SITEBRUSHRULE, SITEBRUSHTASK, SITEBRUSHTORRENTS
 from app.db.repositories.base_repository import BaseRepository

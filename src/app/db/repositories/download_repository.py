@@ -386,7 +386,9 @@ class DownloadRepository(BaseRepository):
                 download_id == DOWNLOADHISTORY.DOWNLOAD_ID,
             ).update({"STATE": state})
 
-    def update_download_save_path(self, downloader: str, download_id: str, new_save_path: str, tmdb_id: int | None = None) -> int:
+    def update_download_save_path(
+        self, downloader: str, download_id: str, new_save_path: str, tmdb_id: int | None = None
+    ) -> int:
         """
         更新下载记录的保存路径（作品级跨盘归档迁移后同步新位置）。
         优先按 downloader+download_id 定位；缺少 download_id 时按 tmdb_id 兜底。

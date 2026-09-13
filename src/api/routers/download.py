@@ -297,7 +297,7 @@ def download(
     if not req.confirm_strategy:
         try:
             precheck = svc.precheck_multi_version_by_id(dl_id=req.id)
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             precheck = None
         if precheck and precheck.need_confirm:
             return success(
@@ -340,7 +340,7 @@ def download_link(
     if not req.confirm_strategy and req.title:
         try:
             precheck = svc.precheck_multi_version(title=req.title, description=req.description)
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             precheck = None
         if precheck and precheck.need_confirm:
             return success(
@@ -405,7 +405,7 @@ def download_torrent(
     if not req.confirm_strategy and req.title:
         try:
             precheck = svc.precheck_multi_version(title=req.title, description=req.description)
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             precheck = None
         if precheck and precheck.need_confirm:
             return success(

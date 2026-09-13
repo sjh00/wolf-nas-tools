@@ -10,6 +10,7 @@ Provides backward compatibility for databases that still have the old column.
 """
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "a2b3c4d5e6f1"
@@ -35,7 +36,9 @@ def upgrade() -> None:
         op.add_column("DOWNLOADER", sa.Column("ONLY_WOLF_NAS", sa.Integer(), nullable=True))
 
     # TORRENT_REMOVE_TASK table
-    if _has_column("TORRENT_REMOVE_TASK", "ONLY_NEXUS_MEDIA") and not _has_column("TORRENT_REMOVE_TASK", "ONLY_WOLF_NAS"):
+    if _has_column("TORRENT_REMOVE_TASK", "ONLY_NEXUS_MEDIA") and not _has_column(
+        "TORRENT_REMOVE_TASK", "ONLY_WOLF_NAS"
+    ):
         op.alter_column("TORRENT_REMOVE_TASK", "ONLY_NEXUS_MEDIA", new_column_name="ONLY_WOLF_NAS")
     elif not _has_column("TORRENT_REMOVE_TASK", "ONLY_WOLF_NAS"):
         op.add_column("TORRENT_REMOVE_TASK", sa.Column("ONLY_WOLF_NAS", sa.Integer(), nullable=True))
@@ -44,5 +47,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     if _has_column("DOWNLOADER", "ONLY_WOLF_NAS") and not _has_column("DOWNLOADER", "ONLY_NEXUS_MEDIA"):
         op.alter_column("DOWNLOADER", "ONLY_WOLF_NAS", new_column_name="ONLY_NEXUS_MEDIA")
-    if _has_column("TORRENT_REMOVE_TASK", "ONLY_WOLF_NAS") and not _has_column("TORRENT_REMOVE_TASK", "ONLY_NEXUS_MEDIA"):
+    if _has_column("TORRENT_REMOVE_TASK", "ONLY_WOLF_NAS") and not _has_column(
+        "TORRENT_REMOVE_TASK", "ONLY_NEXUS_MEDIA"
+    ):
         op.alter_column("TORRENT_REMOVE_TASK", "ONLY_WOLF_NAS", new_column_name="ONLY_NEXUS_MEDIA")

@@ -1,11 +1,8 @@
 """FileIndexService.get_file_relations 单元测试 — 源/媒体库文件关系分析."""
 
-import os
 from unittest.mock import MagicMock
 
 from app.services.file_index_service import FileIndexService
-
-import pytest
 
 
 class _Rec:

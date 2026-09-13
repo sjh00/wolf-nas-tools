@@ -1,7 +1,6 @@
 """MediaCleanupService 单元测试 — 按文件锚点清理硬链接链."""
 
 import os
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -52,8 +51,16 @@ class TestFindChainPaths:
 
         def fake_find_hardlinks(self, file=None, fdir=None):
             return [
-                {"file": str(tmp_path / "seed" / "Show.mkv"), "filename": "Show.mkv", "filepath": str(tmp_path / "seed")},
-                {"file": str(tmp_path / "movie" / "Show" / "Show.mkv"), "filename": "Show.mkv", "filepath": str(tmp_path / "movie" / "Show")},
+                {
+                    "file": str(tmp_path / "seed" / "Show.mkv"),
+                    "filename": "Show.mkv",
+                    "filepath": str(tmp_path / "seed"),
+                },
+                {
+                    "file": str(tmp_path / "movie" / "Show" / "Show.mkv"),
+                    "filename": "Show.mkv",
+                    "filepath": str(tmp_path / "movie" / "Show"),
+                },
             ]
 
         from app.utils.system_utils import SystemUtils

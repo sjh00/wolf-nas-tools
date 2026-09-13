@@ -1,6 +1,6 @@
-# Nexus Media
+# WolfNas
 
-Nexus Media 是一个功能强大的媒体库管理工具，提供自动化追剧、资源下载、文件整理和订阅管理等功能，适合 PT 用户和影视爱好者使用。
+WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、资源下载、文件整理和订阅管理等功能，适合 PT 用户和影视爱好者使用。
 
 ![首页](assets/images/home/dashboard.png){ .screenshot }
 
@@ -45,6 +45,6 @@ Nexus Media 是一个功能强大的媒体库管理工具，提供自动化追�
 
 ## 支持与帮助
 
-- 问题反馈：[GitHub Issues](https://github.com/linyuan0213/nexus-media/issues)
+- 问题反馈：[GitHub Issues](https://github.com/sjh00/wolf-nas-tools/issues)
 - 交流群组：[Telegram 群组](https://t.me/+UxUIoJMmH2YwYWE1)
-- 站点适配：[nexus-media-sites](https://github.com/linyuan0213/nexus-media-sites) 提 Issues
+- 站点适配：[wolf-nas-tools](https://github.com/sjh00/wolf-nas-tools) 提 Issues
