@@ -1,9 +1,6 @@
 """MediaMigrateService / PathUtils.is_same_filesystem 单元测试."""
 
-import os
 from unittest.mock import MagicMock
-
-import pytest
 
 from app.services.media_migrate_service import MediaMigrateService
 from app.utils.path_utils import PathUtils
@@ -77,8 +74,10 @@ class TestCollectDirs:
 class TestDetermineCross:
     def test_explicit_cross_override(self, tmp_path):
         svc = _svc()
-        assert svc._determine_cross({str(tmp_path)}, {str(tmp_path)}, str(tmp_path / "x"), str(tmp_path / "y"), True) is True
-        assert svc._determine_cross({str(tmp_path)}, {str(tmp_path)}, str(tmp_path / "x"), str(tmp_path / "y"), False) is False
+        roots = {str(tmp_path)}
+        x, y = str(tmp_path / "x"), str(tmp_path / "y")
+        assert svc._determine_cross(roots, roots, x, y, True) is True
+        assert svc._determine_cross(roots, roots, x, y, False) is False
 
     def test_auto_same_fs(self, tmp_path):
         svc = _svc()

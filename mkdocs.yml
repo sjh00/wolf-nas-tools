@@ -1,7 +1,7 @@
-site_name: Nexus Media 文档
-site_description: Nexus Media 多功能媒体库管理工具使用文档
-site_url: https://linyuan0213.github.io/nexus-media/
-repo_url: https://github.com/linyuan0213/nexus-media
+site_name: WolfNas 文档
+site_description: WolfNas 多功能媒体库管理工具使用文档
+site_url: https://github.com/sjh00/wolf-nas-tools
+repo_url: https://github.com/sjh00/wolf-nas-tools
 edit_uri: edit/master/docs/
 docs_dir: docs
 

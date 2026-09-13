@@ -13,13 +13,13 @@
 import os
 import threading
 
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
 import log
 from app.core.constants import RMT_MEDIAEXT
 from app.core.settings import settings
-from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.utils import ExceptionUtils
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
 
 _observer_lock = threading.Lock()
 
@@ -53,7 +53,7 @@ class MediaLibraryMonitorService:
     def __init__(self, media_file_service, thread_executor=None):
         self._media_file = media_file_service
         self._thread_executor = thread_executor
-        self._observers: list[Observer | PollingObserver] = []
+        self._observers: list[Observer] = []
         self._seen: set[str] = set()  # 最近处理过的路径，去重（监控事件可能重复触发）
 
     # ---------- 生命周期 ----------

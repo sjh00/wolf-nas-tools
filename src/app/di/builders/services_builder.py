@@ -58,8 +58,8 @@ from app.services.downloader_core import DownloaderCore
 from app.services.file_index_service import FileIndexService
 from app.services.filter_service import FilterService
 from app.services.indexer_service import IndexerService
-from app.services.media_config_service import MediaConfigService
 from app.services.media_cleanup_service import MediaCleanupService
+from app.services.media_config_service import MediaConfigService
 from app.services.media_consistency_service import MediaConsistencyService
 from app.services.media_file_service import MediaFileService
 from app.services.media_info_service import MediaInfoService

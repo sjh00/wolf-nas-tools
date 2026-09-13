@@ -5,7 +5,8 @@ import pytest
 from app.domain.engine.brush_rule_engine import BrushRuleEngine
 from app.domain.enums import BrushDeleteType, BrushStopType, SwitchState
 
-class TestCheckRemoveRule:
+
+class TestCheckRemoveRuleKbFixes:
     def test_seedtime_or_mode(self):
         ok, typ = BrushRuleEngine.check_remove_rule(
             {"mode": "or", "time": "gt#1"},
@@ -58,7 +59,7 @@ class TestCheckRemoveRule:
         assert typ == BrushDeleteType.UPSPEED
 
 
-class TestCheckStopRule:
+class TestCheckStopRuleKbFixes:
     def test_stop_avg_upspeed_kb(self):
         ok, typ = BrushRuleEngine.check_stop_rule(
             {"avg_upspeed": "lt#100", "stopfree": SwitchState.OFF.value},

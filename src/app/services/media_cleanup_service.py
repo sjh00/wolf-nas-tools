@@ -11,8 +11,8 @@
 import os
 
 import log
+from app.core.settings import settings
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
-from app.domain.mediatypes import MediaType
 from app.events import Event
 from app.events.bus import EventBus
 from app.events.constants import LIBRARY_FILE_DELETED, MEDIA_SOURCE_DELETED
@@ -262,8 +262,6 @@ class MediaCleanupService:
     def _is_library_path(self, path: str) -> bool:
         """判断路径是否位于媒体库目录（用于区分事件类型）。"""
         try:
-            from app.core.settings import settings
-
             media = settings.get("media") or {}
             norm = os.path.normpath(path)
             for key in ("movie_path", "tv_path", "anime_path"):
@@ -273,6 +271,6 @@ class MediaCleanupService:
                 for lib in paths:
                     if lib and (norm == os.path.normpath(lib) or norm.startswith(os.path.normpath(lib) + os.sep)):
                         return True
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Cleanup]判断媒体库路径失败 {path}: {e}")
         return False

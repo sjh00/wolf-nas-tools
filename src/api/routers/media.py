@@ -11,8 +11,8 @@ import log
 from api.deps import (
     get_downloader_service,
     get_file_index_service,
-    get_media_config_service,
     get_media_cleanup_service,
+    get_media_config_service,
     get_media_consistency_service,
     get_media_file_service,
     get_media_info_service,

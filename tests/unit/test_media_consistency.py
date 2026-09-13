@@ -1,6 +1,5 @@
 """MediaConsistencyService 单元测试 — 跨盘整理感知/一致性校验."""
 
-import os
 from unittest.mock import MagicMock
 
 import pytest
