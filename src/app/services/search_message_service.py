@@ -61,8 +61,9 @@ class MessageSearchService:
         user_id: str,
         user_name: str | None = None,
         user_permissions: list[str] | None = None,
+        bound_user_id: int | None = None,
     ):
-        """处理消息中心输入"""
+        """处理消息中心输入（bound_user_id: IM 绑定解析出的系统用户 ID，用于数据归属）"""
         if not input_str:
             return
         input_str = str(input_str).strip()
@@ -74,11 +75,11 @@ class MessageSearchService:
 
         # 数字选择
         if input_str.isdigit() and int(input_str) < 10:
-            self._handle_selection(int(input_str), in_from, user_id, user_name)
+            self._handle_selection(int(input_str), in_from, user_id, user_name, bound_user_id)
             return
 
         # 文本输入
-        self._handle_text(input_str, in_from, user_id, user_name, user_permissions)
+        self._handle_text(input_str, in_from, user_id, user_name, user_permissions, bound_user_id)
 
     def _handle_pagination(self, direction: str, in_from: SearchType, user_id: str):
         """处理分页导航"""
@@ -93,11 +94,18 @@ class MessageSearchService:
 
         self._pagination.send_page_message(in_from, user_id)
 
-    def _handle_selection(self, choose: int, in_from: SearchType, user_id: str, user_name: str | None = None):
+    def _handle_selection(
+        self,
+        choose: int,
+        in_from: SearchType,
+        user_id: str,
+        user_name: str | None = None,
+        bound_user_id: int | None = None,
+    ):
         """处理数字选择"""
         # 优先从分页缓存选择
         if self._pagination.has_page(user_id):
-            self._select_from_pagination(choose, in_from, user_id, user_name)
+            self._select_from_pagination(choose, in_from, user_id, user_name, bound_user_id=bound_user_id)
             return
 
         # 从媒体缓存选择
@@ -111,12 +119,19 @@ class MessageSearchService:
         media_type = self._pagination.get_media_type(user_id)
 
         if media_type == "SUBSCRIBE":
-            self._add_rss(in_from, media_info, user_id=user_id, user_name=user_name)
+            self._add_rss(in_from, media_info, user_id=user_id, user_name=user_name, bound_user_id=bound_user_id)
         else:
-            self._search_and_download(in_from, media_info, user_id, user_name)
+            self._search_and_download(in_from, media_info, user_id, user_name, bound_user_id=bound_user_id)
 
-    def _select_from_pagination(self, choose: int, in_from: SearchType, user_id: str, user_name: str | None = None):
-        """从分页结果中选择下载"""
+    def _select_from_pagination(
+        self,
+        choose: int,
+        in_from: SearchType,
+        user_id: str,
+        user_name: str | None = None,
+        bound_user_id: int | None = None,
+    ):
+        """从分页结果中选择下载（bound_user_id 为数据归属用户）"""
         item = self._pagination.select_item(user_id, choose)
         if not item:
             self._message.send_channel_msg(channel=in_from, title="输入有误！", user_id=user_id)
@@ -151,7 +166,7 @@ class MessageSearchService:
         media_info.size = item.SIZE or 0
         media_info.org_string = item.TORRENT_NAME or title
 
-        self._downloader.download(media_info=media_info, in_from=in_from, user_name=user_name)
+        self._downloader.download(media_info=media_info, in_from=in_from, user_name=user_name, user_id=bound_user_id)
         self._pagination.clear_media_cache(user_id)
 
     def _handle_text(
@@ -161,6 +176,7 @@ class MessageSearchService:
         user_id: str,
         user_name: str | None = None,
         user_permissions: list[str] | None = None,
+        bound_user_id: int | None = None,
     ):
         """处理文本输入"""
         # 判断意图
@@ -177,7 +193,7 @@ class MessageSearchService:
                     channel=in_from, title="请输入要订阅的关键词，例如：订阅 进击的巨人", user_id=user_id
                 )
                 return
-            self._search_media(in_from, content, user_id, user_name, "SUBSCRIBE")
+            self._search_media(in_from, content, user_id, user_name, "SUBSCRIBE", bound_user_id=bound_user_id)
         else:
             content = re.sub(r"/(rss|ssa)[\s:：]*", "", input_str)
             content = re.sub(r"(搜索|下载)[:：\s]*", "", content)
@@ -188,7 +204,7 @@ class MessageSearchService:
                     user_id=user_id,
                 )
                 return
-            self._search_media(in_from, content, user_id, user_name, "SEARCH")
+            self._search_media(in_from, content, user_id, user_name, "SEARCH", bound_user_id=bound_user_id)
 
     def _parse_intent(self, input_str: str) -> str:
         """解析用户意图"""
@@ -245,7 +261,13 @@ class MessageSearchService:
         self._message.send_channel_msg(channel=in_from, title="", text=answer_text, user_id=user_id)
 
     def _search_media(
-        self, in_from: SearchType, content: str, user_id: str, user_name: str | None = None, mtype: str = "SEARCH"
+        self,
+        in_from: SearchType,
+        content: str,
+        user_id: str,
+        user_name: str | None = None,
+        mtype: str = "SEARCH",
+        bound_user_id: int | None = None,
     ):
         """搜索媒体并展示结果"""
         indexer_type = self._indexer.get_client_type()
@@ -316,7 +338,7 @@ class MessageSearchService:
                     url=media_info.get_detail_url(),
                     user_id=user_id,
                 )
-                self._search_and_download(in_from, media_info, user_id, user_name)
+                self._search_and_download(in_from, media_info, user_id, user_name, bound_user_id=bound_user_id)
         else:
             self._message.send_channel_list_msg(
                 channel=in_from,
@@ -325,7 +347,14 @@ class MessageSearchService:
                 user_id=user_id,
             )
 
-    def _search_and_download(self, in_from: SearchType, media_info, user_id: str, user_name: str | None = None):
+    def _search_and_download(
+        self,
+        in_from: SearchType,
+        media_info,
+        user_id: str,
+        user_name: str | None = None,
+        bound_user_id: int | None = None,
+    ):
         """搜索并下载媒体"""
         exist_flag, no_exists, messages = self._downloader.check_exists_medias(meta_info=media_info)
         if messages:
@@ -340,6 +369,7 @@ class MessageSearchService:
             no_exists=no_exists,
             sites=media_info.search_sites,
             user_name=user_name,
+            user_id=bound_user_id,
         )
 
         if not search_count:
@@ -361,7 +391,7 @@ class MessageSearchService:
             )
 
         if not search_result and settings.get("pt").get("search_no_result_rss"):
-            self._add_rss(in_from, media_info, user_id, state="R", user_name=user_name)
+            self._add_rss(in_from, media_info, user_id, state="R", user_name=user_name, bound_user_id=bound_user_id)
 
     def _enter_pagination_mode(self, in_from: SearchType, media_info, user_id: str):
         """进入搜索结果分页选择模式"""
@@ -375,8 +405,8 @@ class MessageSearchService:
         self._pagination.set_search_results(user_id, search_results, media_info.title)
         self._pagination.send_page_message(in_from, user_id)
 
-    def _add_rss(self, in_from, media_info, user_id=None, state="D", user_name=None):
-        """添加订阅"""
+    def _add_rss(self, in_from, media_info, user_id=None, state="D", user_name=None, bound_user_id=None):
+        """添加订阅（bound_user_id 为数据归属用户）"""
         mediaid = f"DB:{media_info.douban_id}" if media_info.douban_id else media_info.tmdb_id
         code, msg, media_info = self._subscribe_service.add_rss_subscribe(
             mtype=media_info.type,
@@ -391,6 +421,7 @@ class MessageSearchService:
             download_setting=media_info.download_setting,
             in_from=in_from,
             user_name=user_name,
+            user_id=bound_user_id,
         )
         if code == 0:
             log.info(f"[Web]{media_info.type.value} {media_info.get_title_string()} 已添加订阅")

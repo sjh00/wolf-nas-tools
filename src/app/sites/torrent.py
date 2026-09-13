@@ -14,6 +14,7 @@ from app.infrastructure.http.exceptions import HttpClientError
 from app.infrastructure.temp import temp_manager
 from app.sites import engine_tools
 from app.utils.config_tools import get_proxies
+from app.utils.json_utils import JsonUtils
 from app.utils.string_utils import StringUtils
 
 
@@ -61,6 +62,10 @@ class Torrent:
             )
             if not file_path:
                 return None, content, "", [], errmsg
+            # 站点可能返回 JSON/HTML（如一过性下载链接过期）而非种子内容，
+            # 提前识别给出明确原因，避免后续 bencode 解析报"种子数据有误"误导。
+            if not self._looks_like_torrent(file_path):
+                return None, content, "", [], self._site_error_message(file_path)
             # 解析种子文件
             files_folder, files, retmsg = self.get_torrent_files(file_path)
             # 种子文件路径、种子内容、种子文件列表主目录、种子文件列表、错误信息
@@ -68,6 +73,34 @@ class Torrent:
 
         except Exception as err:
             return None, None, "", [], f"下载种子文件出现异常：{str(err)}"
+
+    @staticmethod
+    def _site_error_message(file_path) -> str:
+        """站点返回非种子内容（JSON 错误）时解析 message，并标注不可重试.
+
+        M-Team 等会在超限时返回 JSON（如"相同種子當天最多下載10次"），
+        此时重试无意义且会继续消耗限额，需标记 [不可重试]。
+        """
+        try:
+            with open(file_path, "rb") as f:
+                raw = f.read(2048)
+            if raw[:1] in (b"{", b"["):
+                data = JsonUtils.loads(raw.decode("utf-8", errors="ignore"))
+                msg = (data or {}).get("message") if isinstance(data, dict) else None
+                if msg:
+                    return f"[不可重试]站点返回：{msg}"
+        except Exception as err:  # noqa: BLE001
+            log.debug(f"解析站点错误信息失败：{err}")
+        return "下载链接已失效或非种子数据（请等待重新搜索获取新链接）"
+
+    @staticmethod
+    def _looks_like_torrent(file_path) -> bool:
+        """判断文件是否为 bencode 种子（dict 以 'd' 开头）."""
+        try:
+            with open(file_path, "rb") as f:
+                return f.read(1) == b"d"
+        except OSError:
+            return False
 
     def save_torrent_file(self, url, cookie=None, api_key=None, bearer_token=None, ua=None, referer=None, proxy=False):
         """
@@ -290,9 +323,14 @@ class Torrent:
         return target
 
     @staticmethod
-    def get_download_list(media_list, download_order):
+    def get_download_list(media_list, download_order, collapse: bool = True, max_per_name: int = 8):
         """
         对媒体信息进行排序、去重
+
+        :param collapse: 是否按"标题+季集"折叠为单一最优候选。
+            True（默认，搜索/手动下载场景）：每个名称只保留最优的一个。
+            False（订阅下载场景）：保留有序的多站点候选，失败后可自动回退到下一个。
+        :param max_per_name: collapse=False 时每个名称最多保留的候选数，防止列表膨胀。
         """
         if not media_list:
             return []
@@ -341,8 +379,9 @@ class Torrent:
         # 控重
         can_download_list_item = []
         seen_media_names = set()
+        name_counts: dict[str, int] = {}
 
-        # 排序后重新加入数组，按真实名称控重，即只取每个名称的第一个
+        # 排序后重新加入数组，按真实名称控重
         for t_item in media_list:
             # 控重的主链是名称、年份、季、集
             if t_item.type != MediaType.MOVIE:
@@ -350,9 +389,17 @@ class Torrent:
             else:
                 media_name = t_item.get_title_string()
 
-            # 如果名称未被处理过，将其加入结果列表
-            if media_name not in seen_media_names:
-                seen_media_names.add(media_name)
-                can_download_list_item.append(t_item)
+            if collapse:
+                # 每个名称只取最优的一个
+                if media_name not in seen_media_names:
+                    seen_media_names.add(media_name)
+                    can_download_list_item.append(t_item)
+                continue
+
+            # 订阅场景：保留多个候选，按同一名称限流，失败可回退到下一站点
+            if name_counts.get(media_name, 0) >= max_per_name:
+                continue
+            name_counts[media_name] = name_counts.get(media_name, 0) + 1
+            can_download_list_item.append(t_item)
 
         return can_download_list_item

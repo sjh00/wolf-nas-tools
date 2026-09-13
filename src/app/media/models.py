@@ -107,6 +107,8 @@ class MediaInfo(BaseModel):
     site: str | None = None
     site_order: int = 0
     user_name: str | None = None
+    user_id: int | None = None  # 数据归属用户（多用户权限）
+    sibling_rssids: list[int] | None = None  # 同媒体其他用户的订阅 id（fan-out 联动记账）
     enclosure: str | None = None
     res_order: int = 0
     filter_rule: str | None = None
@@ -391,6 +393,7 @@ class MediaInfo(BaseModel):
         imdbid=None,
         over_edition=None,
         labels=None,
+        sibling_rssids=None,
     ):
         if site:
             self.site = site
@@ -426,6 +429,8 @@ class MediaInfo(BaseModel):
             self.over_edition = over_edition
         if labels is not None:
             self.labels = labels
+        if sibling_rssids is not None:
+            self.sibling_rssids = sibling_rssids
 
     def set_download_info(self, download_setting=None, save_path=None):
         if download_setting:
@@ -456,7 +461,11 @@ class MediaInfo(BaseModel):
                 genre_ids = [str(genre_ids).upper()]
             if set(genre_ids).intersection(set(ANIME_GENREIDS)):
                 self.type = MediaType.ANIME
-            else:
+            elif genre_ids:
+                self.type = MediaType.TV
+            elif self.type not in (MediaType.ANIME, MediaType.TV):
+                # 无类型信息时保留已推断的结果（站点分类/文件名），
+                # 避免把 ANIME 误降级为 TV 而入错媒体库目录
                 self.type = MediaType.TV
         elif media_type:
             self.type = media_type

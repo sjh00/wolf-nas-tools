@@ -76,8 +76,9 @@ class SubscribeAddService:
         rssid: int | None = None,
         in_from: str | None = None,
         user_name: str | None = None,
+        user_id: int | None = None,
     ) -> tuple[int, str, Any]:
-        """添加电影、电视剧订阅"""
+        """添加电影、电视剧订阅（user_id 为订阅归属用户，None 为系统/插件创建）"""
         if not name:
             return -1, "标题或类型有误", None
         year = int(year) if str(year).isdigit() else ""
@@ -99,8 +100,6 @@ class SubscribeAddService:
                 default_free = default_rss_setting.get("free")
                 default_download_setting = default_rss_setting.get("download_setting")
                 default_over_edition = default_rss_setting.get("over_edition")
-                default_rss_sites = default_rss_setting.get("rss_sites")
-                default_search_sites = default_rss_setting.get("search_sites")
                 if filter_restype is None and default_restype:
                     filter_restype = default_restype
                 if filter_pix is None and default_pix:
@@ -123,10 +122,8 @@ class SubscribeAddService:
                         if str(default_download_setting).replace("-", "").isdigit()
                         else None
                     )
-                if not rss_sites and default_rss_sites:
-                    rss_sites = default_rss_sites
-                if not search_sites and default_search_sites:
-                    search_sites = default_search_sites
+                # 站点留空表示"全部当前用户可见站点"：不再强制继承默认设置，
+                # 由搜索/RSS 执行时按用户可见站点兜底，避免"未配置即搜不到"
 
         rss_sites = rss_sites or []
         if isinstance(rss_sites, str):
@@ -240,6 +237,7 @@ class SubscribeAddService:
                     desc=media_info.overview,
                     note=gen_rss_note(media_info),
                     keyword=keyword,
+                    user_id=user_id,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
             else:
@@ -262,6 +260,7 @@ class SubscribeAddService:
                     desc=media_info.overview,
                     note=gen_rss_note(media_info),
                     keyword=keyword,
+                    user_id=user_id,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
         else:
@@ -290,6 +289,7 @@ class SubscribeAddService:
                     download_setting=download_setting,
                     fuzzy_match=1,
                     keyword=keyword,
+                    user_id=user_id,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
             else:
@@ -312,6 +312,7 @@ class SubscribeAddService:
                     download_setting=download_setting,
                     fuzzy_match=1,
                     keyword=keyword,
+                    user_id=user_id,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
 
@@ -342,6 +343,7 @@ class SubscribeAddService:
             )
             if in_from:
                 media_info.user_name = user_name
+                media_info.user_id = user_id
                 self._message.send_subscribe_success_message(
                     in_from=cast(SubscribeType, in_from), media_info=media_info
                 )

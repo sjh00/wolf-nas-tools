@@ -4,7 +4,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/sjh00/wolf-nas-tools)](https://hub.docker.com/r/sjh00/wolf-nas-tools)
 [![Telegram Group](https://img.shields.io/badge/Telegram-Group-blue)](https://t.me/+UxUIoJMmH2YwYWE1)
 
-WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、资源下载、文件整理和订阅管理等功能，适合PT用户和影视爱好者使用。
+WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、资源下载、文件整理和订阅管理等功能，适合 PT 用户和影视爱好者使用。
 
 ## 文档目录
 
@@ -28,7 +28,7 @@ WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、
 - [消息通知模板](docs/message_templates.md) - 通知渠道与模板配置
 - [服务与调度](docs/service.md) - 服务面板与调度任务
 - [存储后端](docs/storage.md) - 本地/WebDAV/SMB/S3 等存储后端
-- [用户与权限](docs/users.md) - 用户/角色/API Key 管理
+- [用户与权限](docs/users.md) - 多用户数据隔离、角色、站点授权、渠道绑定、API Key
 
 ### 插件
 - [插件使用](docs/plugins.md) - 内置插件配置（签到、CookieCloud 等）
@@ -44,15 +44,15 @@ WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、
 ## 主要功能
 
 - **AI 助手**：消息中心对话式操作，支持资源搜索、订阅、下载与知识库问答，可展示思考过程
-- **自动下载**：支持多种PT站点资源自动下载
+- **自动下载**：支持多种 PT 站点资源自动下载
 - **媒体管理**：自动识别和整理媒体文件
-- **订阅系统**：RSS自动订阅和手动订阅
-- **刷流功能**：支持多种PT站点自动刷流
+- **订阅系统**：RSS 自动订阅和手动订阅
+- **刷流功能**：支持多种 PT 站点自动刷流
 - **插件系统**：可扩展的功能插件
 
 ## 支持站点
-- 站点适配需求请在[wolf-nas-tools项目](https://github.com/sjh00/wolf-nas-tools)提issues
-- 如需新增站点支持，请在[wolf-nas-tools项目](https://github.com/sjh00/wolf-nas-tools)提issues
+- 站点适配需求请在 [wolf-nas-tools](https://github.com/sjh00/wolf-nas-tools) 提 Issues
+- 如需新增站点支持，请在 [wolf-nas-tools](https://github.com/sjh00/wolf-nas-tools) 提 Issues
 
 ## 贡献指南
 
@@ -67,3 +67,12 @@ WolfNas 是一个功能强大的媒体库管理工具，提供自动化追剧、
 ## 许可证
 
 本项目采用 [MIT License](LICENSE.md) 开源协议
+
+## 致谢与参考
+
+WolfNas 在以下开源项目的基础上继续演进，感谢原作者与社区的工作：
+
+- [nas-tools](https://github.com/NAStool/nas-tools) — 最初的 NAS 媒体自动化工具
+- [Nexus Media](https://github.com/linyuan0213/nexus-media)（[linyuan0213](https://github.com/linyuan0213)）— 本仓库同步参考的 v4 架构与功能演进
+
+本仓库为独立维护的衍生项目，接口、品牌与发布节奏与上述上游并不保证完全一致。

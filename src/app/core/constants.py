@@ -142,7 +142,6 @@ KEYWORD_BLACKLIST = [
 ]
 
 # M-Team base url
-MT_URL = "https://api.m-team.io"
 
 # sites.dat github
 SITES_DATA_URL = "https://api.github.com/repos/sjh00/wolf-nas-tools/releases/latest"

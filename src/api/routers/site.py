@@ -3,19 +3,43 @@ Site Router — FastAPI 迁移
 对应原 web/controllers/site.py，复用 app/services/site_service.py
 """
 
+import threading
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from api.deps import get_indexer_service, get_site_service, require_any_permission, require_permission
+import log
+from api.deps import (
+    get_app_context,
+    get_current_user,
+    get_indexer_service,
+    get_site_service,
+    require_any_permission,
+    require_permission,
+)
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import DomainError, ServiceError  # noqa: F401
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.common import CommonResponse
 from app.services.indexer_service import IndexerService
+from app.services.site_parse_health_service import SiteParseHealthService
 from app.services.site_service import SiteService
+from app.sites.siteconf import SiteConf
 from app.utils.response import fail, success
 
 router = APIRouter()
+
+# 解析自检后台运行状态（单实例进程内标记，防并发重复触发）
+_PARSE_HEALTH_STATE = {"running": False, "lock": threading.Lock()}
+
+
+def _build_parse_health_service(app_context) -> SiteParseHealthService:
+    """基于应用上下文装配解析健康自检服务（无需注册到 DI 对象图）."""
+    return SiteParseHealthService(
+        site_cache=app_context.site_cache,
+        siteconf=SiteConf(app_context.site_engine),
+        message=app_context.message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +167,13 @@ def del_site(
 @router.post("/sites/detail", response_model=CommonResponse, summary="获取站点详情")
 def get_site(
     req: SiteIdRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
+    allowed = _allowed_site_names(user, app_context)
+    if not _index_id_allowed(allowed, app_context, req.id):
+        return fail(msg="无权查看该站点")
     dto = svc.get_site(req.id)
     return success(
         data={"site": dto.site, "site_free": dto.site_free, "site_2xfree": dto.site_2xfree, "site_hr": dto.site_hr}
@@ -155,11 +183,15 @@ def get_site(
 @router.post("/sites/activity", response_model=CommonResponse, summary="获取站点活跃度")
 def get_site_activity(
     req: SiteNameRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
     if not req.name:
         return fail(msg="查询参数错误")
+    allowed = _allowed_site_names(user, app_context)
+    if allowed is not None and req.name not in allowed:
+        return fail(msg="无权查看该站点数据")
     dto = svc.get_site_activity(req.name)
     return success(data={"dataset": dto.dataset})
 
@@ -176,35 +208,47 @@ def get_site_favicon(
 @router.post("/sites/history", response_model=CommonResponse, summary="获取站点历史数据")
 def get_site_history(
     req: SiteDaysRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
     if req.days is None or not isinstance(req.days, int):
         return fail(msg="查询参数错误")
     dto = svc.get_site_history(days=req.days, end_day=req.end_day)
-    return success(data={"dataset": dto.dataset})
+    allowed = _allowed_site_names(user, app_context)
+    dataset = dto.dataset
+    if allowed is not None and dataset:
+        # dataset[0] 为表头 ["site","upload","download"]，按站点名过滤数据行
+        dataset = [dataset[0], *[row for row in dataset[1:] if row and row[0] in allowed]]
+    return success(data={"dataset": dataset})
 
 
 @router.post("/sites/statistics/daily", response_model=CommonResponse, summary="获取站点日统计")
 def get_site_daily_history(
     req: SiteDaysRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
     if req.days is None or not isinstance(req.days, int):
         return fail(msg="查询参数错误")
-    result = svc.get_site_daily_history(days=req.days, end_day=req.end_day)
+    allowed = _allowed_site_names(user, app_context)
+    result = svc.get_site_daily_history(days=req.days, end_day=req.end_day, allowed_sites=allowed)
     return success(data=result)
 
 
 @router.post("/sites/seeding", response_model=CommonResponse, summary="获取站点做种信息")
 def get_site_seeding_info(
     req: SiteNameRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
     if not req.name:
         return fail(msg="查询参数错误")
+    allowed = _allowed_site_names(user, app_context)
+    if allowed is not None and req.name not in allowed:
+        return fail(msg="无权查看该站点数据")
     dto = svc.get_site_seeding_info(req.name)
     return success(data={"dataset": dto.dataset})
 
@@ -225,7 +269,7 @@ def refresh_site_statistics(
 
 @router.post("/sites/definitions", response_model=CommonResponse, summary="获取所有可添加的站点定义")
 def get_site_definitions(
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user: str = Depends(require_permission("site:manage")),
     svc: SiteService = Depends(get_site_service),
 ):
     defs = svc.get_site_definitions()
@@ -248,8 +292,9 @@ def get_site_definitions(
 @router.post("/sites", response_model=CommonResponse, summary="获取站点列表")
 def get_sites(
     req: SiteFilterRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
     sites = svc.get_sites(
         rss=bool(req.rss),
@@ -258,6 +303,13 @@ def get_sites(
         basic=bool(req.basic),
         source=req.source,
     )
+    # 无站点管理权限的用户按站点授权过滤（ADR-021 4.3）
+    grant_service = getattr(app_context, "site_grant_service", None)
+    can_manage = user.is_superadmin or "site:manage" in user.permissions or "*" in user.permissions
+    if grant_service is not None and not can_manage:
+        visible = grant_service.get_visible_sites(user)
+        if visible is not None:
+            sites = [s for s in sites if grant_service.is_site_name_allowed(visible, s.get("name", ""), usage="search")]
     return success(data=sites)
 
 
@@ -318,12 +370,19 @@ def update_site_cookie_ua(
 @router.post("/sites/statistics", response_model=CommonResponse, summary="获取站点用户统计")
 def get_site_user_statistics(
     req: SiteUserStatisticsRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
     # 强制使用 DICT 编码，确保返回可序列化的字典格式
+    allowed = _allowed_site_names(user, app_context)
     statistics = svc.get_site_user_statistics(
-        sites=req.sites, encoding="DICT", sort_by=req.sort_by, sort_on=req.sort_on, site_hash=req.site_hash
+        sites=req.sites,
+        encoding="DICT",
+        sort_by=req.sort_by,
+        sort_on=req.sort_on,
+        site_hash=req.site_hash,
+        allowed_sites=allowed,
     )
     return success(data=statistics)
 
@@ -331,9 +390,13 @@ def get_site_user_statistics(
 @router.post("/sites/resources", response_model=CommonResponse, summary="获取站点资源列表")
 def list_site_resources(
     req: SiteResourcesRequest,
-    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    user=Depends(require_any_permission("site:view", "site:manage")),
     svc: SiteService = Depends(get_site_service),
+    app_context=Depends(get_app_context),
 ):
+    allowed = _allowed_site_names(user, app_context)
+    if not _index_id_allowed(allowed, app_context, req.id):
+        return fail(msg="无权查看该站点资源")
     resources = svc.list_site_resources(
         index_id=req.id or "",
         page=req.page or 0,
@@ -389,3 +452,137 @@ def batch_update_indexer_site_config(
         if "default_settings" in item:
             idx_svc.update_site_default_settings(site_name, item.get("default_settings"))
     return success()
+
+
+class SiteParseHealthRequest(BaseModel):
+    site_id: int | None = None
+
+
+@router.get("/parse-health/latest", response_model=CommonResponse, summary="各站点最新解析健康状态")
+def parse_health_latest(
+    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    app_context=Depends(get_app_context),
+):
+    svc = _build_parse_health_service(app_context)
+    return success(data=svc.latest_all())
+
+
+@router.get("/parse-health/history", response_model=CommonResponse, summary="站点解析健康历史")
+def parse_health_history(
+    site_id: int,
+    limit: int = 30,
+    user: str = Depends(require_any_permission("site:view", "site:manage")),
+    app_context=Depends(get_app_context),
+):
+    svc = _build_parse_health_service(app_context)
+    return success(data=svc.history(site_id, limit))
+
+
+@router.get("/parse-health/run-state", response_model=CommonResponse, summary="解析自检是否正在后台运行")
+def parse_health_run_state(
+    user: str = Depends(require_any_permission("site:view", "site:manage")),
+):
+    return success(data={"running": bool(_PARSE_HEALTH_STATE.get("running"))})
+
+
+@router.post("/parse-health/run", response_model=CommonResponse, summary="手动触发站点解析健康自检（后台执行）")
+def parse_health_run(
+    req: SiteParseHealthRequest,
+    user: str = Depends(require_permission("site:manage")),
+    app_context=Depends(get_app_context),
+):
+    state = _PARSE_HEALTH_STATE
+    with state["lock"]:
+        if state.get("running"):
+            return success(data={"running": True, "started": False})
+        state["running"] = True
+
+    def _run():
+        try:
+            svc = _build_parse_health_service(app_context)
+            svc.check_all([req.site_id] if req.site_id else None)
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[解析自检]后台任务异常: {e}")
+        finally:
+            with state["lock"]:
+                state["running"] = False
+
+    threading.Thread(target=_run, name="parse-health-check", daemon=True).start()
+    return success(data={"running": True, "started": True})
+
+
+def _index_id_allowed(allowed: set[str] | None, app_context, index_id) -> bool:
+    """按索引器 id/名称判断是否属于用户授权站点（allowed=None 表示不限制）"""
+    if allowed is None:
+        return True
+    key = str(index_id or "")
+    try:
+        for i in app_context.indexer_service.get_indexers(check=False) or []:
+            iid = str(getattr(i, "id", ""))
+            iname = str(getattr(i, "name", ""))
+            if key in (iid, iname):
+                return iname in allowed
+    except Exception as e:  # noqa: BLE001
+        log.debug(f"[Site]解析索引器授权失败: {e}")
+    return key.split(":", 1)[-1] in allowed
+
+
+def _allowed_site_names(user, app_context) -> set[str] | None:
+    """解析用户被授权的 builtin 站点名集合（ADR-021 6.1）.
+
+    None = 不过滤（superadmin / open 策略 / 全站通配）；否则仅返回授权站点名。
+    """
+    grant_service = getattr(app_context, "site_grant_service", None)
+    if grant_service is None:
+        return None
+    visible = grant_service.get_visible_sites(user)
+    if visible is None:
+        return None
+    if "builtin:*" in visible or "*" in visible:
+        return None
+    names: set[str] = set()
+    for key in visible:
+        if key.endswith(":*"):
+            continue
+        names.add(key.split(":", 1)[1] if ":" in key else key)
+    return names
+
+
+@router.get("/sites/visible", response_model=CommonResponse, summary="获取当前用户可见站点")
+def get_visible_sites(
+    current_user=Depends(get_current_user),
+    app_context=Depends(get_app_context),
+    site_svc: SiteService = Depends(get_site_service),
+):
+    """当前用户可用站点列表（closed 策略下按站点授权白名单过滤），带用途粒度.
+
+    用途粒度同时受站点实际能力约束：搜索需站点已启用（索引器 check），
+    RSS 需站点已配置 RSS 源，避免向用户展示"选了也没用"的站点。
+    """
+    grant_service = app_context.site_grant_service
+    visible = grant_service.get_visible_sites(current_user)
+    indexers = app_context.indexer_service.indexer.get_indexers_with_source(check=True)
+    # RSS 能力：站点已配置 RSS 源
+    try:
+        rss_capable = {s.get("name") for s in (site_svc.get_sites(rss=True) or []) if s.get("name")}
+    except Exception:  # noqa: BLE001
+        rss_capable = set()
+
+    def _permissions(name: str, grants: set[str] | None) -> list[str]:
+        perms = set(grants) if grants is not None else {"search", "rss"}
+        if name not in rss_capable:
+            perms.discard("rss")
+        return sorted(perms)
+
+    if visible is None:
+        # 不过滤：superadmin 或 open 策略
+        return success(data=[{**item, "permissions": _permissions(item["name"], None)} for item in indexers])
+    sites = []
+    for item in indexers:
+        grants: set[str] = set()
+        for key in (f"{item['source']}:{item['name']}", f"{item['source']}:*", item["name"]):
+            grants |= visible.get(key, set())
+        perms = _permissions(item["name"], grants)
+        if perms:
+            sites.append({**item, "permissions": perms})
+    return success(data=sites)

@@ -63,12 +63,14 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
         return DownloadHistoryEntity.from_orm(row)
 
     # 兼容旧Repository方法名
-    def insert_download_history(self, media_info, downloader: str, download_id: str, save_dir: str) -> None:
-        self._repo.insert_download_history(media_info, downloader, download_id, save_dir)
+    def insert_download_history(
+        self, media_info, downloader: str, download_id: str, save_dir: str, user_id: int | None = None
+    ) -> None:
+        self._repo.insert_download_history(media_info, downloader, download_id, save_dir, user_id=user_id)
 
     # 兼容旧Repository方法名
-    def get_download_history(self, date=None, hid=None, num=30, page=1):
-        return self._repo.get_download_history(date=date, hid=hid, num=num, page=page)
+    def get_download_history(self, date=None, hid=None, num=30, page=1, user=None):
+        return self._repo.get_download_history(date=date, hid=hid, num=num, page=page, user=user)
 
     # 兼容旧Repository方法名
     def get_download_history_by_title(self, title: str):
@@ -77,6 +79,12 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
     # 兼容旧Repository方法名
     def get_download_history_by_downloader(self, downloader: str, download_id: str):
         return self._repo.get_download_history_by_downloader(downloader, download_id)
+
+    def delete_download_history_by_id(self, hid, user=None) -> bool:
+        return self._repo.delete_download_history_by_id(hid, user=user)
+
+    def delete_all_download_history(self, user=None) -> int:
+        return self._repo.delete_all_download_history(user=user)
 
     def get_by_id(self, download_id: str):
         return self._repo.get_download_history_by_id(download_id)

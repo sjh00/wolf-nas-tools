@@ -19,13 +19,15 @@ from lxml import etree
 import log
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType
-from app.infrastructure.chrome.challenge import is_challenge
+from app.infrastructure.chrome.challenge import has_pending_turnstile, is_challenge
+from app.infrastructure.chrome.session import BrowserSession
+from app.infrastructure.chrome.site_lock import site_serial
 from app.infrastructure.http import CookieAuth, HttpClient, HttpClientConfig
 from app.sites import engine_tools
 from app.sites.api_searcher import ApiSiteSearcher
 from app.sites.engine import SiteDefinition
 from app.sites.searchers import _TRANSFORMS, _css_to_xpath, _resolve_jinja
-from app.utils.browser_mode import build_browser_mode
+from app.utils.browser_mode import build_browser_mode, get_chrome_server_url, make_session_key
 from app.utils.config_tools import get_proxies
 
 
@@ -59,7 +61,24 @@ class HtmlSiteSearcher:
         if not html_text:
             return []
 
-        return self._parse_html(html_text, is_browse=is_browse)
+        result = self._parse_html(html_text, is_browse=is_browse)
+        # 关键词搜索且结果为空：站点搜索表单受 CF/Turnstile 保护（普通 GET 不生效），
+        # 走浏览器交互：过盾 → 填词 → 点提交 → 取结果
+        if not result and keyword and bool(self._user_config.get("chrome")):
+            form_html = self._browser_form_search(keyword)
+            if form_html:
+                parsed = self._parse_html(form_html, is_browse=False)
+                if parsed:
+                    result = parsed
+        # 仅浏览（无关键词）模式才做"整页浏览器渲染"回退；关键词搜索若回退到
+        # 列表页会把首页当搜索结果（假阳性），因此关键词搜索只认表单搜索结果。
+        if not result and is_browse and bool(self._user_config.get("chrome")):
+            rendered = self._fetch_html(url, force_browser=True)
+            if rendered and rendered != html_text:
+                retried = self._parse_html(rendered, is_browse=is_browse)
+                if retried:
+                    result = retried
+        return result
 
     @staticmethod
     def _cfg_get(cfg, key, default=None):
@@ -138,7 +157,104 @@ class HtmlSiteSearcher:
                 url += f"{'&' if '?' in url else '?'}page={int(page) + 1}"
         return url
 
-    def _fetch_html(self, url):
+    def _browser_form_search(self, keyword: str) -> str | None:
+        """浏览器过盾后重新提交搜索链接，返回结果页 HTML（站点搜索受 CF 保护）."""
+        if not keyword or not self._user_config.get("chrome"):
+            return None
+        server = get_chrome_server_url()
+        if not server:
+            return None
+        domain = self._user_config.get("domain") or self._site.domain or ""
+        search_url = self._build_url(keyword, 0, None, None)
+        if not search_url:
+            return None
+        search_cfg = self._cfg_get(self._site.html or {}, "search", {}) or {}
+        paths = search_cfg.get("paths") or []
+        base_path = str((paths[0].get("path") if paths else "torrents.php") or "torrents.php")
+        base_url = f"{domain.rstrip('/')}/{base_path.lstrip('/')}"
+        proxies = get_proxies() if self._user_config.get("proxy") else None
+        proxy_url = proxies.get("http") if isinstance(proxies, dict) else None
+        browser_cfg = build_browser_mode(
+            site_info={
+                "chrome": True,
+                "ua": self._user_config.get("ua"),
+                "browser_render": True,
+                "browser_persistent": bool(self._user_config.get("browser_persistent")),
+            },
+            site_key=domain,
+            proxy_url=proxy_url,
+            render_html=True,
+        )
+        session_id = make_session_key(domain, browser_cfg) if browser_cfg else domain
+        fp_profile_id = browser_cfg.fp_profile_id if browser_cfg else None
+        fingerprint = browser_cfg.fingerprint_profile if browser_cfg else "stealth"
+        cookie = self._user_config.get("cookie") or ""
+
+        def _accept_results(html_text: str | None) -> str | None:
+            """仅接受'非挑战页且能解析出结果'的 HTML，避免把盾页面当成结果返回."""
+            if not html_text:
+                return None
+            if is_challenge(html_text):
+                log.debug(f"[HtmlSiteSearcher]{self._site.name} 仍处于盾挑战页，未过盾")
+                return None
+            if self._parse_html(html_text, is_browse=False):
+                return html_text
+            return None
+
+        def _reuse_fetch(session) -> str | None:
+            """复用会话 clearance 直接请求搜索链接（锁外，允许并发）."""
+            try:
+                res = session.fetch(search_url, method="GET")
+                body = (res or {}).get("body") or (res or {}).get("html") or ""
+                return _accept_results(body)
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[HtmlSiteSearcher]{self._site.name} 复用会话请求失败: {e}")
+            return None
+
+        try:
+            with BrowserSession(
+                session_id,
+                server_url=server,
+                user_agent=self._user_config.get("ua"),
+                proxy_url=proxy_url,
+                fp_profile_id=fp_profile_id,
+                fingerprint=fingerprint,
+                persist=True,
+            ) as session:
+                try:
+                    # 1) 过盾后的并发路径：已有 clearance 时直接请求，无需拿站点锁
+                    reused = _reuse_fetch(session)
+                    if reused:
+                        return reused
+                    # 2) 需要过盾：仅此阶段串行（双重检查，避免并发重复过盾）
+                    with site_serial(session_id):
+                        reused = _reuse_fetch(session)
+                        if reused:
+                            return reused
+                        # 未过盾：先访问站点首页触发并通过盾，再请求搜索链接，
+                        # 避免在盾未通过时直接打搜索 URL（浪费/可能被流控）
+                        session.navigate(base_url, cookie=cookie)
+                        session.navigate(search_url, cookie=cookie)
+                        html = session.html()
+                        accepted = _accept_results(html)
+                        if accepted:
+                            log.info(f"[HtmlSiteSearcher]{self._site.name} 过盾后搜索成功")
+                            return accepted
+                        try:
+                            session.turnstile(timeout=8)
+                        except Exception as e:  # noqa: BLE001
+                            log.debug(f"[HtmlSiteSearcher]{self._site.name} Turnstile 处理失败: {e}")
+                        session.navigate(search_url, cookie=cookie)
+                        return _accept_results(session.html())
+                finally:
+                    # 保留会话（clearance/Cookie 复用），仅关闭标签页，
+                    # 避免同一 Chrome 实例标签页长期堆积导致卡死
+                    session.close_tabs()
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[HtmlSiteSearcher]{self._site.name} 浏览器搜索失败: {e}")
+            return None
+
+    def _fetch_html(self, url, force_browser: bool = False):
         cookie = self._user_config.get("cookie", "")
         headers = {}
         ua = self._user_config.get("ua", "")
@@ -176,16 +292,23 @@ class HtmlSiteSearcher:
                 if client is not None and with_browser is not None:
                     client.close()
 
-        # 站点开启浏览器自动化：直连失败/疑似挑战页时自动经 nexus-chrome 渲染再取一次
-        html = _request(None)
-        if html is None or is_challenge(html):
+        # 站点开启浏览器自动化：直连失败 / 挑战页 / 内嵌 Turnstile 时经 nexus-chrome 渲染再取一次
+        html = _request(None) if not force_browser else None
+        need_browser = (
+            force_browser
+            or html is None
+            or is_challenge(html)
+            or (chrome_enabled and bool(html) and has_pending_turnstile(html))
+        )
+        if need_browser:
             if not chrome_enabled:
                 return html
             browser = build_browser_mode(
                 site_info={
                     "chrome": True,
                     "ua": ua,
-                    "browser_render": render,
+                    # 强制/内嵌验证场景需要渲染后再取 DOM（等待 JS/挑战完成）
+                    "browser_render": True if (force_browser or has_pending_turnstile(html or "")) else render,
                     "browser_persistent": bool(self._user_config.get("browser_persistent")),
                 },
                 site_key=self._user_config.get("domain") or self._site.domain or "",
@@ -224,6 +347,12 @@ class HtmlSiteSearcher:
             rows = html_doc.xpath(xpath)
         except Exception:
             rows = []
+        # 部分站点行位于 <tbody> 内而选择器写的是 `table > tr`：补一层 tbody 兜底
+        if not rows and "> tr" in list_selector and "tbody" not in list_selector:
+            try:
+                rows = html_doc.xpath(_css_to_xpath(list_selector.replace("> tr", "> tbody > tr", 1)))
+            except Exception:
+                rows = []
         if not rows and ":has(" not in list_selector:
             try:
                 rows = html_doc.cssselect(list_selector)

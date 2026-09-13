@@ -81,6 +81,7 @@ class DownloadPipeline:
         proxy=None,
         file_indices=None,
         file_names=None,
+        user_id: int | None = None,
     ) -> tuple[str | None, str | None, str]:
         """
         执行完整下载流水线
@@ -94,14 +95,14 @@ class DownloadPipeline:
         # ---------- 阶段1：获取种子内容 ----------
         fetch = self._stage_fetch(media_info=media_info, torrent_file=torrent_file, proxy=proxy)
         if not fetch:
-            self._fail(media_info, in_from, "下载链接为空")
+            self._fail(media_info, in_from, "下载链接为空", user_id=user_id)
             return None, None, "下载链接为空"
         content, file_path, dl_files_folder, dl_files, retmsg, site_info, torrent_attr = fetch
 
         if retmsg:
             log.warn(f"[DownloadPipeline]{retmsg}")
         if not content:
-            self._fail(media_info, in_from, retmsg)
+            self._fail(media_info, in_from, retmsg, user_id=user_id)
             return None, None, retmsg
 
         # ---------- 阶段2：解析下载设置 ----------
@@ -128,9 +129,9 @@ class DownloadPipeline:
         downloader_conf = self._client_factory.get_downloader_conf(downloader_id)
         downloader = self._client_factory.get_client(downloader_id)
         if not downloader or not downloader_conf:
-            msg = "请检查下载设置所选下载器是否有效且启用"
-            self._fail(media_info, in_from, msg)
-            return None, None, f"下载设置 {download_setting_name} 所选下载器失效"
+            msg = f"下载设置「{download_setting_name}」所选下载器无效或未启用，请检查下载设置与下载器连接状态"
+            self._fail(media_info, in_from, msg, user_id=user_id)
+            return None, None, msg
         downloader_name = downloader_conf.get("name")
 
         download_info = self._client_factory.get_download_dir_info(media_info, downloader_conf.get("download_dir"))
@@ -145,7 +146,7 @@ class DownloadPipeline:
         if not getattr(downloader, "supports_pt", True) and self._is_pt_torrent(site_info, content):
             msg = f"下载器 {downloader_name} 不支持 PT 私有站点种子，已拒绝下载"
             log.warn(f"[DownloadPipeline]{msg}: {title}")
-            self._fail(media_info, in_from, msg)
+            self._fail(media_info, in_from, msg, user_id=user_id)
             return downloader_id, None, msg
 
         # ---------- 阶段3：添加任务 ----------
@@ -167,8 +168,16 @@ class DownloadPipeline:
             file_names=file_names,
         )
         if not download_id:
+            detail = ""
+            get_error = getattr(downloader, "get_last_add_error", None)
+            if callable(get_error):
+                detail = get_error() or ""
             msg = f"下载器 {downloader_name} 添加下载任务失败"
-            self._fail(media_info, in_from, msg)
+            if detail:
+                msg = f"{msg}：{detail}"
+            else:
+                msg = f"{msg}（下载器未返回明确原因，请检查下载器连接/保存路径/磁盘空间或是否已存在重复种子）"
+            self._fail(media_info, in_from, msg, user_id=user_id)
             return downloader_id, None, msg
 
         self._event_bus.publish(
@@ -202,6 +211,7 @@ class DownloadPipeline:
             torrent_attr=torrent_attr,
             in_from=in_from,
             user_name=user_name,
+            user_id=user_id,
         )
 
         if not media_info.enclosure and file_path:
@@ -248,6 +258,9 @@ class DownloadPipeline:
             else:
                 site_info = self._sites.get_sites(siteurl=url)
                 cookie = site_info.get("cookie")
+                # 属性详情页走站点会话（cookie），与下载 API 鉴权不同：
+                # API 站下载可用 api_key，但详情页仍需 cookie，否则会被 CF 拦截/抓取为空
+                attr_cookie = site_info.get("cookie")
                 api_key = site_info.get("api_key")
                 bearer_token = site_info.get("bearer_token")
                 site_def = self._site_engine.get_by_url(url)
@@ -256,16 +269,22 @@ class DownloadPipeline:
                 headers = site_info.get("headers")
                 headers = JsonUtils.loads(headers) if headers else {}
                 if media_info.page_url and site_info.get("id"):
-                    torrent_attr = self._siteconf.check_torrent_attr(
-                        torrent_url=media_info.page_url,
-                        cookie=cookie,
-                        api_key=api_key,
-                        bearer_token=bearer_token,
-                        ua=site_info.get("ua"),
-                        headers=headers,
-                        proxy=proxy if proxy is not None else site_info.get("proxy") or False,
-                        browser_persistent=bool(site_info.get("browser_persistent")),
-                    )
+                    try:
+                        torrent_attr = self._siteconf.check_torrent_attr(
+                            torrent_url=media_info.page_url,
+                            cookie=attr_cookie,
+                            api_key=api_key,
+                            bearer_token=bearer_token,
+                            ua=site_info.get("ua"),
+                            headers=headers,
+                            proxy=proxy if proxy is not None else site_info.get("proxy") or False,
+                            browser_persistent=bool(site_info.get("browser_persistent")),
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        # 详情页抓取失败不应中断下载：降级为无属性（HR/优惠等）继续，
+                        # 否则单个种子的属性异常会冒泡打断整批订阅处理
+                        log.warn(f"[Pipeline]获取种子属性失败，跳过属性校正继续下载：{media_info.page_url[:120]} - {e}")
+                        torrent_attr = {}
                 file_path, content, dl_files_folder, dl_files, retmsg = Torrent(self._site_engine).get_torrent_info(
                     url=url,
                     cookie=cookie,
@@ -278,11 +297,13 @@ class DownloadPipeline:
 
                 # enclosure 下载失败且为 API 站(如 M-Team 预签名链接过期)时，
                 # 用详情页 tid 重新走下载 API 拿新鲜链接后重试一次
-                if not file_path and media_info.enclosure and media_info.page_url:
-                    page_site = self._site_engine.get_by_url(media_info.page_url)
+                if not file_path and media_info.enclosure and media_info.page_url and "不可重试" not in (retmsg or ""):
+                    # 注意：详情页域名可能与站点定义域名不同（如 M-Team 详情 kp.m-team.cc、
+                    # 定义 api.m-team.cc），必须优先用种子链接解析到的站点定义。
+                    page_site = site_def or self._site_engine.get_by_url(media_info.page_url)
                     if page_site and page_site.download and page_site.download.type in ("api", "api_chained"):
                         log.info(f"[Pipeline]下载链接可能已过期，尝试重新获取：{media_info.page_url}")
-                        page_info = self._sites.get_sites(siteurl=media_info.page_url)
+                        page_info = site_info or self._sites.get_sites(siteurl=media_info.page_url)
                         fresh_url = self._site_engine.resolve_download_url(
                             page_url=media_info.page_url,
                             user_config={
@@ -423,6 +444,7 @@ class DownloadPipeline:
         torrent_attr,
         in_from,
         user_name,
+        user_id=None,
     ):
         if not self._client_factory:
             return
@@ -445,12 +467,16 @@ class DownloadPipeline:
                 downloader = self._client_factory.get_client(downloader_id)
                 if downloader:
                     downloader.delete_torrents(ids=download_id, delete_file=True)
-                self._fail(media_info, in_from, "请检查下载任务保存目录是否正确")
+                self._fail(media_info, in_from, "请检查下载任务保存目录是否正确", user_id=user_id)
                 return
 
         try:
             self._download_history_repo.insert_download_history(
-                media_info=media_info, downloader=downloader_id, download_id=download_id, save_dir=save_dir or ""
+                media_info=media_info,
+                downloader=downloader_id,
+                download_id=download_id,
+                save_dir=save_dir or "",
+                user_id=user_id,
             )
         except Exception as e:
             log.warn(f"[Pipeline]写入下载历史失败（任务已提交至下载器）: {e}")
@@ -486,6 +512,7 @@ class DownloadPipeline:
 
         if in_from:
             media_info.user_name = user_name
+            media_info.user_id = user_id
             media_info.hit_and_run = bool(torrent_attr and torrent_attr.get("hr"))
             self._message.send_download_message(
                 in_from=in_from,
@@ -550,7 +577,7 @@ class DownloadPipeline:
                     return True
         return False
 
-    def _fail(self, media_info, in_from, reason):
+    def _fail(self, media_info, in_from, reason, user_id=None):
         self._event_bus.publish(
             Event(
                 event_type=DOWNLOAD_FAILED,
@@ -558,4 +585,5 @@ class DownloadPipeline:
             )
         )
         if in_from:
-            self._message.send_download_fail_message(media_info, f"添加下载任务失败：{reason}")
+            media_info.user_id = user_id
+            self._message.send_download_fail_message(media_info, reason)

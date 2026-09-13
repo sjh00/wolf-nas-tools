@@ -47,6 +47,7 @@ class RssFeedStrategy:
         message: Message,
         coordinator=None,
         system_config=None,
+        site_grant_service=None,
     ):
         self.media = media
         self.sites = sites
@@ -60,6 +61,31 @@ class RssFeedStrategy:
         self.message = message
         self._coordinator = coordinator
         self._system_config = system_config
+        self._site_grant_service = site_grant_service
+        # 站点授权缓存：一轮轮询内按归属用户复用，避免逐订阅查库
+        self._grant_cache: dict[int, dict | None] = {}
+
+    def _filter_subscriptions_by_site_grant(self, subs: dict, site_name: str) -> dict:
+        """执行时站点授权兜底（ADR-021 4.3）：剔除归属用户未获该站点 rss 用途授权的订阅.
+
+        user_id 为 None（系统/插件创建）或授权服务未启用时不过滤。
+        """
+        if self._site_grant_service is None or not site_name:
+            return subs
+        filtered = {}
+        for key, info in subs.items():
+            owner = info.get("user_id")
+            if owner is None:
+                filtered[key] = info
+                continue
+            if owner not in self._grant_cache:
+                self._grant_cache[owner] = self._site_grant_service.get_visible_sites_by_id(owner)
+            visible = self._grant_cache[owner]
+            if visible is None or self._site_grant_service.is_site_allowed(visible, site_name, "builtin", "rss"):
+                filtered[key] = info
+            else:
+                log.info(f"[RssFeedStrategy] 订阅 {info.get('name')}(用户{owner}) 未授权站点 {site_name}，本轮跳过")
+        return filtered
 
     def set_coordinator(self, coordinator) -> None:
         """设置下载协调器（用于 SubscriptionMonitor 注入）."""
@@ -90,6 +116,7 @@ class RssFeedStrategy:
         return []
 
     def _do_rss_poll(self) -> None:
+        self._grant_cache = {}
         if self.sites is None:
             return
         if self.subscribe is None:
@@ -290,8 +317,8 @@ class RssFeedStrategy:
 
                 match_flag, match_msg, match_info = self.matcher.match(
                     media_info=media_info,
-                    rss_movies=rss_movies,
-                    rss_tvs=rss_tvs,
+                    rss_movies=self._filter_subscriptions_by_site_grant(rss_movies, site_name),
+                    rss_tvs=self._filter_subscriptions_by_site_grant(rss_tvs, site_name),
                     site_id=site_id,
                     site_filter_rule=item["site_filter_rule"],
                     site_cookie=item["site_cookie"],
@@ -377,13 +404,20 @@ class RssFeedStrategy:
                                     episodes = list(range(int(current_ep), int(total_ep or 0) + 1))
                             if media_info.tmdb_id not in rss_no_exists:
                                 rss_no_exists[media_info.tmdb_id] = []
-                            rss_no_exists[media_info.tmdb_id].append(
-                                {
-                                    "season": season,
-                                    "episodes": episodes,
-                                    "total_episodes": total_ep,
-                                }
-                            )
+                            # 同一季可能因多条匹配规则被多次收集，按季覆盖而非追加，
+                            # 否则重复条目会让后续策略对同一缺失季重复下载
+                            season_entries = rss_no_exists[media_info.tmdb_id]
+                            entry = {
+                                "season": season,
+                                "episodes": episodes,
+                                "total_episodes": total_ep,
+                            }
+                            for idx, exist in enumerate(season_entries):
+                                if exist.get("season") == season:
+                                    season_entries[idx] = entry
+                                    break
+                            else:
+                                season_entries.append(entry)
                             exist_flag, library_no_exists, _ = self.downloader.check_exists_medias(
                                 meta_info=media_info, total_ep={season: total_ep}
                             )
@@ -421,10 +455,12 @@ class RssFeedStrategy:
                     download_volume_factor=match_info.get("download_volume_factor"),
                     upload_volume_factor=match_info.get("upload_volume_factor"),
                     rssid=match_info.get("id"),
+                    sibling_rssids=match_info.get("sibling_rssids"),
                 )
                 media_info.set_download_info(
                     download_setting=match_info.get("download_setting"), save_path=match_info.get("save_path")
                 )
+                media_info.user_id = match_info.get("user_id")
                 self.rsshelper.insert_rss_torrents(media_info)
                 if media_info not in rss_download_torrents:
                     rss_download_torrents.append(media_info)
@@ -461,6 +497,13 @@ class RssFeedStrategy:
             if self.subscribe is None:
                 return
             self.subscribe.finish_rss_subscribe(rssid=download_item.rssid, media=download_item)
+            # 同媒体其他用户的订阅联动完成（共享媒体库已满足，ADR-021 5.4 记账分离）
+            for sibling_id in getattr(download_item, "sibling_rssids", None) or []:
+                if sibling_id in finished_rss_torrents:
+                    continue
+                finished_rss_torrents.append(sibling_id)
+                log.info(f"[RssFeedStrategy] 联动完成兄弟订阅 rssid={sibling_id}（同一媒体共享下载）")
+                self.subscribe.finish_rss_subscribe(rssid=sibling_id, media=download_item)
 
         def __update_tv_rss(download_item, left_media):
             if not download_item or not left_media:
@@ -488,6 +531,28 @@ class RssFeedStrategy:
                 rtype=download_item.type, rssid=download_item.rssid, media=download_item
             )
 
+        # 同一轮 RSS 中同一资源可能因多条规则/多个条目被重复收集，
+        # 先去重，避免对同一 dl 链接反复解析种子、反复下载触发站点限流
+        seen_urls: set[str] = set()
+        unique_media: list = []
+        for _m in rss_download_torrents:
+            _enclosure = getattr(_m, "enclosure", "") or ""
+            _key = (
+                _enclosure
+                if _enclosure and not _enclosure.startswith("magnet:")
+                else (getattr(_m, "page_url", "") or "")
+            )
+            _key = _key or str(getattr(_m, "rssid", "") or "")
+            if not _key:
+                unique_media.append(_m)
+                continue
+            if _key in seen_urls:
+                log.info(f"[RssFeedStrategy] 重复候选已去重，跳过：{_key[:120]}")
+                continue
+            seen_urls.add(_key)
+            unique_media.append(_m)
+        rss_download_torrents = unique_media
+
         for media in rss_download_torrents:
             if media.type not in (MediaType.TV, MediaType.ANIME):
                 continue
@@ -497,8 +562,8 @@ class RssFeedStrategy:
                 continue
             try:
                 episodes, file_path = self.downloader.get_torrent_episodes(media.enclosure, media.page_url)
-                if file_path:
-                    Torrent.delete_torrent_file(file_path)
+                # 不删除种子文件：同轮后续策略会复用该解析结果与文件路径，避免重复取链
+                # 消耗站点下载配额；临时文件由 temp_manager 定期清理。
                 if episodes:
                     media.total_episodes = len(episodes)
                     media.begin_episode = min(episodes)

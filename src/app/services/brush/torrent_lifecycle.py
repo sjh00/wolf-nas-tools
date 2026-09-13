@@ -31,10 +31,13 @@ class BrushTorrentLifecycle:
 
     @staticmethod
     def _remove_rule_needs_torrent_attr(remove_rule: dict | None) -> bool:
-        """删种规则是否依赖种子详情页属性（free/hr），避免对每颗种子做无谓详情请求消耗站点限流."""
+        """删种规则是否依赖种子详情页属性（free/hr/pubdate），避免对每颗种子做无谓详情请求消耗站点限流."""
         if not remove_rule:
             return False
-        return any(remove_rule.get(key) not in ("#", "N", None, "") for key in ("freestatus", "hr", "hr_time"))
+        return any(
+            remove_rule.get(key) not in ("#", "N", None, "")
+            for key in ("freestatus", "hr", "hr_time", "pubdate")
+        )
 
     def remove_task_torrents(self, taskid: int | None, taskinfo: dict) -> None:
         if taskinfo.get("state") != BrushTaskState.RUNNING.value:
@@ -178,8 +181,10 @@ class BrushTorrentLifecycle:
             enclosure = torrent_id_maps.get(torrent_id)
             torrent_url, torrent_attr = (None, {})
             if enclosure and need_attr:
+                # 详情属性优先用详情页 URL（M-Team 等 enclosure 为一次性签名链接，无法提取 TID）
+                attr_url = torrent_page_url_maps.get(torrent_id) or enclosure
                 torrent_url, torrent_attr = self._helper.get_torrent_attr(
-                    site_info if isinstance(site_info, dict) else {}, enclosure, use_cache=False
+                    site_info if isinstance(site_info, dict) else {}, attr_url, use_cache=False
                 )
                 if torrent_attr is None:
                     # 详情属性抓取失败（限流/网络等）：不能据此判定“免费到期”而误删，
@@ -299,8 +304,10 @@ class BrushTorrentLifecycle:
                     continue
                 torrent_attr = {}
                 if stopfree_enabled:
+                    # 详情属性优先用详情页 URL（M-Team 等 enclosure 为一次性签名链接，无法提取 TID）
+                    attr_url = torrent_page_url_maps.get(torrent_id) or enclosure
                     torrent_url, torrent_attr = self._helper.get_torrent_attr(
-                        site_info if isinstance(site_info, dict) else {}, enclosure, use_cache=False
+                        site_info if isinstance(site_info, dict) else {}, attr_url, use_cache=False
                     )
                     if torrent_attr is None:
                         # 属性未知（抓取失败）：不据此执行停种，等待下轮
@@ -351,6 +358,7 @@ class BrushTorrentLifecycle:
                 downlaod_name,
                 sendmessage,
                 site_info,
+                torrent_page_url_maps,
             )
 
     def _resume_free_torrents(
@@ -363,6 +371,7 @@ class BrushTorrentLifecycle:
         downlaod_name,
         sendmessage,
         site_info,
+        torrent_page_url_maps=None,
     ):
         all_torrents = self._downloader.get_torrents(downloader_id, list(torrent_id_maps.keys()))
         if not all_torrents:
@@ -373,8 +382,10 @@ class BrushTorrentLifecycle:
             enclosure = torrent_id_maps.get(torrent.id)
             if not enclosure:
                 continue
+            # 详情属性优先用详情页 URL（M-Team 等 enclosure 为一次性签名链接，无法提取 TID）
+            attr_url = (torrent_page_url_maps or {}).get(torrent.id) or enclosure
             torrent_url, torrent_attr = self._helper.get_torrent_attr(
-                site_info if isinstance(site_info, dict) else {}, enclosure, use_cache=False
+                site_info if isinstance(site_info, dict) else {}, attr_url, use_cache=False
             )
             if torrent_attr is None:
                 # 属性未知（抓取失败）：暂不启动，等待下轮确认

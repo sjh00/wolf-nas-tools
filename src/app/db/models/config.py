@@ -50,7 +50,7 @@ class CONFIGSITE(Base):
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
     NAME: Mapped[str] = mapped_column(String(255))
     PRI: Mapped[str] = mapped_column(String(255))
-    RSSURL: Mapped[str] = mapped_column(String(512))
+    RSSURL: Mapped[str] = mapped_column(Text)
     SIGNURL: Mapped[str] = mapped_column(String(512))
     COOKIE: Mapped[str | None] = mapped_column(Text, nullable=True)
     API_KEY: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -92,6 +92,9 @@ class CONFIGUSERRSS(Base):
     __tablename__ = "CONFIG_USER_RSS"
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
+    USER_ID: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("RBAC_USERS.ID", ondelete="CASCADE"), nullable=True, index=True
+    )
     NAME: Mapped[str] = mapped_column(String(255), index=True)
     ADDRESS: Mapped[str] = mapped_column(String(255))
     PARSER: Mapped[str] = mapped_column(String(255))

@@ -141,6 +141,16 @@ class GetCategoryConfigRequest(BaseModel):
 class GetDownloadedRequest(BaseModel):
     page: int | None = None
     page_size: int | None = Field(default=30, ge=1, le=200)
+    user_id: int | None = None  # superadmin 按归属用户过滤
+
+
+class DeleteDownloadedRequest(BaseModel):
+    history_id: int  # DOWNLOAD_HISTORY.ID
+    user_id: int | None = None  # superadmin 按归属用户校验
+
+
+class DeleteAllDownloadedRequest(BaseModel):
+    user_id: int | None = None  # superadmin 按归属用户校验
 
 
 class GetTransferHistoryRequest(BaseModel):
@@ -411,7 +421,11 @@ def get_downloaded(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: Downloader = Depends(get_downloader_service),
 ):
-    items = svc.get_download_history(page=req.page or 1, num=req.page_size or 30)
+    # superadmin 可按归属用户过滤；普通用户行级过滤兜底
+    scoped_user = current_user
+    if req.user_id and current_user.is_superadmin:
+        scoped_user = current_user.model_copy(update={"user_id": req.user_id, "role_codes": []})
+    items = svc.get_download_history(page=req.page or 1, num=req.page_size or 30, user=scoped_user)
     if items:
         return success(
             data=[
@@ -430,11 +444,41 @@ def get_downloaded(
                     "season_episode": item.SE or "",
                     "date": item.DATE,
                     "site": item.SITE,
+                    "history_id": item.ID,
                 }
                 for item in items
             ]
         )
     return success(data=[])
+
+
+@router.post("/library/downloaded/delete", response_model=CommonResponse, summary="删除单条已下载记录")
+def delete_downloaded(
+    req: DeleteDownloadedRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: Downloader = Depends(get_downloader_service),
+):
+    """删除一条下载历史记录（非超管仅能删除本人或系统记录）."""
+    scoped_user = current_user
+    if req.user_id and current_user.is_superadmin:
+        scoped_user = current_user.model_copy(update={"user_id": req.user_id, "role_codes": []})
+    if svc.delete_download_history_by_id(req.history_id, user=scoped_user):
+        return success(data=True)
+    return fail(msg="记录不存在或无权删除")
+
+
+@router.post("/library/downloaded/delete_all", response_model=CommonResponse, summary="清空已下载记录")
+def delete_all_downloaded(
+    req: DeleteAllDownloadedRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: Downloader = Depends(get_downloader_service),
+):
+    """清空下载历史记录（非超管仅清空本人或系统记录），返回删除条数."""
+    scoped_user = current_user
+    if req.user_id and current_user.is_superadmin:
+        scoped_user = current_user.model_copy(update={"user_id": req.user_id, "role_codes": []})
+    count = svc.delete_all_download_history(user=scoped_user)
+    return success(data={"count": count})
 
 
 @router.post("/library/count", response_model=CommonResponse, summary="获取媒体库统计")
@@ -576,7 +620,7 @@ def get_search_result(
 ):
     req = req or {}
     session_id = req.get("session_id") or TokenCache.get(f"search_session:{current_user.user_id}")
-    search_results = svc.get_search_results(session_id)
+    search_results = svc.get_search_results(session_id, user_id=current_user.user_id)
     result = result_svc.group_search_results(search_results)
     return success(data={"total": result.total, "result": result.result})
 
@@ -584,7 +628,7 @@ def get_search_result(
 @router.post("/transfer/history", response_model=CommonResponse, summary="获取转移历史")
 def get_transfer_history(
     req: GetTransferHistoryRequest,
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
     result = svc.get_transfer_history_page(search_str=req.keyword, page=req.page, page_num=req.pagenum)
@@ -602,7 +646,7 @@ def get_transfer_history(
 @router.post("/transfer/statistics", response_model=CommonResponse, summary="获取转移统计")
 def get_transfer_statistics(
     req: GetTransferStatisticsRequest,
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
     result = svc.get_transfer_statistics(days=req.days if req.days is not None else 90)
@@ -611,7 +655,7 @@ def get_transfer_statistics(
 
 @router.post("/unknown", response_model=CommonResponse, summary="获取未识别列表")
 def get_unknown_list(
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
     items = svc.get_unknown_list()
@@ -621,7 +665,7 @@ def get_unknown_list(
 @router.post("/unknown/paged", response_model=CommonResponse, summary="分页获取未识别列表")
 def get_unknown_list_by_page(
     req: GetUnknownListByPageRequest,
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
     result = svc.get_unknown_list_by_page(search_str=req.keyword, page=req.page, page_num=req.pagenum)
@@ -665,7 +709,7 @@ def search_media_infos(
 
 @router.post("/unknown/list", response_model=CommonResponse, summary="重新识别未识别项")
 def unidentification(
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
     svc.re_identify_unknown()
@@ -776,7 +820,7 @@ async def upload_file(
 
 @router.post("/library/paths", response_model=CommonResponse, summary="获取媒体库路径")
 def get_library_paths(
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_permission("library:manage")),
     media_svc=Depends(get_media_config_service),
     sync_svc=Depends(get_sync_service),
     media_file_svc: MediaFileService = Depends(get_media_file_service),
@@ -795,7 +839,7 @@ def get_tmdb_blacklist(
     page: int = Query(1, ge=1),
     count: int = Query(30, ge=1, le=100),
     s: str | None = Query(""),
-    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    current_user=Depends(require_permission("library:manage")),
     tmdb_svc=Depends(get_tmdb_blacklist_service),
 ):
     items, total = tmdb_svc.get_blacklist(tmdb_id=s if s else None, page=page, count=count)
