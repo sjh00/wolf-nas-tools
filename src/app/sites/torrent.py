@@ -3,6 +3,7 @@ import os.path
 import re
 from urllib.parse import parse_qs, unquote, urlparse
 
+import bencodepy
 from bencode import bdecode
 
 import log
@@ -65,7 +66,7 @@ class Torrent:
             # 站点可能返回 JSON/HTML（如一过性下载链接过期）而非种子内容，
             # 提前识别给出明确原因，避免后续 bencode 解析报"种子数据有误"误导。
             if not self._looks_like_torrent(file_path):
-                return None, content, "", [], self._site_error_message(file_path)
+                return None, content, "", [], self._content_error_message(content or b"")
             # 解析种子文件
             files_folder, files, retmsg = self.get_torrent_files(file_path)
             # 种子文件路径、种子内容、种子文件列表主目录、种子文件列表、错误信息
@@ -75,30 +76,43 @@ class Torrent:
             return None, None, "", [], f"下载种子文件出现异常：{str(err)}"
 
     @staticmethod
-    def _site_error_message(file_path) -> str:
-        """站点返回非种子内容（JSON 错误）时解析 message，并标注不可重试.
+    def _content_error_message(content: bytes) -> str:
+        """站点返回非种子内容时给出明确原因，并标注不可重试.
 
         M-Team 等会在超限时返回 JSON（如"相同種子當天最多下載10次"），
-        此时重试无意义且会继续消耗限额，需标记 [不可重试]。
+        此时重试无意义且会继续消耗限额，需标记 [不可重试] 以触发下游短路。
         """
-        try:
-            with open(file_path, "rb") as f:
-                raw = f.read(2048)
-            if raw[:1] in (b"{", b"["):
+        raw = (content or b"")[:2048]
+        if raw[:1] in (b"{", b"["):
+            try:
                 data = JsonUtils.loads(raw.decode("utf-8", errors="ignore"))
-                msg = (data or {}).get("message") if isinstance(data, dict) else None
-                if msg:
-                    return f"[不可重试]站点返回：{msg}"
-        except Exception as err:  # noqa: BLE001
-            log.debug(f"解析站点错误信息失败：{err}")
+            except Exception:  # noqa: BLE001
+                data = None
+            msg = (data or {}).get("message") if isinstance(data, dict) else None
+            if msg:
+                return f"[不可重试]站点返回：{msg}"
+            return "[不可重试]站点返回非种子数据（JSON）"
+        if raw[:1] == b"<":
+            return "站点返回网页而非种子（可能需登录/Cookie 或触发防盗链），请等待重新搜索"
         return "下载链接已失效或非种子数据（请等待重新搜索获取新链接）"
 
     @staticmethod
+    def _safe_decode(content: bytes) -> dict:
+        """先用纯 Python 校验再用 bencode 解析（保持 str 键语义）.
+
+        bencode 是 C 扩展，畸形/截断数据会直接段错误（崩溃进程）；
+        bencodepy 为纯 Python，对非法输入抛 DecodingError，可安全拦截。
+        """
+        bencodepy.decode(content)
+        return bdecode(content)
+
+    @staticmethod
     def _looks_like_torrent(file_path) -> bool:
-        """判断文件是否为 bencode 种子（dict 以 'd' 开头）."""
+        """判断文件是否为 bencode 种子（dict 以 'd' 开头、以 'e' 结束）."""
         try:
             with open(file_path, "rb") as f:
-                return f.read(1) == b"d"
+                data = f.read()
+            return bool(data) and data[:1] == b"d" and data[-1:] == b"e"
         except OSError:
             return False
 
@@ -183,7 +197,7 @@ class Torrent:
                         # 改写req
                         req = client.post(url=action, data=data, headers=headers, auth=auth, **rl_kwargs)
                         # 检查是不是种子文件，如果不是抛出异常
-                        bdecode(req.content)
+                        self._safe_decode(req.content)
                         # 跳过成功
                         log.info(f"[Downloader]触发了站点首次种子下载，已自动跳过：{url}")
                         skip_flag = True
@@ -198,12 +212,21 @@ class Torrent:
             if not skip_flag:
                 return None, None, "种子数据有误，请确认链接是否正确，如为PT站点则需手工在站点下载一次种子"
         else:
-            # 检查是不是种子文件，如果不是仍然抛出异常
+            # 站点可能返回 JSON（限额/鉴权错误）或网页而非种子：给出真实原因
+            if (req.content or b"")[:1] != b"d":
+                msg = self._content_error_message(req.content)
+                log.warn(
+                    f"[Torrent]非种子响应（content-type={req.headers.get('content-type')}）："
+                    f"{(req.content or b'')[:160]!r}，链接：{url}，返回：{msg}"
+                )
+                return None, None, msg
             try:
-                bdecode(req.content)
+                self._safe_decode(req.content)
             except Exception as err:
-                log.warn(f"[Torrent]种子数据解析失败：{err}，链接：{url}")
-                return None, None, "种子数据有误，请确认链接是否正确"
+                log.warn(
+                    f"[Torrent]种子数据解析失败：{err}，content-type={req.headers.get('content-type')}，链接：{url}"
+                )
+                return None, None, self._content_error_message(req.content)
         # 读取种子文件名
         file_name = self.__get_url_torrent_filename(req, url)
         # 种子文件路径
@@ -230,7 +253,7 @@ class Torrent:
         file_folder = ""
         try:
             with open(path, "rb") as f:
-                torrent = bdecode(f.read())
+                torrent = Torrent._safe_decode(f.read())
                 if torrent.get("info"):
                     files = torrent.get("info", {}).get("files") or []
                     if files:

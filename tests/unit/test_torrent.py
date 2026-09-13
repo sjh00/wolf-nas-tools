@@ -1,5 +1,9 @@
 """Tests for app.sites.torrent."""
 
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 from app.domain.mediatypes import MediaType
 from app.media.models import MediaInfo
 from app.sites.torrent import Torrent
@@ -155,3 +159,53 @@ class TestTorrentGetDownloadList:
         )
         result = Torrent.get_download_list([first, second], download_order="site", collapse=False)
         assert result == [first, second]
+
+
+class TestTorrentContentErrors:
+    def test_json_limit_marked_unretryable(self):
+        content = '{"code":"1","message":"相同種子當天最多下載10次","data":null}'.encode()
+        msg = Torrent._content_error_message(content)
+        assert msg.startswith("[不可重试]站点返回：")
+        assert "最多下載10次" in msg
+
+    def test_json_without_message(self):
+        msg = Torrent._content_error_message(b'{"code":"1"}')
+        assert "[不可重试]" in msg and "JSON" in msg
+
+    def test_html_response_message(self):
+        msg = Torrent._content_error_message(b"<!DOCTYPE html><html>login</html>")
+        assert "网页" in msg
+
+    def test_garbage_response_message(self):
+        msg = Torrent._content_error_message(b"something else")
+        assert "失效" in msg
+
+    def test_safe_decode_raises_on_truncated_without_crash(self):
+        with pytest.raises(Exception):
+            Torrent._safe_decode(b"d8:announce146:https://tracker.m-team.cc/announce?cred")
+
+    def test_safe_decode_parses_valid_torrent(self):
+        torrent = Torrent._safe_decode(b"d8:announce4:http4:infod6:lengthi1e4:name1:aee")
+        assert torrent["announce"] == "http"
+
+    def _torrent(self):
+        engine = MagicMock()
+        engine.get_by_url.return_value = None
+        engine.site_limiter = None
+        return Torrent(engine)
+
+    def _response(self, content: bytes):
+        resp = MagicMock()
+        resp.content = content
+        resp.text = content.decode("utf-8", errors="ignore")
+        resp.headers = {"content-type": "application/json"}
+        return resp
+
+    def test_save_torrent_file_json_limit_returns_unretryable(self):
+        torrent = self._torrent()
+        resp = self._response('{"code":"1","message":"相同種子當天最多下載10次"}'.encode())
+        with patch("app.sites.torrent.HttpClient") as client:
+            client.return_value.get.return_value = resp
+            path, content, msg = torrent.save_torrent_file("https://api.m-team.cc/api/rss/dlv2?sign=abc&t=1")
+        assert path is None and content is None
+        assert "不可重试" in msg and "最多下載10次" in msg
