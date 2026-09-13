@@ -1,6 +1,5 @@
 """MediaLibraryMonitorService 单元测试."""
 
-import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +18,6 @@ def monitor():
 class TestOnMediaFileEvent:
     def test_skips_non_media_ext(self, monitor, monkeypatch):
         """非媒体扩展名不触发刮削"""
-        scraper = MagicMock()
         monkeypatch.setattr("app.services.media_library_monitor.settings", _fake_settings(True))
         monitor.on_media_file_event("/tmp/a.txt")
         monitor._media_file.scrap_media_path.assert_not_called()

@@ -21,9 +21,8 @@ import os
 import shutil
 
 import log
-from app.core.exceptions import DomainError, ServiceError, ValidationError
+from app.core.exceptions import ServiceError, ValidationError
 from app.utils.path_utils import PathUtils
-from app.utils.system_utils import SystemUtils
 
 
 class MediaMigrateService:
@@ -329,7 +328,9 @@ class MediaMigrateService:
                 download_id = getattr(rec, "DOWNLOAD_ID", "") or ""
                 if downloader and download_id:
                     try:
-                        self._download_repo.update_save_path(downloader, download_id, new_sp, tmdb_id=getattr(r, "TMDBID", None))
+                        self._download_repo.update_save_path(
+                            downloader, download_id, new_sp, tmdb_id=getattr(r, "TMDBID", None)
+                        )
                         updated += 1
                     except Exception as e:  # noqa: BLE001
                         log.warn(f"[Migrate]更新下载记录 SAVE_PATH 失败：{e}")

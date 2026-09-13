@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 from app.media.models import MediaInfo
-from app.schemas.download import DownloadResultDTO
 from app.services.download_service import DownloadService
 
 
