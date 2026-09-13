@@ -205,6 +205,17 @@ class ClientManager:
         key = client_type.name if isinstance(client_type, Enum) else client_type
         return self._active_interactive_clients.get(key)
 
+    def get_client_by_id(self, cid: Any) -> dict | None:
+        """按客户端 id 从活跃客户端中查找（治理层 flush 摘要时解析目标）."""
+        target = str(cid)
+        if not target:
+            return None
+        self._ensure_loaded()
+        for client in self._active_clients:
+            if str(client.get("id")) == target:
+                return client
+        return None
+
     def delete_message_client(self, cid: Any) -> Any:
         self._ensure_loaded()
         if not self.config_repo:
