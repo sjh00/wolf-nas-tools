@@ -1,4 +1,5 @@
 import difflib
+import re
 
 from app.core.settings import settings
 from app.db.repositories.plugin_repo_adapter import TmdbBlacklistRepositoryAdapter
@@ -104,12 +105,27 @@ def compare_tmdb_names(file_name, tmdb_names):
         if len(file_name) < 3 or len(tmdb_name) < 3:
             continue
         is_substring = file_name in tmdb_name or tmdb_name in file_name or file_name_simplified in tmdb_name
+        # 中文副标题前缀："太极1" → "太极1从零开始"（冒号已被 handler_special_chars 去掉）。
+        # 这类"主标题：副标题"的 ratio 往往低于阈值，需按前缀放行，否则带序号的中文片名搜不到。
+        if (
+            is_substring
+            and len(file_name_simplified) >= 3
+            and _has_cjk(file_name_simplified)
+            and tmdb_name.startswith(file_name_simplified)
+            and len(tmdb_name) - len(file_name_simplified) >= 2
+        ):
+            return True
         ratio = difflib.SequenceMatcher(None, file_name_simplified, tmdb_name).ratio()
         # 子串匹配阈值放宽：动漫罗马音标题常带 -kun/-chan/-san 等后缀，0.95 过严
         threshold = 0.85 if is_substring else 0.75
         if ratio >= threshold:
             return True
     return False
+
+
+def _has_cjk(s: str) -> bool:
+    """判断字符串是否含 CJK 字符"""
+    return bool(re.search(r"[\u3000-\u9fff]", s))
 
 
 def get_genre_ids_from_detail(genres):

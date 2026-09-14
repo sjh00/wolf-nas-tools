@@ -423,6 +423,19 @@ class TestAudioMetadataNotGlued:
                 "Title",
                 None,
             ),
+            (
+                # TrueHD5.1 / DTS-HD MA5.1 等带声道数的音频编码不应进片名（v3 正则回归）
+                "Charlie and the Chocolate Factory 2005 BluRay REMUX VC-1 TrueHD5.1.mkv",
+                None,
+                "Charlie And The Chocolate Factory",
+                "2005",
+            ),
+            (
+                "Deadpool 2016 UHD BluRay REMUX 2160p HEVC HDR10 Atmos TrueHD7.1-CHD.mkv",
+                None,
+                "Deadpool",
+                "2016",
+            ),
         ],
     )
     def test_audio_descriptors_stripped(self, parser, title, expected_cn, expected_en, expected_year):
