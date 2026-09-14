@@ -367,3 +367,67 @@ class TestSharedPostProcess:
         post = svc._post_process(parsed, title, "tmp /")
         assert post is not None and post.title_en is not None
         assert post.title_en.lower() == "sparks of tomorrow"
+
+
+class TestAudioMetadataNotGlued:
+    """'7声轨'/'3Audio'/'7.1Audio' 等音轨描述不应并入片名"""
+
+    @pytest.mark.parametrize(
+        "title,expected_cn,expected_en,expected_year",
+        [
+            (
+                "瑞克和莫蒂 S04 7声轨 1080p",
+                "瑞克和莫蒂",
+                None,
+                None,
+            ),
+            (
+                "肖申克的救赎 1994 国粤双语 3音轨 蓝光",
+                "肖申克的救赎",
+                None,
+                "1994",
+            ),
+            (
+                "流浪地球2 2023 3Audio 1080p BluRay",
+                "流浪地球2",
+                None,
+                "2023",
+            ),
+            (
+                "Avengers.Endgame.2019.7.1Audio.1080p.BluRay.x265",
+                None,
+                "Avengers Endgame",
+                "2019",
+            ),
+            (
+                "Movie.Title.2018.3Audio.1080p.WEB-DL",
+                None,
+                "Title",
+                "2018",
+            ),
+            (
+                "Movie.Title.2018.7.1Audio.1080p.WEB-DL",
+                None,
+                "Title",
+                "2018",
+            ),
+            (
+                "Movie Title 5.1Audio 1080p BluRay",
+                None,
+                "Title",
+                None,
+            ),
+            (
+                "Title S03E05 7.1声道 1080p",
+                None,
+                "Title",
+                None,
+            ),
+        ],
+    )
+    def test_audio_descriptors_stripped(self, parser, title, expected_cn, expected_en, expected_year):
+        result = parser.parse(title)
+        assert result is not None, title
+        assert result.title_cn == expected_cn, f"{title!r} title_cn={result.title_cn!r}"
+        assert result.title_en == expected_en, f"{title!r} title_en={result.title_en!r}"
+        assert result.year == expected_year, f"{title!r} year={result.year!r}"
