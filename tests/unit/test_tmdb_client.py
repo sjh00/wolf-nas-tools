@@ -38,6 +38,16 @@ class TestCompareTmdbNames:
         assert compare_tmdb_names("test", []) is False
         assert compare_tmdb_names(None, ["test"]) is False
 
+    def test_chinese_subtitle_prefix_match(self):
+        """带序号中文片名应匹配"主标题：副标题"（太极1 vs 太极1：从零开始）"""
+        assert compare_tmdb_names("太极1", "太极1：从零开始") is True
+        assert compare_tmdb_names("太极1", "太极1: 从零开始") is True
+
+    def test_chinese_prefix_not_overmatch_short(self):
+        """过短中文前缀（太极）不应误匹配到无关长标题（太极张三丰）"""
+        # "太极" 只有 2 字，前缀放行要求 >=3 字，此处应仍走 ratio 判断
+        assert compare_tmdb_names("太极", "太极张三丰") is False
+
 
 class TestGetTmdbChineseTitle:
     def test_cn_simplified(self):

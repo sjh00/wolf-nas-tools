@@ -54,14 +54,14 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="flac",
-        pattern=re.compile(r"\b(FLAC|ALAC|APE|WAV|WavPack|DSD)\b", re.IGNORECASE),
+        pattern=re.compile(r"\b(FLAC\d*(?:\.\d+)?|ALAC|APE|WAV|WavPack|DSD)\b", re.IGNORECASE),
         category="audio_codec",
         priority=85,
         confidence=0.9,
     ),
     ExtractionRule(
         name="dts",
-        pattern=re.compile(r"\b(DTS[-\s]?X|DTS[-\s]?HD[-\s]?MA|DTS[-\s]?HD|DTS)\b", re.IGNORECASE),
+        pattern=re.compile(r"\b(DTS[-\s]?X|DTS[-\s]?HD[-\s]?MA|DTS[-\s]?HD|DTS)\d*(?:\.\d+)?\b", re.IGNORECASE),
         category="audio_codec",
         priority=82,
         confidence=0.9,
@@ -69,7 +69,7 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="truehd_atmos",
-        pattern=re.compile(r"\b(TrueHD|Atmos)\b", re.IGNORECASE),
+        pattern=re.compile(r"\b(TrueHD\d*(?:\.\d+)?|Atmos)\b", re.IGNORECASE),
         category="audio_codec",
         priority=80,
         confidence=0.9,
@@ -92,7 +92,7 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="lpcm_pcm",
-        pattern=re.compile(r"\b(LPCM|PCM)\b", re.IGNORECASE),
+        pattern=re.compile(r"\b(LPCM\d*(?:\.\d+)?|PCM)\b", re.IGNORECASE),
         category="audio_codec",
         priority=70,
         confidence=0.85,
