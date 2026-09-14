@@ -174,3 +174,64 @@ class TestSearchTvBySeasonGuard:
         search = self._make_search([anime], details)
         result = search.search_tv_by_season("更衣人偶坠入爱河", "2022", 2)
         assert result and result.get("id") == 123249
+
+
+class TestSearchTvBySeasonDefensive:
+    """search_tv_by_season 必须容忍 _fetch_allnames 返回异常结构和 None detail"""
+
+    def _make_search_with_fetch(self, tvs, fetch_results):
+        from unittest.mock import MagicMock
+
+        from app.media.lookup.tmdb_search import TmdbSearch
+
+        client = MagicMock()
+        client.search.tv_shows.return_value = tvs
+        client.get_blacklist.return_value = []
+        search = TmdbSearch(client)
+
+        def fake_fetch(mtype, tmdb_id):
+            return fetch_results.get(tmdb_id, (None, []))
+
+        search._fetch_allnames = fake_fetch
+        return search
+
+    def test_all_candidates_return_none_info(self):
+        """所有候选 _fetch_allnames 返回 (None, [])：不得抛异常，结果为 {}"""
+        tvs = [
+            {"id": 1, "name": "X", "original_name": "X", "first_air_date": "2020-01-01"},
+            {"id": 2, "name": "X", "original_name": "X", "first_air_date": "2020-01-01"},
+        ]
+        search = self._make_search_with_fetch(tvs, {1: (None, []), 2: (None, [])})
+        result = search.search_tv_by_season("X", "2020", 1)
+        assert result == {}, f"应返回空 dict，实际 {result!r}"
+
+    def test_translations_block_malformed(self):
+        """translations 块不是 dict 时必须安全降级"""
+        # 首轮用错位名称（"Wrong Name"），强制走 fallback
+        tvs = [{"id": 9, "name": "Wrong Name", "original_name": "Wrong Name", "first_air_date": "2018-05-01"}]
+        malformed = {
+            "id": 9,
+            "name": "Show",
+            "seasons": [{"season_number": 1, "air_date": "2018-05-01", "episode_count": 10}],
+            "number_of_episodes": 10,
+            "alternative_titles": ["not", "a", "dict"],
+            "translations": {"translations": [{"data": None}, {"data": "scalar"}]},
+        }
+        search = self._make_search_with_fetch(tvs, {9: (malformed, ["Show"])})
+        # 不应抛 TypeError；fallback 命中应返回正常 detail
+        result = search.search_tv_by_season("Show", "2018", 1)
+        assert result and result.get("id") == 9
+
+    def test_season_match_skips_non_dict_entries(self):
+        """seasons 列表里混入非 dict 时 _season_match 必须跳过而非崩溃"""
+        tvs = [{"id": 7, "name": "Z", "original_name": "Z", "first_air_date": "2019-01-01"}]
+        weird = {
+            "id": 7,
+            "name": "Show",
+            "seasons": [None, "string", {"season_number": 1, "air_date": "2019-01-01", "episode_count": 8}],
+            "number_of_episodes": 8,
+        }
+        # 首轮用错位名称（"Z" vs 返回的 "Show"），走 fallback
+        search = self._make_search_with_fetch(tvs, {7: (weird, ["Show"])})
+        result = search.search_tv_by_season("Show", "2019", 1)
+        assert result and result.get("id") == 7
