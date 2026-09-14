@@ -94,3 +94,21 @@ class TestSiteCache:
         assert isinstance(site, dict)
         assert site["note"]["tag"] is True
         assert site["name"] == "站点A"
+
+    def test_sync_indexer_site_config_does_not_force_enabled(self, mock_repo, mock_engine):
+        limiter = MagicMock(spec=SiteRateLimiterService)
+        indexer_repo = MagicMock()
+        indexer_repo.list_all.return_value = []
+        mock_engine.all_sites.return_value = []
+        mock_repo.list_all.return_value = [_Entity(1, "M-Team", sign_url="https://example.com")]
+        SiteCache(
+            repo=mock_repo,
+            site_engine=mock_engine,
+            rate_limiter=limiter,
+            indexer_site_config_repo=indexer_repo,
+        )
+        indexer_repo.upsert_site.assert_called()
+        kwargs = indexer_repo.upsert_site.call_args.kwargs
+        assert kwargs["site_name"] == "M-Team"
+        assert kwargs["source"] == "builtin"
+        assert "enabled" not in kwargs

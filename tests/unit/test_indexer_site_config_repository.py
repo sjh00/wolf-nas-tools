@@ -85,6 +85,13 @@ class TestIndexerSiteConfigRepositoryCRUD:
         row = db_session.query(INDEXERSITECONFIG).filter_by(SITE_NAME="M-Team").first()
         assert row.ENABLED == 0
 
+    def test_update_enabled_creates_row_when_missing(self, repo, db_session):
+        repo.update_enabled("NewSite", False)
+        row = db_session.query(INDEXERSITECONFIG).filter_by(SITE_NAME="NewSite").first()
+        assert row is not None
+        assert row.ENABLED == 0
+        assert row.SOURCE == "builtin"
+
     def test_update_download_setting(self, repo, db_session):
         repo.upsert_site(site_name="M-Team", source="builtin", enabled=True)
         repo.update_download_setting("M-Team", 5)

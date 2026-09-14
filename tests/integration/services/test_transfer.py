@@ -117,6 +117,7 @@ class TestTransferPathResolver:
         media.get_season_item.return_value = "S01"
         media.get_episode_items.return_value = "E01"
         media.part = None
+        media.note = None
 
         media_service = MagicMock()
         media_service.get_episode_title.return_value = None
