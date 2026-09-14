@@ -25,6 +25,12 @@ def _proxy_url_from_settings() -> str | None:
     return None
 
 
+def is_tmdb_read_access_token(credential: str) -> bool:
+    """TMDB 账号页 API Read Access Token 为 JWT，须用 Authorization: Bearer."""
+    value = (credential or "").strip()
+    return value.startswith("eyJ") and value.count(".") >= 2
+
+
 class TMDb:
     TMDB_API_KEY = "TMDB_API_KEY"
     TMDB_LANGUAGE = "TMDB_LANGUAGE"
@@ -95,23 +101,25 @@ class TMDb:
             return [AsObj(**res) for res in result[key]]
 
     def _call(self, action, append_to_response, method="GET", data=None):
-        if self.api_key is None or self.api_key == "":
+        credential = (self.api_key or "").strip()
+        if not credential:
             raise TMDbError("No API key found.")
 
-        url = (
-            f"{self.domain}{action}?api_key={self.api_key}"
-            f"&include_adult=false&{append_to_response}&language={self.language}"
-        )
+        query = f"include_adult=false&{append_to_response}&language={self.language}"
+        request_kwargs: dict = {
+            "data": data,
+            "rate_limit_key": "tmdb:api",
+            "rate_limit_rate": "4/s",
+            "rate_limit_timeout": 60,
+        }
+        if is_tmdb_read_access_token(credential):
+            url = f"{self.domain}{action}?{query}"
+            request_kwargs["headers"] = {"Authorization": f"Bearer {credential}"}
+        else:
+            url = f"{self.domain}{action}?api_key={credential}&{query}"
 
         client = self._get_client()
-        req = client.request(
-            method,
-            url,
-            data=data,
-            rate_limit_key="tmdb:api",
-            rate_limit_rate="4/s",
-            rate_limit_timeout=60,
-        )
+        req = client.request(method, url, **request_kwargs)
 
         headers = req.headers
         if "X-RateLimit-Remaining" in headers:
