@@ -57,11 +57,11 @@ _META_TOKEN_RE = re.compile(
     r"|(?:hevc|avc|h\.?26[45]|x\.?26[45])[-\d]*bit?"
     r"|av1|vp[89]|mpeg[-]?2|vc[-]?1|wmv[hd]?|xvid|divx|realvideo"
     # --- 音频编码 ---
-    r"|aac\d*|ac[-]?3|e[-]?ac[-]?3|ddp?\d*(\.\d+)?|dd\+"
-    r"|flac|alac|ape|wav|wavpack|dsd"
-    r"|dts[-]?(hd[-]?ma|hd|x)?|truehd|atmos"
-    r"|mp3|mp2|opus|ogg|vorbis|wma"
-    r"|lpcm|pcm|dolby[-\s]?digital"
+    r"|aac\d*(\.\d+)?|ac[-]?3|e[-]?ac[-]?3|ddp?\d*(\.\d+)?|dd\+"
+    r"|flac\d*(\.\d+)?|alac|ape|wav|wavpack|dsd"
+    r"|dts[-]?(hd[-]?ma|hd|x)?\d*(\.\d+)?|truehd\d*(\.\d+)?|atmos"
+    r"|mp3\d*|mp2|opus|ogg|vorbis|wma"
+    r"|lpcm\d*(\.\d+)?|pcm|dolby[-\s]?digital"
     # --- HDR/色彩 ---
     r"|hdr\d*|hdr10\+?|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
     # --- 来源/平台 ---
