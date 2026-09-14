@@ -1,5 +1,6 @@
 import log
 from app.domain.mediatypes import MediaType
+from app.infrastructure.http.exceptions import HttpClientError
 from app.infrastructure.image_proxy import ImageProxy
 from app.infrastructure.request_deduper import get_deduper
 from app.media.lookup.tmdb_client import TmdbClient, get_genre_ids_from_detail, update_tmdbinfo_cn_title
@@ -87,18 +88,26 @@ class TmdbDetail:
         try:
             log.info(f"[Meta]正在查询TMDB电视剧：{tmdbid}，季：{season} ...")
             info = self.client.tv.season_details(tmdbid, season)
-            result = info or {}
-            if result and result.get("episodes"):
-                self.client.redis_cache.set_season_info(tmdbid, season, result)
-            else:
-                # 季不存在（空响应通常是 404），短期缓存避免重复打 TMDB
+        except HttpClientError as e:
+            # 404 = 该季在 TMDB 不存在（如合并季动漫被标成 S06，但 TMDB 只有 S01）。
+            # 短期缓存避免每次转移/识别都重复打 404，也避免 WARNING 刷屏。
+            if e.status_code == 404:
                 self.client.redis_cache.mark_season_not_found(tmdbid, season)
-                log.debug(f"[Meta]TMDB 季不存在，6 小时内不再查询: {tmdbid}, 季: {season}")
-            return result
-        except Exception as e:
-            # 网络/限流异常：缓存"未知"短 TTL，下次继续重试
+                log.debug(f"[Meta]TMDB 季不存在（404），6 小时内不再查询: {tmdbid}, 季: {season}")
+                return {}
             log.warn(f"[TmdbDetail]查询季详情失败: {e}")
             return {}
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[TmdbDetail]查询季详情失败: {e}")
+            return {}
+        result = info or {}
+        if result and result.get("episodes"):
+            self.client.redis_cache.set_season_info(tmdbid, season, result)
+        else:
+            # 空响应（无 episodes）也视为季不存在，短期缓存
+            self.client.redis_cache.mark_season_not_found(tmdbid, season)
+            log.debug(f"[Meta]TMDB 季不存在（空响应），6 小时内不再查询: {tmdbid}, 季: {season}")
+        return result
 
     def get_backdrops(self, tmdbinfo, original=True):
         if not tmdbinfo:
