@@ -19,7 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import MetaData, inspect, text
+from sqlalchemy import Date, DateTime, MetaData, inspect, text
 from sqlalchemy.engine import Engine
 
 from app.db.database_factory import DatabaseFactory
@@ -53,9 +53,36 @@ def _serialize_value(value: Any) -> Any:
     return value
 
 
-def _deserialize_value(value: Any) -> Any:
-    """将 JSON 值反序列化为数据库可接受类型（保持原样，由 SQLAlchemy 自动处理）"""
-    return value
+def _parse_datetime_string(value: str, as_date: bool) -> datetime | date | str:
+    text_value = value.strip()
+    if not text_value:
+        return value
+    try:
+        parsed = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if as_date:
+        return parsed.date()
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _coerce_row_for_table(sa_table, row: dict[str, Any]) -> dict[str, Any]:
+    """把备份 JSON 里的 ISO 时间字符串转成 datetime/date，避免 SQLite DateTime 拒收 str。"""
+    coerced = dict(row)
+    for col in sa_table.columns:
+        if col.name not in coerced:
+            continue
+        value = coerced[col.name]
+        if not isinstance(value, str):
+            continue
+        type_name = type(col.type).__name__.upper()
+        if isinstance(col.type, Date) or type_name == "DATE":
+            coerced[col.name] = _parse_datetime_string(value, as_date=True)
+        elif isinstance(col.type, DateTime) or type_name in {"DATETIME", "TIMESTAMP"}:
+            coerced[col.name] = _parse_datetime_string(value, as_date=False)
+    return coerced
 
 
 def get_all_table_names(engine: Engine) -> list[str]:
@@ -254,6 +281,7 @@ def import_database(
                             row = new_row
                         else:
                             row = {k: v for k, v in row.items() if k in insert_columns}
+                        row = _coerce_row_for_table(sa_table, row)
                         if not row:
                             continue
                         try:

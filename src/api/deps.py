@@ -173,9 +173,9 @@ def require_permission(permission: str):
     """
 
     def checker(user: UserContext = current_user_dependency) -> UserContext:
-        if permission not in user.permissions:
-            raise PermissionDenied(f"权限不足: {permission}")
-        return user
+        if user.is_superadmin or permission in user.permissions:
+            return user
+        raise PermissionDenied(f"权限不足: {permission}")
 
     return checker
 
@@ -187,7 +187,7 @@ def require_any_permission(*permissions: str):
     """
 
     def checker(user: UserContext = current_user_dependency) -> UserContext:
-        if any(p in user.permissions for p in permissions):
+        if user.is_superadmin or any(p in user.permissions for p in permissions):
             return user
         raise PermissionDenied(f"权限不足，需要以下任一权限: {', '.join(permissions)}")
 
@@ -201,6 +201,8 @@ def require_all_permissions(*permissions: str):
     """
 
     def checker(user: UserContext = current_user_dependency) -> UserContext:
+        if user.is_superadmin:
+            return user
         missing = [p for p in permissions if p not in user.permissions]
         if missing:
             raise PermissionDenied(f"权限不足，缺少: {', '.join(missing)}")
