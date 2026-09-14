@@ -194,6 +194,20 @@ class PluginFrameworkService:
             self._role_repo.assign_menus_to_role(role.id, list(current_ids))
             log.info(f"[PluginFrameworkService] 为角色 '{role.role_name}' 分配 {len(menu_ids)} 个插件菜单")
 
+    @staticmethod
+    def _resolve_installed(orm_model) -> bool:
+        """判定插件是否已安装：DB 标记为真，或（非内置且安装目录存在）。
+
+        兼容历史数据中 INSTALLED 缺失/过期（已落盘但标记为 0）的情况，
+        避免"市场显示已安装、已安装列表为空"。
+        """
+        path = str(getattr(orm_model, "PATH", "") or "")
+        if bool(getattr(orm_model, "INSTALLED", True)):
+            return True
+        if path and "builtin_plugins" not in path and os.path.isdir(path):
+            return True
+        return False
+
     def list_plugins(self) -> list[dict]:
         """列出所有已安装插件"""
         # 先扫描内置插件（热新增）
@@ -217,7 +231,7 @@ class PluginFrameworkService:
                         "color": manifest.color,
                         "enabled": bool(orm_model.ENABLED),
                         "is_builtin": bool(orm_model.PATH and "builtin_plugins" in orm_model.PATH),
-                        "installed": bool(getattr(orm_model, "INSTALLED", True)),
+                        "installed": self._resolve_installed(orm_model),
                         "supports_run": manifest.backend.supports_run,
                         "has_config": bool(
                             manifest.frontend and manifest.frontend.settings and manifest.frontend.settings.fields

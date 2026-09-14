@@ -1,5 +1,6 @@
 import datetime
 import os
+from typing import Any
 
 import pytz
 
@@ -95,7 +96,7 @@ def load_default_jobs(
     knowledge_ingestor=None,
     conversation_store=None,
     plugin_market_service=None,
-    message=None,
+    message: Any = None,
 ):
     """
     加载系统默认定时任务
@@ -286,3 +287,23 @@ def load_default_jobs(
         jobstore=_jobstore,
     )
     log.info("站点解析健康自检任务已注册（每日 03:20）")
+
+    # 消息治理聚合 flush（批量通知折叠为摘要，避免 1000+ 条刷屏）
+    flush_seconds = 0
+    flush_func = None
+    if message is not None:
+        try:
+            flush_seconds = int(message.governor_flush_seconds())
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[MessageGovernor]读取 flush 间隔失败: {e!s}")
+            flush_seconds = 0
+        flush_func = getattr(message, "flush_governor", None)
+    if flush_seconds > 0 and flush_func is not None:
+        scheduler.register_interval(
+            job_id="MessageGovernor.flush",
+            name="消息治理聚合",
+            func=flush_func,
+            seconds=flush_seconds,
+            jobstore=_jobstore,
+        )
+        log.info(f"消息治理聚合任务已注册（每 {flush_seconds}s）")
