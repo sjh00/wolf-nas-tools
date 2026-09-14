@@ -5,15 +5,13 @@ function __fixuser {
 
     echo "以PUID=${PUID}，PGID=${PGID}的身份启动程序..."
 
-    # 更改 nt userid 和 groupid
-    groupmod -o -g "$PGID" nt
-    usermod -o -u "$PUID" nt
+    # 更改 nexus userid 和 groupid
+    groupmod -o -g "$PGID" nexus
+    usermod -o -u "$PUID" nexus
 
     # 创建目录、权限设置
-    if grep -Eqi "Debian" /etc/issue || grep -Eq "Debian" /etc/os-release; then
-        chown -R nt:nt /usr/bin/chromedriver
-    fi
-    chown -R nt:nt "${WORKDIR}" "${HOME}" /config /usr/lib/chromium /etc/hosts
+    # WORKDIR 在构建时已用 --chown=nexus:nexus COPY，此处只处理运行时挂载卷和特殊文件
+    chown -R nexus:nexus "${HOME}" /config /etc/hosts 2>/dev/null || true
 
 }
 

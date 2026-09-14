@@ -1,0 +1,438 @@
+"""
+DoubanSync Plugin v2
+同步豆瓣在看、想看、看过记录，自动添加订阅或搜索下载
+"""
+
+import contextlib
+import traceback
+from datetime import datetime
+from threading import Event, Lock
+from typing import Any
+
+from app.domain.enums import SearchType
+from app.domain.mediatypes import MediaType
+from app.infrastructure.cache_system import get_cache_manager
+from app.media import meta_info
+from app.media.external.douban import DouBan
+from app.plugin_framework.context import PluginContext
+from app.services.downloader_core import DownloaderCore
+from app.services.search_service import Searcher
+from app.services.subscribe_service import SubscribeService
+from app.services.web.utils import get_mediainfo_from_id
+from app.utils.json_utils import JsonUtils
+
+_lock = Lock()
+
+
+class DoubanSyncPlugin:
+    """豆瓣同步插件"""
+
+    def __init__(
+        self,
+        ctx: PluginContext,
+        searcher: Searcher,
+        downloader: DownloaderCore,
+        subscribe: SubscribeService,
+        douban: DouBan | None = None,
+        cache_ttl: int = 1800,
+        fetch_backoff_seconds: int = 300,
+    ):
+        self.ctx = ctx
+        self._douban = douban or DouBan()
+        self._searcher = searcher
+        self._downloader = downloader
+        self._subscribe = subscribe
+        self._cache = get_cache_manager().get_or_create(
+            f"doubansync:{ctx.plugin_id}", cache_type="memory", maxsize=200, ttl=cache_ttl
+        )
+        self._cache_ttl = cache_ttl
+        self._fetch_backoff = fetch_backoff_seconds
+        self._failed_users: set[str] = set()
+        self._event = Event()
+
+    def _get_config(self):
+        return self.ctx.get_config() or {}
+
+    def on_enable(self):
+        self.ctx.info("豆瓣同步插件已启用")
+        self._start_service()
+
+    def on_disable(self):
+        self.ctx.info("豆瓣同步插件已禁用")
+        self._event.set()
+        self._stop_service()
+
+    def on_hook(self, event, data):
+        if event == "plugin.config_changed":
+            if data.get("plugin_id") == self.ctx.plugin_id:
+                self.ctx.info("配置已变更，重载服务")
+                self._stop_service()
+                self._start_service()
+        elif event == "media.douban_sync":
+            self._sync()
+
+    def run(self):
+        """立即运行同步"""
+        self.ctx.info("手动触发豆瓣同步")
+        self._sync(manual=True)
+
+    def _start_service(self):
+        config = self._get_config()
+        enable = config.get("enable", False)
+        if not enable:
+            return
+
+        self._event.clear()
+
+        sync_type = config.get("sync_type", "0")
+        interval = config.get("interval", 0)
+        rss_interval = config.get("rss_interval", 0)
+
+        if sync_type == "0" and interval and int(interval) > 0:
+            self.ctx.info(f"豆瓣全量同步服务启动，周期：{interval} 小时")
+            self.ctx.schedule_interval(
+                "sync_full",
+                self._sync,
+                hours=int(interval),
+            )
+        elif sync_type == "1" and rss_interval and int(rss_interval) > 0:
+            sec = int(rss_interval)
+            sec = max(sec, 300)
+            self.ctx.info(f"豆瓣近期动态同步服务启动，周期：{sec} 秒")
+            self.ctx.schedule_interval(
+                "sync_rss",
+                self._sync,
+                seconds=sec,
+            )
+
+    def _stop_service(self):
+        for job_id in ["sync_full", "sync_rss", "sync_once"]:
+            with contextlib.suppress(Exception):
+                self.ctx.remove_schedule(job_id)
+        self._event.set()
+
+    def _is_enabled(self) -> bool:
+        config = self._get_config()
+        return bool(config.get("enable", False) and config.get("users") and config.get("types"))
+
+    def _sync(self, manual=False):
+        if not self._get_config().get("enable") and not manual:
+            return
+        with _lock:
+            self._do_sync()
+
+    def _do_sync(self):
+        config = self._get_config()
+        users = config.get("users", "")
+        types = config.get("types", "")
+        sync_type = config.get("sync_type", "0")
+        days = config.get("days", 0)
+        config.get("cookie", "")
+        auto_search = config.get("auto_search", False)
+        auto_rss = config.get("auto_rss", False)
+
+        if not users or not types:
+            self.ctx.info("豆瓣配置：用户ID或同步类型未配置")
+            return
+
+        user_list = users.split(",") if isinstance(users, str) else users
+        type_list = types.split(",") if isinstance(types, str) else types
+
+        self.ctx.info(f"同步方式：{'近期动态' if sync_type == '1' else '全量同步'}")
+
+        douban_ids = {}
+
+        for user in user_list:
+            if self._event.is_set():
+                return
+            if not user:
+                continue
+            if user in self._failed_users:
+                self.ctx.warn(f"用户 {user} 近期请求失败，本次跳过")
+                continue
+
+            userinfo = self._cache_get_user_info(user)
+            if not userinfo:
+                self.ctx.warn(f"用户名获取失败，请检查豆瓣ID {user} 是否正确")
+                self._failed_users.add(user)
+                continue
+
+            user_name = userinfo.get("name", "")
+
+            if sync_type != "1":
+                self._sync_full_user(user, user_name, type_list, days, douban_ids)
+            else:
+                self._sync_rss_user(user, user_name, type_list, days, douban_ids)
+
+        self.ctx.info(f"所有用户解析完成，共获取到 {len(douban_ids)} 个媒体")
+
+        history_data = self._load_history()
+        for doubanid, info in douban_ids.items():
+            if self._event.is_set():
+                return
+            self._process_douban_media(doubanid, info, auto_search, auto_rss, history_data)
+        self._save_history(history_data)
+
+        self.ctx.info("豆瓣数据同步完成")
+
+    def _cache_key(self, prefix: str, key: str) -> str:
+        return f"{prefix}:{key}"
+
+    def _cache_get_user_info(self, user: str) -> Any | None:
+        cache_key = self._cache_key("userinfo", user)
+        userinfo = self._cache.get(cache_key)
+        if userinfo is not None:
+            return userinfo
+        userinfo = self._douban.get_user_info(userid=user)
+        if userinfo:
+            self._cache.set(cache_key, userinfo, ttl=self._cache_ttl)
+        return userinfo
+
+    def _sync_full_user(self, user, user_name, type_list, days, douban_ids):
+        perpage = 15
+        for mtype in type_list:
+            if not mtype:
+                continue
+            self.ctx.info(f"开始获取 {user_name or user} 的 {mtype} 数据...")
+            start = 0
+            while True:
+                page = int(start / perpage + 1)
+                self.ctx.debug(f"开始解析第 {page} 页数据...")
+                try:
+                    cache_key = self._cache_key("wish", f"{user}:{mtype}:{start}")
+                    items = self._cache.get(cache_key)
+                    if items is None:
+                        items = self._douban.get_douban_wish(dtype=mtype, userid=user, start=start, wait=True)
+                        if items is not None:
+                            self._cache.set(cache_key, items, ttl=self._cache_ttl)
+                    if not items:
+                        self.ctx.warn(f"第 {page} 页未获取到数据")
+                        break
+
+                    continue_next = True
+                    for item in items:
+                        date = item.get("date")
+                        if not date:
+                            continue_next = False
+                            break
+                        mark_date = datetime.strptime(date, "%Y-%m-%d")
+                        if days and int(days) > 0:
+                            if (datetime.now() - mark_date).days >= int(days):
+                                continue_next = False
+                                break
+
+                        doubanid = item.get("id")
+                        if str(doubanid).isdigit():
+                            self.ctx.info(f"解析到媒体：{doubanid}")
+                            if doubanid not in douban_ids:
+                                douban_ids[doubanid] = {"user_name": user_name}
+
+                    if not continue_next:
+                        break
+                    start += perpage
+                except Exception as e:
+                    self.ctx.error(f"{user_name or user} 第 {page} 页解析出错：{e}")
+                    break
+
+    def _sync_rss_user(self, user, user_name, type_list, days, douban_ids):
+        cache_key = self._cache_key("rss", user)
+        all_items = self._cache.get(cache_key)
+        if all_items is None:
+            all_items = self._douban.get_latest_douban_interests(dtype="all", userid=user, wait=True)
+            if all_items is not None:
+                self._cache.set(cache_key, all_items, ttl=self._cache_ttl)
+        if not all_items:
+            return
+        for mtype in type_list:
+            items = [x for x in all_items if x.get("type") == mtype]
+            for item in items:
+                date = item.get("date")
+                if not date:
+                    continue
+                mark_date = datetime.strptime(date, "%Y-%m-%d")
+                if days and int(days) > 0 and (datetime.now() - mark_date).days >= int(days):
+                    continue
+                doubanid = item.get("id")
+                if str(doubanid).isdigit():
+                    self.ctx.info(f"解析到媒体：{doubanid}")
+                    if doubanid not in douban_ids:
+                        douban_ids[doubanid] = {"user_name": user_name}
+
+    def _process_douban_media(self, doubanid, info, auto_search, auto_rss, history_data):
+        cache_key = self._cache_key("detail", str(doubanid))
+        douban_info = self._cache.get(cache_key)
+        if douban_info is None:
+            douban_info = self._douban.get_douban_detail(doubanid=doubanid, wait=True)
+            if not douban_info:
+                douban_info = self._douban.get_media_detail_from_web(doubanid)
+            if douban_info:
+                self._cache.set(cache_key, douban_info, ttl=self._cache_ttl)
+        if not douban_info:
+            self.ctx.warn(f"{doubanid} 无权限访问，需要配置豆瓣Cookie")
+            return
+
+        media_type = MediaType.TV if douban_info.get("episodes_count") else MediaType.MOVIE
+        mi = meta_info(title="{} {}".format(douban_info.get("title"), douban_info.get("year") or ""))
+        mi.douban_id = doubanid
+        mi.type = media_type
+        mi.overview = douban_info.get("intro")
+        mi.poster_path = douban_info.get("cover_url")
+        rating = douban_info.get("rating", {}) or {}
+        mi.vote_average = float(rating.get("value") or 0)
+        mi.imdb_id = douban_info.get("imdbid")
+        mi.user_name = info.get("user_name")
+
+        history = history_data.get(str(doubanid))
+        if history and history.get("state") != "NEW":
+            self.ctx.info(f"{doubanid} {mi.get_name()} 已处理过(state={history.get('state')})")
+            return
+
+        try:
+            if auto_search:
+                self.ctx.info(f"{doubanid} {mi.get_name()} 开始自动搜索...")
+                self._auto_search_media(mi, auto_rss, history_data)
+            else:
+                if auto_rss:
+                    self.ctx.info(f"{doubanid} {mi.get_name()} 开始自动订阅...")
+                    self._auto_subscribe_media(mi, state="R", history_data=history_data)
+                else:
+                    if history:
+                        self.ctx.info(f"{doubanid} {mi.get_name()} 已存在NEW记录，跳过")
+                    else:
+                        self.ctx.info(f"{doubanid} {mi.get_name()} 记录到历史")
+                        self._apply_history_update(mi, "NEW", history_data)
+        except Exception as e:
+            self.ctx.error(f"{doubanid} {mi.get_name()} 处理失败：{e}")
+
+    def _auto_search_media(self, media_info, auto_rss, history_data):
+        try:
+            mediainfo = get_mediainfo_from_id(
+                mtype=media_info.type,
+                mediaid=f"DB:{media_info.douban_id}",
+                wait=True,
+            )
+            if not mediainfo or not mediainfo.tmdb_info:
+                self.ctx.warn(f"{media_info.get_name()} 未查询到媒体信息")
+                self._apply_history_update(media_info, "FAILED", history_data)
+                return
+
+            exist_flag, no_exists, _ = self._downloader.check_exists_medias(meta_info=mediainfo)
+            if exist_flag:
+                self.ctx.info(f"{mediainfo.title} 已存在")
+                self._apply_history_update(mediainfo, "DOWNLOADED", history_data)
+                return
+
+            if not auto_rss:
+                self.ctx.info(f"{mediainfo.title} 开始自动搜索...")
+                search_result, no_exists, search_count, download_count = self._searcher.search_one_media(
+                    media_info=mediainfo,
+                    in_from=SearchType.DB,
+                    no_exists=no_exists,
+                    user_name=mediainfo.user_name,
+                )
+                if search_result:
+                    self._apply_history_update(mediainfo, "DOWNLOADED", history_data)
+                else:
+                    self.ctx.warn(f"{mediainfo.title} 搜索无结果")
+                    self._apply_history_update(mediainfo, "SEARCH_FAILED", history_data)
+            else:
+                self.ctx.info(f"{mediainfo.title} 更新到订阅中...")
+                code, msg, _ = self._subscribe.add_rss_subscribe(
+                    mtype=mediainfo.type,
+                    name=mediainfo.title,
+                    year=mediainfo.year,
+                    channel="auto",
+                    mediaid=f"DB:{mediainfo.douban_id}",
+                    in_from=SearchType.DB.value,
+                )
+                self.ctx.info(f"订阅返回 code={code}, msg={msg}")
+                if code == 0 or code == 9:
+                    self._apply_history_update(mediainfo, "RSS", history_data)
+                else:
+                    self.ctx.error(f"{mediainfo.title} 添加订阅失败：{msg}")
+                    self._apply_history_update(mediainfo, "RSS_FAILED", history_data)
+        except Exception as e:
+            self.ctx.error(f"_auto_search_media 内部异常: {e}")
+            self.ctx.error(traceback.format_exc())
+            with contextlib.suppress(Exception):
+                self._apply_history_update(media_info, "FAILED", history_data)
+
+    def _auto_subscribe_media(self, media_info, state="R", history_data=None):
+        self.ctx.info(f"{media_info.get_name()} 更新到订阅中...")
+        try:
+            result = self._subscribe.add_rss_subscribe(
+                mtype=media_info.type,
+                name=media_info.get_name(),
+                year=media_info.year,
+                channel="auto",
+                mediaid=f"DB:{media_info.douban_id}",
+                in_from=SearchType.DB.value,
+            )
+            self.ctx.info(f"订阅返回 result={result}")
+            code, msg, _ = result
+            self.ctx.info(f"订阅返回 code={code}, msg={msg}")
+            if code == 0 or code == 9:
+                self.ctx.info("code 匹配，准备调用 _update_history")
+                self._apply_history_update(media_info, "RSS", history_data or {})
+                self.ctx.info("_update_history 调用完成")
+            else:
+                self.ctx.error(f"{media_info.get_name()} 添加订阅失败：{msg}")
+        except Exception as e:
+            self.ctx.error(f"_auto_subscribe_media 内部异常: {e}")
+            self.ctx.error(traceback.format_exc())
+
+    def _get_history(self, douban_id: str | None = None) -> Any:
+        data = self._load_history()
+        if douban_id:
+            return data.get(str(douban_id))
+        return data
+
+    def _load_history(self) -> Any:
+        content = self.ctx.read_data("history.json")
+        if content:
+            try:
+                return JsonUtils.loads(content)
+            except Exception:
+                self.ctx.warn("history.json 解析失败，将重新创建")
+        return {}
+
+    def _save_history(self, data: dict) -> None:
+        self.ctx.write_data("history.json", JsonUtils.dumps(data, ensure_ascii=False, indent=2))
+
+    def _update_history(self, media, state: str) -> None:
+        self.ctx.info(f"_update_history 开始执行: douban_id={media.douban_id}, state={state}")
+        data = self._load_history()
+        self.ctx.info(f"_load_history 返回 {len(data)} 条记录")
+        self._apply_history_update(media, state, data)
+        self.ctx.info("准备保存 history.json")
+        self._save_history(data)
+        title = media.title or media.get_name()
+        self.ctx.info(f"历史记录已更新: {title} [{state}]")
+
+    def _apply_history_update(self, media, state: str, data: dict) -> None:
+        key = str(media.douban_id)
+        title = media.title or media.get_name()
+        media_type = media.type.value if hasattr(media.type, "value") else str(media.type)
+        try:
+            image = media.get_poster_image()
+        except Exception:
+            image = media.poster_path or ""
+        data[key] = {
+            "id": media.douban_id,
+            "name": title,
+            "year": media.year,
+            "type": media_type,
+            "rating": media.vote_average,
+            "image": image,
+            "state": state,
+            "add_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    def delete_history(self, douban_id: str) -> bool:
+        data = self._load_history()
+        key = str(douban_id)
+        if key in data:
+            del data[key]
+            self._save_history(data)
+            return True
+        return False

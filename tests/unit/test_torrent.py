@@ -1,0 +1,211 @@
+"""Tests for app.sites.torrent."""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.domain.mediatypes import MediaType
+from app.media.models import MediaInfo
+from app.sites.torrent import Torrent
+
+
+class _MediaInfo(MediaInfo):
+    def __init__(self, **kwargs):
+        super().__init__()
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class TestTorrentGetDownloadList:
+    """Test suite for Torrent.get_download_list."""
+
+    def test_prioritizes_season_pack_over_single_episodes(self):
+        single = _MediaInfo(
+            title="Single Ep",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=1,
+            res_order=1,
+            site_order=1,
+            seeders=100,
+        )
+        pack = _MediaInfo(
+            title="Season Pack",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            res_order=1,
+            site_order=1,
+            seeders=10,
+        )
+        result = Torrent.get_download_list([single, pack], download_order="default")
+        assert result[0].title == "Season Pack"
+
+    def test_prioritizes_multi_episode_pack(self):
+        single = _MediaInfo(
+            title="Single Ep",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=1,
+            res_order=1,
+            site_order=1,
+            seeders=100,
+        )
+        multi = _MediaInfo(
+            title="E01-E12 Pack",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=12,
+            res_order=1,
+            site_order=1,
+            seeders=50,
+        )
+        result = Torrent.get_download_list([single, multi], download_order="default")
+        assert result[0].title == "E01-E12 Pack"
+
+    def test_site_mode_prefers_lower_pri_site(self):
+        """site_order=100-pri（pri 越小=主站越优先）：site 模式应选 pri 小（site_order 大）的站点"""
+        low = _MediaInfo(
+            title="Low",
+            type=MediaType.MOVIE,
+            res_order=0,
+            site_order=99,
+            seeders=5,
+        )
+        high = _MediaInfo(
+            title="High",
+            type=MediaType.MOVIE,
+            res_order=0,
+            site_order=-21,
+            seeders=500,
+        )
+        result = Torrent.get_download_list([low, high], download_order="site")
+        assert result[0].title == "Low"
+
+    def test_seeder_mode_tie_prefers_lower_pri_site(self):
+        """seeder 模式种子数相同时，主站（pri 小、site_order 大）胜出"""
+        low = _MediaInfo(
+            title="Low",
+            type=MediaType.MOVIE,
+            res_order=0,
+            site_order=99,
+            seeders=5,
+        )
+        high = _MediaInfo(
+            title="High",
+            type=MediaType.MOVIE,
+            res_order=0,
+            site_order=-21,
+            seeders=5,
+        )
+        result = Torrent.get_download_list([low, high], download_order="seeder")
+        assert result[0].title == "Low"
+
+    def test_collapse_keeps_single_best_candidate_per_name(self):
+        first = _MediaInfo(
+            title="Same Show",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=1,
+            res_order=1,
+            site_order=99,
+            seeders=10,
+        )
+        second = _MediaInfo(
+            title="Same Show",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=1,
+            res_order=1,
+            site_order=-21,
+            seeders=10,
+        )
+        result = Torrent.get_download_list([first, second], download_order="site")
+        assert len(result) == 1
+        assert result[0] is first
+
+    def test_no_collapse_keeps_multi_site_candidates_in_order(self):
+        first = _MediaInfo(
+            title="Same Show",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=1,
+            res_order=1,
+            site_order=99,
+            seeders=10,
+        )
+        second = _MediaInfo(
+            title="Same Show",
+            type=MediaType.ANIME,
+            tmdb_id=1,
+            begin_season=1,
+            begin_episode=1,
+            end_episode=1,
+            res_order=1,
+            site_order=-21,
+            seeders=10,
+        )
+        result = Torrent.get_download_list([first, second], download_order="site", collapse=False)
+        assert result == [first, second]
+
+
+class TestTorrentContentErrors:
+    def test_json_limit_marked_unretryable(self):
+        content = '{"code":"1","message":"相同種子當天最多下載10次","data":null}'.encode()
+        msg = Torrent._content_error_message(content)
+        assert msg.startswith("[不可重试]站点返回：")
+        assert "最多下載10次" in msg
+
+    def test_json_without_message(self):
+        msg = Torrent._content_error_message(b'{"code":"1"}')
+        assert "[不可重试]" in msg and "JSON" in msg
+
+    def test_html_response_message(self):
+        msg = Torrent._content_error_message(b"<!DOCTYPE html><html>login</html>")
+        assert "网页" in msg
+
+    def test_garbage_response_message(self):
+        msg = Torrent._content_error_message(b"something else")
+        assert "失效" in msg
+
+    def test_safe_decode_raises_on_truncated_without_crash(self):
+        with pytest.raises(Exception):
+            Torrent._safe_decode(b"d8:announce146:https://tracker.m-team.cc/announce?cred")
+
+    def test_safe_decode_parses_valid_torrent(self):
+        torrent = Torrent._safe_decode(b"d8:announce4:http4:infod6:lengthi1e4:name1:aee")
+        assert torrent["announce"] == "http"
+
+    def _torrent(self):
+        engine = MagicMock()
+        engine.get_by_url.return_value = None
+        engine.site_limiter = None
+        return Torrent(engine)
+
+    def _response(self, content: bytes):
+        resp = MagicMock()
+        resp.content = content
+        resp.text = content.decode("utf-8", errors="ignore")
+        resp.headers = {"content-type": "application/json"}
+        return resp
+
+    def test_save_torrent_file_json_limit_returns_unretryable(self):
+        torrent = self._torrent()
+        resp = self._response('{"code":"1","message":"相同種子當天最多下載10次"}'.encode())
+        with patch("app.sites.torrent.HttpClient") as client:
+            client.return_value.get.return_value = resp
+            path, content, msg = torrent.save_torrent_file("https://api.m-team.cc/api/rss/dlv2?sign=abc&t=1")
+        assert path is None and content is None
+        assert "不可重试" in msg and "最多下載10次" in msg

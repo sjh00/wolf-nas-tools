@@ -1,0 +1,55 @@
+{
+  "manifest_version": "1.0",
+  "id": "torrentmark",
+  "name": "种子标记",
+  "version": "1.1",
+  "author": "sjh00",
+  "author_url": "https://github.com/sjh00",
+  "description": "标记种子是否是PT。",
+  "category": "tool",
+  "tags": ["种子", "标记"],
+  "icon": "lucide:tag",
+  "color": "#3b82f6",
+  "min_app_version": "3.0.0",
+  "backend": {
+    "entry": "backend.plugin:TorrentMarkPlugin",
+    "api_prefix": "/api/plugin/torrentmark",
+    "permissions": [],
+    "hooks": [
+      "plugin.config_changed"
+    ],
+    "supports_run": true
+  },
+  "frontend": {
+    "routes": [],
+    "settings": {
+      "component": "SettingsPage",
+      "fields": [
+        {
+          "key": "enable",
+          "type": "switch",
+          "label": "开启种子标记",
+          "default": false,
+          "help": "开启后，自动监控下载器，对下载完成的任务根据执行周期标记"
+        },
+        {
+          "key": "cron",
+          "type": "cron",
+          "label": "执行周期",
+          "default": "0 0 * * *",
+          "placeholder": "0 0 * * *",
+          "help": "标记任务执行的时间周期，支持5位cron表达式"
+        },
+        {
+          "key": "downloaders",
+          "type": "multi_select",
+          "label": "标记下载器",
+          "source": "downloaders",
+          "default": [],
+          "help": "选择需要标记的下载器"
+        }
+      ]
+    },
+    "slots": []
+  }
+}
