@@ -431,3 +431,55 @@ class TestAudioMetadataNotGlued:
         assert result.title_cn == expected_cn, f"{title!r} title_cn={result.title_cn!r}"
         assert result.title_en == expected_en, f"{title!r} title_en={result.title_en!r}"
         assert result.year == expected_year, f"{title!r} year={result.year!r}"
+
+
+class TestNameCleanup:
+    """名称残留元数据/分隔符/重复词的彻底清理（目录同步识别失败根因）"""
+
+    def test_pipe_group_suffix_not_in_name(self, parser):
+        """[中字 | Ardtu] 尾部组合方括号不应进入片名（字幕说明+发布组）"""
+        result = parser.parse("Movie.Name.2026.1080p [中字 | Ardtu]")
+        assert result is not None
+        assert "中字" not in (result.title_cn or "")
+        assert "Ardtu" not in (result.title_en or "")
+        assert "Ardtu" not in (result.title_cn or "")
+
+    def test_consecutive_leading_brackets_both_stripped(self, parser):
+        """[中字] [Ardtu] 连续前导方括号都应被剥离，只留真实片名"""
+        result = parser.parse("[中字] [Ardtu] 某电影 2026")
+        assert result is not None
+        assert result.title_cn == "某电影"
+        assert result.title_en is None
+
+    def test_fullwidth_paren_pilot_not_in_name(self, parser):
+        """全角括号（试播集）应被移除，不进入中文名"""
+        result = parser.parse("Person of Interest （试播集） 2011")
+        assert result is not None
+        assert result.title_en == "Person Of Interest"
+        assert "试播" not in (result.title_cn or "")
+
+    def test_halfwidth_paren_pilot_not_in_name(self, parser):
+        """半角括号 (试播集) 应被移除"""
+        result = parser.parse("Person of Interest (试播集) 2011")
+        assert result is not None
+        assert result.title_en == "Person Of Interest"
+        assert "试播" not in (result.title_cn or "")
+
+    def test_pilot_keyword_alone_not_name(self, parser):
+        """试播集作为独立元数据词不进入片名"""
+        result = parser.parse("某剧 试播集 2011")
+        assert result is not None
+        assert result.title_cn == "某剧"
+
+    def test_duplicate_cn_name_collapsed(self, parser):
+        """中文名重复（我们这一天 我们这一天）应去重"""
+        result = parser.parse("我们这一天.我们这一天.2022")
+        assert result is not None
+        assert result.title_cn == "我们这一天"
+
+    def test_mixed_bracket_english_cn_meta(self, parser):
+        """[Person of Interest (试播集)] 中英混合：英文作 en_name，中文元数据丢弃"""
+        result = parser.parse("[Person of Interest (试播集)] 2011")
+        assert result is not None
+        assert result.title_en == "Person Of Interest"
+        assert "试播" not in (result.title_cn or "")

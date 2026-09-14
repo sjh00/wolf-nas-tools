@@ -37,7 +37,7 @@ _RE_AUDIO_CHANNELS = re.compile(r"\b\d(\.\d)?[-.]?(?:[Aa]udio|[Aa][Cc]-?3|[Aa][C
 # 日期匹配：负向先行断言，避免误吞 "7.1Audio" 这种音轨数 + Audio 的组合
 _RE_DATE = re.compile(r"\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}(?!\s*[Aa]udio)")
 _RE_YEAR_RANGE = re.compile(r"([\s.]+)(\d{4})-(\d{4})")
-_RE_LEADING_BRACKET = re.compile(r"^[\[【](.+?)[\]】]")
+_RE_LEADING_BRACKET = re.compile(r"^\s*[\[【](.+?)[\]】]")
 # 额外内容/花絮后缀（BONUS.DISC、extras-N）：识别标题时剔除，避免混入正式标题/集数
 _RE_BONUS_SUFFIX = re.compile(r"[\._ ]BONUS[\._ ]DISC|\.extras-\d+", re.IGNORECASE)
 # 语言/字幕/制作/类别标记 — 出现在方括号中时应视为标签而非标题
@@ -114,8 +114,9 @@ def prepare_title(title: str) -> str:
         break
 
     # 处理方括号分隔的多段名称（dmhy/mikan格式）
-    # 只有当方括号内不含斜杠时才拆分 — 避免破坏 "中文 / English" 格式
-    if "/" not in title:
+    # 只有当方括号内不含斜杠、且存在多个方括号时才拆分 — 避免破坏
+    # "片名 [中字 | Ardtu]" 这类尾部单个元数据方括号（否则 ] 被吃掉、| 被拆散）
+    if "/" not in title and title.count("]") >= 2:
         names = title.split("]")
         if len(names) > 1 and title.find("- ") == -1:
             titles: list[str] = []
