@@ -44,12 +44,14 @@ class TMDBCache(TypedCache):
     TTL_TMDB_INFO = 7 * 24 * 3600  # 7 天
     TTL_MEDIA_INFO = 24 * 3600  # 24 小时
     TTL_SEASON_INFO = 12 * 3600  # 12 小时
+    TTL_SEASON_NOT_FOUND = 6 * 3600  # 季不存在（404）短期缓存，避免重复打 TMDB
     TTL_PERSON_INFO = 30 * 24 * 3600  # 30 天
     TTL_TRENDING = 2 * 3600  # 2 小时
     TTL_DEFAULT = 3600  # 1 小时（默认）
 
     MEDIA_CACHE_VERSION = "2"  # 匹配逻辑变更时递增，自动作废旧缓存
     TMDB_CACHE_VERSION = "2"  # 中文名补全逻辑变更时递增，自动作废旧缓存（旧缓存可能存英文名）
+    SEASON_NOT_FOUND_MARKER = "__not_found__"
 
     def __init__(self, adapter: CacheAdapter | None = None):
         if adapter is None:
@@ -101,7 +103,7 @@ class TMDBCache(TypedCache):
         return self.set(key, info, ttl)
 
     def get_season_info(self, tmdbid: str, season: int) -> Any | None:
-        """获取季详情缓存"""
+        """获取季详情缓存；返回 SEASON_NOT_FOUND_MARKER 表示季不存在（negative cache）"""
         key = self._make_key("tmdb:season", tmdbid, season)
         return self.get(key)
 
@@ -110,6 +112,15 @@ class TMDBCache(TypedCache):
         key = self._make_key("tmdb:season", tmdbid, season)
         ttl = ttl or self.TTL_SEASON_INFO
         return self.set(key, info, ttl)
+
+    def mark_season_not_found(self, tmdbid: str, season: int) -> bool:
+        """缓存季不存在（404 短期缓存）"""
+        key = self._make_key("tmdb:season", tmdbid, season)
+        return self.set(key, self.SEASON_NOT_FOUND_MARKER, self.TTL_SEASON_NOT_FOUND)
+
+    def is_season_not_found(self, tmdbid: str, season: int) -> bool:
+        """检查季是否已知不存在（命中 negative cache）"""
+        return self.get_season_info(tmdbid, season) == self.SEASON_NOT_FOUND_MARKER
 
     def get_person_info(self, person_id: str) -> Any | None:
         """获取演员信息缓存"""

@@ -76,6 +76,9 @@ class TmdbDetail:
 
     def get_season_detail(self, tmdbid, season: int):
         cached = self.client.redis_cache.get_season_info(tmdbid, season)
+        if cached == self.client.redis_cache.SEASON_NOT_FOUND_MARKER:
+            log.debug(f"[Meta]季不存在（命中短期 negative cache）: {tmdbid}, 季: {season}")
+            return {}
         if cached:
             log.debug(f"[Meta]从缓存获取季详情: {tmdbid}, 季: {season}")
             return cached
@@ -85,10 +88,15 @@ class TmdbDetail:
             log.info(f"[Meta]正在查询TMDB电视剧：{tmdbid}，季：{season} ...")
             info = self.client.tv.season_details(tmdbid, season)
             result = info or {}
-            if result:
+            if result and result.get("episodes"):
                 self.client.redis_cache.set_season_info(tmdbid, season, result)
+            else:
+                # 季不存在（空响应通常是 404），短期缓存避免重复打 TMDB
+                self.client.redis_cache.mark_season_not_found(tmdbid, season)
+                log.debug(f"[Meta]TMDB 季不存在，6 小时内不再查询: {tmdbid}, 季: {season}")
             return result
         except Exception as e:
+            # 网络/限流异常：缓存"未知"短 TTL，下次继续重试
             log.warn(f"[TmdbDetail]查询季详情失败: {e}")
             return {}
 
