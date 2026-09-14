@@ -38,7 +38,7 @@ def main():
 
     app_conf = settings.get("app") or {}
     host = app_conf.get("web_host", "::").replace("[", "").replace("]", "")
-    port = int(app_conf.get("web_port", 3000))
+    port = int(os.environ.get("NEXUS_PORT") or app_conf.get("web_port") or 3000)
     log.console(f"监听地址：{host}:{port}")
 
     ssl_kwargs = {}
