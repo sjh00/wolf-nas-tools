@@ -67,7 +67,10 @@ class Jellyfin(_IMediaClient):
                 required=False,
                 title="用户ID",
                 type="text",
-                tooltip="指定Jellyfin用户ID。新版 Jellyfin 不再支持浏览器直接打开 /Users?api_key=...，请留空由系统自动选取管理员，或在控制台用户列表中复制 Id",
+                tooltip=(
+                    "指定Jellyfin用户ID。新版不再支持浏览器直接打开 /Users?api_key=...，"
+                    "请留空由系统自动选取管理员，或在控制台用户列表中复制 Id"
+                ),
                 placeholder="",
             ),
         ],
