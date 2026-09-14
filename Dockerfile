@@ -22,7 +22,7 @@ ARG UV_INDEX_URL=https://pypi.org/simple
 ENV UV_INDEX_URL=${UV_INDEX_URL}
 
 RUN uv venv .venv \
-    && uv sync --frozen --no-cache --no-install-package nexus-media
+    && uv sync --frozen --no-cache --no-install-package wolfnas
 
 # ==================== 运行时 ====================
 FROM python:3.14-slim-trixie
