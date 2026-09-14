@@ -1,57 +1,136 @@
-name: NAStool Docker
+name: WolfNas Docker
+
 on:
   workflow_dispatch:
   push:
     branches:
-      - master
-    paths:
-      - version.py
-      - .github/workflows/build.yml
-      - package_list.txt
-      - requirements.txt
-      - docker/Dockerfile
+      - main
+    tags:
+      - v*
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
     runs-on: ubuntu-latest
     name: Build Docker Image
+    needs: ci
+
     steps:
-      -
-        name: Checkout
-        uses: actions/checkout@master
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      -
-        name: Release version
-        id: release_version
+      - name: Image tags
+        id: tags
         run: |
-          app_version=$(cat version.py |sed -ne "s/APP_VERSION\s=\s'v\(.*\)'/\1/gp")
-          echo "app_version=$app_version" >> $GITHUB_ENV
+          OWNER="${{ github.repository_owner }}"
+          TAGS="ghcr.io/${OWNER}/wolf-nas:latest"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+            TAGS="${TAGS}
+ghcr.io/${OWNER}/wolf-nas:${VER}"
+          fi
+          if [ -n "${{ secrets.DOCKER_USERNAME }}" ]; then
+            TAGS="${TAGS}
+${{ secrets.DOCKER_USERNAME }}/wolf-nas:latest"
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              TAGS="${TAGS}
+${{ secrets.DOCKER_USERNAME }}/wolf-nas:${VER}"
+            fi
+          fi
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
-      -
-        name: Set Up QEMU
-        uses: docker/setup-qemu-action@v1
+      - name: Set Up QEMU
+        uses: docker/setup-qemu-action@v4
 
-      -
-        name: Set Up Buildx
-        uses: docker/setup-buildx-action@v1
+      - name: Set Up Buildx
+        uses: docker/setup-buildx-action@v4
 
-      -
-        name: Login DockerHub
-        uses: docker/login-action@v1
+      - name: Login DockerHub
+        if: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - 
-        name: Build Image
-        uses: docker/build-push-action@v2
+      - name: Login GitHub Container Registry
+        uses: docker/login-action@v4
         with:
-          context: docker
-          file: docker/Dockerfile
-          platforms: |
-            linux/amd64
-            linux/arm64
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Image
+        uses: docker/build-push-action@v7
+        with:
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/nas-tools:latest
-            ${{ secrets.DOCKER_USERNAME }}/nas-tools:${{ env.app_version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: build
+    name: Create Release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Extract version and changelog
+        id: extract
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+
+          CONTENT=$(awk '/^## v'"$VERSION"' /{flag=1;next}/^## v/{flag=0}flag' docs/changelog.md)
+          if [ -z "$CONTENT" ]; then
+            CONTENT="WolfNas $GITHUB_REF_NAME 已发布。"
+          fi
+
+          {
+            echo "notes<<CHANGELOG_EOF"
+            echo "$CONTENT"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: WolfNas ${{ steps.extract.outputs.tag }}
+          body: ${{ steps.extract.outputs.notes }}
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare Telegram notification
+        env:
+          NOTES: ${{ steps.extract.outputs.notes }}
+        run: |
+          printf '%s\n' "$NOTES" > notes_raw.txt
+          python3 scripts/release_notify.py < notes_raw.txt > notes.txt
+          {
+            echo '<b>WolfNas ${{ steps.extract.outputs.tag }} 已发布</b>'
+            echo ''
+            cat notes.txt
+            echo ''
+            echo '📦 Docker: <code>docker pull ghcr.io/sjh00/wolf-nas:latest</code>'
+            echo '🔗 <a href="https://github.com/${{ github.repository }}/releases/tag/${{ steps.extract.outputs.tag }}">查看 Release</a>'
+          } > telegram_msg.txt
+
+      - name: Send Telegram Notification
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          format: html
+          message_file: telegram_msg.txt

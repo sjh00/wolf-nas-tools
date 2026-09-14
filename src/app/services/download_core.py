@@ -1,0 +1,710 @@
+"""
+DownloadCore - 下载核心业务逻辑
+
+职责：
+- 单个资源下载（download）
+- 批量下载（batch_download）
+- 媒体库存在性检查（check_exists_medias）
+- 种子文件解析（get_torrent_episodes）
+- 历史记录查询
+
+依赖注入：所有外部依赖通过构造函数传入。
+"""
+
+import os
+import threading
+from typing import Any
+
+import log
+from app.core.constants import PT_TAG, RMT_MEDIAEXT
+from app.core.exceptions import DomainError, RepositoryError, ServiceError
+from app.core.system_config import SystemConfig
+from app.db.repositories.config_repo_adapter import DownloaderRepositoryAdapter
+from app.db.repositories.download_repo_adapter import (
+    DownloadHistoryRepositoryAdapter,
+    DownloadSettingRepositoryAdapter,
+)
+from app.db.repositories.indexer_site_config_repo_adapter import IndexerSiteConfigRepositoryAdapter
+from app.domain.mediatypes import MediaType
+from app.downloader.client_factory import DownloadClientFactory
+from app.downloader.pipeline import DownloadPipeline
+from app.downloader.strategy import RemoveStrategy
+from app.events.bus import EventBus
+from app.events.registry import EventHandlerRegistry  # noqa: F401
+from app.infrastructure.cache_system import get_cache_manager
+from app.media import meta_info
+from app.mediaserver import MediaServer
+from app.message import Message
+from app.schemas.download import Torrent as TorrentInfo
+from app.services.download_strategies import (
+    EpisodeStrategy,
+    MovieDownloadStrategy,
+    SeasonPackStrategy,
+    mark_download_failed,
+)
+from app.services.filetransfer_service import FileTransferService as FileTransfer
+from app.sites import SiteConf, SiteSubtitle
+from app.sites.engine import SiteEngine
+from app.sites.site_cache import SiteCache
+from app.sites.torrent import Torrent
+from app.utils import ExceptionUtils
+
+# 轮内种子解析缓存上限（防止异常情况无限增长）与存活时长（秒）
+_EPISODE_CACHE_MAX = 500
+_EPISODE_CACHE_TTL = 300
+# 普通下载失败后的短路时长（秒），避免多策略/多阶段重复取链
+_DOWNLOAD_FAIL_TTL = 600
+# 站点明确拒绝（如限额/不可重试）后的短路时长（秒），避免持续消耗站点配额
+_DOWNLOAD_UNRETRYABLE_TTL = 6 * 3600
+
+
+class DownloadCore:
+    """
+    下载核心业务服务
+    """
+
+    def __init__(
+        self,
+        client_factory: DownloadClientFactory,
+        message: Message,
+        mediaserver: MediaServer,
+        filetransfer: FileTransfer,
+        sites: SiteCache,
+        siteconf: SiteConf,
+        sitesubtitle: SiteSubtitle,
+        event_bus: EventBus,
+        download_repo: DownloadHistoryRepositoryAdapter,
+        download_setting_repo: DownloadSettingRepositoryAdapter,
+        systemconfig: SystemConfig,
+        downloader_repo: DownloaderRepositoryAdapter,
+        site_engine: SiteEngine,
+        site_config_repo: IndexerSiteConfigRepositoryAdapter | None = None,
+    ):
+        self._client_factory = client_factory
+        self._message = message
+        self._mediaserver = mediaserver
+        self._filetransfer = filetransfer
+        self._sites = sites
+        self._siteconf = siteconf
+        self._sitesubtitle = sitesubtitle
+        self._event_bus = event_bus
+        self._download_repo = download_repo
+        self._download_setting_repo = download_setting_repo
+        self._systemconfig = systemconfig
+        self._downloader_repo = downloader_repo
+        self._site_engine = site_engine
+        self._site_config_repo = site_config_repo or IndexerSiteConfigRepositoryAdapter()
+        cache_manager = get_cache_manager()
+        # 轮内种子解析缓存：key -> (episodes, file_path)，避免同一链接被多阶段反复下载
+        self._episode_cache = cache_manager.get_or_create(
+            "download_episode_parse", "memory", maxsize=_EPISODE_CACHE_MAX, ttl=_EPISODE_CACHE_TTL
+        )
+        # 下载失败负缓存：key -> 错误信息，避免重复取链消耗站点配额（Redis 跨进程共享）
+        self._download_fail_cache = cache_manager.get_or_create("download_fail", "redis", ttl=_DOWNLOAD_FAIL_TTL)
+        # 按链接的单飞锁：保证同一链接在进程内串行，避免并发取链/下载
+        self._link_locks: dict[str, threading.Lock] = {}
+        self._link_locks_guard = threading.Lock()
+        self._pipeline = DownloadPipeline(
+            client_factory=self._client_factory,
+            message=self._message,
+            mediaserver=self._mediaserver,
+            filetransfer=self._filetransfer,
+            sites=self._sites,
+            siteconf=self._siteconf,
+            sitesubtitle=self._sitesubtitle,
+            event_bus=self._event_bus,
+            download_history_repo=self._download_repo,
+            site_engine=self._site_engine,
+            site_config_repo=self._site_config_repo,
+        )
+
+    # ---------- 媒体存在性检查 ----------
+
+    def _get_link_lock(self, key: str) -> threading.Lock:
+        """按链接获取进程内单飞锁（并发访问同一链接时串行）."""
+        with self._link_locks_guard:
+            lock = self._link_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._link_locks[key] = lock
+            return lock
+
+    def check_exists_medias(self, meta_info, no_exists=None, total_ep=None):
+        """检查媒体是否已存在于媒体库中.
+
+        :return: (exist_flag, no_exists_dict, extra)
+            - 电影: exist_flag 表示库中已有；no_exists 保持调用方传入结构
+            - 剧集: exist_flag 表示本季集已齐；no_exists 为
+              {tmdb_id: [{season, episodes, total_episodes}, ...]}，并与入参合并
+        """
+        if meta_info.type == MediaType.MOVIE:
+            exists = self._filetransfer.get_no_exists_medias(meta_info)
+            if exists:
+                return True, no_exists or {}, None
+            return False, no_exists or {}, None
+
+        season_raw = meta_info.get_season_seq()
+        try:
+            season = int(season_raw) if season_raw not in (None, "") else 1
+        except (TypeError, ValueError):
+            season = 1
+
+        if isinstance(total_ep, dict):
+            # 兼容 int / str 季号键（调用方常用 {1: 12}，get_season_seq 返回 "1"）
+            total = total_ep.get(season)
+            if total is None:
+                total = total_ep.get(str(season))
+            if total is None and season_raw not in (None, ""):
+                total = total_ep.get(season_raw)
+        else:
+            total = total_ep
+        if not total:
+            total = meta_info.total_episodes
+        if not total:
+            return False, no_exists or {}, None
+
+        missing_episodes = self._filetransfer.get_no_exists_medias(
+            meta_info, season=season, total_num=int(total)
+        )
+        result = dict(no_exists or {})
+        if missing_episodes:
+            season_entry = {
+                "season": season,
+                "episodes": missing_episodes,
+                "total_episodes": int(total),
+            }
+            existing = list(result.get(meta_info.tmdb_id) or [])
+            replaced = False
+            for i, entry in enumerate(existing):
+                if entry.get("season") == season:
+                    existing[i] = season_entry
+                    replaced = True
+                    break
+            if not replaced:
+                existing.append(season_entry)
+            result[meta_info.tmdb_id] = existing
+            return False, result, None
+        return True, result, None
+
+    # ---------- 核心下载方法 ----------
+
+    def download(
+        self,
+        media_info,
+        is_paused=None,
+        tag=None,
+        download_dir=None,
+        download_setting=None,
+        downloader_id=None,
+        upload_limit=None,
+        download_limit=None,
+        torrent_file=None,
+        in_from=None,
+        user_name=None,
+        proxy=None,
+        file_indices=None,
+        file_names=None,
+        user_id: int | None = None,
+    ):
+        """
+        添加下载任务，委托给 DownloadPipeline 执行
+
+        :return: 下载器类型, 种子ID，错误信息
+        """
+        fail_key = media_info.enclosure or media_info.page_url or ""
+        if fail_key:
+            # 单飞：并发同一链接串行执行，锁内复查失败负缓存，避免并发重复取链
+            with self._get_link_lock(fail_key):
+                cached_fail = self._download_fail_cache.get(fail_key)
+                if cached_fail:
+                    log.info(f"[Downloader]同一资源已失败并处于短路期，跳过重复下载：{fail_key[:120]}")
+                    return None, None, cached_fail
+                result = self._pipeline.execute(
+                    media_info=media_info,
+                    is_paused=is_paused,
+                    tag=tag,
+                    download_dir=download_dir,
+                    download_setting=download_setting,
+                    downloader_id=downloader_id,
+                    upload_limit=upload_limit,
+                    download_limit=download_limit,
+                    torrent_file=torrent_file,
+                    in_from=in_from,
+                    user_name=user_name,
+                    proxy=proxy,
+                    file_indices=file_indices,
+                    file_names=file_names,
+                    user_id=user_id,
+                )
+                _, download_id, msg = result
+                if not download_id and msg:
+                    ttl = _DOWNLOAD_UNRETRYABLE_TTL if "[不可重试]" in msg else _DOWNLOAD_FAIL_TTL
+                    self._download_fail_cache.set(fail_key, msg, ttl=ttl)
+                return result
+
+        return self._pipeline.execute(
+            media_info=media_info,
+            is_paused=is_paused,
+            tag=tag,
+            download_dir=download_dir,
+            download_setting=download_setting,
+            downloader_id=downloader_id,
+            upload_limit=upload_limit,
+            download_limit=download_limit,
+            torrent_file=torrent_file,
+            in_from=in_from,
+            user_name=user_name,
+            proxy=proxy,
+            file_indices=file_indices,
+            file_names=file_names,
+            user_id=user_id,
+        )
+
+    def batch_download(
+        self,
+        in_from: Any,
+        media_list: list,
+        need_tvs: dict | None = None,
+        user_name: str | None = None,
+        user_id: int | None = None,
+    ) -> tuple[list, list]:
+        download_items: list = []
+        # 每轮重置种子解析缓存；失败负缓存由 TTL 控制跨轮保留
+        self._episode_cache.clear()
+        download_order = self._client_factory.download_order if self._client_factory else None
+        # 订阅下载保留有序多站点候选，失败后可回退到下一个候选
+        download_list = Torrent.get_download_list(media_list, download_order, collapse=False)
+
+        def _download_callback(item, torrent_file=None, is_paused=None):
+            # 多用户：优先用候选自身的归属（RSS 批次可能混合多个用户的订阅），
+            # 其次回退到批量层传入的 user_id，保证下载记录/通知归属正确
+            owner_id = getattr(item, "user_id", None) or user_id
+            try:
+                downloader_id, download_id, _ = self.download(
+                    media_info=item,
+                    torrent_file=torrent_file,
+                    is_paused=is_paused,
+                    in_from=in_from,
+                    user_name=user_name,
+                    user_id=owner_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                # 单个候选的异常不应中断整批：标记失败后交由策略尝试下一个候选
+                log.warn(f"[Downloader]候选下载异常，已跳过：{getattr(item, 'title', '')} - {e}")
+                mark_download_failed(item)
+                return None, None, str(e)
+            if download_id and item not in download_items:
+                download_items.append(item)
+            elif not download_id:
+                # 标记本轮失败，后续策略阶段跳过该候选，自动尝试下一个站点/链接
+                mark_download_failed(item)
+            return downloader_id, download_id, ""
+
+        # 1. 下载所有电影
+        download_items = MovieDownloadStrategy.download_movies(
+            download_list=download_list,
+            download_callback=_download_callback,
+            get_download_url_callback=self.get_download_url,
+        )
+
+        # 2. 电视剧整季匹配
+        if need_tvs:
+            need_seasons = SeasonPackStrategy.build_need_seasons(need_tvs)
+            pack_items, _, need_tvs = SeasonPackStrategy.find_season_packs(
+                download_list=download_list,
+                need_seasons=need_seasons,
+                need_tvs=need_tvs,
+                get_download_url_callback=self.get_download_url,
+                download_callback=_download_callback,
+                get_torrent_episodes_callback=self.get_torrent_episodes,
+            )
+            for item in pack_items:
+                if item not in download_items:
+                    download_items.append(item)
+
+        # 3. 电视剧单集匹配
+        if need_tvs:
+            download_items, need_tvs = EpisodeStrategy.download_episodes(
+                download_list=download_list,
+                need_tvs=need_tvs,
+                get_download_url_callback=self.get_download_url,
+                download_callback=_download_callback,
+                get_torrent_episodes_callback=self.get_torrent_episodes,
+                _set_files_status_callback=self.set_files_status,
+                _start_torrents_callback=lambda ids, downloader_id: self.start_torrents(
+                    downloader_id=downloader_id, ids=ids
+                ),
+                return_items=download_items,
+            )
+
+        # 4. 从整季包中拆包下载
+        if need_tvs:
+            download_items, need_tvs = EpisodeStrategy.download_from_season_pack(
+                download_list=download_list,
+                need_tvs=need_tvs,
+                get_download_url_callback=self.get_download_url,
+                download_callback=_download_callback,
+                get_torrent_episodes_callback=self.get_torrent_episodes,
+                set_files_status_callback=self.set_files_status,
+                start_torrents_callback=lambda ids, downloader_id: self.start_torrents(
+                    downloader_id=downloader_id, ids=ids
+                ),
+                return_items=download_items,
+            )
+
+        left_medias = [item for item in media_list if item not in download_items]
+        return download_items, left_medias
+
+    # ---------- 历史记录 / 配置 CRUD 代理 ----------
+
+    def get_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo] | None:
+        if not downloader_id:
+            downloader_id = self._client_factory.default_downloader_id
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return None
+        try:
+            torrents, error_flag = _client.get_torrents(tag=tag, ids=ids)
+            if error_flag:
+                return None
+            return torrents
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            return None
+
+    def get_remove_torrents(self, downloader_id=None, config=None):
+        if not config or not downloader_id:
+            return []
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return []
+        config["filter_tags"] = []
+        if config.get("only_wolf_nas"):
+            config["filter_tags"] = config["tags"] + [PT_TAG]
+        else:
+            config["filter_tags"] = config["tags"]
+        strategy = RemoveStrategy.from_dict(config)
+        torrents = _client.get_remove_torrents(strategy=strategy)
+        if torrents:
+            torrents.sort(key=lambda x: x.get("name") or "")
+        return torrents
+
+    def get_downloading_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo] | None:
+        if not downloader_id:
+            downloader_id = self._client_factory.default_downloader_id
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return None
+        try:
+            return _client.get_downloading_torrents(tag=tag, ids=ids) or []
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            return None
+
+    def get_downloading_progress(self, downloader_id=None, ids=None):
+        if not downloader_id:
+            downloader_id = self._client_factory.default_downloader_id
+        downloader_conf = self._client_factory.get_downloader_conf(downloader_id)
+        only_wolf_nas = downloader_conf.get("only_wolf_nas") if downloader_conf else None
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return []
+        tag = [PT_TAG] if only_wolf_nas else None
+        try:
+            return _client.get_downloading_progress(tag=tag, ids=ids) or []
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            return []
+
+    def get_completed_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo]:
+        if not downloader_id:
+            downloader_id = self._client_factory.default_downloader_id
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return []
+        try:
+            return _client.get_completed_torrents(ids=ids, tag=tag) or []
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            return []
+
+    def set_torrents_tag(self, downloader_id=None, ids=None, tags=None):
+        if not downloader_id:
+            downloader_id = self._client_factory.default_downloader_id
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return None
+        _client.set_torrents_tag(ids=ids, tags=tags)
+
+    def start_torrents(self, downloader_id=None, ids=None):
+        if not ids:
+            return False
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return False
+        return _client.start_torrents(ids)
+
+    def stop_torrents(self, downloader_id=None, ids=None):
+        if not ids:
+            return False
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return False
+        return _client.stop_torrents(ids)
+
+    def delete_torrents(self, downloader_id=None, ids=None, delete_file=False):
+        if not ids:
+            return False
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return False
+        return _client.delete_torrents(delete_file=delete_file, ids=ids)
+
+    def get_files(self, tid, downloader_id=None):
+        _client: Any = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return []
+        return _client.get_normalized_files(tid)
+
+    def set_files_status(self, tid, need_episodes, downloader_id=None):
+        if not downloader_id:
+            downloader_id = self._client_factory.default_downloader_id
+        _client: Any = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return []
+        torrent_files = self.get_files(tid=tid, downloader_id=downloader_id)
+        if not torrent_files:
+            return []
+        success_episodes = []
+        selected_map = {}
+        for torrent_file in torrent_files:
+            file_id = torrent_file.get("id")
+            file_name = torrent_file.get("name")
+            mi = meta_info(file_name)
+            if not mi.get_episode_list():
+                selected = False
+            else:
+                selected = set(mi.get_episode_list()).issubset(set(need_episodes))
+                if selected:
+                    success_episodes = list(set(success_episodes).union(set(mi.get_episode_list())))
+            selected_map[file_id] = selected
+        if success_episodes and selected_map:
+            _client.set_file_selection(tid, selected_map)
+        return success_episodes
+
+    def recheck_torrents(self, downloader_id=None, ids=None):
+        if not ids:
+            return False
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return False
+        return _client.recheck_torrents(ids)
+
+    def set_speed_limit(self, downloader_id=None, download_limit=None, upload_limit=None):
+        if not downloader_id:
+            return
+        _client = self._client_factory.get_client(downloader_id)
+        if not _client:
+            return
+        try:
+            download_limit = int(download_limit) if download_limit else 0
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            download_limit = 0
+        try:
+            upload_limit = int(upload_limit) if upload_limit else 0
+        except (ServiceError, RepositoryError, DomainError):
+            raise
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+            upload_limit = 0
+        _client.set_speed_limit(download_limit=download_limit, upload_limit=upload_limit)
+
+    def get_torrent_trackers(self, tid, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return []
+        return _client.get_torrent_trackers(tid) or []
+
+    def add_torrent_trackers(self, ids, urls, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return
+        _client.add_torrent_trackers(ids, urls)
+
+    def edit_torrent_tracker(self, ids, old_url, new_url, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return
+        _client.edit_torrent_tracker(ids, old_url, new_url)
+
+    def remove_torrent_trackers(self, ids, urls, downloader_id=None):
+        _client = (
+            self._client_factory.get_client(downloader_id) if downloader_id else self._client_factory.default_client
+        )
+        if not _client:
+            return
+        _client.remove_torrent_trackers(ids, urls)
+
+    # ---------- 种子解析 ----------
+
+    def get_torrent_episodes(self, url, page_url=None):
+        if not url:
+            log.error("[Downloader]url 链接为空")
+            return [], None
+        cache_key = url
+        with self._get_link_lock(cache_key):
+            cached = self._episode_cache.get(cache_key)
+            if cached is not None:
+                return list(cached[0]), cached[1]
+            site_info: Any = self._sites.get_sites(siteurl=url) or {}
+            torrent = Torrent(site_engine=self._site_engine)
+            file_path, _, _, files, retmsg = torrent.get_torrent_info(
+                url=url,
+                cookie=site_info.get("cookie"),
+                api_key=site_info.get("api_key"),
+                bearer_token=site_info.get("bearer_token"),
+                ua=site_info.get("ua"),
+                referer=page_url if site_info.get("referer") else None,
+                proxy=site_info.get("proxy") or False,
+            )
+            if not files:
+                log.error(f"[Downloader]读取种子文件集数出错：{retmsg}")
+                if file_path:
+                    Torrent.delete_torrent_file(file_path)
+                self._episode_cache.set(cache_key, ([], None))
+                return [], None
+            episodes = []
+            for file in files:
+                if os.path.splitext(file)[-1] not in RMT_MEDIAEXT:
+                    continue
+                meta = meta_info(file)
+                if not meta.begin_episode:
+                    continue
+                episodes = list(set(episodes).union(set(meta.get_episode_list())))
+            self._episode_cache.set(cache_key, (list(episodes), file_path))
+            return episodes, file_path
+
+    # ---------- 历史记录 / 配置 CRUD 代理 ----------
+
+    def get_download_history(self, date=None, hid=None, num=30, page=1, user=None):
+        return self._download_repo.get_download_history(date=date, hid=hid, num=num, page=page, user=user)
+
+    def get_download_history_by_title(self, title):
+        return self._download_repo.get_download_history_by_title(title=title) or []
+
+    def get_download_history_by_downloader(self, downloader, download_id):
+        return self._download_repo.get_download_history_by_downloader(downloader=downloader, download_id=download_id)
+
+    def delete_download_history_by_id(self, hid, user=None) -> bool:
+        return self._download_repo.delete_download_history_by_id(hid, user=user)
+
+    def delete_all_download_history(self, user=None) -> int:
+        return self._download_repo.delete_all_download_history(user=user)
+
+    # ---------- 下载器 CRUD ----------
+
+    def update_downloader(
+        self, did, name, enabled, dtype, transfer, only_wolf_nas, match_path, rmt_mode, config, download_dir
+    ):
+        ret = self._downloader_repo.update_downloader(
+            did=did,
+            name=name,
+            enabled=enabled,
+            dtype=dtype,
+            transfer=transfer,
+            only_wolf_nas=only_wolf_nas,
+            match_path=match_path,
+            rmt_mode=rmt_mode,
+            config=config,
+            download_dir=download_dir,
+        )
+        self._client_factory._refresh()
+        return ret
+
+    def delete_downloader(self, did):
+        ret = self._downloader_repo.delete_downloader(did=did)
+        self._client_factory._refresh()
+        return ret
+
+    def check_downloader(self, did=None, transfer=None, only_wolf_nas=None, enabled=None, match_path=None):
+        ret = self._downloader_repo.check_downloader(
+            did=did, transfer=transfer, only_wolf_nas=only_wolf_nas, enabled=enabled, match_path=match_path
+        )
+        self._client_factory._refresh()
+        return ret
+
+    def delete_download_setting(self, sid):
+        ret = self._download_setting_repo.delete_download_setting(sid=sid)
+        self._client_factory._refresh()
+        return ret
+
+    def update_download_setting(
+        self,
+        sid,
+        name,
+        category,
+        tags,
+        is_paused,
+        upload_limit,
+        download_limit,
+        ratio_limit,
+        seeding_time_limit,
+        downloader,
+    ):
+        ret = self._download_setting_repo.update_download_setting(
+            sid=sid,
+            name=name,
+            category=category,
+            tags=tags,
+            is_paused=is_paused,
+            upload_limit=upload_limit,
+            download_limit=download_limit,
+            ratio_limit=ratio_limit,
+            seeding_time_limit=seeding_time_limit,
+            downloader=downloader,
+        )
+        self._client_factory._refresh()
+        return ret
+
+    # ---------- 静态工具 ----------
+
+    def get_download_url(self, page_url):
+        site_info: Any = self._sites.get_sites(siteurl=page_url) or {}
+        return self._site_engine.resolve_download_url(
+            page_url=page_url,
+            user_config={
+                "cookie": site_info.get("cookie", ""),
+                "ua": site_info.get("ua", ""),
+                "headers": site_info.get("headers", {}),
+                "proxy": site_info.get("proxy"),
+                "api_key": site_info.get("api_key", ""),
+                "bearer_token": site_info.get("bearer_token", ""),
+            },
+        )

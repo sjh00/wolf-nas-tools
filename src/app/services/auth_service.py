@@ -1,0 +1,177 @@
+"""
+JWT 认证服务
+提供 Access Token + Refresh Token 双令牌机制
+"""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import jwt
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+
+from app.core.exceptions import RepositoryError, ServiceError
+from app.infrastructure.security import get_secret_key
+from app.schemas.auth import TokenPair, UserContext
+
+# 密码加密上下文（Argon2）
+pwd_context = PasswordHash([Argon2Hasher()])
+
+# 配置项
+_SECRET_KEY = get_secret_key()
+_ALGORITHM = "HS256"
+_ACCESS_TOKEN_EXPIRE_MINUTES = 15
+_REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+
+class AuthService:
+    """
+    认证服务：处理 JWT Token 的签发、验证、刷新
+    """
+
+    def __init__(self, rbac_service: Any):
+        self._rbac_service = rbac_service
+
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        """验证密码"""
+        return pwd_context.verify(plain_password, hashed_password)
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """加密密码"""
+        return pwd_context.hash(password)
+
+    def authenticate(self, username: str, password: str) -> UserContext | None:
+        """
+        验证用户名密码，返回用户上下文
+        """
+        success, result = self._rbac_service.authenticate_user(username, password)
+        if not success:
+            return None
+
+        user = result
+
+        # 获取用户权限与角色码
+        try:
+            permissions = list(self._rbac_service.get_user_permissions(user.ID) or [])
+            role_codes = list(self._rbac_service.get_user_role_codes(user.ID) or [])
+        except (ServiceError, RepositoryError):
+            permissions = []
+            role_codes = []
+
+        return UserContext(
+            user_id=user.ID,
+            username=user.USERNAME,
+            nickname=getattr(user, "NICKNAME", None),
+            level=getattr(user, "LEVEL", 0) or 0,
+            permissions=permissions,
+            role_codes=role_codes,
+        )
+
+    @staticmethod
+    def create_token_pair(user_ctx: UserContext) -> TokenPair:
+        """
+        创建 Access + Refresh Token 对
+        """
+        now = datetime.now(timezone.utc)
+
+        # Access Token
+        access_payload = {
+            "sub": str(user_ctx.user_id),
+            "user_id": user_ctx.user_id,
+            "username": user_ctx.username,
+            "nickname": user_ctx.nickname,
+            "level": user_ctx.level,
+            "permissions": user_ctx.permissions,
+            "role_codes": user_ctx.role_codes,
+            "iat": now,
+            "exp": now + timedelta(minutes=_ACCESS_TOKEN_EXPIRE_MINUTES),
+            "jti": str(uuid.uuid4()),
+            "type": "access",
+        }
+        access_token = jwt.encode(access_payload, _SECRET_KEY, algorithm=_ALGORITHM)
+
+        # Refresh Token（仅含 sub 和 jti）
+        refresh_payload = {
+            "sub": str(user_ctx.user_id),
+            "jti": str(uuid.uuid4()),
+            "iat": now,
+            "exp": now + timedelta(days=_REFRESH_TOKEN_EXPIRE_DAYS),
+            "type": "refresh",
+        }
+        refresh_token = jwt.encode(refresh_payload, _SECRET_KEY, algorithm=_ALGORITHM)
+
+        return TokenPair(
+            access_token=access_token, refresh_token=refresh_token, expires_in=_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+
+    def refresh_access_token(self, refresh_token: str) -> TokenPair | None:
+        """
+        使用 Refresh Token 换取新的 Token 对
+        """
+        try:
+            payload = jwt.decode(refresh_token, _SECRET_KEY, algorithms=[_ALGORITHM])
+            if payload.get("type") != "refresh":
+                return None
+
+            user_id = int(payload.get("sub") or 0)
+            if not user_id:
+                return None
+
+            # 重新获取用户信息
+            user = self._rbac_service.get_user_by_id(user_id)
+            if not user:
+                return None
+
+            # 构建用户上下文
+            try:
+                permissions = list(self._rbac_service.get_user_permissions(user_id) or [])
+                role_codes = list(self._rbac_service.get_user_role_codes(user_id) or [])
+            except (ServiceError, RepositoryError):
+                permissions = []
+                role_codes = []
+
+            level = getattr(user, "LEVEL", 0) or 0
+
+            ctx = UserContext(
+                user_id=user_id,
+                username=getattr(user, "USERNAME", ""),
+                nickname=getattr(user, "NICKNAME", None) or None,
+                level=level,
+                permissions=permissions,
+                role_codes=role_codes,
+            )
+            return AuthService.create_token_pair(ctx)
+
+        except (jwt.InvalidTokenError, ValueError):
+            return None
+
+    @staticmethod
+    def verify_token(token: str) -> UserContext | None:
+        """
+        验证 Access Token，返回用户上下文
+        """
+        try:
+            payload = jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
+            if payload.get("type") != "access":
+                return None
+
+            return UserContext(
+                user_id=payload.get("user_id", 0),
+                username=payload.get("username", ""),
+                nickname=payload.get("nickname", None),
+                level=payload.get("level", 0),
+                permissions=payload.get("permissions", []),
+                role_codes=payload.get("role_codes", []),
+            )
+        except (jwt.InvalidTokenError, ValueError):
+            return None
+
+    @staticmethod
+    def revoke_token(jti: str) -> None:
+        """
+        撤销 Token（将 jti 加入黑名单）
+        当前为基础实现，P4 可配合 Redis 实现分布式黑名单
+        """
