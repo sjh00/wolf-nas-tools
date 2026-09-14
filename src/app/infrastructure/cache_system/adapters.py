@@ -6,6 +6,7 @@
 import fnmatch
 import pickle
 import threading
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -227,10 +228,17 @@ class RedisCacheAdapter(CacheAdapter):
             "fallback_sets": 0,
         }
         self._lock = threading.Lock()
+        self._next_redis_try = 0.0
         self._init_redis()
 
+    _REDIS_RETRY_SECONDS = 60
+
+    def _mark_redis_unavailable(self) -> None:
+        self._redis = None
+        self._next_redis_try = time.monotonic() + self._REDIS_RETRY_SECONDS
+
     def _init_redis(self):
-        """初始化Redis连接"""
+        """初始化Redis连接。未启用或连不上时使用内存，并降低重试频率。"""
         try:
             # 延迟导入：测试 mock 依赖 + 避免模块加载即连接 Redis
             from app.infrastructure.redis import RedisStore  # noqa: PLC0415
@@ -238,13 +246,14 @@ class RedisCacheAdapter(CacheAdapter):
             store = RedisStore()
             if store.is_available():
                 self._redis = store
+                self._next_redis_try = 0.0
                 log.debug(f"[Cache]Redis适配器初始化成功: {self._name}")
             else:
-                log.info(f"[Cache]Redis不可用，使用内存回退: {self._name}")
-                self._redis = None
+                log.debug(f"[Cache]Redis不可用，使用内存回退: {self._name}")
+                self._mark_redis_unavailable()
         except Exception as e:
-            log.info(f"[Cache]Redis适配器初始化失败，使用内存回退: {e}")
-            self._redis = None
+            log.debug(f"[Cache]Redis适配器初始化失败，使用内存回退: {e}")
+            self._mark_redis_unavailable()
 
     def _ensure_connection(self) -> bool:
         """确保Redis连接可用"""
@@ -255,7 +264,8 @@ class RedisCacheAdapter(CacheAdapter):
             except Exception as e:  # noqa: BLE001
                 log.debug(f"[Cache]忽略异常: {e}")
             self._redis = None
-        # 尝试重连
+        if self._next_redis_try and time.monotonic() < self._next_redis_try:
+            return False
         self._init_redis()
         return self._redis is not None
 

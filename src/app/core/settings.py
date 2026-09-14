@@ -331,8 +331,9 @@ class DatabaseConfig(BaseModel):
 
 
 class RedisConfig(BaseModel):
-    """Redis 缓存配置"""
+    """Redis 缓存配置。enabled=false 时不探测、不连接，缓存走内存。"""
 
+    enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 6379
     password: str = ""
