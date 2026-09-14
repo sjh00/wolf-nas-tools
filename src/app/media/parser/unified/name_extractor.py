@@ -10,7 +10,9 @@ from app.utils.chinese_utils import to_simplified
 
 from .types import ParseContext
 
-_CHINESE_META_CLEAN = frozenset("粤日英简繁国台港双多单语字幕音轨声频道内嵌封挂压效硬软中外体转载自搬运蓝光高清")
+_CHINESE_META_CLEAN = frozenset(
+    "粤日英简繁国台港双多单语字幕音轨声频道内嵌封挂压效硬软中外体转载自搬运蓝光高清集话期回首播试预告"
+)
 
 # 集标题区域内的元数据词（拒绝将此类词作为集标题）
 _EP_TITLE_META_RE = re.compile(
@@ -125,6 +127,15 @@ _GROUP_KEYWORDS_RE = re.compile(
     re.IGNORECASE,
 )
 _RE_KANA_TITLE = re.compile(r"[぀-ヿ]+")
+
+# 剧集说明/预告类词：出现在标题里是元数据，不是片名（试播集/首播/预告/第X集等）
+_EP_META_WORDS_RE = re.compile(
+    r"(?i)^(?:"
+    r"试播集?|首播|先行(?:版|放送)?|预告(?:片|篇)?|特典|片头(?:曲)?|片尾(?:曲)?|"
+    r"第\s*[0-9一二三四五六七八九十百零]+\s*[集话期回]|[0-9]+\s*[集话期回]|"
+    r"本篇|总集篇|特番|特别篇|剧场版预告|pv|cm|sp|ova\d*|oad\d*"
+    r")$"
+)
 
 
 def extract_name(ctx: ParseContext, original_text: str) -> None:
@@ -277,8 +288,30 @@ def _extract_bracket_name(ctx: ParseContext, prepared_text: str, original_text: 
             ctx.cn_name = cn_in_prefix
 
         if StringUtils.is_chinese(bc_clean):
+            # 中英混合方括号（如 [Person of Interest (试播集)] / [攻壳机动队ARISE Alternative Architecture]）：
+            # 拆出中文与英文；中文全是元数据词时丢弃中文只留英文，否则中文作 cn_name、英文作 en_name
+            if re.search(r"[A-Za-z]{2,}", bc_clean):
+                cn_words = [w for w in re.findall(r"[\u4e00-\u9fff]+", bc_clean) if not _is_metadata(w)]
+                en_words = re.findall(r"[A-Za-z][A-Za-z0-9]*", bc_clean)
+                if not cn_words:
+                    # 中文全是元数据（如"试播集"）→ 英文作 en_name
+                    if en_words and not ctx.en_name:
+                        ctx.en_name = " ".join(en_words)
+                    return
+                ctx.cn_name = ctx.cn_name or "".join(cn_words)
+                if en_words and not ctx.en_name:
+                    ctx.en_name = " ".join(en_words)
+                return
             ctx.cn_name = ctx.cn_name or bc_clean
         else:
+            # 无空格的纯字母数字方括号是发布组/字幕组（如 [Ardtu]），
+            # 不是英文片名；英文片名通常含空格或多个词
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9@._-]*", bc_clean) and " " not in bc_clean:
+                if not ctx.release_group:
+                    ctx.release_group = bc_clean
+                if ctx.cn_name:
+                    return
+                continue
             ctx.en_name = ctx.en_name or bc_clean
         if ctx.cn_name or ctx.en_name:
             return
@@ -291,6 +324,8 @@ def _extract_bracket_name(ctx: ParseContext, prepared_text: str, original_text: 
             if release_group and bc_clean.upper() == release_group.upper():
                 continue
             if _GROUP_KEYWORDS_RE.search(bc_clean):
+                continue
+            if _is_metadata(bc_clean):
                 continue
             if StringUtils.is_chinese(bc_clean) and len(bc_clean) >= 4:
                 if all(c in _CHINESE_META_CLEAN for c in bc_clean):
@@ -315,11 +350,13 @@ def _extract_cn_from_prefix(text: str) -> str | None:
 
 def _extract_free_text(ctx: ParseContext, text: str) -> None:
     """从自由文本中提取名称"""
+    text = text.replace("|", " ").replace("｜", " ")
     text = re.sub(r"\[[^\]]*\]", "", text).strip()
     text = re.sub(r"「[^」]*」", " ", text).strip()  # 日文括号→空格防粘连
     text = re.sub(r"\[\s*\]", "", text).strip()
     text = re.sub(r"[\[\]]", "", text).strip()  # 残留单边括号
     text = re.sub(r"\([^)]*\)", "", text).strip()
+    text = re.sub(r"（[^）]*）", "", text).strip()  # 全角括号（如 （试播集））
     text = re.sub(r"\s*第\s*\d+\s*季\s*$", "", text)
     text = re.sub(r"\s+S\d{1,2}\s*$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+-\s*\d+\s*$", "", text)
@@ -419,9 +456,23 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
 
     # 仅填充缺失的名称，避免覆盖方括号层已提取的更可靠 cn/en 名
     if cn_parts and not ctx.cn_name:
-        ctx.cn_name = " ".join(cn_parts)
+        ctx.cn_name = " ".join(_dedup_adjacent(cn_parts))
     if en_parts and not ctx.en_name:
-        ctx.en_name = " ".join(en_parts)
+        ctx.en_name = " ".join(_dedup_adjacent(en_parts))
+
+
+def _looks_like_group_token(text: str) -> bool:
+    """判断是否为发布组/字幕组 token（无空格的纯字母数字，如 Ardtu、FRDS）"""
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9@._-]*", text)) and " " not in text
+
+
+def _dedup_adjacent(words: list[str]) -> list[str]:
+    """去除相邻重复词（我们这一天 我们这一天 → 我们这一天）"""
+    result: list[str] = []
+    for w in words:
+        if not result or w != result[-1]:
+            result.append(w)
+    return result
 
 
 def _recover_from_original(ctx: ParseContext, original_text: str) -> None:
@@ -489,8 +540,15 @@ def _is_metadata(text: str) -> bool:
     """检测文本是否为元数据（非名称）"""
     if _META_TOKEN_RE.match(text):
         return True
+    if _EP_META_WORDS_RE.match(text.strip()):
+        return True
     if all(c in _CHINESE_META_CLEAN for c in text):
         return True
+    # "中字 | Ardtu" / "简繁 | 1080p" 这类竖线分隔组合：各段都是元数据/发布组则整体视为元数据
+    if "|" in text or "｜" in text:
+        parts = [p.strip() for p in re.split(r"[|｜]", text) if p.strip()]
+        if parts and all(_is_metadata(p) or _looks_like_group_token(p) for p in parts):
+            return True
     # 点分隔的多词元数据（如 WEB.1080p.AV1）
     dot_tokens = text.replace(".", " ").split()
     if len(dot_tokens) >= 2 and all(_META_TOKEN_RE.match(tk) for tk in dot_tokens):
@@ -510,12 +568,17 @@ def _is_metadata(text: str) -> bool:
 def clean_names(ctx: ParseContext) -> None:
     """清理并标准化提取到的名称"""
     if ctx.cn_name:
+        # 收口：清残留分隔符/单边括号，去除相邻重复词
+        ctx.cn_name = re.sub(r"[\s\|\/\[\]\(\)（）【】「」『』＜＞]+", " ", ctx.cn_name).strip()
+        ctx.cn_name = " ".join(_dedup_adjacent(ctx.cn_name.split()))
         _, ctx.cn_name, _, _, _, _ = StringUtils.get_keyword_from_string(ctx.cn_name)
         if ctx.cn_name:
             ctx.cn_name = re.sub(rf"{_NAME_NOSTRING_RE}", "", ctx.cn_name, flags=re.IGNORECASE).strip()
             ctx.cn_name = re.sub(_NAME_CLEANUP_RE, "", ctx.cn_name, flags=re.IGNORECASE).strip()
             ctx.cn_name = to_simplified(ctx.cn_name)
     if ctx.en_name:
+        ctx.en_name = re.sub(r"[\s\|\/\[\]\(\)（）【】「」『』＜＞]+", " ", ctx.en_name).strip()
+        ctx.en_name = " ".join(_dedup_adjacent(ctx.en_name.split()))
         ctx.en_name = re.sub(rf"{_NAME_NOSTRING_RE}", "", ctx.en_name, flags=re.IGNORECASE).strip()
         ctx.en_name = re.sub(_NAME_CLEANUP_RE, "", ctx.en_name, flags=re.IGNORECASE).strip()
         ctx.en_name = ctx.en_name.title()
