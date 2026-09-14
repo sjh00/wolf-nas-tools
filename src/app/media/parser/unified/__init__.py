@@ -43,6 +43,9 @@ class UnifiedParser(BaseParser):
         confidence = self._calculate_confidence(ctx)
         season, end_season = self._to_int_pair(ctx.season)
         episode, end_episode = self._to_int_pair(ctx.episode)
+        # 有集数但无季数（裸集号/第X集/方括号集号）时默认第 1 季，与 v3 行为一致
+        if episode is not None and season is None:
+            season = 1
 
         return ParserResult(
             title_en=ctx.en_name,

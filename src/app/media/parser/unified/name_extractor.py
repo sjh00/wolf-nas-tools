@@ -63,7 +63,7 @@ _META_TOKEN_RE = re.compile(
     r"|mp3\d*|mp2|opus|ogg|vorbis|wma"
     r"|lpcm\d*(\.\d+)?|pcm|dolby[-\s]?digital"
     # --- HDR/色彩 ---
-    r"|hdr\d*|hdr10\+?|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
+    r"|hdr\d*|hdr10\+?|dovi|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
     # --- 来源/平台 ---
     r"|web[-]?(dl|rip|dlr|dlmux|dlrip)?|webcast|webtv"
     r"|blu[-]?ray|bluray|bd(rip|mv|remux|iso|25|50|66|100)?|bd[-]?rip|bdmv"
@@ -96,9 +96,11 @@ _META_TOKEN_RE = re.compile(
     r"|ch[st]|chs|cht|jpsc|jptc|jps|jpt|srt|srtx?\d*|assx?\d*|ssax?\d*|idx|sup|pgs"
     r"|gb|big5"
     # --- 剧集标记 ---
-    r"|complete|season|batch|collection|pack|trilogy|quadrilogy"
+    # 注意：不把单独 "season" 当元数据——"The Long Season"/"Cherry Season" 的 Season 是片名。
+    # 季节识别交给 season_keyword 规则（Season 1/2）；batch/collection/pack 等仍按元数据剥离
+    r"|complete|batch|collection|pack|trilogy|quadrilogy"
     r"|mini[-]?series|mini|ova\d*|special|ova|ond[ae]s?|sp\d*"
-    r"|ep(isode)?\d*|part\d*|chapter\d*|vol(ume)?\d*"
+    r"|ep(isode)?\d*|part\d+|chapter\d*|vol(ume)?\d*"
     r"|final|end|fin|the[-]?end"
     # --- 频道 ---
     r"|bbc|itv|channel\s*[45]|cnn|fox|abc|nbc|cbs|hbo|starz|showtime|amc|tnt|tbs|fx|syfy"
@@ -327,6 +329,9 @@ def _extract_bracket_name(ctx: ParseContext, prepared_text: str, original_text: 
                 continue
             if _is_metadata(bc_clean):
                 continue
+            # 标签类方括号（新番/连载/国漫/国语中字/类型 等）不是片名
+            if re.search(r"新番|连载|国漫|国语|中字|类型[：:]|年番|双语", bc_clean):
+                continue
             if StringUtils.is_chinese(bc_clean) and len(bc_clean) >= 4:
                 if all(c in _CHINESE_META_CLEAN for c in bc_clean):
                     continue
@@ -411,8 +416,9 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
             break
         text = stripped
 
-    # 再次清理残留的点号
+    # 再次清理残留的点号与尾部连字符/分隔符
     text = re.sub(r"(?<!\d)\.(?!\d)|(?<=\d)\.(?!\d)", " ", text)
+    text = re.sub(r"[\s\-|]+\s*$", "", text)
     text = re.sub(r"\s+", " ", text).strip()
 
     if not text or text in _ANIME_NO_WORDS:
