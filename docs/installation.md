@@ -13,34 +13,33 @@
 
 后端镜像内嵌 nginx：nginx 监听容器内 **8080**，反向代理到内部 wolfnas 服务（3000）。因此：
 
-| 服务 | 容器内端口 | 实际 compose 宿主机映射 |
-|------|-----------|------------------------|
-| 后端（经 nginx） | 8080 | `3000:8080` |
-| 前端 Web UI | 8080 | `8080:8080` |
+| 服务 | 容器内端口 | bridge 映射 | host 网络 |
+|------|-----------|-------------|-----------|
+| 后端（经 nginx） | 8080 | `3000:8080` | 本机 8080（不对外） |
+| 前端 Web UI | 8080（可改 `LISTEN_PORT`） | `8080:8080` | 宿主机 3000 |
 | Redis | 6379 | 不映射（仅内网） |
 | MySQL | 3306 | `3306:3306`（可选） |
 | PostgreSQL | 5432 | `5432:5432`（可选） |
 | wolfnas-chrome | 9850 / 6080 | `9850:9850` / `6080:6080` |
 | wolfnas-verify | 9300 | `9300:9300` |
 
-## 飞牛 OS / NAS 一键启动（推荐）
+## host 网络启动（推荐）
 
-前后端分开两个 Git 仓库，**运行时用一份 compose**。把 [docker-compose.nas.yml](../docker-compose.nas.yml) 拷到 NAS（如 `/vol1/1000/docker/wolfnas/`）：
+前后端两个仓库，运行时用一份 compose。适用 Docker 环境，容器走宿主机网络：前端占用 **3000**，后端 API 只在本机 **8080** 给前端反代。
 
 ```bash
-# 媒体盘路径按飞牛实际存储改，例如 /vol1/1000/store
-export MEDIA_PATH=/vol1/1000/store
-docker compose -f docker-compose.nas.yml pull
-docker compose -f docker-compose.nas.yml up -d
+export MEDIA_PATH=/mnt/media   # 改成实际媒体库目录
+docker compose -f docker-compose.host.yml pull
+docker compose -f docker-compose.host.yml up -d
 ```
 
-- 浏览器：`http://<NAS-IP>:8080`
+- 浏览器：`http://<主机>:3000`
 - 默认账号：`admin` / `password`（登录后立刻改密）
-- 镜像（main 推送后自动构建，公开包无需 `docker login`）：
+- 镜像（推送 `main` 后自动构建）：
   - `ghcr.io/sjh00/wolf-nas:latest`
   - `ghcr.io/sjh00/wolf-nas-web:latest`
 
-首次构建完成后，到 GitHub Packages 把这两个包设为 **Public**。
+首次构建完成后，到 GitHub Packages 把这两个包设为 **Public**。host 网络下后端应用端口为 `3001`，避免与前端 3000 冲突。
 
 ## Docker Compose 安装（推荐）
 

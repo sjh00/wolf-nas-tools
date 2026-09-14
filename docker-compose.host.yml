@@ -1,0 +1,43 @@
+# host 网络：前端占用宿主机 3000，后端仅本机 8080 供前端反代（不对外发布）
+# 将 MEDIA_PATH 换成媒体库目录后：
+#   docker compose -f docker-compose.host.yml pull && docker compose -f docker-compose.host.yml up -d
+# 浏览器：http://<主机>:3000   默认 admin / password
+#
+# 镜像：ghcr.io/sjh00/wolf-nas 、 ghcr.io/sjh00/wolf-nas-web
+
+services:
+  frontend:
+    image: ghcr.io/sjh00/wolf-nas-web:latest
+    container_name: wolfnas-web
+    network_mode: host
+    environment:
+      LISTEN_PORT: "3000"
+      BACKEND_HOST: 127.0.0.1
+      BACKEND_PORT: "8080"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/sjh00/wolf-nas:latest
+    container_name: wolfnas
+    hostname: wolfnas
+    network_mode: host
+    volumes:
+      - ./data:/data
+      - ${MEDIA_PATH:-/mnt/media}:/media
+    environment:
+      PUID: "0"
+      PGID: "0"
+      UMASK: "000"
+      TZ: Asia/Shanghai
+      WOLFNAS_DATA: /data
+      NEXUS_PORT: "3001"
+    restart: unless-stopped
+    healthcheck:
+      test: "wget -qO- http://127.0.0.1:8080/health || exit 1"
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
