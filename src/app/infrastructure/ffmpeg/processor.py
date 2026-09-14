@@ -1,0 +1,121 @@
+import subprocess
+
+import log
+from app.utils.json_utils import JsonUtils
+
+
+class FfmpegProcessor:
+    @staticmethod
+    def get_thumb_image_from_video(video_path, image_path, frames="00:03:01"):
+        """使用ffmpeg从视频文件中截取缩略图"""
+        if not video_path or not image_path:
+            return False
+        cmd = [
+            "ffmpeg",
+            "-i",
+            video_path,
+            "-ss",
+            frames,
+            "-vframes",
+            "1",
+            "-f",
+            "image2",
+            image_path,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return bool(result.stdout.strip())
+        except Exception:
+            return False
+
+    @staticmethod
+    def extract_wav_from_video(video_path, audio_path, audio_index=None):
+        """
+        使用ffmpeg从视频文件中提取16000hz, 16-bit的wav格式音频
+        """
+        if not video_path or not audio_path:
+            return False
+
+        # 提取指定音频流
+        if audio_index:
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-i",
+                video_path,
+                "-map",
+                f"0:a:{audio_index}",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                audio_path,
+            ]
+        else:
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-i",
+                video_path,
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                audio_path,
+            ]
+
+        ret = subprocess.run(command).returncode  # nosec B603
+        return ret == 0
+
+    @staticmethod
+    def get_video_metadata(video_path):
+        """
+        获取视频元数据
+        """
+        if not video_path:
+            return False
+
+        try:
+            command = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", video_path]
+            result = subprocess.run(command, capture_output=True)  # nosec B603
+            if result.returncode == 0:
+                return JsonUtils.loads(result.stdout.decode("utf-8"))
+        except Exception as e:
+            log.warn(f"[FfmpegProcessor]获取视频元数据失败: {e}")
+        return None
+
+    @staticmethod
+    def extract_subtitle_from_video(video_path, subtitle_path, subtitle_index=None):
+        """
+        从视频中提取字幕
+        """
+        if not video_path or not subtitle_path:
+            return False
+
+        if subtitle_index:
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-i",
+                video_path,
+                "-map",
+                f"0:s:{subtitle_index}",
+                subtitle_path,
+            ]
+        else:
+            command = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y", "-i", video_path, subtitle_path]
+        ret = subprocess.run(command).returncode  # nosec B603
+        return ret == 0
