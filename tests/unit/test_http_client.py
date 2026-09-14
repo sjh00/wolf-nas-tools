@@ -484,6 +484,63 @@ def mock_async_error():
         yield mock_req
 
 
+# ==================== CookieAuth 跨重定向回归 ====================
+
+
+class TestCookieAuthSurvivesRedirect:
+    """CookieAuth 跨 302 重定向必须保留 Cookie header.
+
+    背景：httpx2 的 Client._redirect_headers() 会无条件 pop Cookie header（httpx 假设
+    cookie 由 client.cookies jar 管理）。HttpClient.request 检测到 auth=CookieAuth 时
+    会同步把 cookie 写入 client.cookies jar，重定向时 jar 自动重建 Cookie header —
+    确保 PT 站 302 跳转仍带鉴权。回归用户报告"订阅在 pt 找到种子后，提示下载的是网页"。
+    """
+
+    def test_cookie_survives_redirect(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        received: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append(dict(self.headers))
+                if self.path == "/rss":
+                    self.send_response(302)
+                    self.send_header("Location", "/download")
+                    self.end_headers()
+                elif self.path == "/download":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-bittorrent")
+                    self.send_header("Content-Disposition", 'attachment; filename="x.torrent"')
+                    self.end_headers()
+                    self.wfile.write(b"d8:announcee")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *_args, **_kwargs):  # noqa: ANN001
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), Handler)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            client = HttpClient(config=HttpClientConfig(follow_redirects=True, max_connections=4))
+            resp = client.request("GET", f"http://127.0.0.1:{port}/rss", auth=CookieAuth("session=abc; uid=42"))
+            assert resp.status_code == 200
+            assert len(received) == 2, f"应产生 2 次请求（302 + download），实际 {len(received)}"
+            assert received[0].get("Cookie") == "session=abc; uid=42", (
+                f"原始请求应带 Cookie: {received[0].get('Cookie')!r}"
+            )
+            assert received[1].get("Cookie") == "session=abc; uid=42", (
+                "重定向后 Cookie 丢失（这是 PT 站被退到 login 页的根因）: "
+                f"{received[1].get('Cookie')!r}"
+            )
+        finally:
+            srv.shutdown()
+
+
 @pytest.fixture
 def mock_async_status_error():
     with (
