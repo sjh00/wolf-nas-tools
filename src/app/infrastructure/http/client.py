@@ -10,6 +10,7 @@ from typing import Any, BinaryIO
 import httpx2
 
 import log
+from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.browser_transport import ChromeTransport
 from app.infrastructure.http.cache import HttpCacheConfig
 from app.infrastructure.http.config import HttpClientConfig
@@ -187,6 +188,19 @@ class HttpClient:
         raise_on_error = raise_for_status or raise_exception
         cache_ttl = kwargs.pop("cache_ttl", None)
         cache_bypass = kwargs.pop("cache_bypass", False)
+        auth = kwargs.pop("auth", None)
+
+        # CookieAuth 的 cookie 写入 request.headers 后，跨重定向 httpx 会 pop Cookie
+        # （httpx 假设 cookie 由 client.cookies jar 管理）。若仅靠 auth_flow 设置，
+        # 302 后丢失 → PT 站 / 私有站点跳到 login 页。同步写入 client.cookies jar
+        # 让重定向时 cookie 自动重建。仅对 CookieAuth 生效，避免影响其他 auth 类型。
+        if isinstance(auth, CookieAuth) and auth.cookies:
+            try:
+                self._client.cookies.clear()
+                for k, v in auth.cookies.items():
+                    self._client.cookies.set(k, v)
+            except Exception as exc:  # noqa: BLE001
+                log.debug(f"[HttpClient]同步 CookieAuth 到 client jar 失败（不影响原始 header 路径）: {exc!s}")
 
         if self._rate_limiter and rate_limit_key and rate_limit_rate:
             acquired = self._rate_limiter.acquire(
@@ -204,7 +218,7 @@ class HttpClient:
                 return cached
 
         def _do_request() -> httpx2.Response:
-            response = self._client.request(method, url, **kwargs)
+            response = self._client.request(method, url, auth=auth, **kwargs)
             if raise_on_error:
                 response.raise_for_status()
             return response
