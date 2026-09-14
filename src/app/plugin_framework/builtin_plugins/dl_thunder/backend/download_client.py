@@ -77,6 +77,13 @@ class Thunder(_IDownloadClient):
     def connect(self) -> None:
         pass
 
+    def _ensure_connected(self) -> bool:
+        """客户端缺失时按配置重建；配置缺失则重建后仍为空，返回 False."""
+        if self._client:
+            return True
+        self.init_config()
+        return bool(self._client)
+
     def get_status(self) -> bool:
         if not self._client:
             return False
@@ -250,7 +257,7 @@ class Thunder(_IDownloadClient):
         cookie: str | None = None,
         **kwargs: Any,
     ) -> str | None:
-        if not self._client:
+        if not self._ensure_connected() or not self._client:
             return None
         try:
             if isinstance(content, str):

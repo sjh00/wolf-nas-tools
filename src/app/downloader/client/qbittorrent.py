@@ -101,6 +101,18 @@ class Qbittorrent(_IDownloadClient):
         if self.host and self.port:
             self.qbc = self.__login_qbittorrent()
 
+    def _ensure_connected(self) -> bool:
+        """会话缺失时按需重连.
+
+        实例在首次构造时只登录一次且会被 client_factory 缓存；
+        若那次登录因瞬时网络/超时而失败，qbc 会永久为 None，
+        导致后续所有操作直接"客户端不可用"。这里在操作前补一次登录。
+        """
+        if self.qbc:
+            return True
+        self.connect()
+        return bool(self.qbc)
+
     def __login_qbittorrent(self):
         try:
             qbt = qbittorrentapi.Client(
@@ -502,7 +514,7 @@ class Qbittorrent(_IDownloadClient):
         torrent_hash = self.calculate_torrent_hash(content)
         if not torrent_hash:
             return False, None
-        if not self.qbc:
+        if not self._ensure_connected():
             return False, torrent_hash
         try:
             torrents, error = self.get_torrents(ids=[torrent_hash])
@@ -574,7 +586,7 @@ class Qbittorrent(_IDownloadClient):
     ):
         if not content:
             return False
-        if not self.qbc:
+        if not self._ensure_connected() or not self.qbc:
             log.error(f"[{self.client_name}]{self.name} qBittorrent 客户端不可用（未登录或连接失败）")
             return False
         if isinstance(content, str):
