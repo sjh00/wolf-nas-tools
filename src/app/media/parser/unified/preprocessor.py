@@ -6,7 +6,7 @@ import re
 
 from app.utils import StringUtils
 
-_META_CHARS = set("粤日英简繁国台港双多单语字幕音轨频内嵌封挂压效硬软中外体转载自搬运")
+_META_CHARS = set("粤日英简繁国台港双多单语字幕音轨声频道内嵌封挂压效硬软中外体转载自搬运蓝光高清")
 
 _RE_SITE_TAG = re.compile(
     r"^[【\[]?(?:[动漫画纪录片电影视连续剧集日美韩中港台海外华语综艺原盘高清]{2,}|TV|Animation|Movie|Documentar|Anime|完结][】\]]?|★\d+月新番★)",
@@ -32,7 +32,10 @@ _RE_BRACKET_GROUP = re.compile(r"^\[[^\]]+]$")
 _RE_AUDIO_BITRATE = re.compile(r"\b\d{2,4}(\.\d+)?\s*(kHz|kbps|bit|bits)\b", re.IGNORECASE)
 _RE_AUDIO_FORMAT = re.compile(r"\b(FLAC|ALAC|APE|WAV|AIFF|DSD|DTS|MP3|AAC|OGG|WMA|M4A|Opus)\b", re.IGNORECASE)
 _RE_FPS_HZ = re.compile(r"\d+\s*(FPS|HZ)\b", re.IGNORECASE)
-_RE_DATE = re.compile(r"\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}")
+# 音轨数标记（如 7.1Audio、5.1AC3、2Audio），X.YAudio 模式容易被 DATE 正则误判为发布日期，需先剥除
+_RE_AUDIO_CHANNELS = re.compile(r"\b\d(\.\d)?[-.]?(?:[Aa]udio|[Aa][Cc]-?3|[Aa][Cc]3\b)")
+# 日期匹配：负向先行断言，避免误吞 "7.1Audio" 这种音轨数 + Audio 的组合
+_RE_DATE = re.compile(r"\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}(?!\s*[Aa]udio)")
 _RE_YEAR_RANGE = re.compile(r"([\s.]+)(\d{4})-(\d{4})")
 _RE_LEADING_BRACKET = re.compile(r"^[\[【](.+?)[\]】]")
 # 额外内容/花絮后缀（BONUS.DISC、extras-N）：识别标题时剔除，避免混入正式标题/集数
@@ -63,6 +66,7 @@ def prepare_title(title: str) -> str:
     title = _RE_TV_NUMBER.sub(r"[\1", title)
     title = _RE_4K.sub("2160p", title)
     title = _RE_AUDIO_BITRATE.sub("", title)
+    title = _RE_AUDIO_CHANNELS.sub("", title)
     title = _RE_DATE.sub("", title)
     title = _RE_YEAR_RANGE.sub(r"\1\2", title)
     # 剔除 BONUS.DISC / .extras-N 花絮后缀，避免被当成正式标题/集数识别

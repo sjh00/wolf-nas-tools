@@ -10,7 +10,7 @@ from app.utils.chinese_utils import to_simplified
 
 from .types import ParseContext
 
-_CHINESE_META_CLEAN = frozenset("粤日英简繁国台港双多单语字幕音轨频内嵌封挂压效硬软中外体转载自搬运")
+_CHINESE_META_CLEAN = frozenset("粤日英简繁国台港双多单语字幕音轨声频道内嵌封挂压效硬软中外体转载自搬运蓝光高清")
 
 # 集标题区域内的元数据词（拒绝将此类词作为集标题）
 _EP_TITLE_META_RE = re.compile(
@@ -88,7 +88,8 @@ _META_TOKEN_RE = re.compile(
     r"|imax|open[-]?matte|widescreen|letterbox"
     r"|uncensored|censored|decensored"
     # --- 音轨/字幕 ---
-    r"|dual[-]?audio|multi[-]?audio|multi[-]?subs?|2[-]?audio|3[-]?audio|dual|multi"
+    r"|dual[-]?audio|multi[-]?audio|multi[-]?subs?|dual|multi"
+    r"|\d(\.\d)?[-]?audio"
     r"|dub(bed)?|sub(bed)?|hard[-]?sub|soft[-]?sub|eng[-]?sub"
     r"|ch[st]|chs|cht|jpsc|jptc|jps|jpt|srt|srtx?\d*|assx?\d*|ssax?\d*|idx|sup|pgs"
     r"|gb|big5"
@@ -402,7 +403,13 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
             if any(w[:1].isalpha() for w in words[idx + 1 :]):
                 en_parts.append(word)
             continue
-        elif StringUtils.is_chinese(word):
+        # 处理"数字 + 元数据中文词"组合，如 "7声轨"、"3音轨"、"5声道"
+        digit_prefix = re.match(r"^\d+(?:\.\d+)?", word)
+        if digit_prefix and digit_prefix.end() < len(word):
+            rest = word[digit_prefix.end() :]
+            if rest and _is_metadata(rest):
+                continue
+        if StringUtils.is_chinese(word):
             # 过滤纯元数据的汉字词（如 日语中字、新番、连载等）
             if _is_metadata(word):
                 continue
