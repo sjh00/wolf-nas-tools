@@ -1,5 +1,6 @@
 """DownloadService 下载前多版本检测 单元测试."""
 
+from typing import Any
 from unittest.mock import MagicMock
 
 from app.media.models import MediaInfo
@@ -71,7 +72,7 @@ class TestDownloadFromLinkConfirm:
             {"full_path": "/b.mkv", "exists": True},
         ]
         down = MagicMock()
-        media_svc = MagicMock()
+        media_svc: Any = MagicMock()
         media_svc.get_media_info.return_value = media
         svc = _make_svc(file_index=fi, downloader=down, media=media_svc)
 
@@ -90,7 +91,7 @@ class TestDownloadFromLinkConfirm:
         fi.get_versions.return_value = []
         down = MagicMock()
         down.download.return_value = (None, True, "")
-        media_svc = MagicMock()
+        media_svc: Any = MagicMock()
         media_svc.get_media_info.return_value = media
         svc = _make_svc(file_index=fi, downloader=down, media=media_svc)
 

@@ -87,13 +87,15 @@ class SiteCache:
         self._sync_indexer_site_config()
 
     def _sync_indexer_site_config(self) -> None:
-        """将 builtin 站点名同步到 INDEXER_SITE_CONFIG；已存在行保留 enabled/download_setting。"""
+        """将 builtin 站点名同步到 INDEXER_SITE_CONFIG。
+
+        不写入 enabled：新行走表默认值（启用搜索），已有行保留用户设置。
+        """
         try:
             for site_info in self._site_by_ids.values():
                 self._indexer_site_config_repo.upsert_site(
                     site_name=site_info["name"],
                     source="builtin",
-                    enabled=True,
                 )
         except Exception as e:
             log.error(f"[SiteCache]同步索引器站点配置失败: {e!s}")

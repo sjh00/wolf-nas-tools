@@ -78,6 +78,23 @@ class TestSiteServiceGetSitesMerge:
         assert tp["rssurl"] == ""
         assert tp["rss_enable"] is False
 
+    def test_full_mode_keeps_builtin_site_when_search_disabled(self, site_service_with_third_party):
+        site_service_with_third_party._indexer_site_config_repo.list_all.return_value = [
+            IndexerSiteConfigEntity(id=10, site_name="1337x", source="jackett", enabled=True, public=True),
+            IndexerSiteConfigEntity(id=12, site_name="M-Team", source="builtin", enabled=False, public=False),
+        ]
+        result = site_service_with_third_party.get_sites(basic=False)
+        mteam = [r for r in result if r["name"] == "M-Team"][0]
+        assert mteam["enabled"] is False
+        assert mteam.get("third_party") is False
+
+    def test_basic_mode_still_hides_search_disabled_builtin(self, site_service_with_third_party):
+        site_service_with_third_party._indexer_site_config_repo.list_all.return_value = [
+            IndexerSiteConfigEntity(id=12, site_name="M-Team", source="builtin", enabled=False, public=False),
+        ]
+        result = site_service_with_third_party.get_sites(basic=True)
+        assert all(r["name"] != "M-Team" for r in result)
+
     def test_rss_brush_statistic_filter_returns_only_builtin(self, site_service_with_third_party):
         for flag in ("rss", "brush", "statistic"):
             site_service_with_third_party.get_sites(**{flag: True})
