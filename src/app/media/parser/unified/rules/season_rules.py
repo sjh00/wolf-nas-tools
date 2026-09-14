@@ -36,7 +36,9 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="season_keyword",
-        pattern=re.compile(r"\bSeason\s*(\d+)\b", re.IGNORECASE),
+        # 仅 1-2 位数字："The Long Season 2017" 的 "Season 2017" 是"片名 Season + 年份"，
+        # 不能被当季数；4 位数字交给 year 规则
+        pattern=re.compile(r"\bSeason\s*(\d{1,2})\b", re.IGNORECASE),
         category="season",
         priority=85,
         confidence=0.9,
@@ -70,8 +72,11 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="roman_season",
-        # 动漫常见季标：Unicode 罗马数字（Ⅲ）或拉丁罗马数字（III/IV 等），排除单个 I/V/X
-        pattern=re.compile(r"\b([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]|[IVX]{2,5})\b(?!\s*[-~]\s*[SsEe]\s*\d)"),
+        # 动漫常见季标：Unicode 罗马数字（Ⅲ）或拉丁罗马数字（III/IV 等），排除单个 I/V/X。
+        # 排除 "Part III"/"Part II" 电影分部标记，以及 "-XXX" 这类发布组后缀（全 IVX 字母）
+        pattern=re.compile(
+            r"(?<!Part[.\s-])(?<!-)\b([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]|[IVX]{2,5})\b(?!\s*[-~]\s*[SsEe]\s*\d)"
+        ),
         category="season",
         priority=72,
         confidence=0.7,
