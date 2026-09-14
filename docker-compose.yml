@@ -40,6 +40,7 @@ x-env-backend-common: &env-backend-common
 x-env-db-common: &env-db-common
   <<: *env-backend-common
   SKIP_MIGRATION: "true"
+  REDIS__ENABLED: "true"
   REDIS__HOST: wolfnas-redis
   REDIS__PORT: "6379"
   REDIS__DB: "0"
