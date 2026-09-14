@@ -1,0 +1,128 @@
+# WolfNas PostgreSQL 完整版：前后端 + Redis + PostgreSQL + OCR + Chrome
+# 启动：docker compose -f docker-compose.postgresql.yml up -d
+# 必填：.env 中设置 POSTGRES_PASSWORD、VNC_PASSWORD（禁止使用默认密码）
+services:
+  frontend:
+    image: sjh00/wolf-nas-web:latest
+    ports:
+      - 8080:8080
+    restart: always
+    container_name: wolfnas-web
+    networks:
+      - wolfnas-network
+    depends_on:
+      backend:
+        condition: service_healthy
+        required: false
+
+  # 后端：PostgreSQL，启动时自动执行 alembic 迁移（镜像内置）
+  backend:
+    image: sjh00/wolf-nas:latest
+    ports:
+      - 3000:8080
+    volumes:
+      - ./data:/data
+      # 替换为你的实际媒体目录，例如：
+      # - /mnt/media:/media
+    restart: always
+    hostname: wolfnas
+    container_name: wolfnas
+    networks:
+      wolfnas-network:
+        aliases:
+          - backend
+    environment:
+      PUID: "0"
+      PGID: "0"
+      UMASK: "000"
+      WOLFNAS_DATA: /data
+      DATABASE__TYPE: postgresql
+      DATABASE__HOST: postgresql
+      DATABASE__PORT: "5432"
+      DATABASE__USERNAME: wolfnas
+      DATABASE__PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD（禁止使用默认密码）}
+      DATABASE__DATABASE: wolfnas
+      REDIS__HOST: redis
+      REDIS__PORT: "6379"
+      REDIS__DB: "0"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: "wget -qO- http://localhost:8080/health || exit 1"
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: wolfnas-redis
+    restart: always
+    networks:
+      - wolfnas-network
+    volumes:
+      - ./data/redis_data:/data
+    command: redis-server --save "" --appendonly no --dir /data
+
+  postgresql:
+    image: postgres:17-alpine
+    container_name: wolfnas-postgresql
+    restart: always
+    networks:
+      - wolfnas-network
+    environment:
+      - POSTGRES_USER=wolfnas
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD（禁止使用默认密码）}
+      - POSTGRES_DB=wolfnas
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # OCR / 站点验证（可选）
+  wolfnas-verify:
+    image: sjh00/wolf-nas-verify:latest
+    container_name: wolfnas-verify
+    restart: always
+    networks:
+      - wolfnas-network
+    ports:
+      - 9300:9300
+
+  # Chrome 自动化（可选）
+  wolfnas-chrome:
+    image: sjh00/wolf-nas-chrome:latest
+    container_name: wolfnas-chrome
+    restart: always
+    networks:
+      - wolfnas-network
+    shm_size: 2g
+    environment:
+      - VNC_PASSWORD=${VNC_PASSWORD:?请在 .env 中设置 VNC_PASSWORD（禁止使用默认密码 password）}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-}
+      - SESSION_TTL=1800
+      - SESSION_CLEANUP_INTERVAL=60
+      - DATA_DIR=/app/data
+      - PROFILE_DATA_DIR=/app/data/profiles
+      - USER_DATA_PATH=/app/data/user_data
+      - FP_CENTER_DB=/app/data/fp_config_center.db
+    volumes:
+      - ./data/chrome:/app/data
+    ports:
+      - 9850:9850
+      - 6080:6080
+
+networks:
+  wolfnas-network:
+    driver: bridge
+    name: wolfnas-network

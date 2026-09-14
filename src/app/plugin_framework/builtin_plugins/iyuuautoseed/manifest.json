@@ -1,0 +1,109 @@
+{
+  "manifest_version": "1.0",
+  "id": "iyuuautoseed",
+  "name": "IYUU自动辅种",
+  "version": "1.1",
+  "author": "sjh00",
+  "author_url": "https://github.com/sjh00",
+  "description": "基于IYUU官方Api实现自动辅种。",
+  "category": "download",
+  "tags": ["辅种", "IYUU"],
+  "icon": "lucide:copy",
+  "color": "#eab308",
+  "min_app_version": "3.0.0",
+  "backend": {
+    "entry": "backend.plugin:IYUUAutoSeedPlugin",
+    "api_prefix": "/api/plugin/iyuuautoseed",
+    "permissions": [],
+    "hooks": [
+      "plugin.config_changed"
+    ],
+    "supports_run": true
+  },
+  "frontend": {
+    "routes": [
+      {
+        "path": "bind-sites",
+        "component": "BindSitesPage",
+        "title": "绑定站点",
+        "icon": "lucide:link",
+        "menu": true
+      }
+    ],
+    "settings": {
+      "component": "SettingsPage",
+      "fields": [
+        {
+          "key": "enable",
+          "type": "switch",
+          "label": "开启自动辅种",
+          "default": false,
+          "help": "开启后自动监控下载器，对下载完成的任务自动辅种"
+        },
+        {
+          "key": "token",
+          "type": "input",
+          "label": "IYUU Token",
+          "default": "",
+          "placeholder": "IYUUxxx",
+          "help": "登录IYUU使用的Token"
+        },
+        {
+          "key": "cron",
+          "type": "cron",
+          "label": "执行周期",
+          "default": "0 0 * * *",
+          "placeholder": "0 0 * * *",
+          "help": "辅种任务执行的时间周期"
+        },
+        {
+          "key": "downloaders",
+          "type": "multi_select",
+          "label": "辅种下载器",
+          "source": "downloaders",
+          "default": [],
+          "help": "扫描这些下载器中已完成的种子进行辅种"
+        },
+        {
+          "key": "sites",
+          "type": "multi_select",
+          "label": "辅种站点",
+          "source": "sites",
+          "default": [],
+          "help": "仅对选中站点辅种"
+        },
+        {
+          "key": "nolabels",
+          "type": "input",
+          "label": "不辅种标签",
+          "default": "",
+          "placeholder": "使用,分隔多个标签",
+          "help": "下载器中的种子有以下标签时不进行辅种"
+        },
+        {
+          "key": "rate_limit",
+          "type": "input",
+          "label": "IYUU API 限流",
+          "default": "1/30s",
+          "placeholder": "1/30s",
+          "help": "请求 IYUU API 的速率限制，格式 次数/单位，如 5/s、100/m；留空不限流"
+        },
+        {
+          "key": "notify",
+          "type": "switch",
+          "label": "运行时通知",
+          "default": false,
+          "help": "运行辅助任务后发送通知"
+        },
+        {
+          "key": "clearcache",
+          "type": "switch",
+          "label": "下一次运行时清除缓存",
+          "default": false,
+          "help": "清除辅种缓存，出错的种子会重新尝试辅种"
+        }
+      ]
+    },
+    "slots": []
+  }
+}

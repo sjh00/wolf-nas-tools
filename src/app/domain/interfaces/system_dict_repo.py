@@ -1,0 +1,17 @@
+"""
+系统字典领域 Repository 接口
+"""
+
+from typing import Protocol
+
+from app.domain.entities.system_dict import SystemDictEntity
+
+
+class ISystemDictRepository(Protocol):
+    """系统字典仓储接口"""
+
+    def get_by_type_key(self, dtype: str, key: str) -> SystemDictEntity | None: ...
+    def list_by_type(self, dtype: str) -> list[SystemDictEntity]: ...
+    def set(self, dtype: str, key: str, value: str, note: str = "") -> bool: ...
+    def delete(self, dtype: str, key: str) -> bool: ...
+    def exists(self, dtype: str, key: str) -> bool: ...

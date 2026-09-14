@@ -1,80 +1,88 @@
-# 使用多阶段构建优化镜像大小
-FROM python:3.11-alpine3.19 AS builder
+# WolfNas 后端 Dockerfile
+# 纯后端构建，前端由独立服务提供
 
-# 减少 COPY 操作的次数
-COPY ./package_list.txt /tmp/
-# Install uv.
+FROM python:3.14-slim-trixie AS builder
+
+# Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# 安装依赖，安装 rclone 和 mc，清理无用文件
-RUN apk add --no-cache $(cat /tmp/package_list.txt) \
-    && curl -sSL https://rclone.org/install.sh | bash \
-    && ARCH=$(case "$(uname -m)" in x86_64) echo "amd64";; aarch64) echo "arm64";; esac) \
-    && curl -sSL https://dl.min.io/client/mc/release/linux-${ARCH}/mc -o /usr/bin/mc \
-    && chmod +x /usr/bin/mc \
-    && rm -rf /tmp/* /root/.cache /var/cache/apk/*
+# 编译依赖
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    gcc libffi-dev libxml2-dev libxslt1-dev libssl-dev libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# 添加 rootfs 文件
-COPY --chmod=755 ./docker/rootfs /
+WORKDIR /wolfnas
+COPY pyproject.toml uv.lock ./
+COPY src ./src
+COPY alembic ./alembic
+COPY alembic.ini run.py start-prod.sh start-dev.sh restart-server.sh stop-server.sh ./
 
-# 最小化的运行时镜像
-FROM scratch AS app
+ARG UV_INDEX_URL=https://pypi.org/simple
+ENV UV_INDEX_URL=${UV_INDEX_URL}
 
-# 复制 builder 阶段的内容到运行时
-COPY --from=builder / /
+RUN uv venv .venv \
+    && uv sync --frozen --no-cache --no-install-package nexus-media
 
-# 设置环境变量
+# ==================== 运行时 ====================
+FROM python:3.14-slim-trixie
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ARG UV_INDEX_URL=https://pypi.org/simple
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    nginx curl bash sudo tzdata wget xz-utils netcat-openbsd \
+    libxml2 libxslt1.1 libffi8 libssl3 libpq5 \
+    && rm -rf /var/lib/apt/lists/* /tmp/*
+
+ARG S6_OVERLAY_VERSION=3.2.3.0
+RUN S6_ARCH=$(case "$(uname -m)" in x86_64) echo "x86_64";; aarch64) echo "aarch64";; esac) \
+    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" | tar -Jxpf - -C / \
+    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" | tar -Jxpf - -C / \
+    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz" | tar -Jxpf - -C / \
+    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-arch.tar.xz" | tar -Jxpf - -C /
+
+COPY --chmod=755 docker/rootfs /
+RUN mkdir -p /var/log/nginx /var/run
+
 ENV S6_SERVICES_GRACETIME=30000 \
     S6_KILL_GRACETIME=60000 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
-    S6_SYNC_DISKS=1 \
-    HOME="/nt" \
+    HOME="/nexus" \
     TERM="xterm" \
     LANG="C.UTF-8" \
     TZ="Asia/Shanghai" \
-    NASTOOL_CONFIG="/config/config.yaml" \
+    WOLFNAS_CONFIG="/data/config.yaml" \
+    WOLFNAS_DATA="/data" \
     PS1="\u@\h:\w \$ " \
-    PYPI_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple" \
-    ALPINE_MIRROR="mirrors.ustc.edu.cn" \
     PUID=0 \
     PGID=0 \
     UMASK=000 \
-    NT_PORT=3000 \
-    WORKDIR="/nas-tools"
+    NEXUS_PORT=3000 \
+    WORKDIR="/wolfnas"
 
-# 创建必要的目录
-RUN mkdir -p ${WORKDIR} ${HOME}
-
-# 复制应用代码到镜像
-ADD ./ ${WORKDIR}/
+RUN groupadd -r -g 911 nexus \
+    && useradd -r -g nexus -d ${HOME} -s /bin/bash -u 911 nexus \
+    && mkdir -p ${WORKDIR} ${HOME} /data/logs \
+    && echo "nexus ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 WORKDIR ${WORKDIR}
-# 添加用户和用户组，并设置系统参数
-RUN apk add --no-cache --virtual .build-deps \
-            libffi-dev \
-            gcc \
-            musl-dev \
-            libxml2-dev \
-            libxslt-dev \
-    && addgroup -S nt -g 911 \
-    && adduser -S nt -G nt -h ${HOME} -s /bin/bash -u 911 \
-    && echo 'fs.inotify.max_user_watches=5242880' >> /etc/sysctl.conf \
-    && echo 'fs.inotify.max_user_instances=5242880' >> /etc/sysctl.conf \
-    && echo 'vm.overcommit_memory=1' >> /etc/sysctl.conf \
-    && echo "nt ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
-    && uv sync --frozen --no-cache\
-    && apk del --purge .build-deps \
-    && rm -rf /tmp/* /root/.cache /var/cache/apk/*
 
-# 健康检查
+COPY --chown=nexus:nexus . ${WORKDIR}/
+COPY --from=builder --chown=nexus:nexus /wolfnas/.venv ${WORKDIR}/.venv
+
+RUN chmod +x \
+    ${WORKDIR}/start-prod.sh \
+    ${WORKDIR}/start-dev.sh \
+    ${WORKDIR}/restart-server.sh \
+    ${WORKDIR}/stop-server.sh
+
 HEALTHCHECK --interval=30s --timeout=30s --retries=3 \
-    CMD wget -qO- http://localhost:${NT_PORT}/healthcheck || exit 1
+    CMD wget -qO- http://localhost:8080/health || exit 1
 
-# 暴露端口
-EXPOSE ${NT_PORT}
-
-# 挂载配置目录
+EXPOSE 3000
 VOLUME ["/config"]
-
-# 启动入口
 ENTRYPOINT ["/init"]
