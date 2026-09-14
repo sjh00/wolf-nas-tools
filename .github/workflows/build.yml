@@ -35,20 +35,15 @@ jobs:
           TAGS="ghcr.io/${OWNER}/wolf-nas:latest"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"
-            TAGS="${TAGS}
-ghcr.io/${OWNER}/wolf-nas:${VER}"
+            TAGS="${TAGS},ghcr.io/${OWNER}/wolf-nas:${VER}"
           fi
           if [ -n "${DOCKERHUB_USER}" ] && [ -n "${DOCKERHUB_PWD}" ]; then
-            TAGS="${TAGS}
-${DOCKERHUB_USER}/wolf-nas:latest"
+            TAGS="${TAGS},${DOCKERHUB_USER}/wolf-nas:latest"
             if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-              TAGS="${TAGS}
-${DOCKERHUB_USER}/wolf-nas:${VER}"
+              TAGS="${TAGS},${DOCKERHUB_USER}/wolf-nas:${VER}"
             fi
           fi
-          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$TAGS" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Set Up QEMU
         uses: docker/setup-qemu-action@v4
