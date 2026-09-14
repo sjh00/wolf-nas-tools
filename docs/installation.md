@@ -23,6 +23,25 @@
 | wolfnas-chrome | 9850 / 6080 | `9850:9850` / `6080:6080` |
 | wolfnas-verify | 9300 | `9300:9300` |
 
+## 飞牛 OS / NAS 一键启动（推荐）
+
+前后端分开两个 Git 仓库，**运行时用一份 compose**。把 [docker-compose.nas.yml](../docker-compose.nas.yml) 拷到 NAS（如 `/vol1/1000/docker/wolfnas/`）：
+
+```bash
+# 媒体盘路径按飞牛实际存储改，例如 /vol1/1000/store
+export MEDIA_PATH=/vol1/1000/store
+docker compose -f docker-compose.nas.yml pull
+docker compose -f docker-compose.nas.yml up -d
+```
+
+- 浏览器：`http://<NAS-IP>:8080`
+- 默认账号：`admin` / `password`（登录后立刻改密）
+- 镜像（main 推送后自动构建，公开包无需 `docker login`）：
+  - `ghcr.io/sjh00/wolf-nas:latest`
+  - `ghcr.io/sjh00/wolf-nas-web:latest`
+
+首次构建完成后，到 GitHub Packages 把这两个包设为 **Public**。
+
 ## Docker Compose 安装（推荐）
 
 项目根目录提供 **3 个独立 compose 文件**，按部署场景选一个：

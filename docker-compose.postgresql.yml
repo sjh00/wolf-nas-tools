@@ -3,11 +3,14 @@
 # 必填：.env 中设置 POSTGRES_PASSWORD、VNC_PASSWORD（禁止使用默认密码）
 services:
   frontend:
-    image: sjh00/wolf-nas-web:latest
+    image: ghcr.io/sjh00/wolf-nas-web:latest
     ports:
       - 8080:8080
     restart: always
     container_name: wolfnas-web
+    environment:
+      BACKEND_HOST: wolfnas
+      BACKEND_PORT: "8080"
     networks:
       - wolfnas-network
     depends_on:
@@ -17,7 +20,7 @@ services:
 
   # 后端：PostgreSQL，启动时自动执行 alembic 迁移（镜像内置）
   backend:
-    image: sjh00/wolf-nas:latest
+    image: ghcr.io/sjh00/wolf-nas:latest
     ports:
       - 3000:8080
     volumes:
