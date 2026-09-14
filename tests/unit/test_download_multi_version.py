@@ -71,10 +71,9 @@ class TestDownloadFromLinkConfirm:
             {"full_path": "/b.mkv", "exists": True},
         ]
         down = MagicMock()
-        svc = _make_svc(file_index=fi, downloader=down)
-        svc._sites.get_sites.return_value = {}
-        # 让 get_media_info 返回带 tmdb 的 media
-        svc._media.get_media_info.return_value = media
+        media_svc = MagicMock()
+        media_svc.get_media_info.return_value = media
+        svc = _make_svc(file_index=fi, downloader=down, media=media_svc)
 
         result = svc.download_from_link(
             site="s", enclosure="http://x", title="Test.2020.1080p", description="",
@@ -91,8 +90,9 @@ class TestDownloadFromLinkConfirm:
         fi.get_versions.return_value = []
         down = MagicMock()
         down.download.return_value = (None, True, "")
-        svc = _make_svc(file_index=fi, downloader=down)
-        svc._media.get_media_info.return_value = media
+        media_svc = MagicMock()
+        media_svc.get_media_info.return_value = media
+        svc = _make_svc(file_index=fi, downloader=down, media=media_svc)
 
         result = svc.download_from_link(
             site="s", enclosure="http://x", title="Test.2020.1080p", description="",
