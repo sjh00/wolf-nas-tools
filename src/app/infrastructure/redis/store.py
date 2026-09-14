@@ -9,8 +9,6 @@ from app.utils.json_utils import JsonUtils
 from redis import StrictRedis
 from redis.exceptions import RedisError
 
-redis_cfg = settings.redis
-
 
 class RedisStore:
     def __init__(self):
@@ -19,6 +17,10 @@ class RedisStore:
         self._lock = threading.RLock()
 
     def _ensure_connection(self) -> StrictRedis | None:
+        # 读取时取当前配置：设置页修改后热重载即可生效，且未启用时不发起任何连接
+        cfg = settings.redis
+        if not cfg.enabled:
+            return None
         with self._lock:
             if self._available and self._client is not None:
                 try:
@@ -31,10 +33,10 @@ class RedisStore:
             if self._client is None:
                 try:
                     self._client = StrictRedis(
-                        host=redis_cfg.host,
-                        port=redis_cfg.port,
-                        password=redis_cfg.password or None,
-                        db=redis_cfg.db,
+                        host=cfg.host,
+                        port=cfg.port,
+                        password=cfg.password or None,
+                        db=cfg.db,
                         socket_connect_timeout=5,
                         socket_timeout=10,
                     )

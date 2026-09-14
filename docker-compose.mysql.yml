@@ -45,6 +45,7 @@ services:
       DATABASE__USERNAME: wolfnas
       DATABASE__PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD（禁止使用默认密码）}
       DATABASE__DATABASE: wolfnas
+      REDIS__ENABLED: "true"
       REDIS__HOST: redis
       REDIS__PORT: "6379"
       REDIS__DB: "0"

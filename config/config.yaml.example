@@ -51,6 +51,14 @@ app:
   # 开启后，只有Releases更新，才会有更新提示
   releases_update_only: false
 
+# 【Redis】：可选。未启用时缓存/锁走内存，不探测 127.0.0.1:6379
+redis:
+  enabled: false
+  host: 127.0.0.1
+  port: 6379
+  password:
+  db: 0
+
 # 【数据库配置】
 database:
   type: sqlite
