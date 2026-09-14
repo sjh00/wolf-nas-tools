@@ -557,31 +557,42 @@ def get_visible_sites(
     """当前用户可用站点列表（closed 策略下按站点授权白名单过滤），带用途粒度.
 
     用途粒度同时受站点实际能力约束：搜索需站点已启用（索引器 check），
-    RSS 需站点已配置 RSS 源，避免向用户展示"选了也没用"的站点。
+    RSS 需站点已配置 RSS 源。搜索关闭但已开 RSS 的站点仍会出现在订阅站点里。
     """
     grant_service = app_context.site_grant_service
     visible = grant_service.get_visible_sites(current_user)
-    indexers = app_context.indexer_service.indexer.get_indexers_with_source(check=True)
-    # RSS 能力：站点已配置 RSS 源
+    indexer = app_context.indexer_service.indexer
+    all_indexers = indexer.get_indexers_with_source(check=False)
+    search_capable = {item["name"] for item in indexer.get_indexers_with_source(check=True)}
     try:
         rss_capable = {s.get("name") for s in (site_svc.get_sites(rss=True) or []) if s.get("name")}
     except Exception:  # noqa: BLE001
         rss_capable = set()
 
+    merged: dict[tuple[str, str], dict] = {}
+    for item in all_indexers:
+        merged[(item["source"], item["name"])] = item
+    for name in rss_capable:
+        if any(n == name for _, n in merged):
+            continue
+        merged[("builtin", name)] = {"name": name, "source": "builtin", "builtin": True}
+
     def _permissions(name: str, grants: set[str] | None) -> list[str]:
         perms = set(grants) if grants is not None else {"search", "rss"}
         if name not in rss_capable:
             perms.discard("rss")
+        if name not in search_capable:
+            perms.discard("search")
         return sorted(perms)
 
-    if visible is None:
-        # 不过滤：superadmin 或 open 策略
-        return success(data=[{**item, "permissions": _permissions(item["name"], None)} for item in indexers])
     sites = []
-    for item in indexers:
-        grants: set[str] = set()
-        for key in (f"{item['source']}:{item['name']}", f"{item['source']}:*", item["name"]):
-            grants |= visible.get(key, set())
+    for item in merged.values():
+        if visible is None:
+            grants = None
+        else:
+            grants = set()
+            for key in (f"{item['source']}:{item['name']}", f"{item['source']}:*", item["name"]):
+                grants |= visible.get(key, set())
         perms = _permissions(item["name"], grants)
         if perms:
             sites.append({**item, "permissions": perms})
