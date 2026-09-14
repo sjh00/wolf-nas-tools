@@ -66,7 +66,7 @@ class WebUtils:
                 "https://api.github.com/repos/sjh00/wolf-nas-tools/releases/latest"
             )
             commit_res = HttpClient(config=HttpClientConfig(proxy_url=proxy_url)).get(
-                "https://api.github.com/repos/sjh00/wolf-nas-tools/commits/master"
+                "https://api.github.com/repos/sjh00/wolf-nas-tools/commits/main"
             )
             ver_json = version_res.json()
             commit_json = commit_res.json()

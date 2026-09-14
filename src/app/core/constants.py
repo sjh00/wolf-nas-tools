@@ -143,8 +143,8 @@ KEYWORD_BLACKLIST = [
 
 # M-Team base url
 
-# sites.dat github
-SITES_DATA_URL = "https://api.github.com/repos/sjh00/wolf-nas-tools/releases/latest"
+# 站点定义包：上游 nexus-media-sites 的 latest release（含 sites-config.zip）
+SITES_DATA_URL = "https://api.github.com/repos/linyuan0213/nexus-media-sites/releases/latest"
 
 # EpisodeMapper 阈值配置
 EPISODE_MAPPER_SEASON_GAP_DAYS = 90

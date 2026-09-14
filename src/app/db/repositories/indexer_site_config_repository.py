@@ -162,6 +162,10 @@ class IndexerSiteConfigRepository(BaseRepository):
             return [row[0] for row in db.execute(query).all()]
 
     def update_enabled(self, site_name: str, enabled: bool) -> None:
+        existing = self.get_by_name(site_name)
+        if existing is None:
+            self.upsert_site(site_name=site_name, source="builtin", enabled=enabled)
+            return
         with self.session() as db:
             db.execute(
                 update(INDEXERSITECONFIG)
