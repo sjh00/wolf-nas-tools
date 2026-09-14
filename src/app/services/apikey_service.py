@@ -1,0 +1,252 @@
+"""
+API Key Service
+API Key 业务逻辑层
+"""
+
+import hashlib
+import secrets
+import uuid
+from datetime import datetime, timedelta
+from typing import Any
+
+import log
+from app.core.exceptions import RepositoryError, ServiceError
+from app.utils import ExceptionUtils
+
+
+class APIKeyService:
+    """API Key 管理服务"""
+
+    def __init__(self, key_repo: Any, log_repo: Any):
+        self._key_repo = key_repo
+        self._log_repo = log_repo
+
+    @staticmethod
+    def _generate_raw_key() -> str:
+        """生成原始 API Key"""
+        return "nk_" + secrets.token_urlsafe(32)
+
+    @staticmethod
+    def _hash_key(key: str) -> str:
+        """对 API Key 进行 SHA256 哈希"""
+        return hashlib.sha256(key.encode()).hexdigest()
+
+    def create_key(
+        self,
+        name: str,
+        expires_days: int | None = None,
+        description: str = "",
+        created_by: int | None = None,
+        raw_key: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        创建新的 API Key
+        """
+        try:
+            _raw_key = raw_key or self._generate_raw_key()
+            key_hash = self._hash_key(_raw_key)
+            key_prefix = _raw_key[:12] + "..."
+
+            expires_at = None
+            if expires_days is not None and expires_days > 0:
+                expires_at = datetime.now() + timedelta(days=expires_days)
+
+            api_key = self._key_repo.create_key(
+                name=name,
+                key_value=key_hash,
+                key_prefix=key_prefix,
+                expires_at=expires_at,
+                created_by=created_by,
+                description=description,
+                raw_key=_raw_key,
+            )
+
+            log.info(f"[APIKey]创建成功: {name} (ID={api_key.id})")
+
+            return {
+                "id": api_key.id,
+                "name": api_key.name,
+                "key": _raw_key,
+                "prefix": key_prefix,
+                "expires_at": api_key.expires_at.isoformat() if api_key.expires_at else None,
+                "created_at": api_key.created_at.isoformat() if api_key.created_at else None,
+                "status": api_key.status,
+            }
+        except (ServiceError, RepositoryError):
+            raise
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="创建 API Key 失败")
+
+    def _is_owner(self, key_id: int, user_id: int) -> bool:
+        """校验 API Key 归属（CREATED_BY）"""
+        items, _ = self._key_repo.list_keys(page=1, page_size=200, created_by=user_id)
+        return any(getattr(i, "id", None) == key_id for i in items)
+
+    def list_keys(self, page: int = 1, page_size: int = 50, user=None) -> dict[str, Any]:
+        """获取 API Key 列表（普通用户仅见自己创建的）"""
+        try:
+            created_by = None
+            if user is not None and not user.is_superadmin:
+                created_by = user.user_id
+            items, total = self._key_repo.list_keys(page, page_size, created_by=created_by)
+            return {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": [item.to_dict() for item in items],
+            }
+        except (ServiceError, RepositoryError):
+            return {"total": 0, "page": page, "page_size": page_size, "items": []}
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="获取 API Key 列表失败")
+
+    def update_key(
+        self,
+        key_id: int,
+        name: str | None = None,
+        status: int | None = None,
+        description: str | None = None,
+        user=None,
+    ) -> bool:
+        """更新 API Key（普通用户仅可操作自己创建的）"""
+        if user is not None and not user.is_superadmin:
+            if not self._is_owner(key_id, user.user_id):
+                return False
+        try:
+            kwargs = {}
+            if name is not None:
+                kwargs["name"] = name
+            if status is not None:
+                kwargs["status"] = status
+            if description is not None:
+                kwargs["description"] = description
+            return self._key_repo.update_key(key_id, **kwargs)
+        except (ServiceError, RepositoryError):
+            return False
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="更新 API Key 失败")
+
+    def delete_key(self, key_id: int, user=None) -> bool:
+        """删除 API Key（普通用户仅可删除自己创建的）"""
+        if user is not None and not user.is_superadmin:
+            if not self._is_owner(key_id, user.user_id):
+                return False
+        try:
+            return self._key_repo.delete_key(key_id)
+        except (ServiceError, RepositoryError):
+            return False
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="删除 API Key 失败")
+
+    def validate_key(self, raw_key: str) -> Any | None:
+        """验证 API Key 是否有效"""
+        try:
+            key_hash = self._hash_key(raw_key)
+            key = self._key_repo.get_by_key_and_status(key_hash, status=1)
+            if key is None or key.is_expired():
+                return None
+            return key
+        except (ServiceError, RepositoryError):
+            return None
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="验证 API Key 失败")
+
+    def record_usage(
+        self,
+        api_key_id: int,
+        request_id: str | None = None,
+        request_name: str = "",
+        source_ip: str = "",
+        user_agent: str = "",
+        request_path: str = "",
+        request_method: str = "",
+        status: int = 1,
+        response_code: int | None = None,
+        error_message: str = "",
+        response_time_ms: int | None = None,
+    ) -> bool:
+        """记录 API Key 使用日志"""
+        try:
+            if request_id is None:
+                request_id = str(uuid.uuid4())
+
+            self._log_repo.create_log(
+                api_key_id=api_key_id,
+                request_id=request_id,
+                request_name=request_name,
+                source_ip=source_ip,
+                user_agent=user_agent,
+                request_path=request_path,
+                request_method=request_method,
+                status=status,
+                response_code=response_code,
+                error_message=error_message,
+                response_time_ms=response_time_ms,
+            )
+            self._key_repo.increment_use_count(api_key_id)
+            return True
+        except (ServiceError, RepositoryError):
+            return False
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="记录 API Key 使用日志失败")
+
+    def list_logs(self, api_key_id: int | None = None, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        """获取 API Key 使用记录"""
+        try:
+            items, total = self._log_repo.list_logs(api_key_id, page, page_size)
+            return {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": [item.to_dict() for item in items],
+            }
+        except (ServiceError, RepositoryError):
+            return {"total": 0, "page": page, "page_size": page_size, "items": []}
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="获取 API Key 使用记录失败")
+
+    def get_or_create_system_key(self, name: str) -> str:
+        """
+        获取或创建系统级 API Key
+        系统 key 的原始值保存在 RAW_KEY 列中，用于构造 webhook URL 等场景
+        :param name: 系统 key 名称（如 "MessageWebhook"）
+        :return: 原始 API Key 值
+        """
+        try:
+            # 查找已有系统 key
+            existing = self._key_repo.get_by_name(name, status=1)
+            if existing is not None and existing.raw_key:
+                return existing.raw_key
+
+            # 不存在或无效，创建新的
+            raw_key = self._generate_raw_key()
+            key_hash = self._hash_key(raw_key)
+            key_prefix = raw_key[:12] + "..."
+
+            api_key = self._key_repo.create_key(
+                name=name,
+                key_value=key_hash,
+                key_prefix=key_prefix,
+                description=f"系统自动创建: {name}",
+                raw_key=raw_key,
+            )
+            log.info(f"[APIKey]系统 key 创建成功: {name} (ID={api_key.id})")
+            return raw_key
+        except (ServiceError, RepositoryError):
+            raise
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="创建系统 API Key 失败")
+
+    def get_stats(self) -> dict[str, Any]:
+        """获取 API Key 统计信息"""
+        try:
+            return self._key_repo.get_stats()
+        except (ServiceError, RepositoryError):
+            return {
+                "total_keys": 0,
+                "active_keys": 0,
+                "total_requests": 0,
+                "today_requests": 0,
+            }
+        except Exception as e:
+            ExceptionUtils.log_and_raise(e, target=ServiceError, message="获取 API Key 统计信息失败")

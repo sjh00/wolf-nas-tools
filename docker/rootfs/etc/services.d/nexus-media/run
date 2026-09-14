@@ -1,0 +1,14 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+umask ${UMASK}
+
+# 先执行 migration（单独运行容器时生效；compose 中由 migration 服务负责，backend 设 SKIP_MIGRATION=true 跳过）
+if [ "${SKIP_MIGRATION:-false}" != "true" ]; then
+    bash -c "cd ${WORKDIR} && .venv/bin/alembic upgrade head"
+fi
+
+# s6-notifyoncheck 需要在服务目录执行才能读取 notification-fd
+exec \
+    s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost ${NEXUS_PORT}" \
+    s6-setuidgid nexus bash -c 'cd "${WORKDIR}" && exec sh ./start-prod.sh'
