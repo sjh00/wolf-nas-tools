@@ -1,6 +1,0 @@
-#!/usr/bin/with-contenv bash
-
-umask ${UMASK}
-
-exec \
-    cd ${WORKDIR} s6-setuidgid nt .venv/bin/python config_monitor.py

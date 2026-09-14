@@ -1,0 +1,405 @@
+import datetime
+import os.path
+import re
+from urllib.parse import parse_qs, unquote, urlparse
+
+from bencode import bdecode
+
+import log
+from app.domain.mediatypes import MediaType
+from app.infrastructure.http.auth import CookieAuth
+from app.infrastructure.http.client import HttpClient
+from app.infrastructure.http.config import HttpClientConfig
+from app.infrastructure.http.exceptions import HttpClientError
+from app.infrastructure.temp import temp_manager
+from app.sites import engine_tools
+from app.utils.config_tools import get_proxies
+from app.utils.json_utils import JsonUtils
+from app.utils.string_utils import StringUtils
+
+
+class Torrent:
+    _torrent_temp_path = None
+
+    def __init__(self, site_engine):
+        self._torrent_temp_path = temp_manager.get_temp_path()
+        self._site_engine = site_engine
+
+    @staticmethod
+    def delete_torrent_file(file_path):
+        """
+        删除临时种子文件
+        :param file_path: 种子文件路径
+        """
+        temp_manager.delete_file(file_path)
+
+    def get_torrent_info(self, url, cookie=None, api_key=None, bearer_token=None, ua=None, referer=None, proxy=False):
+        """
+        把种子下载到本地，返回种子内容
+        :param url: 种子链接
+        :param cookie: 站点Cookie
+        :param api_key: API Key
+        :param bearer_token: Bearer Token
+        :param ua: 站点UserAgent
+        :param referer: 关联地址，有的网站需要这个否则无法下载
+        :param proxy: 是否使用内置代理
+        :return: 种子保存路径、种子内容、种子文件列表主目录、种子文件列表、错误信息
+        """
+        if not url:
+            return None, None, "", [], "URL为空"
+        if url.startswith("magnet:"):
+            return None, url, "", [], f"{url} 为磁力链接"
+        try:
+            # 下载保存种子文件
+            file_path, content, errmsg = self.save_torrent_file(
+                url=url,
+                cookie=cookie,
+                api_key=api_key,
+                bearer_token=bearer_token,
+                ua=ua,
+                referer=referer,
+                proxy=proxy,
+            )
+            if not file_path:
+                return None, content, "", [], errmsg
+            # 站点可能返回 JSON/HTML（如一过性下载链接过期）而非种子内容，
+            # 提前识别给出明确原因，避免后续 bencode 解析报"种子数据有误"误导。
+            if not self._looks_like_torrent(file_path):
+                return None, content, "", [], self._site_error_message(file_path)
+            # 解析种子文件
+            files_folder, files, retmsg = self.get_torrent_files(file_path)
+            # 种子文件路径、种子内容、种子文件列表主目录、种子文件列表、错误信息
+            return file_path, content, files_folder, files, retmsg
+
+        except Exception as err:
+            return None, None, "", [], f"下载种子文件出现异常：{str(err)}"
+
+    @staticmethod
+    def _site_error_message(file_path) -> str:
+        """站点返回非种子内容（JSON 错误）时解析 message，并标注不可重试.
+
+        M-Team 等会在超限时返回 JSON（如"相同種子當天最多下載10次"），
+        此时重试无意义且会继续消耗限额，需标记 [不可重试]。
+        """
+        try:
+            with open(file_path, "rb") as f:
+                raw = f.read(2048)
+            if raw[:1] in (b"{", b"["):
+                data = JsonUtils.loads(raw.decode("utf-8", errors="ignore"))
+                msg = (data or {}).get("message") if isinstance(data, dict) else None
+                if msg:
+                    return f"[不可重试]站点返回：{msg}"
+        except Exception as err:  # noqa: BLE001
+            log.debug(f"解析站点错误信息失败：{err}")
+        return "下载链接已失效或非种子数据（请等待重新搜索获取新链接）"
+
+    @staticmethod
+    def _looks_like_torrent(file_path) -> bool:
+        """判断文件是否为 bencode 种子（dict 以 'd' 开头）."""
+        try:
+            with open(file_path, "rb") as f:
+                return f.read(1) == b"d"
+        except OSError:
+            return False
+
+    def save_torrent_file(self, url, cookie=None, api_key=None, bearer_token=None, ua=None, referer=None, proxy=False):
+        """
+        把种子下载到本地
+        :return: 种子保存路径，错误信息
+        """
+        proxies = get_proxies() if proxy else None
+        proxy_url = proxies.get("http") if proxies else None
+        headers = {}
+        if ua:
+            headers["User-Agent"] = ua
+        if referer:
+            headers["Referer"] = referer
+
+        engine = self._site_engine
+        site_def = engine.get_by_url(url)
+        rate_limiter = getattr(engine, "site_limiter", None)
+        rate_limiter_engine = rate_limiter.engine if rate_limiter else None
+        rl_kwargs = engine_tools._get_rate_limit_kwargs(engine, site_def)
+
+        # 预签名下载链接自带认证(如 M-Team RSS dlv2 的 sign 参数)，
+        # 不能再附加站点 API Key，否则站点会当作 API 认证并返回 JSON 错误。
+        # 优先读站点配置 download.presigned；仅对 API 站点回退到 sign 参数启发式判断。
+        # HTML 站点即使 URL 带 sign（防盗链 token）仍需要登录 cookie，不能跳过。
+        is_presigned = bool(site_def and site_def.download and site_def.download.presigned)
+        if not is_presigned and site_def and site_def.api:
+            is_presigned = bool(parse_qs(urlparse(url).query).get("sign"))
+
+        if site_def and site_def.api and not is_presigned:
+            user_config = {
+                "cookie": cookie or "",
+                "api_key": api_key or "",
+                "bearer_token": bearer_token or "",
+                "ua": ua or "",
+                "headers": {},
+            }
+            auth_headers, auth = engine_tools._build_auth(engine, site_def, user_config)
+            headers.update(auth_headers)
+        elif is_presigned:
+            auth = None
+        else:
+            auth = CookieAuth(cookie)
+
+        try:
+            client = HttpClient(
+                config=HttpClientConfig(proxy_url=proxy_url),
+                rate_limiter=rate_limiter_engine,
+            )
+            req = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
+        except HttpClientError as exc:
+            log.warn(f"[Torrent]下载请求失败, url={url[:200]}, status={exc.status_code}, err={str(exc)}")
+            if exc.status_code == 429:
+                return None, None, "触发站点流控，请稍后重试"
+            return None, None, f"下载种子出错，状态码：{exc.status_code}"
+        except Exception:
+            return None, None, f"无法打开链接：{url}"
+
+        if not req.content:
+            return None, None, "未下载到种子数据"
+        # 解析内容格式
+        if req.text and str(req.text).startswith("magnet:"):
+            # 磁力链接
+            return None, req.text, "磁力链接"
+        elif req.text and "下载种子文件" in req.text:
+            # 首次下载提示页面
+            skip_flag = False
+            try:
+                form = re.findall(r'<form.*?action="(.*?)".*?>(.*?)</form>', req.text, re.S)
+                if form:
+                    action = form[0][0]
+                    if not action or action == "?":
+                        action = url
+                    elif not action.startswith("http"):
+                        action = StringUtils.get_base_url(url) + action
+                    inputs = re.findall(r'<input.*?name="(.*?)".*?value="(.*?)".*?>', form[0][1], re.S)
+                    if action and inputs:
+                        data = {}
+                        for item in inputs:
+                            data[item[0]] = item[1]
+                        # 改写req
+                        req = client.post(url=action, data=data, headers=headers, auth=auth, **rl_kwargs)
+                        # 检查是不是种子文件，如果不是抛出异常
+                        bdecode(req.content)
+                        # 跳过成功
+                        log.info(f"[Downloader]触发了站点首次种子下载，已自动跳过：{url}")
+                        skip_flag = True
+            except HttpClientError as exc:
+                log.warn(
+                    f"[Downloader]触发了站点首次种子下载，且无法自动跳过，"
+                    f"返回码：{exc.status_code}，错误原因：{str(exc)}"
+                )
+            except Exception as err:
+                log.warn(f"[Downloader]触发了站点首次种子下载，尝试自动跳过时出现错误：{str(err)}，链接：{url}")
+
+            if not skip_flag:
+                return None, None, "种子数据有误，请确认链接是否正确，如为PT站点则需手工在站点下载一次种子"
+        else:
+            # 检查是不是种子文件，如果不是仍然抛出异常
+            try:
+                bdecode(req.content)
+            except Exception as err:
+                log.warn(f"[Torrent]种子数据解析失败：{err}，链接：{url}")
+                return None, None, "种子数据有误，请确认链接是否正确"
+        # 读取种子文件名
+        file_name = self.__get_url_torrent_filename(req, url)
+        # 种子文件路径
+        file_path = os.path.join(self._torrent_temp_path or "", file_name)
+        # 种子内容
+        file_content = req.content
+        if not file_content:
+            return None, None, "种子内容为空"
+        # 写入磁盘
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+
+        return file_path, file_content, ""
+
+    @staticmethod
+    def get_torrent_files(path):
+        """
+        解析Torrent文件，获取文件清单
+        :return: 种子文件列表主目录、种子文件列表、错误信息
+        """
+        if not path or not os.path.exists(path):
+            return "", [], f"种子文件不存在：{path}"
+        file_names = []
+        file_folder = ""
+        try:
+            with open(path, "rb") as f:
+                torrent = bdecode(f.read())
+                if torrent.get("info"):
+                    files = torrent.get("info", {}).get("files") or []
+                    if files:
+                        for item in files:
+                            if item.get("path"):
+                                file_names.append(item["path"][0])
+                        file_folder = torrent.get("info", {}).get("name")
+                    else:
+                        file_names.append(torrent.get("info", {}).get("name"))
+        except Exception as err:
+            return file_folder, file_names, f"解析种子文件异常：{str(err)}"
+        return file_folder, file_names, ""
+
+    def read_torrent_content(self, path):
+        """
+        读取本地种子文件的内容
+        :return: 种子内容、种子文件列表主目录、种子文件列表、错误信息
+        """
+        if not path or not os.path.exists(path):
+            return None, "", [], f"种子文件不存在：{path}"
+        content, retmsg, file_folder, files = None, "", "", []
+        try:
+            # 读取种子文件内容
+            with open(path, "rb") as f:
+                content = f.read()
+            # 解析种子文件
+            file_folder, files, retmsg = self.get_torrent_files(path)
+        except Exception as e:
+            retmsg = f"读取种子文件出错：{str(e)}"
+        return content, file_folder, files, retmsg
+
+    @staticmethod
+    def __get_url_torrent_filename(req, url):
+        """
+        从下载请求中获取种子文件名
+        """
+        if not req:
+            return ""
+        disposition = req.headers.get("content-disposition") or ""
+        # 优先 RFC 5987: filename*=UTF-8''...
+        rfc5987 = re.findall(r"filename\*=UTF-8''(.+)", disposition)
+        if rfc5987:
+            file_name = unquote(rfc5987[0].split(";")[0].strip())
+            if file_name.endswith('"'):
+                file_name = file_name[:-1]
+        else:
+            file_name = re.findall(r'filename="?([^"]+)"?', disposition)
+            if file_name:
+                file_name = unquote(str(file_name[0]).split(";")[0].strip())
+                if file_name.endswith('"'):
+                    file_name = file_name[:-1]
+            elif url and url.endswith(".torrent"):
+                file_name = unquote(url.split("/")[-1])
+            else:
+                file_name = str(datetime.datetime.now())
+
+        file_name = file_name.replace("/", "-")
+        return file_name
+
+    @staticmethod
+    def get_intersection_episodes(target, source, title):
+        """
+        对两个季集字典进行判重，有相同项目的取集的交集
+        """
+        if not source or not title:
+            return target
+        if not source.get(title):
+            return target
+        if not target.get(title):
+            target[title] = source.get(title)
+            return target
+        index = -1
+        for target_info in target.get(title):
+            index += 1
+            source_info = None
+            for info in source.get(title):
+                if info.get("season") == target_info.get("season"):
+                    source_info = info
+                    break
+            if not source_info:
+                continue
+            if not source_info.get("episodes"):
+                continue
+            if not target_info.get("episodes"):
+                target_episodes = source_info.get("episodes")
+                target[title][index]["episodes"] = target_episodes
+                continue
+            target_episodes = list(set(target_info.get("episodes")).intersection(set(source_info.get("episodes"))))
+            target[title][index]["episodes"] = target_episodes
+        return target
+
+    @staticmethod
+    def get_download_list(media_list, download_order, collapse: bool = True, max_per_name: int = 8):
+        """
+        对媒体信息进行排序、去重
+
+        :param collapse: 是否按"标题+季集"折叠为单一最优候选。
+            True（默认，搜索/手动下载场景）：每个名称只保留最优的一个。
+            False（订阅下载场景）：保留有序的多站点候选，失败后可自动回退到下一个。
+        :param max_per_name: collapse=False 时每个名称最多保留的候选数，防止列表膨胀。
+        """
+        if not media_list:
+            return []
+
+        # 排序函数，合集优先、标题、站点、资源类型、做种数量
+        def get_sort_str(x):
+
+            episode_list = x.get_episode_list() if hasattr(x, "get_episode_list") else []
+            episode_count = max(len(episode_list), getattr(x, "total_episodes", 0))
+            if episode_count > 1:
+                collection_priority = 2
+            elif (
+                getattr(x, "type", None) in (MediaType.TV, MediaType.ANIME)
+                and getattr(x, "begin_season", None) is not None
+                and getattr(x, "begin_episode", None) is None
+            ):
+                collection_priority = 1
+            else:
+                collection_priority = 0
+            season_len = str(len(x.get_season_list())).rjust(2, "0")
+            episode_len = str(len(episode_list)).rjust(4, "0")
+            # 排序：合集、资源规则、做种/站点（按下载顺序设置）、季集、标题（标题仅作平局决胜）
+            # res_order/site_order = 100-pri（pri 越小优先级越高，主站通常配 1），降序即 pri 小在前
+            if download_order == "seeder":
+                return "{}{}{}{}{}{}".format(
+                    str(collection_priority).rjust(1, "0"),
+                    str(x.res_order).rjust(3, "0"),
+                    str(x.seeders).rjust(10, "0"),
+                    str(x.site_order).rjust(3, "0"),
+                    f"{season_len}{episode_len}",
+                    str(x.title).ljust(100, " "),
+                )
+            else:
+                return "{}{}{}{}{}{}".format(
+                    str(collection_priority).rjust(1, "0"),
+                    str(x.res_order).rjust(3, "0"),
+                    str(x.site_order).rjust(3, "0"),
+                    str(x.seeders).rjust(10, "0"),
+                    f"{season_len}{episode_len}",
+                    str(x.title).ljust(100, " "),
+                )
+
+        # 匹配的资源中排序分组选最好的一个下载
+        # 按站点顺序、资源匹配顺序、做种人数下载数逆序排序
+        media_list = sorted(media_list, key=lambda x: get_sort_str(x), reverse=True)
+        # 控重
+        can_download_list_item = []
+        seen_media_names = set()
+        name_counts: dict[str, int] = {}
+
+        # 排序后重新加入数组，按真实名称控重
+        for t_item in media_list:
+            # 控重的主链是名称、年份、季、集
+            if t_item.type != MediaType.MOVIE:
+                media_name = f"{t_item.get_title_string()}{t_item.get_season_episode_string()}"
+            else:
+                media_name = t_item.get_title_string()
+
+            if collapse:
+                # 每个名称只取最优的一个
+                if media_name not in seen_media_names:
+                    seen_media_names.add(media_name)
+                    can_download_list_item.append(t_item)
+                continue
+
+            # 订阅场景：保留多个候选，按同一名称限流，失败可回退到下一站点
+            if name_counts.get(media_name, 0) >= max_per_name:
+                continue
+            name_counts[media_name] = name_counts.get(media_name, 0) + 1
+            can_download_list_item.append(t_item)
+
+        return can_download_list_item

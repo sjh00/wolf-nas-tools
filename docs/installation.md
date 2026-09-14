@@ -1,77 +1,620 @@
 # 安装指南
 
-## Docker 安装
+## 镜像特点
 
-### 方式一：使用docker-compose
-1. 创建docker-compose.yml文件：
+- 基于 Debian（`python:3.14-slim-trixie`）
+- 支持 amd64 / arm64 架构
+- 内嵌 nginx 反代，后端容器统一 **8080** 端口对外（内部服务监听 3000）
+- 非 root 用户运行（nexus:nexus，UID 911，可用 PUID/PGID 覆盖）
+- s6-overlay 进程管理，支持优雅退出
+- 数据库迁移在容器启动时自动执行（`alembic upgrade head`，幂等，无需独立 migration 容器）
+
+## 端口约定（重要）
+
+后端镜像内嵌 nginx：nginx 监听容器内 **8080**，反向代理到内部 wolfnas 服务（3000）。因此：
+
+| 服务 | 容器内端口 | 实际 compose 宿主机映射 |
+|------|-----------|------------------------|
+| 后端（经 nginx） | 8080 | `3000:8080` |
+| 前端 Web UI | 8080 | `8080:8080` |
+| Redis | 6379 | 不映射（仅内网） |
+| MySQL | 3306 | `3306:3306`（可选） |
+| PostgreSQL | 5432 | `5432:5432`（可选） |
+| wolfnas-chrome | 9850 / 6080 | `9850:9850` / `6080:6080` |
+| wolfnas-verify | 9300 | `9300:9300` |
+
+## Docker Compose 安装（推荐）
+
+项目根目录提供 **3 个独立 compose 文件**，按部署场景选一个：
+
+| 文件 | 场景 | 启动 |
+|---|---|---|
+| `docker-compose.yml` | 前后端 + Redis（SQLite，开箱即用） | `docker compose up -d` |
+| `docker-compose.mysql.yml` | MySQL 完整版（+Redis+OCR+Chrome） | `docker compose -f docker-compose.mysql.yml up -d` |
+| `docker-compose.postgresql.yml` | PostgreSQL 完整版 | `docker compose -f docker-compose.postgresql.yml up -d` |
+
+> 三个文件**互斥**（`container_name`/端口/网络名相同），只选一个部署。
+
+### 第一步：先确认容器间网络互通（常见坑）
+
+`docker compose up` 启动后，后端会通过网桥访问 `mysql`/`postgresql`、`redis`（服务名即主机名）。**网桥不通、容器连不上数据库/redis 是最常见的部署失败原因**，表现为后端反复重试数据库连接、一直超时、`unhealthy`。
+
+**0. 先看状态与日志**
+
+```bash
+docker compose -f docker-compose.mysql.yml ps          # 查看各容器状态
+docker compose -f docker-compose.mysql.yml logs backend | tail -30    # 后端启动日志，看连接报错
+```
+
+**1. 验证容器间是否互通**
+
+所有服务都应在同一个自定义网桥 `wolfnas-network` 上。进入后端容器测试能否解析并连接 mysql：
+
+```bash
+docker exec wolfnas getent hosts mysql            # 应解析出容器 IP（如 172.x.x.x）
+docker exec wolfnas wget -qO- http://mysql:3306/  # 能连则返回（即使非 200 也算通）
+```
+
+- `getent hosts mysql` 无输出 → **DNS/网络不通**，见下
+- 能解析但连接超时 → 网络层问题，见下
+
+**2. 检查网络是否残留/冲突（最常见原因）**
+
+compose 显式指定网络名 `wolfnas-network`。如果之前部署过、或不同目录的项目用了同名网络，旧网络/旧容器可能残留：
+
+```bash
+docker network ls                        # 看 wolfnas-network 是否存在
+docker network inspect wolfnas-network --format '{{range .Containers}}{{.Name}} {{end}}'
+```
+
+若网络里只有部分容器、或容器没加入，先清理后重新启动：
+
+```bash
+docker compose -f docker-compose.mysql.yml down        # 停掉本次 compose 的容器（不删数据卷）
+docker network rm wolfnas-network    # 删掉残留网络（若仍被占用先停对应容器）
+docker compose -f docker-compose.mysql.yml up -d
+```
+
+**3. 检查旧容器残留**
+
+同名容器（`wolfnas`、`wolfnas-mysql` 等）若残留自旧部署，`up` 会报 `name already in use` 或挂到旧网络：
+
+```bash
+docker ps -a | grep nexus
+docker rm -f wolfnas wolfnas-mysql wolfnas-redis wolfnas-web
+docker compose -f docker-compose.mysql.yml up -d
+```
+
+**4. 确认启动顺序**
+
+`backend` 依赖 `mysql`/`postgresql` 健康后才启动（`depends_on: service_healthy`），数据库未就绪会导致后端起不来：
+
+```bash
+docker compose -f docker-compose.mysql.yml logs backend | tail -30   # 数据库连接/迁移报错在这里
+docker compose -f docker-compose.mysql.yml ps | grep mysql           # 看 mysql 是否 healthy
+```
+
+迁移失败常见原因：数据库密码与 `.env` 配置不一致。
+
+**常见错误排查**
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| `Can't connect to MySQL server ... (Connection refused)` | 后端连不上 mysql 容器 | 按第 1 步验证网络；确认 mysql 已健康（`docker compose ps`） |
+| `getent hosts mysql` 无输出 | 容器不在同一网桥 / DNS 失败 | 按第 2、3 步清理网络与旧容器后重启 |
+| `name already in use` | 旧容器残留 | 按第 3 步 `docker rm -f` 后重启 |
+| 后端反复重试、一直 `unhealthy` | 数据库未就绪或密码不一致 | 看后端日志确认是网络还是认证；核对 `.env` 密码 |
+| 启动报错提示密码必填 | `.env` 未配置 | 按「完整 compose 文件」章节在 `.env` 设置密码 |
+
+> **最快恢复路径**：`docker compose -f <文件> down` → 删残留网络与容器（数据卷 `./data`、`./mysql_data` 保留即可）→ 重新 `up -d`。多数"第一步连不上 mysql"问题由此解决。
+
+### 简单示例（开箱即用）
+
+如果觉得完整 `docker-compose.yml` 复杂，可以直接使用下面两个简化版。
+
+**版本一：前后端 + Redis + MySQL（推荐）**
+
 ```yaml
-version: "3"
 services:
-  nas-tools:
-    image: linyuan0213/nas-tools:latest
+  frontend:
+    image: sjh00/wolf-nas-web:latest
+    container_name: wolfnas-web
     ports:
-      - 3000:3000        # 默认的webui控制端口
-    volumes:
-      - ./config:/config   # 冒号左边请修改为你想保存配置的路径
-      - /你的媒体目录:/你想设置的容器内能见到的目录   # 媒体目录，多个目录需要分别映射进来
-    environment: 
-      - PUID=0    # 用户uid
-      - PGID=0    # 用户gid
-      - UMASK=000 # 掩码权限，默认000
-      - NT_PORT=3000 # web端口，默认3000
-    restart: always
-    network_mode: bridge
-    hostname: nas-tools
-    container_name: nas-tools
+      - "8080:8080"                    # 前端访问端口
+    environment:
+      - BACKEND_HOST=backend
+      - BACKEND_PORT=3000
     depends_on:
-      - ocr
-      - chrome
-
-  ocr:
-    image: linyuan0213/nas-tools-ocr:latest
-    container_name: nas-tools-ocr
-    ports:
-      - 9300:9300
+      - backend
     restart: always
+    networks:
+      - wolfnas-network
 
-  chrome:
-    image: linyuan0213/nas-tools-chrome:latest
-    container_name: nas-tools-chrome
-    shm_size: 2g # 共享内存大小
+  backend:
+    image: sjh00/wolf-nas:latest
+    container_name: wolfnas
+    hostname: wolfnas
     ports:
-      - 9850:9850
+      - "3000:8080"                    # 后端访问端口（容器内 nginx 8080）
+    volumes:
+      - ./data:/data                   # 配置/数据库/插件数据
+      - /mnt/media:/media              # ← 替换为你的媒体库目录
+    environment:
+      - PUID=0
+      - PGID=0
+      - UMASK=000
+      - NEXUS_PORT=3000
+      - REDIS__HOST=redis
+      - REDIS__PORT=6379
+      - REDIS__DB=0
+      - DATABASE__TYPE=mysql
+      - DATABASE__HOST=mysql
+      - DATABASE__PORT=3306
+      - DATABASE__USERNAME=wolfnas
+      - DATABASE__PASSWORD=wolfnas_password   # 与 mysql 服务保持一致
+      - DATABASE__DATABASE=wolfnas
+    depends_on:
+      redis:
+        condition: service_started
+      mysql:
+        condition: service_healthy          # 等 mysql 健康后再启动，避免连不上超时
     restart: always
+    networks:
+      - wolfnas-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: wolfnas-redis
+    volumes:
+      - ./data/redis_data:/data
+    command: redis-server --save "" --appendonly no --dir /data
+    restart: always
+    networks:
+      - wolfnas-network
+
+  mysql:
+    image: mysql:8.4
+    container_name: wolfnas-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_DATABASE=wolfnas
+      - MYSQL_USER=wolfnas
+      - MYSQL_PASSWORD=wolfnas_password   # 与 backend 保持一致
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+    restart: always
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - wolfnas-network
+
+networks:
+  wolfnas-network:
+    driver: bridge
+    name: wolfnas-network
 ```
 
-2. 启动服务：
+将上面的 YAML 保存为 `docker-compose.simple.yml`（放在项目或任意目录下）后启动：
+
 ```bash
-docker-compose up -d
+docker compose -f docker-compose.simple.yml up -d
 ```
 
-### 方式二：直接运行docker命令
+**版本二：仅前后端（SQLite，无需 Redis/数据库，适合体验）**
+
+```yaml
+services:
+  frontend:
+    image: sjh00/wolf-nas-web:latest
+    container_name: wolfnas-web
+    ports:
+      - "8080:8080"
+    environment:
+      - BACKEND_HOST=backend
+      - BACKEND_PORT=3000
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - wolfnas-network
+
+  backend:
+    image: sjh00/wolf-nas:latest
+    container_name: wolfnas
+    hostname: wolfnas
+    ports:
+      - "3000:8080"
+    volumes:
+      - ./data:/data
+      - /mnt/media:/media              # ← 替换为你的媒体库目录
+    environment:
+      - PUID=0
+      - PGID=0
+      - UMASK=000
+      - NEXUS_PORT=3000
+    restart: always
+    networks:
+      - wolfnas-network
+
+networks:
+  wolfnas-network:
+    driver: bridge
+    name: wolfnas-network
+```
+
+> 简单示例中后端**不设置 `SKIP_MIGRATION`**，启动时自动执行数据库迁移（`alembic upgrade head`）；项目自带的完整 compose 文件同样由后端启动时自动迁移，无需独立 migration 容器。
+
+### 完整 compose 文件（3 个独立文件）
+
+需要 OCR/Chrome 组件、PostgreSQL、密码自定义时，使用项目根目录的 compose 文件：
+
+| 文件 | 场景 | 启动命令 |
+|------|------|------|
+| `docker-compose.yml` | 前后端 + Redis（SQLite） | `docker compose up -d` |
+| `docker-compose.mysql.yml` | 前端 + 后端 + Redis + MySQL + OCR + Chrome | `docker compose -f docker-compose.mysql.yml up -d` |
+| `docker-compose.postgresql.yml` | 前端 + 后端 + Redis + PostgreSQL + OCR + Chrome | `docker compose -f docker-compose.postgresql.yml up -d` |
+
+> 三个文件互斥，只选一个部署。MySQL/PostgreSQL 版已包含完整组件；基础版（SQLite + Redis）无需外部数据库。
+
+### 可选组件：wolfnas-verify 与 wolfnas-chrome
+
+MySQL / PostgreSQL 完整版已随 compose 自动启动两个可选组件：
+
+| 组件 | 镜像 | 端口 | 作用 |
+|------|------|------|------|
+| wolfnas-verify | `sjh00/wolf-nas-verify` | 9300 | OCR 验证码识别，用于站点自动签到 |
+| wolfnas-chrome | `sjh00/wolf-nas-chrome` | 9850 / 6080 | 浏览器自动化，用于站点 Cookie 更新、网页自动化登录、AI 助手网页抓取 |
+
+组件已随 compose 自动配置好网络互通。若需单独部署，后端通过以下设置启用对应能力：
+
+- 验证码识别：**系统设置 → 基础设置 → 实验室** 中「启用验证码识别服务器」，填 `http://wolfnas-verify:9300`
+- 网页自动化：**系统设置 → 基础设置 → 实验室** 中「启用网页自动化」，填 `http://wolfnas-chrome:9850`
+
+**wolfnas-chrome 认证（可选）**：wolfnas-chrome 设置 `AUTH_PASSWORD` 环境变量后会启用登录页 + API 鉴权。此时需在实验室「访问凭证（API Key）」中填写凭证，否则所有浏览器请求会被 401 拒绝：
+
+1. 在 wolfnas-chrome 管理台（`http://<host>:9850/ui/api-keys`）创建 API Key，权限范围建议选「会话」+「画像」
+2. 将生成的 Key（`ncmk_` 前缀）填入实验室「访问凭证（API Key）」
+3. 该配置同时用作指纹画像配置中心的推送凭证（也可直接填 wolfnas-chrome 的 `FP_ADMIN_TOKEN`）
+
+wolfnas-chrome 未设置 `AUTH_PASSWORD` 时该字段留空即可（本地模式，不鉴权）。
+
+> wolfnas-chrome 的浏览器页面可通过 VNC（端口 6080）实时查看。
+> **安全提示**：VNC 密码为必填项，**禁止使用默认值 `password`**。请在项目目录 `.env` 中配置，例如：
+>
+> ```bash
+> # .env
+> VNC_PASSWORD=你的强密码
+> ```
+>
+> 未设置 `VNC_PASSWORD` 时 `docker compose up` 会直接报错并提示，避免默认弱口令暴露 VNC 远程桌面。
+
+**wolfnas-chrome 数据持久化**：指纹配置中心数据库（`fp_config_center.db`）、会话记录（`sessions.json`）、指纹画像、浏览器用户数据（Cookie/登录态）统一存放在容器 `/app/data`，compose 已将其挂载到宿主机 `./data/chrome`，重建/升级容器不会丢失数据。
+
+### 1. 修改配置
+
+克隆项目后，按需修改所选 compose 文件与 `.env`：
+
+**目录挂载**（后端服务）：
+
+```yaml
+    volumes:
+      - ./data:/data                # 配置、数据库、插件数据（必须）
+      # 替换为你的实际媒体目录：
+      # - /mnt/media:/media          # 媒体库目录（必须，否则无法转移）
+```
+
+**密码**（MySQL / PostgreSQL 版）：项目根目录 `.env` 中设置，`docker compose` 自动读取，必填项缺失会报错提示：
+
 ```bash
-# 主服务
-docker run -d \
-    --name nas-tools \
-    --hostname nas-tools \
-    -p 3000:3000   `# 默认的webui控制端口` \
-    -v $(pwd)/config:/config  `# 冒号左边请修改为你想在主机上保存配置文件的路径` \
-    -v /你的媒体目录:/你想设置的容器内能见到的目录 `# 媒体目录，多个目录需要分别映射进来` \
-    -e PUID=0     `# 想切换为哪个用户来运行程序，该用户的uid` \
-    -e PGID=0     `# 想切换为哪个用户来运行程序，该用户的gid` \
-    -e UMASK=000  `# 掩码权限，默认000，可以考虑设置为022` \
-    linyuan0213/nas-tools:latest
-
-# OCR服务（可选，用于验证码识别）
-docker run -d \
-    --name nas-tools-ocr \
-    -p 9300:9300 \
-    linyuan0213/nas-tools-ocr:latest
-
-# Chrome服务（可选，用于网页自动化）
-docker run -d \
-    --name nas-tools-chrome \
-    -p 9850:9850 \
-    --shm-size=2g `# 共享内存大小` \
-    linyuan0213/nas-tools-chrome:latest
+# .env
+MYSQL_ROOT_PASSWORD=你的root密码
+MYSQL_PASSWORD=你的应用密码
+POSTGRES_PASSWORD=你的PostgreSQL密码    # PostgreSQL 版
+VNC_PASSWORD=你的Chrome VNC密码
 ```
+
+### 2. 启动服务
+
+```bash
+# 基础版（SQLite + Redis）
+docker compose up -d
+
+# 或 MySQL 完整版
+docker compose -f docker-compose.mysql.yml up -d
+
+# 或 PostgreSQL 完整版
+docker compose -f docker-compose.postgresql.yml up -d
+```
+
+数据库迁移由后端启动时自动执行（`alembic upgrade head`），无需单独操作。
+
+### 3. 访问
+
+- 前端 Web UI: http://localhost:8080
+- 后端 API: http://localhost:3000
+
+## 单独部署后端
+
+**docker cli**
+
+```bash
+docker run -d \
+  --name wolfnas \
+  --hostname wolfnas \
+  -p 3000:8080 \
+  -v $(pwd)/data:/data \
+  -v /mnt/media:/media \
+  -e PUID=0 \
+  -e PGID=0 \
+  -e UMASK=000 \
+  -e NEXUS_PORT=3000 \
+  sjh00/wolf-nas:latest
+```
+
+> 容器内 nginx 监听 8080，`-p 3000:8080` 表示宿主机 3000 访问后端。
+
+**docker-compose**
+
+```yaml
+services:
+  wolfnas:
+    image: sjh00/wolf-nas:latest
+    ports:
+      - 3000:8080
+    volumes:
+      - ./data:/data
+      - /mnt/media:/media
+    environment:
+      - PUID=0
+      - PGID=0
+      - UMASK=000
+      - NEXUS_PORT=3000
+    restart: always
+    hostname: wolfnas
+    container_name: wolfnas
+```
+
+> 单独部署后端时（无 compose 内 Redis/DB），需配置 `REDIS__HOST` 与 `DATABASE__*` 指向外部 Redis / 数据库。
+
+## 单独部署前端
+
+前端 Docker 镜像内嵌 nginx，通过环境变量指向后端地址，所有 `/api/`、`/ws` 请求由 nginx 转发到后端。
+
+**docker cli**
+
+```bash
+docker run -d \
+  --name wolfnas-web \
+  -p 8080:8080 \
+  -e BACKEND_HOST=192.168.1.100 \
+  -e BACKEND_PORT=3000 \
+  sjh00/wolf-nas-web:latest
+```
+
+**docker-compose**
+
+```yaml
+services:
+  wolfnas-web:
+    image: sjh00/wolf-nas-web:latest
+    ports:
+      - 8080:8080
+    environment:
+      - BACKEND_HOST=wolfnas   # 后端服务地址（compose 内为服务名）
+      - BACKEND_PORT=3000          # 后端宿主机映射端口
+    restart: always
+    container_name: wolfnas-web
+```
+
+> `BACKEND_PORT` 填后端**宿主机映射端口**（compose 示例中后端 `3000:8080`，故填 `3000`）；前端 nginx 会转发到 `BACKEND_HOST:BACKEND_PORT`。
+
+## 反向代理部署
+
+通过 Nginx 将 WolfNas 挂到域名下对外访问时，只需代理**前端端口**（宿主机 `8080`）。前端容器内嵌 nginx 会继续将 `/api`、`/ws` 转发到后端。
+
+!!! warning
+    必须配置 WebSocket 转发头，否则日志、进度等实时推送功能不可用。
+
+```nginx
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name media.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+
+        # WebSocket 支持（必须）
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 大文件上传（备份恢复等场景）
+        client_max_body_size 100m;
+        proxy_read_timeout 300s;
+    }
+}
+
+server {
+    listen 80;
+    server_name media.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+配合设置：
+
+1. 在 **系统设置 → 基础设置 → 系统** 中将「外网访问地址」填为 `https://media.example.com`，消息通知中的链接才能正确跳转
+2. 子路径部署（如 `/nexus`）暂不支持，请使用独立域名或端口
+3. 使用**企业微信交互功能**时，还需把 `/wechat` 直接转发到后端端口（前端 nginx 不转发该路径），详见 [通知渠道配置](notifications.md#交互功能可选)
+
+## Redis 配置
+
+### compose 模式
+
+compose 中 Redis 服务已配置好（无密码、使用 `/data/redis_data` 持久化）：
+
+```yaml
+  redis:
+    image: redis:7-alpine
+    container_name: wolfnas-redis
+    volumes:
+      - ./data/redis_data:/data
+    command: redis-server --save "" --appendonly no --dir /data
+```
+
+后端通过 `REDIS__*` 环境变量连接（compose 的 `x-env-db-common` 已设置）：
+
+```yaml
+    environment:
+      - REDIS__HOST=wolfnas-redis
+      - REDIS__PORT=6379
+      - REDIS__DB=0
+```
+
+### 外部 Redis
+
+单独部署后端且使用外部 Redis 时，设置：
+
+```yaml
+    environment:
+      - REDIS__HOST=你的redis地址
+      - REDIS__PORT=6379
+      - REDIS__PASSWORD=你的redis密码   # 无密码则省略
+      - REDIS__DB=0
+```
+
+## 数据库配置
+
+### 基础版（SQLite + Redis）
+
+`docker-compose.yml`（基础版）使用 SQLite + Redis（compose 自带），无需外部数据库：
+
+```bash
+docker compose up -d
+```
+
+数据文件保存在 `./data/db/`（由 `WOLFNAS_DATA=/data` 决定）。
+
+### MySQL / PostgreSQL（compose 模式）
+
+MySQL / PostgreSQL 版 compose 已配置好，后端通过 `DATABASE__*` 环境变量连接（服务名即主机名）：
+
+```yaml
+    environment:
+      - DATABASE__TYPE=postgresql      # 或 mysql
+      - DATABASE__HOST=postgresql      # 或 mysql（compose 服务名）
+      - DATABASE__PORT=5432            # mysql 为 3306
+      - DATABASE__USERNAME=wolfnas
+      - DATABASE__PASSWORD=${POSTGRES_PASSWORD}   # 从 .env 读取
+      - DATABASE__DATABASE=wolfnas
+```
+
+数据库迁移由后端启动时自动执行（`alembic upgrade head`），无需独立 migration 服务。
+
+### 外部数据库
+
+单独部署后端使用外部数据库时，设置 `DATABASE__*` 指向外部实例，后端启动时同样自动迁移（如需跳过可设 `SKIP_MIGRATION=true` 后手动执行）。
+
+## 环境变量
+
+环境变量优先级：`环境变量 > .env > config.yaml`。除 Docker 镜像专用变量外，其余变量对应 `src/app/core/settings.py` 中的配置节点，使用 `__` 作为嵌套分隔符，例如 `APP__WEB_HOST`、`DATABASE__TYPE`、`REDIS__HOST`。
+
+### Docker 镜像专用变量
+
+**后端镜像 (`sjh00/wolf-nas`)**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PUID` | 0 | 运行用户 UID |
+| `PGID` | 0 | 运行用户 GID |
+| `UMASK` | 000 | 文件权限掩码 |
+| `NEXUS_PORT` | 3000 | 容器内部 wolfnas 服务端口（nginx 反代到该端口） |
+| `SKIP_MIGRATION` | false | 设为 `true` 跳过启动时数据库迁移（默认自动执行，幂等） |
+| `TZ` | Asia/Shanghai | 时区 |
+| `WOLFNAS_DATA` | /data | 数据目录（config.yaml、数据库、插件数据） |
+| `WOLFNAS_CONFIG` | /data/config.yaml | 配置文件路径（可选，默认自动发现 `data/config.yaml`） |
+
+**前端镜像 (`sjh00/wolf-nas-web`)**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `BACKEND_HOST` | `wolfnas` | 后端服务地址（compose 内为服务名，独立部署时设为 IP 或域名） |
+| `BACKEND_PORT` | `3000` | 后端宿主机映射端口（前端 nginx 转发目标） |
+
+### 前后端配置变量（`app` 节点）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `APP__WEB_HOST` | :: | Web 监听地址 |
+| `APP__WEB_PORT` | 3000 | Web 监听端口 |
+| `APP__LOGIN_USER` | admin | 默认登录用户名 |
+| `APP__LOGIN_PASSWORD` | password | 默认登录密码 |
+| `APP__TMDB_DOMAIN` | api.themoviedb.org | TMDB API 域名 |
+| `APP__DEBUG` | false | Debug 模式，开启后提供 `/docs` API 文档，生产环境保持关闭 |
+
+### 数据库配置变量（`database` 节点）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DATABASE__TYPE` | sqlite | 数据库类型：`sqlite` / `mysql` / `postgresql` |
+| `DATABASE__HOST` | localhost | 数据库地址 |
+| `DATABASE__PORT` | 0 | 数据库端口 |
+| `DATABASE__USERNAME` | — | 数据库用户名 |
+| `DATABASE__PASSWORD` | — | 数据库密码 |
+| `DATABASE__DATABASE` | wolfnas | 数据库名称 |
+| `DATABASE__SQLITE_PATH` | data/user.db | SQLite 数据库文件路径（`TYPE=sqlite` 时生效） |
+
+### Redis 配置变量（`redis` 节点）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `REDIS__HOST` | 127.0.0.1 | Redis 地址（compose 内为 `wolfnas-redis`） |
+| `REDIS__PORT` | 6379 | Redis 端口 |
+| `REDIS__PASSWORD` | — | Redis 密码 |
+| `REDIS__DB` | 0 | Redis 数据库索引 |
+
+### 其他常用变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WOLFNAS_CONFIG` | /data/config.yaml | 配置文件路径（可选，默认自动发现） |
+| `WOLFNAS_DATA` | /data | 数据目录路径（可选，默认 `./data`） |
+| `LOG__FORMAT` | text | 设为 `json` 输出 ELK 兼容日志 |
+
+## 目录说明
+
+| 容器路径 | 说明 |
+|----------|------|
+| `/data` | 配置文件（config.yaml）、数据库、插件数据（必须挂载） |
+| `/data/redis_data` | Redis 持久化数据（compose 内） |
+| `/data/chrome` | wolfnas-chrome 数据（指纹数据库、会话、指纹画像、浏览器用户数据） |
+| `/wolfnas` | 应用代码目录 |
+| `/media` | 媒体库目录（需自行映射，例如 `/mnt/media:/media`） |
+
+## PUID / PGID 说明
+
+- 若同时使用 Emby / Jellyfin / Plex / qBittorrent 等 Docker 镜像，建议保持 PUID / PGID 一致
+- 在宿主机上执行 `id -u` 和 `id -g` 获取对应值
+
+## 首次使用
+
+1. 访问前端页面 http://localhost:8080
+2. 默认账号密码：
+   - 用户名: `admin`
+   - 密码: `password`
+3. **首次登录后必须修改默认密码**
+4. 进入 **设置 > 基础设置 > 媒体** 配置 TMDB API Key（必须）
+5. 进入 **设置 > 下载器** 添加下载器
+6. 进入 **设置 > 媒体服务器** 添加 Emby/Jellyfin/Plex
+7. 进入 **站点 > 站点维护** 添加 PT 站点

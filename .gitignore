@@ -1,12 +1,76 @@
-/.idea/**
-*.pyc
-*.c
-/test.py
-/setup.py
-/build/**
-/venv/**
-/cloudflarespeedtest/**
-.python-version
+# IDE
+/.idea/
 .vscode/
-./config/site_manage/*.json
-./config/site_manage/*.dat
+
+# Python cache
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.playwright-mcp/
+
+# Coverage
+.coverage
+htmlcov/
+*.cover
+
+# Build artifacts
+/build/**
+/dist/
+
+# Virtual environments
+/venv/
+/.venv/
+.python-version
+
+# Cloudflare speedtest tool
+/cloudflarespeedtest/**
+
+# Runtime generated files — data/
+/data/
+
+# Runtime generated files — data/
+/data/
+
+# Runtime generated files — config/ (兼容旧数据目录)
+/static/
+/config/logs/
+/config/config.yaml
+/config/site_manage/*.json
+/config/site_manage/*.dat
+/config/*.db
+/config/*.db-journal
+/config/*.db-shm
+/config/*.db-wal
+/config/redis_data/
+/config/plugins_data/
+/config/temp/
+/config/temp/*.torrent
+/config/plugins/
+/tests/*.db
+
+# Runtime cache
+static/img_cache/*
+static/avatars/*
+
+# Agent configs
+.roo/
+.kilo/
+
+# Build metadata
+*.egg-info/
+
+# Environment
+.env
+config/*.pid
+deps_win.txt
+third_party/
+
+# MkDocs 构建输出
+/site/
+
+tests/config_test.yaml.lock
+tests/config_test.yaml
+
+# 本地调试日志
+/log
