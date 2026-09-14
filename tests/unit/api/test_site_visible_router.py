@@ -71,6 +71,37 @@ class TestVisibleSitesCapability:
         assert by_name["siteA"] == ["rss", "search"]
         assert by_name["siteB"] == ["search"]
 
+    def test_rss_only_site_listed_when_search_disabled(self):
+        """关闭搜索但仍配置 RSS 的站点应出现在订阅站点列表。"""
+        user = UserContext(user_id=1, username="admin", level=0, permissions=["*"], role_codes=["superadmin"])
+        c = _client(grants=None, indexers=[], rss_sites=["siteA"], user=user)
+        data = c.get("/api/site/sites/visible").json()["data"]
+        by_name = {d["name"]: d["permissions"] for d in data}
+        assert by_name["siteA"] == ["rss"]
+
+    def test_search_permission_requires_enabled_indexer(self):
+        """索引器未启用搜索时不展示 search 用途，RSS 仍可展示。"""
+        user = UserContext(user_id=1, username="admin", level=0, permissions=["*"], role_codes=["superadmin"])
+        app = FastAPI()
+        app.include_router(site_router.router, prefix="/api/site")
+        ctx = SimpleNamespace(
+            site_grant_service=MagicMock(),
+            indexer_service=SimpleNamespace(indexer=MagicMock()),
+        )
+        ctx.site_grant_service.get_visible_sites.return_value = None
+        ctx.indexer_service.indexer.get_indexers_with_source.side_effect = (
+            lambda check=True: [] if check else _INDEXERS
+        )
+        site_svc = MagicMock()
+        site_svc.get_sites.return_value = [{"name": "siteA"}]
+        app.dependency_overrides[get_app_context] = lambda: ctx
+        app.dependency_overrides[get_site_service] = lambda: site_svc
+        app.dependency_overrides[get_current_user] = lambda: user
+        data = TestClient(app).get("/api/site/sites/visible").json()["data"]
+        by_name = {d["name"]: d["permissions"] for d in data}
+        assert by_name["siteA"] == ["rss"]
+        assert "siteB" not in by_name
+
 
 class TestIndexIdAllowed:
     """站点读接口按授权站点判定（site:view 用户只见被授权站点）"""
