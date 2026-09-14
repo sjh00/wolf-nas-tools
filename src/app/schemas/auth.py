@@ -47,7 +47,7 @@ class UserContext(BaseModel):
         return SUPERADMIN_ROLE_CODE in self.role_codes
 
     def has_permission(self, permission_code: str) -> bool:
-        return "*" in self.permissions or permission_code in self.permissions
+        return self.is_superadmin or "*" in self.permissions or permission_code in self.permissions
 
 
 def system_user_context() -> UserContext:
