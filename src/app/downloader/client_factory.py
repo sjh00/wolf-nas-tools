@@ -173,6 +173,18 @@ class DownloadClientFactory:
                 ExceptionUtils.exception_traceback(e)
         return None
 
+    @staticmethod
+    def _client_ready(client) -> bool:
+        """客户端句柄是否就绪（不发起网络请求）.
+
+        各下载器就绪标志：Qbittorrent->qbc、Transmission->trc、Aria2/Thunder->_client；
+        没有这类属性的客户端视为就绪。
+        """
+        for attr in ("qbc", "trc", "_client"):
+            if hasattr(client, attr):
+                return bool(getattr(client, attr))
+        return True
+
     def get_client(self, did=None) -> _IDownloadClient | None:
         """获取（或创建）下载器客户端实例"""
         if not did:
@@ -188,10 +200,28 @@ class DownloadClientFactory:
         config = downloader_conf.get("config") or {}
         config["download_dir"] = downloader_conf.get("download_dir")
         config["name"] = downloader_conf.get("name")
+        name = downloader_conf.get("name")
+        key = str(did)
         with client_lock:
-            if not self._clients.get(str(did)):
-                self._clients[str(did)] = self._build_class(ctype, config)
-            return self._clients.get(str(did))
+            client = self._clients.get(key)
+            if client is None:
+                client = self._build_class(ctype, config)
+                if client is None:
+                    return None
+            if not self._client_ready(client):
+                # 首次连接失败或配置缺失的实例不缓存：重连一次，仍不就绪则下次重建
+                try:
+                    client.connect()
+                except Exception as e:  # noqa: BLE001
+                    log.warn(f"[Downloader]下载器 {name} 重连失败：{e!s}")
+                if self._client_ready(client):
+                    self._clients[key] = client
+                else:
+                    self._clients.pop(key, None)
+                    log.warn(f"[Downloader]下载器 {name} 未就绪，本次不缓存（下次将重建）")
+                return client
+            self._clients[key] = client
+            return client
 
     def get_client_type(self, downloader_id=None):
         """获取下载器的类型枚举"""

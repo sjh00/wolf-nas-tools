@@ -128,6 +128,17 @@ class Transmission(_IDownloadClient):
         if self.host and self.port:
             self.trc = self.__login_transmission()
 
+    def _ensure_connected(self) -> bool:
+        """会话缺失时按需重连.
+
+        实例只在构造时连接一次并被 client_factory 缓存；首次连接若因瞬时
+        网络/超时失败，trc 会永久为 None，导致后续操作直接失败。这里补一次连接。
+        """
+        if self.trc:
+            return True
+        self.connect()
+        return bool(self.trc)
+
     def __login_transmission(self):
         """
         连接transmission
@@ -391,7 +402,7 @@ class Transmission(_IDownloadClient):
         cookie: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        if not self.trc:
+        if not self._ensure_connected() or not self.trc:
             return False
         try:
             ret = self.trc.add_torrent(torrent=content, download_dir=download_dir, paused=is_paused, cookies=cookie)

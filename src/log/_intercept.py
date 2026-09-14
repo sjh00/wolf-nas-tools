@@ -7,6 +7,7 @@ import logging
 from loguru import logger
 
 from ._buffer_proxy import LOG_BUFFER
+from ._levels import is_enabled
 
 __all__ = ["InterceptHandler"]
 
@@ -23,5 +24,7 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
+        if not is_enabled(level):
+            return
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
         LOG_BUFFER.append(str(level).upper(), record.getMessage())

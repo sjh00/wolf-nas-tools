@@ -79,4 +79,8 @@ DEFAULT_MESSAGE_TEMPLATES = {
     "mediaserver_message": {"title": "🎬 {{ message_title }}", "text": "{{ message_content }}"},
     "custom_message": {"title": "🔌 {{ title }}", "text": "{{ text }}"},
     "ptrefresh_date_message": {"title": "📊 站点数据统计", "text": "{{ msgs|join('\\n') }}"},
+    "message_digest": {
+        "title": "📦 {{ label }}：{{ count }} 条通知已合并",
+        "text": "{% for s in samples %}• {{ s }}\n{% endfor %}{% if more %}…另有 {{ more }} 条{% endif %}",
+    },
 }

@@ -53,11 +53,28 @@ class _NestedSafeDotEnvSource(DotEnvSettingsSource):
 _PROJECT_ROOT = get_project_root()
 
 
-def _load_dotenv(path: str | None = None) -> bool:
-    """手动加载 .env 文件（早于 pydantic-settings，用于发现 WOLFNAS_CONFIG）。"""
+_DOTENV_BOOTSTRAP_KEYS = (
+    "WOLFNAS_CONFIG",
+    "WOLFNAS_DATA",
+    "NEXUS_MEDIA_CONFIG",
+    "NEXUS_MEDIA_DATA",
+    "TZ",
+    "DATABASE__SQLITE_PATH",
+    "LOG_FORMAT",
+)
+
+
+def _load_dotenv(path: str | None = None) -> dict[str, str]:
+    """解析 .env 为键值对，不写入 os.environ.
+
+    .env 交由 pydantic-settings 的 dotenv 源处理（优先级：环境变量 > .env > config.yaml）。
+    早期版本会把 .env 全部注入 os.environ，使其被当作"环境变量"而永远压过 config.yaml；
+    这里仅通过 `_apply_bootstrap_env` 注入启动期必需的键。
+    """
     env_path = Path(path) if path else _PROJECT_ROOT / ".env"
+    values: dict[str, str] = {}
     if not env_path.is_file():
-        return False
+        return values
     with open(env_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -66,9 +83,24 @@ def _load_dotenv(path: str | None = None) -> bool:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    return True
+            if key:
+                values[key] = value
+    return values
+
+
+def _apply_bootstrap_env(values: dict[str, str], model_fields: dict[str, Any] | None = None) -> None:
+    """注入启动引导键与非配置字段键到 os.environ；已知配置字段交给 pydantic dotenv 源.
+
+    - 启动引导键：需在 AppSettings 实例化前读取（配置路径/数据目录/时区/日志格式/SQLite 路径）
+    - 非配置字段键：代码用 os.getenv 直接读取但模型里没有对应字段（如 NEXUS_SITES_DIR）
+    """
+    known = {name.upper() for name in (model_fields or {})}
+    for key, value in values.items():
+        if not key or not value or key in os.environ:
+            continue
+        top = key.split("__", 1)[0].upper()
+        if key in _DOTENV_BOOTSTRAP_KEYS or top not in known:
+            os.environ[key] = value
 
 
 def _resolve_config_path() -> str:
@@ -311,9 +343,23 @@ class LogConfig(BaseModel):
     """日志配置"""
 
     type: str = "file"
-    level: str = "debug"
+    level: str = "info"
     format: str = "text"
     path: str = ""
+
+
+class MessageGovernorConfig(BaseModel):
+    """消息治理（去重/聚合）配置.
+
+    - modes: msg_type -> immediate|dedup|digest，覆盖默认策略
+    - thresholds: msg_type -> 窗口内直接发送条数上限
+    """
+
+    enabled: bool = True
+    flush_seconds: int = 30
+    max_samples: int = 3
+    modes: dict[str, str] = Field(default_factory=dict)
+    thresholds: dict[str, int] = Field(default_factory=dict)
 
 
 def _filter_none(data: dict[str, Any]) -> dict[str, Any]:
@@ -367,7 +413,7 @@ class AppSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -391,6 +437,7 @@ class AppSettings(BaseSettings):
     agent: AgentConfig = Field(default_factory=AgentConfig, validate_default=True)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
+    message_governor: MessageGovernorConfig = Field(default_factory=MessageGovernorConfig)
 
     @field_validator("agent", mode="before")
     @classmethod
@@ -492,7 +539,8 @@ def _init_config_file() -> str:
     return config_path
 
 
-_load_dotenv()
+_DOTENV_VALUES = _load_dotenv()
+_apply_bootstrap_env(_DOTENV_VALUES, AppSettings.model_fields)
 
 _config_path = _init_config_file()
 

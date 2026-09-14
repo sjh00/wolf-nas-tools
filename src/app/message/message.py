@@ -6,10 +6,13 @@
 
 from typing import Any
 
+from app.core.settings import settings
 from app.message.core.agent_dispatcher import AgentEnhancingDispatcher
 from app.message.core.client_manager import ClientManager
 from app.message.core.command_manager import CommandManager
 from app.message.core.dispatcher import MessageDispatcher
+from app.message.core.governor import MessageGovernor, build_policies
+from app.message.core.governor_store import build_governor_store
 from app.message.core.message_builder import MessageBuilder
 from app.message.core.template_engine import TemplateEngine
 from app.message.message_center import MessageCenter
@@ -43,6 +46,8 @@ class Message:
         self._command_manager = CommandManager(self._client_manager)
         self._template_engine = TemplateEngine()
         self._dispatcher = MessageDispatcher(self._client_manager, self.messagecenter, self._domain)
+        self._governor = self._build_governor()
+        self._dispatcher.set_governor(self._governor)
         self._builder = MessageBuilder(
             self._client_manager,
             self._dispatcher,
@@ -51,6 +56,34 @@ class Message:
         )
         # 插件注册的消息命令
         self._command_manager._plugin_commands = {}
+
+    def _build_governor(self) -> MessageGovernor:
+        """按配置构建消息治理层（去重/聚合），配置异常时回退默认策略."""
+        kwargs = {
+            "sender": self._dispatcher.submit_now,
+            "store": build_governor_store(),
+            "client_resolver": self._client_manager.get_client_by_id,
+            "template_engine": self._template_engine,
+        }
+        try:
+            cfg = settings.message_governor
+        except Exception:  # noqa: BLE001
+            return MessageGovernor(**kwargs)
+        return MessageGovernor(
+            **kwargs,
+            policies=build_policies(cfg.modes, cfg.thresholds),
+            enabled=cfg.enabled,
+            flush_seconds=cfg.flush_seconds,
+            max_samples=cfg.max_samples,
+        )
+
+    def flush_governor(self) -> int:
+        """flush 消息治理聚合缓冲（由调度器定时任务调用）."""
+        return self._governor.flush_once()
+
+    def governor_flush_seconds(self) -> int:
+        """治理层聚合 flush 间隔（秒）；未启用返回 0."""
+        return self._governor.flush_seconds if self._governor.enabled else 0
 
     def set_channel_binding_service(self, service) -> None:
         """延迟注入渠道绑定服务（DI 分层：Message 在基础设施层先于 rbac 构建）"""
@@ -162,12 +195,25 @@ class Message:
         text: str = "",
         image: str | None = None,
         url: str | None = None,
+        msg_type: str | None = None,
+        variables: dict | None = None,
+        template_engine=None,
     ) -> bool:
         """按归属用户定向发送（ADR-021 5.6）：Web 消息 + 该用户绑定的外部渠道.
 
         system_user_id 为 None 时退化为 Web 系统消息（无归属）。
+        透传 msg_type/variables/template_engine，使定向消息同样受治理层按类型治理。
         """
-        return self._dispatcher.send_user_msg(system_user_id, title, text, image=image, url=url)
+        return self._dispatcher.send_user_msg(
+            system_user_id,
+            title,
+            text,
+            image=image,
+            url=url,
+            msg_type=msg_type,
+            variables=variables,
+            template_engine=template_engine,
+        )
 
     # ---------- 业务消息构建委托 ----------
 

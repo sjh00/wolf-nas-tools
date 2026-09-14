@@ -68,6 +68,23 @@ log:
   # 【日志级别】：info、debug、error
   level: info
 
+# 【消息治理】：批量通知去重/聚合，避免批量失败时刷屏（如 1000+ 文件入库失败）
+message_governor:
+  # 【总开关】
+  enabled: true
+  # 【聚合窗口/汇总间隔】：秒
+  flush_seconds: 30
+  # 【摘要中最多保留的明细条数】
+  max_samples: 3
+  # 【按消息类型覆盖模式】：immediate(即时) / dedup(去重) / digest(聚合)
+  # 可用类型见 src/app/message/switches.py
+  modes: {}
+  #   transfer_fail: digest
+  #   custom_message: immediate
+  # 【按消息类型覆盖“窗口内直接发送条数”】
+  thresholds: {}
+  #   transfer_fail: 3
+
 # 【配置媒体库信息】
 media:
   # 【媒体库电影文件存放目录】：支持配置多个目录，不同的硬盘需映射为不同的根目录，以更于程序区分
