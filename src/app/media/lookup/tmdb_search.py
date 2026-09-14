@@ -281,14 +281,22 @@ class TmdbSearch:
             return None
 
         def _season_match(tv_info, season_year):
-            if not tv_info:
+            if not tv_info or not isinstance(tv_info, dict):
                 return False
             try:
-                seasons = tv_info.get("seasons") or []
-                return any(
-                    s.get("air_date", "")[:4] == str(season_year) and s.get("season_number") == int(season_number)
-                    for s in seasons
-                )
+                seasons = tv_info.get("seasons")
+                if not isinstance(seasons, list):
+                    return False
+                target = str(season_year)
+                for s in seasons:
+                    if not isinstance(s, dict):
+                        continue
+                    air_date = s.get("air_date") or ""
+                    if not isinstance(air_date, str):
+                        continue
+                    if s.get("season_number") == int(season_number) and air_date[:4] == target:
+                        return True
+                return False
             except Exception as e:
                 log.error(f"[Meta]连接TMDB出错：{e}")
                 return False
@@ -344,10 +352,16 @@ class TmdbSearch:
                     log.error(f"[Meta]获取剧集详情出错: {err}")
         for tv in candidates:
             res = results.get(tv.get("id"))
-            if res:
-                _, (info, names) = res
-                if compare_tmdb_names(name, names) and _season_match(info, media_year) and _episode_valid(info):
-                    return info
+            if not res or not isinstance(res, tuple) or len(res) != 2:
+                continue
+            _tv_obj, payload = res
+            if not isinstance(payload, tuple) or len(payload) != 2:
+                continue
+            info, names = payload
+            if not isinstance(info, dict):
+                continue
+            if compare_tmdb_names(name, names) and _season_match(info, media_year) and _episode_valid(info):
+                return info
         return {}
 
     def search_multi(self, name: str) -> Any:
@@ -541,32 +555,56 @@ class TmdbSearch:
             return None
 
     def _fetch_allnames(self, mtype, tmdb_id):
+        """获取详情并聚合所有候选名；任何中间字段异常都安全返回 (None, [])"""
         if not mtype or not tmdb_id:
             return {}, []
-        ret_names = []
-        tmdb_info = TmdbDetail(self.client).get_detail(
-            tmdb_id, mtype, append_to_response="alternative_titles,translations"
-        )
-        if not tmdb_info:
+        try:
+            tmdb_info = TmdbDetail(self.client).get_detail(
+                tmdb_id, mtype, append_to_response="alternative_titles,translations"
+            )
+        except Exception as err:
+            log.warning(f"[Meta]获取TMDB详情异常 tmdb_id={tmdb_id} mtype={mtype}: {err!s}")
+            return {}, []
+        if not tmdb_info or not isinstance(tmdb_info, dict):
             return tmdb_info, []
-        if mtype == MediaType.MOVIE:
-            for alt in tmdb_info.get("alternative_titles", {}).get("titles", []):
-                title = alt.get("title")
-                if title and title not in ret_names:
-                    ret_names.append(title)
-            for tr in tmdb_info.get("translations", {}).get("translations", []):
-                title = tr.get("data", {}).get("title")
-                if title and title not in ret_names:
-                    ret_names.append(title)
-        else:
-            for alt in tmdb_info.get("alternative_titles", {}).get("results", []):
-                name = alt.get("title")
-                if name and name not in ret_names:
-                    ret_names.append(name)
-            for tr in tmdb_info.get("translations", {}).get("translations", []):
-                name = tr.get("data", {}).get("name")
-                if name and name not in ret_names:
-                    ret_names.append(name)
+        ret_names: list = []
+        try:
+            if mtype == MediaType.MOVIE:
+                alt_block = tmdb_info.get("alternative_titles") or {}
+                for alt in (alt_block.get("titles") or []) if isinstance(alt_block, dict) else []:
+                    if not isinstance(alt, dict):
+                        continue
+                    title = alt.get("title")
+                    if title and title not in ret_names:
+                        ret_names.append(title)
+                tr_block = tmdb_info.get("translations") or {}
+                for tr in (tr_block.get("translations") or []) if isinstance(tr_block, dict) else []:
+                    if not isinstance(tr, dict):
+                        continue
+                    title = (tr.get("data") or {}).get("title")
+                    if title and title not in ret_names:
+                        ret_names.append(title)
+            else:
+                alt_block = tmdb_info.get("alternative_titles") or {}
+                for alt in (alt_block.get("results") or []) if isinstance(alt_block, dict) else []:
+                    if not isinstance(alt, dict):
+                        continue
+                    name = alt.get("title") or alt.get("name")
+                    if name and name not in ret_names:
+                        ret_names.append(name)
+                tr_block = tmdb_info.get("translations") or {}
+                for tr in (tr_block.get("translations") or []) if isinstance(tr_block, dict) else []:
+                    if not isinstance(tr, dict):
+                        continue
+                    data = tr.get("data") or {}
+                    if not isinstance(data, dict):
+                        continue
+                    name = data.get("name") or data.get("title")
+                    if name and name not in ret_names:
+                        ret_names.append(name)
+        except Exception as err:
+            log.warning(f"[Meta]解析TMDB候选名异常 tmdb_id={tmdb_id}: {err!s}")
+            return tmdb_info, []
         return tmdb_info, ret_names
 
     def _get_detail(self, tmdbid, mtype):
