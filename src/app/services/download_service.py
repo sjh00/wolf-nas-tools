@@ -436,6 +436,10 @@ class DownloadService:
         result: list[dict] = []
         completed_ids: list[tuple[str, str]] = []
         active_ids: list[tuple[str, str]] = []
+        # 诊断计数：列表为空时据此直接判断卡在哪一步，无需再翻代码
+        queried: set[str] = set()
+        matched_count = 0
+        missing_count = 0
 
         for did, tasks in downloader_groups.items():
             downloader_conf = None
@@ -471,6 +475,7 @@ class DownloadService:
                 # 查询失败（下载器不可达/未就绪）：数据不可信，既不要改状态也不要下结论
                 log.warn(f"[DownloadService]下载器 {downloader_name} 进度查询失败，本轮跳过 {len(tasks)} 个任务")
                 continue
+            queried.add(did)
 
             # 建索引：hash 优先，种子名兜底（hash 可能因 torrent 重编码等原因不一致）
             by_hash: dict[str, dict] = {}
@@ -496,6 +501,7 @@ class DownloadService:
                         # 推送过、但下载器里比对不到：仍然展示，不隐藏、不改状态。
                         # 常见于下载器已清理该任务，或 hash/名称都对不上。
                         self._warn_task_missing_once(did, tid, downloader_name, getattr(task, "state", None))
+                        missing_count += 1
                         result.append(
                             {
                                 "id": tid,
@@ -525,6 +531,7 @@ class DownloadService:
                     if getattr(task, "state", None) != "downloading":
                         active_ids.append((did, tid))
 
+                    matched_count += 1
                     result.append(
                         {
                             "id": str(progress.get("id") or tid),
@@ -565,6 +572,14 @@ class DownloadService:
                 raise
             except Exception as e:
                 log.debug(f"[DownloadService]批量标记任务完成失败：{e}")
+
+        # 自诊断摘要：列表为空时据此直接定位卡在哪一步，无需再翻代码或加日志
+        if not result and active_tasks:
+            log.info(
+                f"[DownloadService]正在下载列表为空：平台推送任务 {len(active_tasks)} 个，"
+                f"下载器查询成功 {len(queried)} 个，比对命中 {matched_count} 个，比对不到 {missing_count} 个"
+                + ("" if queried else "（所有下载器均查询失败，请检查下载器连接）")
+            )
 
         total = len(result)
         start = (page - 1) * page_size
