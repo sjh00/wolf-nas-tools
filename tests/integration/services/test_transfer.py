@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from typing import cast
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
@@ -952,3 +953,87 @@ class TestTransferReplicateToBackends:
         service._mirror_upload(media, "/data/tv1/S01E01.mkv", None, [("/data/tv2", backend_b)], "S01E01.mkv")
 
         backend_b.write_stream.assert_not_called()
+
+
+class TestUnrecognizedFileAccounting:
+    """未识别文件计数：已记录过的未识别文件按"跳过"处理，不重复计失败"""
+
+    def _make_service(self):
+        with (
+            patch("app.services.transfer.filetransfer_service.TransferPathResolver") as mock_res_cls,
+            patch("app.services.transfer.filetransfer_service.get_lock_manager") as mock_get_lm,
+        ):
+            mock_lock = MagicMock()
+            mock_lock.acquire.return_value = True
+            mock_get_lm.return_value.create_lock.return_value = mock_lock
+
+            mock_resolver = MagicMock()
+            mock_resolver.unknown_path = []
+            mock_res_cls.from_settings.return_value = mock_resolver
+
+            service = FileTransferService(
+                media_service=MagicMock(),
+                message=MagicMock(),
+                scrape_queue_service=MagicMock(),
+                thread_executor=MagicMock(),
+                history_manager=MagicMock(),
+                progress=MagicMock(),
+                event_bus=MagicMock(),
+                engine=MagicMock(),
+                path_resolver=mock_resolver,
+                existence_checker=MagicMock(),
+                cleanup_service=MagicMock(),
+                sync_path_repo=MagicMock(),
+            )
+            service._path_resolver = mock_resolver
+            return service
+
+    def test_already_recorded_unknown_not_counted_as_failure(self):
+        """已在未识别表中的文件再次出现：failed=0，不产生重复失败日志"""
+        service = self._make_service()
+        history = cast("MagicMock", service._history)
+        history.is_transfer_unknown_exists.return_value = True
+
+        fc, ac, _ = service._handle_unrecognized_file(
+            "/src/Unknown.Movie.2020.mkv", "/src/Unknown.Movie.2020.mkv", "/src", "", "link", "/dst", False, []
+        )
+        assert fc == 0
+        assert ac == 0
+
+    def test_new_unknown_counted_once(self):
+        """首次未识别：failed=1 且写入未识别表"""
+        service = self._make_service()
+        history = cast("MagicMock", service._history)
+        history.is_transfer_unknown_exists.return_value = False
+        history.is_need_insert_transfer_unknown.return_value = True
+
+        fc, ac, msgs = service._handle_unrecognized_file(
+            "/src/Unknown.Movie.2020.mkv", "/src/Unknown.Movie.2020.mkv", "/src", "", "link", "/dst", False, []
+        )
+        assert fc == 1
+        assert ac == 1
+        assert msgs == ["无法识别媒体信息"]
+        history.insert_transfer_unknown.assert_called_once()
+
+    def test_unrecognized_logged_once_not_warn_and_error(self):
+        """同一条未识别消息只输出一次（此前 WARN + ERROR 各一条）"""
+        service = self._make_service()
+        history = cast("MagicMock", service._history)
+        history.is_transfer_unknown_exists.return_value = False
+        history.is_need_insert_transfer_unknown.return_value = True
+
+        with patch("app.services.transfer.filetransfer_service.log") as mock_log:
+            service._handle_unrecognized_file(
+                "/src/Unknown.Movie.2020.mkv",
+                "/src/Unknown.Movie.2020.mkv",
+                "/src",
+                "",
+                "link",
+                "/dst",
+                False,
+                [],
+            )
+
+        unrecognized_warns = [c for c in mock_log.warn.call_args_list if "无法识别媒体信息" in str(c)]
+        assert len(unrecognized_warns) == 1, "未识别消息应只 warn 一次"
+        assert mock_log.error.call_count == 0, "未识别消息不应再输出 error"
