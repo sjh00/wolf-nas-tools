@@ -622,7 +622,8 @@ def pt_info(
     svc: Downloader = Depends(get_downloader_service),
 ):
     torrents = svc.get_downloading_progress(ids=req.ids)
-    return success(data=torrents)
+    # 查询失败(None)时该接口的契约仍返回数组，避免前端拿到 null；失败原因已由日志暴露
+    return success(data=torrents or [])
 
 
 @router.post("/tasks/remove", response_model=CommonResponse, summary="删除下载任务")

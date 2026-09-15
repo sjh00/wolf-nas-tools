@@ -10,7 +10,12 @@ from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepos
 from app.db.repositories.transfer_repo_adapter import TransferBlacklistRepositoryAdapter
 from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.domain.enums import SyncType
-from app.services.filetransfer_service import FileTransferService
+from app.services.filetransfer_service import (
+    FileTransferService,
+    is_transfer_skip,
+    skip_message,
+    strip_skip_prefix,
+)
 from app.services.scrape_queue_service import ScrapeQueueService
 from app.storage.backends.base import StorageBackend, StorageType
 from app.storage.config_models import LocalStorageConfig
@@ -77,7 +82,15 @@ class TransferPipeline:
                 messages.append(str(e))
                 log.error(f"[Pipeline]处理失败：{file_path}，{e}")
 
-        final_msg = "; ".join(messages) if messages else "处理完成"
+        # 结果分三类：全部跳过 / 混合（既有跳过又有失败）/ 全部失败或无跳过。
+        # 关键点：混合时必须去掉内层跳过标记，否则拼接串以标记开头会被调用方误判为
+        # 「整体跳过」，从而掩盖真正的失败（不记 ERROR、不打标签、失败被静默吞掉）。
+        if not messages:
+            final_msg = "处理完成"
+        elif all(is_transfer_skip(m) for m in messages):
+            final_msg = skip_message("; ".join(strip_skip_prefix(m) for m in messages))
+        else:
+            final_msg = "; ".join(strip_skip_prefix(m) for m in messages)
 
         # ---------- 3. 来源特定后处理 ----------
         if task.post_process:

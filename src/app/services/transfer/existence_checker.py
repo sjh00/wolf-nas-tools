@@ -45,7 +45,9 @@ class MediaExistenceChecker:
                         continue
                 files.append(finfo.path)
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[FileTransfer]忽略异常: {e}")
+            # 不静默：远程后端列举失败会被下游当成「目录下没有媒体文件」而跳过转移，
+            # 只记 debug 会让真实文件长期不转移且无从排查
+            log.warn(f"[FileTransfer]远程目录列举失败，本次按空目录处理（可能导致漏转移）：{path} - {e}")
         return files
 
     def is_media_exists(self, media_dest, media, dst_backend=None):

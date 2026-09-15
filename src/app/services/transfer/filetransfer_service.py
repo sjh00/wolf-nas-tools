@@ -33,6 +33,7 @@ from app.events.payloads import (
     SubtitleDownloadPayload,
     TransferFailPayload,
 )
+from app.infrastructure.distributed_lock import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.progress import ProgressTracker
 from app.infrastructure.queue.memory_queue import MemoryMessageQueue
@@ -52,6 +53,33 @@ from app.utils import ExceptionUtils, PathUtils, StringUtils
 
 # 多后端镜像上传：后端间写入间隔（秒），避免连续上传压垮后端
 MIRROR_BACKEND_DELAY = 1.0
+
+# 转移结果消息前缀：表示「本次未处理，但并非失败」（如目标正被其他实例转移）。
+# 调用方据此按跳过处理：不记 ERROR、不写转移历史/黑名单、不给下载器任务打「已整理」标签，
+# 使该文件在下一轮仍会被重试。
+TRANSFER_SKIP_PREFIX = "[跳过]"
+
+# 单文件转移的分布式锁 TTL（秒）。配合 lock_heartbeat 续期：
+# TTL 短 → 进程意外退出后锁能快速失效，不会长时间阻塞重试；
+# 心跳 → 长任务期间锁不会中途过期而被其他实例重复处理。
+MEDIA_TRANSFER_LOCK_TTL = 180
+
+
+def is_transfer_skip(message: str | None) -> bool:
+    """判断转移结果消息是否为「跳过」而非失败。"""
+    return bool(message) and str(message).startswith(TRANSFER_SKIP_PREFIX)
+
+
+def strip_skip_prefix(message: str | None) -> str:
+    """去掉跳过标记，返回纯描述。"""
+    text = str(message or "")
+    return text[len(TRANSFER_SKIP_PREFIX) :] if is_transfer_skip(text) else text
+
+
+def skip_message(message: str) -> str:
+    """构造带跳过标记的消息（幂等）。"""
+    return f"{TRANSFER_SKIP_PREFIX}{strip_skip_prefix(message)}"
+
 
 _mirror_queue: MemoryMessageQueue | None = None
 _mirror_queue_lock = threading.Lock()
@@ -345,13 +373,14 @@ class FileTransferService:
 
         # 分布式锁：多实例同时处理同一文件/目录时互斥
         lock_key = f"filetransfer:media:{hashlib.md5(in_path.encode(), usedforsecurity=False).hexdigest()}"
-        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=3600)
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=MEDIA_TRANSFER_LOCK_TTL)
         acquired = lock.acquire()
         if not acquired:
-            log.info(f"[Rmt]{in_path} 正在其他实例转移中，跳过")
-            return self._finish_transfer(False, f"文件正在转移中：{in_path}")
+            # 并发/残留锁导致的跳过是瞬态状态，不是失败：交由下一轮重试
+            log.info(f"[Rmt]{in_path} 正在转移中（其他实例或上一轮未完成），本轮跳过")
+            return self._finish_transfer(False, skip_message(f"文件正在转移中：{in_path}"))
 
-        with lock:
+        with lock, lock_heartbeat(lock, MEDIA_TRANSFER_LOCK_TTL):
             if not operation:
                 operation = self._default_operation
 
@@ -455,7 +484,8 @@ class FileTransferService:
                 if fi.is_dir and exists(f"{fi.path.rstrip('/')}/BDMV/index.bdmv"):
                     return norm
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[Rmt]蓝光目录检测失败: {e}")
+            # 检测失败会让蓝光原盘被当成普通目录处理，需可见而非静默
+            log.warn(f"[Rmt]蓝光目录检测失败，将按普通目录处理：{in_path} - {e}")
         return None
 
     def _discover_files(self, in_path, files, episode, min_filesize, src_backend=None):
@@ -541,7 +571,8 @@ class FileTransferService:
                         continue
                     files.append(finfo.path)
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[Rmt]后端目录递归列举失败: {e}")
+            # 列举失败返回的 [] 会被下游当成「目录下没有媒体文件」而跳过转移，需可见
+            log.warn(f"[Rmt]后端目录递归列举失败，按空目录处理（可能导致漏转移）：{dir_path} - {e}")
         return files
 
     def _lookup_download_record(self, in_path):
@@ -1010,7 +1041,10 @@ class FileTransferService:
         if dst_backend is not None:
             try:
                 return bool(dst_backend.exists(path))
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                # 远端查询失败时回退本地判断（远端路径本地通常不存在 → 视为「不存在」，
+                # 宁可多转移一次也不误判为已入库）。该回退需可见，便于排查后端异常。
+                log.warn(f"[Rmt]目标后端存在性查询失败，回退本地判断：{path} - {e}")
                 return os.path.exists(path)
         return os.path.exists(path)
 
@@ -1273,34 +1307,38 @@ class FileTransferService:
             return
 
         lock_key = f"filetransfer:manual:{hashlib.md5(s_path.encode(), usedforsecurity=False).hexdigest()}"
-        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=3600)
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=MEDIA_TRANSFER_LOCK_TTL)
         acquired = lock.acquire()
         if not acquired:
-            log.warn(f"[Rmt]源目录正在转移中：{s_path}")
+            log.info(f"[Rmt]源目录正在转移中（其他实例或上一轮未完成），本轮跳过：{s_path}")
             return
 
-        try:
-            if t_path and not os.path.exists(t_path):
-                log.warn(f"[Rmt]目的目录不存在：{t_path}")
-                return
-            log.info(f"[Rmt]转移模式为：{operation}")
-            log.info(f"[Rmt]正在转移以下目录中的全量文件：{s_path}")
-            paths = [
-                path
-                for path in PathUtils.get_dir_level1_medias(s_path, RMT_MEDIAEXT)
-                if not PathUtils.is_invalid_path(path)
-            ]
+        with lock_heartbeat(lock, MEDIA_TRANSFER_LOCK_TTL):
+            try:
+                if t_path and not os.path.exists(t_path):
+                    log.warn(f"[Rmt]目的目录不存在：{t_path}")
+                    return
+                log.info(f"[Rmt]转移模式为：{operation}")
+                log.info(f"[Rmt]正在转移以下目录中的全量文件：{s_path}")
+                paths = [
+                    path
+                    for path in PathUtils.get_dir_level1_medias(s_path, RMT_MEDIAEXT)
+                    if not PathUtils.is_invalid_path(path)
+                ]
 
-            def _transfer_one(path: str) -> None:
-                ret, ret_msg = self.transfer_media(
-                    in_from=SyncType.MAN, in_path=path, target_dir=t_path, operation=operation
-                )
-                if not ret:
-                    log.error(f"[Rmt]{path} 处理失败：{ret_msg}")
+                def _transfer_one(path: str) -> None:
+                    ret, ret_msg = self.transfer_media(
+                        in_from=SyncType.MAN, in_path=path, target_dir=t_path, operation=operation
+                    )
+                    if not ret:
+                        if is_transfer_skip(ret_msg):
+                            log.info(f"[Rmt]{path} 跳过：{ret_msg}")
+                        else:
+                            log.error(f"[Rmt]{path} 处理失败：{ret_msg}")
 
-            self._run_parallel(paths, _transfer_one)
-        finally:
-            lock.release()
+                self._run_parallel(paths, _transfer_one)
+            finally:
+                lock.release()
 
     def get_sync_backend_by_dest(self, dest: str) -> str:
         """根据目的目录查找对应同步配置的目标后端."""
