@@ -59,8 +59,15 @@ async def _serve_image(
     else:
         image_data = await download_image(image_url, referer=referer)
     if not image_data or len(image_data) < 100:
-        log.error(f"[ImageProxy]下载内容为空或过小: {image_url}")
-        raise NexusError("获取图片失败", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
+        # 上游无此图（如媒体条目缺少对应图片）是正常的空结果，前端会走占位图。
+        # 这里按 debug 记录，避免每张缺失图片刷两条 ERROR。
+        log.debug(f"[ImageProxy]上游无此图（返回空或过小）: {image_url}")
+        raise NexusError(
+            "获取图片失败",
+            errcode=ErrorCode.IMAGE_FETCH_FAILED,
+            http_status=404,
+            details={"expected": True},
+        )
 
     # 调整尺寸（PIL CPU 密集，放线程池）
     if size and size != "original":
