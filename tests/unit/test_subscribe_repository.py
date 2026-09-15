@@ -149,3 +149,60 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
             assert ep is not None
             assert ep.EPISODES.startswith("5,")
             assert ep.EPISODES.endswith(",48")
+
+
+class TestGetRssTvEpisodes:
+    """get_rss_tv_episodes 的解析健壮性。
+
+    回归：EPISODES 为空串时 `''.split(',')` 得到 `['']`，直接 int('') 会抛
+    ValueError 并中断整个订阅处理流程（invalid literal for int() with base 10: ''）。
+    空串语义上是「记录存在但没有缺失剧集」，应返回 []。
+    """
+
+    def _setup_repo(self, episodes: str | None = None, *, rid: int = 1):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db.models.base import Base
+        from app.db.models.subscribe import SubscribeTvEpisodes
+        from app.db.session import SessionManager
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        mgr = SessionManager()
+        mgr._engine = engine
+        mgr._factory = sessionmaker(bind=engine, expire_on_commit=False)
+        SubscribeRepository._session_manager = mgr
+        if episodes is not None:
+            with mgr.session_scope() as db:
+                db.add(SubscribeTvEpisodes(RSSID=rid, EPISODES=episodes))
+        return mgr
+
+    def test_empty_string_returns_empty_list(self):
+        """空串（无缺失剧集）→ []，不得抛 ValueError"""
+        self._setup_repo("")
+        assert SubscribeRepository().get_rss_tv_episodes(1) == []
+
+    def test_normal_list_parsed(self):
+        self._setup_repo("1,2,3")
+        assert SubscribeRepository().get_rss_tv_episodes(1) == [1, 2, 3]
+
+    def test_whitespace_fragments_skipped(self):
+        self._setup_repo("1, ,2,,")
+        assert SubscribeRepository().get_rss_tv_episodes(1) == [1, 2]
+
+    def test_missing_record_returns_none(self):
+        """无该订阅的记录 → None（调用方据此走兜底推算）"""
+        self._setup_repo(None)
+        assert SubscribeRepository().get_rss_tv_episodes(1) is None
+
+    def test_falsy_rid_returns_empty(self):
+        self._setup_repo("1,2")
+        repo = SubscribeRepository()
+        assert repo.get_rss_tv_episodes(None) == []
+        assert repo.get_rss_tv_episodes(0) == []
+
+    def test_non_numeric_fragment_skipped(self):
+        """脏数据（非数字片段）跳过而非中断整个订阅流程"""
+        self._setup_repo("1,abc,3")
+        assert SubscribeRepository().get_rss_tv_episodes(1) == [1, 3]
