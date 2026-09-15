@@ -977,12 +977,16 @@ class FileTransferService:
     ):
         file_name = os.path.basename(file_item)
         error = "无法识别媒体信息"
-        # 已在未识别列表：跳过（无论 STATE），避免每周期重复识别报错/重复通知
+        # 已在未识别列表：跳过（无论 STATE），避免每周期重复识别报错/重复通知。
+        # 按"已处理跳过"计数（failed=0），否则每个同步周期都会重复输出
+        # "[Sync]xxx 转移失败" 错误日志
         if self._history.is_transfer_unknown_exists(reg_path):
-            return 1, 0, alert_messages
+            return 0, 0, alert_messages
         insert = self._history.is_need_insert_transfer_unknown(reg_path)
         if not insert:
-            return 1, 0, alert_messages
+            return 0, 0, alert_messages
+        # 未识别只告警一次：下方按是否配置未识别目录决定是否再记录转移动作，
+        # 不重复输出同一条"无法识别媒体信息"（此前 WARN + ERROR 各一条）
         log.warn(f"[Rmt]{file_name} {error}！")
         self.progress.update(ptype=ProgressKey.FileTransfer, text=error)
         self._history.insert_transfer_unknown(reg_path, target_dir, operation)
@@ -998,8 +1002,6 @@ class FileTransferService:
                 log.warn(f"[Rmt]{file_name} 按原文件名转移到未识别目录：{p}")
                 new_file = os.path.join(p, os.path.basename(file_item))
                 self._engine.transfer(file_item, new_file, operation, src_backend=src_backend)
-        else:
-            log.error(f"[Rmt]{file_name} {error}！")
         return 1, 1, alert_messages
 
     @staticmethod
@@ -1081,8 +1083,9 @@ class FileTransferService:
 
         if dir_exist_flag:
             if bluray_disk_dir:
-                log.warn(f"[Rmt]蓝光原盘目录已存在：{ret_dir_path}")
-                return 1, 0, alert_messages, 0, new_file, ret_file_path, ret_dir_path
+                # 蓝光原盘目录已存在：视为已入库跳过，不计失败、不告警
+                log.info(f"[Rmt]蓝光原盘目录已存在，跳过：{ret_dir_path}")
+                return 0, 0, alert_messages, 0, new_file, ret_file_path, ret_dir_path
             if file_exist_flag and ret_file_path:
                 exist_filenum = 1
                 if udf_flag:

@@ -496,3 +496,82 @@ class TestNameCleanup:
         assert result is not None
         assert result.title_en == "Person Of Interest"
         assert "试播" not in (result.title_cn or "")
+
+
+class TestTailMetadataLeftover:
+    """尾部元数据残留：音频编码参数、版本短语、多词组名、编码组链等不应混入片名"""
+
+    def test_truehd_channels_not_in_name(self, parser):
+        """TrueHD5.1 的声道数不应拼进片名"""
+        result = parser.parse("Charlie and the Chocolate Factory 2005 BluRay REMUX VC-1 TrueHD5.1.mkv")
+        assert result is not None
+        assert result.title_en == "Charlie And The Chocolate Factory"
+        assert result.year == "2005"
+
+    def test_truehd_atmos_parentheses(self, parser):
+        """TrueHD(Atmos) 括号写法应整体识别为音频编码"""
+        result = parser.parse("Green.Book.2018.UHD.BluRay.2160p.TrueHD(Atmos).7.1.HDR.10bit.x265-beAst.mkv")
+        assert result is not None
+        assert result.title_en == "Green Book"
+        assert result.audio_encode == "Dolby Atmos"
+        assert "7" not in (result.title_en or "")
+
+    def test_dts_hd_ma_dot_separated(self, parser):
+        """DTS-HD.MA 点分隔写法：MA 不应残留为片名词"""
+        result = parser.parse("Casanova.Cat.1951.1080p.BluRay.Remux.AVC.DTS-HD.MA.2.0-AnimeF@ADE.mkv")
+        assert result is not None
+        assert result.title_en == "Casanova Cat"
+        assert result.audio_encode == "DTS-HD MA"
+        assert result.resource_team == "AnimeF@ADE"
+
+    def test_version_phrase_stripped(self, parser):
+        """Extended Version 版本短语应整体剥离"""
+        title = (
+            "The Hobbit An Unexpected Journey 2012 Extended Version UHD Blu-ray "
+            "2160p HEVC Atmos TrueHD 7.1-CHDBits.iso"
+        )
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en == "The Hobbit An Unexpected Journey"
+        assert result.resource_team == "CHDBits"
+
+    def test_group_chain_stripped(self, parser):
+        """MNHD-FRDS 编码组-发布组链：整段剥离，末段作为发布组"""
+        title = "Dragon.Ball.Super.EP078.2015.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS.mp4"
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en == "Dragon Ball Super"
+        assert result.resource_team == "FRDS"
+        assert result.episode == 78
+
+    def test_multiword_release_group(self, parser):
+        """多词发布组 -Mo Cuishle 应被提取，不留在片名里"""
+        result = parser.parse("Rick and Morty S01-S05 Pilot 1080p BDRemux-Mo Cuishle")
+        assert result is not None
+        assert result.title_en == "Rick And Morty"
+        assert result.resource_team == "Mo Cuishle"
+        assert result.season == 1
+        assert result.end_season == 5
+
+    def test_max_kept_in_title(self, parser):
+        """Mad Max 的 Max 是片名，不能被当作 HBO Max 平台标记剥离"""
+        title = "Mad.Max.Fury.Road.2015.2160p.EUR.UHD.Blu-ray.HEVC.Atmos.TrueHD.7.1-Jerry@CHDBits"
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en == "Mad Max Fury Road"
+
+    def test_cjk_latin_glued_split(self, parser):
+        """中文与英文粘连（瑞克和莫蒂Rick and Morty）应拆分为中文名 + 英文名"""
+        title = "瑞克和莫蒂Rick and Morty S01E01 Pilot 1080p BDRemux-Mo Cuishle.mkv"
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_cn == "瑞克和莫蒂"
+        assert result.title_en == "Rick And Morty"
+        assert result.season == 1
+        assert result.episode == 1
+
+    def test_leading_numeric_title_kept(self, parser):
+        """纯数字片名（如 24）位于起始处时应保留"""
+        result = parser.parse("24 S01 1080p WEB-DL AAC2.0 H.264-BTN")
+        assert result is not None
+        assert result.title_en == "24"

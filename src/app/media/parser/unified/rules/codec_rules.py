@@ -61,7 +61,11 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="dts",
-        pattern=re.compile(r"\b(DTS[-\s]?X|DTS[-\s]?HD[-\s]?MA|DTS[-\s]?HD|DTS)\d*(?:\.\d+)?\b", re.IGNORECASE),
+        # 声道后缀允许点/空格/连字符分隔（DTS-HD.MA.2.0 / DTS-HD MA 5.1 / DTS.5.1）
+        pattern=re.compile(
+            r"\b(DTS[-.\s]?X|DTS[-.\s]?HD[-.\s]?MA|DTS[-.\s]?HD|DTS)\d*(?:[.\s]\d+)?\b",
+            re.IGNORECASE,
+        ),
         category="audio_codec",
         priority=82,
         confidence=0.9,
@@ -69,7 +73,11 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="truehd_atmos",
-        pattern=re.compile(r"\b(TrueHD\d*(?:\.\d+)?|Atmos)\b", re.IGNORECASE),
+        # 同时覆盖 TrueHD / TrueHD7.1 / TrueHD(Atmos) / TrueHD.Atmos 等写法
+        pattern=re.compile(
+            r"\b(TrueHD[-.\s]?\(?Atmos\)?|TrueHD\d*(?:[.\s]\d+)?|\(?Atmos\)?)(?!\w)",
+            re.IGNORECASE,
+        ),
         category="audio_codec",
         priority=80,
         confidence=0.9,
@@ -101,7 +109,7 @@ RULES: list[ExtractionRule] = [
 
 
 def _dts_normalize(m: re.Match[str]) -> dict[str, str]:
-    val = m.group(0).upper().replace(" ", "").replace("-", "")
+    val = m.group(0).upper().replace(" ", "").replace("-", "").replace(".", "")
     if "HDMA" in val:
         return {"audio_codec": "DTS-HD MA"}
     if "HD" in val:
