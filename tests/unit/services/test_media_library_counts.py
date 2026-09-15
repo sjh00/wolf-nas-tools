@@ -1,0 +1,68 @@
+"""媒体库统计必须是原始数字。
+
+回归：原先格式化成带千分位的展示字符串（"{:,}".format → "1,234"），
+前端首页用 Number("1,234") 得到 NaN，导致「电影」计数恒为 0
+（而媒体库页面自己剥了千分位所以显示正常）。
+"""
+
+from unittest.mock import MagicMock
+
+from app.services.media_library_service import MediaLibraryService
+
+
+def _service(medias_count, user_count=3):
+    media_server = MagicMock()
+    media_server.get_medias_count.return_value = medias_count
+    media_server.get_user_count.return_value = user_count
+    return MediaLibraryService(
+        media_server=media_server,
+        filetransfer=MagicMock(),
+        system_config=MagicMock(),
+        thread_executor=MagicMock(),
+        media_config_service=MagicMock(),
+    )
+
+
+class TestGetMediaCount:
+    def test_returns_raw_numbers_not_formatted_strings(self):
+        """大于 1000 时不得返回带千分位的字符串"""
+        svc = _service({"MovieCount": 1234, "SeriesCount": 88, "EpisodeCount": 5678, "SongCount": 0})
+        counts = svc.get_media_count()
+
+        assert counts is not None
+        for key in ("Movie", "Series", "Episodes", "Music", "User"):
+            assert isinstance(counts[key], int), f"{key} 应为原始数字，实际 {counts[key]!r}"
+        assert counts["Movie"] == 1234
+        assert counts["Episodes"] == 5678
+
+    def test_missing_keys_become_zero(self):
+        """上游未返回的字段按 0 处理，不得抛异常"""
+        svc = _service({"MovieCount": 10})
+        counts = svc.get_media_count()
+
+        assert counts is not None
+        assert counts["Movie"] == 10
+        assert counts["Series"] == 0
+        assert counts["Episodes"] == 0
+        assert counts["Music"] == 0
+
+    def test_none_values_become_zero(self):
+        """字段为 None 时按 0 处理（原先 "{:,}".format(None) 会抛 TypeError）"""
+        svc = _service({"MovieCount": None, "SeriesCount": None, "EpisodeCount": None, "SongCount": None})
+        counts = svc.get_media_count()
+
+        assert counts is not None
+        assert counts["Movie"] == 0
+        assert counts["Series"] == 0
+
+    def test_no_upstream_data_returns_none(self):
+        """上游无数据 → None（调用方据此判定媒体服务器不可用）"""
+        assert _service(None).get_media_count() is None
+
+    def test_frontend_number_parse_of_result(self):
+        """模拟前端 Number()：原始数字可直接解析，不会再变成 NaN"""
+        svc = _service({"MovieCount": 1234, "SeriesCount": 88, "EpisodeCount": 0, "SongCount": 0})
+        counts = svc.get_media_count()
+        assert counts is not None
+        # 前端逻辑：Number(value) || 0；对 int 而言即原值
+        assert (counts["Movie"] or 0) == 1234
