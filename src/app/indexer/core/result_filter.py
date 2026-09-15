@@ -285,11 +285,13 @@ class ResultFilter:
                                     if meta_info.en_name:
                                         _en = _norm(meta_info.en_name)
                                         _found = False
-                                        for mn in match_names:
-                                            if _has_cjk(mn):
+                                        # 不得复用外层循环变量 mn：否则内层循环结束后会污染外层取值，
+                                        # 使下一轮 `mn == mmn` 误判命中（结果随哈希种子变化）
+                                        for _mname in match_names:
+                                            if _has_cjk(_mname):
                                                 continue
-                                            if _en == mn or mn in _en:
-                                                if len(mn) / len(_en) >= 0.7:
+                                            if _en == _mname or _mname in _en:
+                                                if len(_mname) / len(_en) >= 0.7:
                                                     _found = True
                                                     break
                                         if not _found:
@@ -309,11 +311,13 @@ class ResultFilter:
                                     if meta_info.en_name:
                                         _en = _norm(meta_info.en_name)
                                         _found = False
-                                        for mn in match_names:
-                                            if _has_cjk(mn):
+                                        # 不得复用外层循环变量 mn：否则内层循环结束后会污染外层取值，
+                                        # 使下一轮 `mn == mmn` 误判命中（结果随哈希种子变化）
+                                        for _mname in match_names:
+                                            if _has_cjk(_mname):
                                                 continue
-                                            if _en == mn or mn in _en:
-                                                if len(mn) / len(_en) >= 0.7:
+                                            if _en == _mname or _mname in _en:
+                                                if len(_mname) / len(_en) >= 0.7:
                                                     _found = True
                                                     break
                                         if not _found:
