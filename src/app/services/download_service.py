@@ -7,7 +7,6 @@ import os
 from typing import Any
 
 import log
-from app.core.constants import PT_TAG
 from app.core.exceptions import DomainError, ServiceError
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.domain.enums import SearchType
@@ -416,11 +415,17 @@ class DownloadService:
         只展示**本平台推送过**的任务（以 DOWNLOAD_HISTORY 为准），不会把用户在
         下载器里手动添加的种子列进来。
 
-        与下载器的比对方式：一次性取该下载器的全部正在下载任务，再与本地记录
-        做匹配（先按 hash，hash 对不上时按种子名兜底）。用全量列表匹配而非
-        `ids=记录hash`，是为了避免 hash 因重编码等原因不一致时任务被整条丢弃。
-        匹配不到时**仍然展示**该记录（它确实是平台推送的），只是没有实时进度，
-        绝不静默隐藏或标记完成 —— 否则"下载器里在下载、列表却为空"。
+        只展示**本平台推送过**的任务（以 DOWNLOAD_HISTORY 为准），不会把用户在
+        下载器里手动添加的种子列进来。
+
+        与下载器的比对方式：**按记录的 hash 批量查询**（`ids=...`）。
+        注意不要改成"取下载器全部任务再本地匹配"——客户端为每个种子解析属性、
+        tracker 与 tracker 错误，代价是每种子 3 次额外 HTTP 请求，全量拉取
+        （N 个种子 → 3N 次请求）会让本接口超时（前端 30s 超时）。
+        按 hash 查询只涉及平台推送的任务，请求数与任务数同阶。
+
+        查询失败（下载器不可达）时保持原状态不做标记；查不到某任务说明它已不在
+        下载器中（完成被移除或 hash 不一致），标记完成并留一条告警便于排查。
 
         返回 {"items": [...], "total": N}
         """
@@ -466,9 +471,13 @@ class DownloadService:
             if not _client:
                 # 下载器不可用：本轮无法比对，保持原状态
                 continue
-            tag = [PT_TAG] if downloader_conf.get("only_wolf_nas") else None
+
+            # 只查平台推送的这些 hash（切忌不限 ids 全量拉取，见方法说明）
+            ids = [str(t.download_id) for t in tasks if t.download_id]
+            if not ids:
+                continue
             try:
-                progress_list = _client.get_downloading_progress(tag=tag)
+                progress_list = _client.get_downloading_progress(ids=ids)
             except (DomainError, ServiceError):
                 raise
             except Exception as e:
@@ -479,50 +488,21 @@ class DownloadService:
                 log.warn(f"[DownloadService]下载器 {downloader_name} 进度查询失败，本轮跳过 {len(tasks)} 个任务")
                 continue
             queried.add(did)
-
-            # 建索引：hash 优先，种子名兜底（hash 可能因 torrent 重编码等原因不一致）
-            by_hash: dict[str, dict] = {}
-            by_name: dict[str, dict] = {}
-            for progress in progress_list:
-                raw_id = progress.get("id")
-                if raw_id:
-                    by_hash[str(raw_id).lower()] = progress
-                name_key = progress.get("name")
-                if name_key:
-                    by_name.setdefault(str(name_key), progress)
+            progress_map = {str(p.get("id")).lower(): p for p in progress_list if p.get("id")}
 
             for task in tasks:
                 try:
                     tid = str(task.download_id or "")
-                    progress = by_hash.get(tid.lower()) if tid else None
-                    if progress is None and task.torrent:
-                        progress = by_name.get(str(task.torrent))
-
+                    progress = progress_map.get(tid.lower()) if tid else None
                     title, image = self._build_display_info(task)
 
                     if progress is None:
-                        # 推送过、但下载器里比对不到：仍然展示，不隐藏、不改状态。
-                        # 常见于下载器已清理该任务，或 hash/名称都对不上。
-                        self._warn_task_missing_once(did, tid, downloader_name, getattr(task, "state", None))
+                        # 推送过、但下载器里已无该任务：完成被移除，或记录 hash 与
+                        # 下载器不一致。留痕后按完成处理（避免列表里残留永不消失的
+                        # 幽灵条目；若为 hash 不一致，告警会指出该 hash）。
+                        self._warn_task_missing_once(did, tid, downloader_name)
                         missing_count += 1
-                        result.append(
-                            {
-                                "id": tid,
-                                "name": task.torrent or "",
-                                "title": title,
-                                "image": image,
-                                "progress": 0,
-                                "state": "",
-                                "speed": "",
-                                "size": "",
-                                "downloader_id": did,
-                                "downloader_name": downloader_name,
-                                "client_id": downloader_conf.get("type") or "",
-                                "save_path": task.save_path,
-                                "labels": [],
-                                "category": "",
-                            }
-                        )
+                        completed_ids.append((did, tid))
                         continue
 
                     prog_val = progress.get("progress", 0)
@@ -592,11 +572,11 @@ class DownloadService:
         end = start + page_size
         return {"items": result[start:end], "total": total}
 
-    def _warn_task_missing_once(self, downloader_id: str, download_id: str, downloader_name: str, state) -> None:
-        """平台推送过的任务在下载器中比对不到时告警一次（按任务去重，避免轮询刷屏）。
+    def _warn_task_missing_once(self, downloader_id: str, download_id: str, downloader_name: str) -> None:
+        """平台推送过的任务在下载器中查不到时告警一次（按任务去重，避免轮询刷屏）。
 
-        该记录仍会展示在列表中（不隐藏、不改状态），但拿不到实时进度，
-        因此需要留痕提示排查：多为下载器已清理该任务，或 hash/种子名都对不上。
+        两种可能：任务已完成并被下载器清理，或记录 hash 与下载器不一致。
+        后者会让该任务被误判为完成而退出列表，因此必须留痕以便排查。
         """
         key = f"{downloader_id}:{download_id}"
         warned = getattr(self, "_missing_warned", None)
@@ -607,8 +587,8 @@ class DownloadService:
             return
         warned.add(key)
         log.warn(
-            f"[DownloadService]任务在下载器 {downloader_name} 中比对不到（仍展示但无实时进度）："
-            f"{download_id}（原状态 {state}）。请确认该任务是否仍存在于下载器"
+            f"[DownloadService]任务在下载器 {downloader_name} 中查不到，已按完成处理：{download_id}。"
+            f"若该任务实际仍在下载，请核对下载器中的种子 hash 是否与记录一致"
         )
 
     def _build_display_info(self, task) -> tuple[str, str]:
