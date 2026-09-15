@@ -285,6 +285,9 @@ class DownloadCore:
                     torrent_file=torrent_file,
                     is_paused=is_paused,
                     in_from=in_from,
+                    # 订阅/RSS 候选自带下载设置（分类）；不透传会回落到系统默认设置，
+                    # 表现为"订阅里配了分类却仍按未分类下载"
+                    download_setting=getattr(item, "download_setting", None),
                     user_name=user_name,
                     user_id=owner_id,
                 )
