@@ -7,6 +7,15 @@ from app.infrastructure.image_proxy import ImageProxy
 from app.media.lookup.tmdb_client import TmdbClient
 
 
+def _is_not_found(err: Exception) -> bool:
+    """TMDB 对不存在的资源返回 404。
+
+    movie/tv 的 similar|recommendations 走的是同一接口族，当传入的 tmdbid
+    已被 TMDB 删除/合并时必然 404，属预期内的空结果，不应按异常告警。
+    """
+    return getattr(err, "status_code", None) == 404
+
+
 class TmdbDiscover:
     """TMDB 推荐/发现"""
 
@@ -20,7 +29,10 @@ class TmdbDiscover:
             movies = self.client.movie.similar(movie_id=tmdbid, page=page) or []
             return self._dict_infos(movies, MediaType.MOVIE)
         except Exception as e:
-            log.warn(f"[TmdbDiscover]获取相似电影失败: {e}")
+            if _is_not_found(e):
+                log.debug(f"[TmdbDiscover]电影 {tmdbid} 相似作品不存在（TMDB 404）")
+            else:
+                log.warn(f"[TmdbDiscover]获取相似电影失败: {e}")
             return []
 
     def get_movie_recommendations(self, tmdbid, page=1):
@@ -30,7 +42,10 @@ class TmdbDiscover:
             movies = self.client.movie.recommendations(movie_id=tmdbid, page=page) or []
             return self._dict_infos(movies, MediaType.MOVIE)
         except Exception as e:
-            log.warn(f"[TmdbDiscover]获取电影推荐失败: {e}")
+            if _is_not_found(e):
+                log.debug(f"[TmdbDiscover]电影 {tmdbid} 推荐不存在（TMDB 404）")
+            else:
+                log.warn(f"[TmdbDiscover]获取电影推荐失败: {e}")
             return []
 
     def get_tv_similar(self, tmdbid, page=1):
@@ -40,7 +55,10 @@ class TmdbDiscover:
             tvs = self.client.tv.similar(tv_id=tmdbid, page=page) or []
             return self._dict_infos(tvs, MediaType.TV)
         except Exception as e:
-            log.warn(f"[TmdbDiscover]获取相似电视剧失败: {e}")
+            if _is_not_found(e):
+                log.debug(f"[TmdbDiscover]电视剧 {tmdbid} 相似作品不存在（TMDB 404）")
+            else:
+                log.warn(f"[TmdbDiscover]获取相似电视剧失败: {e}")
             return []
 
     def get_tv_recommendations(self, tmdbid, page=1):
@@ -50,7 +68,10 @@ class TmdbDiscover:
             tvs = self.client.tv.recommendations(tv_id=tmdbid, page=page) or []
             return self._dict_infos(tvs, MediaType.TV)
         except Exception as e:
-            log.warn(f"[TmdbDiscover]获取电视剧推荐失败: {e}")
+            if _is_not_found(e):
+                log.debug(f"[TmdbDiscover]电视剧 {tmdbid} 推荐不存在（TMDB 404）")
+            else:
+                log.warn(f"[TmdbDiscover]获取电视剧推荐失败: {e}")
             return []
 
     def discover(self, mtype, params=None, page=1):

@@ -90,3 +90,68 @@ class TestRateLimitMiddleware:
         client = TestClient(app)
         for _ in range(5):
             assert client.get("/static/file.txt").status_code == 200
+
+
+class TestImageProxyExemption:
+    """图片代理必须豁免限流。
+
+    前端列表页一次加载数十张海报，且旧版 /img?url= 重定向与真实图片共用同一
+    path，全站图片挤在同一限流键（api:{ip}:/img/）上必然触发限流。
+    """
+
+    def test_img_paths_bypass_limit(self, mock_redis_unavailable):
+        app = FastAPI()
+        app.add_middleware(RateLimitMiddleware, rate="1/m")
+
+        @app.get("/img/")
+        def img_redirect():
+            return {"ok": True}
+
+        @app.get("/img/tmdb/w500/poster.jpg")
+        def img_file():
+            return {"ok": True}
+
+        client = TestClient(app)
+        for _ in range(10):
+            assert client.get("/img/").status_code == 200
+            assert client.get("/img/tmdb/w500/poster.jpg").status_code == 200
+
+    def test_other_api_still_limited(self, mock_redis_unavailable):
+        """豁免 /img 不应顺带豁免普通 API"""
+        app = FastAPI()
+        app.add_middleware(RateLimitMiddleware, rate="1/m")
+
+        @app.get("/api/other")
+        def other():
+            return {"ok": True}
+
+        client = TestClient(app)
+        assert client.get("/api/other").status_code == 200
+        assert client.get("/api/other").status_code == 429
+
+
+class TestRateLimitWarnThrottling:
+    """同一限流键重复触发时只告警一次，其余降为 debug，避免刷屏"""
+
+    def test_repeated_blocks_log_once(self, mock_redis_unavailable):
+        app = FastAPI()
+        app.add_middleware(RateLimitMiddleware, rate="1/m")
+
+        @app.get("/api/spam")
+        def spam():
+            return {"ok": True}
+
+        client = TestClient(app)
+        assert client.get("/api/spam").status_code == 200
+        warns = []
+        debug_logs = []
+        with patch(
+            "app.infrastructure.rate_limiter.middleware.log"
+        ) as mock_log:
+            mock_log.warn.side_effect = lambda m: warns.append(m)
+            mock_log.debug.side_effect = lambda m: debug_logs.append(m)
+            for _ in range(5):
+                assert client.get("/api/spam").status_code == 429
+
+        assert len(warns) == 1, f"应只告警一次，实际 {len(warns)} 次"
+        assert len(debug_logs) == 4

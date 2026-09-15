@@ -322,3 +322,87 @@ class TestGetDownloadingTorrents:
         qb.qbc = MagicMock()
         with patch.object(Qbittorrent, "get_torrents", return_value=([], True)):
             assert qb.get_downloading_torrents() is None
+
+
+class TestMapStatusCoverage:
+    """qb state 映射必须覆盖全部下载中状态。
+
+    遗漏的状态会落到 Unknown，被 get_downloading_torrents 的状态白名单过滤，
+    表现为"下载器里有任务、后端正在下载列表为空"，并被误判为已完成。
+    """
+
+    @pytest.mark.parametrize(
+        "raw_state",
+        [
+            "downloading",
+            "metaDL",  # 磁力/种子元数据下载中
+            "forcedDL",
+            "forcedMetaDL",
+            "allocating",
+        ],
+    )
+    def test_downloading_like_states(self, raw_state):
+        from app.downloader.client.qbittorrent import Qbittorrent
+        from app.schemas.download import TorrentStatus
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        assert qb._map_status(raw_state) == TorrentStatus.Downloading
+
+    @pytest.mark.parametrize(
+        "raw_state,expected_name",
+        [
+            ("stalledDL", "Pending"),
+            ("queuedDL", "Queued"),
+            ("queuedUP", "Queued"),
+            ("uploading", "Uploading"),
+            ("forcedUP", "Uploading"),
+            ("checkingDL", "Checking"),
+            ("checkingResumeData", "Checking"),
+            ("moving", "Checking"),
+            ("pausedUP", "Paused"),
+            ("missingFiles", "Error"),
+            ("error", "Error"),
+        ],
+    )
+    def test_other_states(self, raw_state, expected_name):
+        from app.downloader.client.qbittorrent import Qbittorrent
+        from app.schemas.download import TorrentStatus
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        assert qb._map_status(raw_state) == getattr(TorrentStatus, expected_name)
+
+    def test_meta_dl_not_filtered_as_missing(self):
+        """metaDL 状态的任务必须能被 get_downloading_torrents 取到，而非当作不存在"""
+        from app.downloader.client.qbittorrent import Qbittorrent
+        from app.schemas.download import Torrent, TorrentStatus
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        qb.qbc = MagicMock()
+        t = Torrent()
+        t.progress = 0.0
+        t.status = TorrentStatus.Downloading  # metaDL 映射后的结果
+        with patch.object(Qbittorrent, "get_torrents", return_value=([t], False)):
+            result = qb.get_downloading_torrents(ids=["hash1"])
+        assert result is not None
+        assert len(result) == 1
+
+
+class TestDownloadingProgressFailureSemantics:
+    """查询失败(None)必须与"无匹配任务"([])区分，否则下载器抖动会误标已完成"""
+
+    def test_returns_none_when_query_fails(self):
+        from app.downloader.client.qbittorrent import Qbittorrent
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        qb.qbc = MagicMock()
+        with patch.object(Qbittorrent, "get_downloading_torrents", return_value=None):
+            assert qb.get_downloading_progress(ids=["h1"]) is None
+
+    def test_returns_empty_list_when_no_match(self):
+        """查询成功但无匹配任务 → []（可安全判定任务已不存在）"""
+        from app.downloader.client.qbittorrent import Qbittorrent
+
+        qb = Qbittorrent.__new__(Qbittorrent)
+        qb.qbc = MagicMock()
+        with patch.object(Qbittorrent, "get_downloading_torrents", return_value=[]):
+            assert qb.get_downloading_progress(ids=["h1"]) == []
