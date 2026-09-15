@@ -425,6 +425,18 @@ class Searcher:
             log.info("[Searcher]所有搜索结果已在下载历史中存在，跳过下载")
             return None, no_exists, len(media_list), 0
 
+        # 4.1 把订阅/RSS 的下载设置（分类、保存路径）下发到候选，
+        # 否则候选不自带 download_setting，下载时会回落到系统默认设置（未分类）。
+        # 候选已自带时不覆盖；订阅侧未配置时保持原行为
+        match_setting = getattr(media_info, "download_setting", None)
+        match_save_path = getattr(media_info, "save_path", None)
+        if match_setting or match_save_path:
+            for item in filtered_media_list:
+                item.set_download_info(
+                    download_setting=getattr(item, "download_setting", None) or match_setting,
+                    save_path=getattr(item, "save_path", None) or match_save_path,
+                )
+
         # 5. 择优下载
         download_items, left_medias = processor.batch_download(
             filtered_media_list, in_from or SearchType.WEB, no_exists, user_name, user_id=user_id

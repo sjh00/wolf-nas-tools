@@ -2,6 +2,7 @@
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,8 +25,8 @@ class MockMediaItem:
         self._episode_list = kwargs.get("episode_list", [])
         self.downloader_id = None
         self.download_id = None
-        self.save_path = None
-        self.download_setting = None
+        self.save_path: Any = None
+        self.download_setting: Any = None
         self.size = 0
         self.category = ""
         self.res_order = kwargs.get("res_order", 100)
@@ -365,6 +366,28 @@ class TestDownloadShortCircuitAndCache:
 
         assert seen["a"] == 7
         assert seen["b"] == 3
+
+    def test_batch_download_passes_item_download_setting(self, mock_core):
+        """订阅/RSS 候选自带的下载设置（分类）必须透传给 pipeline。
+
+        不透传会回落到系统默认下载设置，表现为"订阅里配了分类却仍按未分类下载"。
+        """
+        core = mock_core
+        with_setting = MockMediaItem(type=MediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
+        with_setting.download_setting = 2
+        without_setting = MockMediaItem(type=MediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
+        without_setting.download_setting = None
+        seen: dict[str, object] = {}
+
+        def mock_download(**kwargs):
+            seen[kwargs["media_info"].enclosure] = kwargs.get("download_setting")
+            return "qb", "tid", ""
+
+        core.download = mock_download
+        core.batch_download("SUBSCRIBE", [with_setting, without_setting])
+
+        assert seen["a"] == 2
+        assert seen["b"] is None
 
     def test_concurrent_same_link_single_flight(self, mock_core):
         core = mock_core
