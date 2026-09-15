@@ -59,7 +59,7 @@ _META_TOKEN_RE = re.compile(
     # --- 音频编码 ---
     r"|aac\d*(\.\d+)?|ac[-]?3|e[-]?ac[-]?3|ddp?\d*(\.\d+)?|dd\+"
     r"|flac\d*(\.\d+)?|alac|ape|wav|wavpack|dsd"
-    r"|dts[-]?(hd[-]?ma|hd|x)?\d*(\.\d+)?|truehd\d*(\.\d+)?|atmos"
+    r"|dts[-.\s]?(hd[-.\s]?ma|hd|x)?\d*([.\s]\d+)?|truehd[-.\s]?\(?atmos\)?|truehd\d*([.\s]\d+)?|\(?atmos\)?"
     r"|mp3\d*|mp2|opus|ogg|vorbis|wma"
     r"|lpcm\d*(\.\d+)?|pcm|dolby[-\s]?digital"
     # --- HDR/色彩 ---
@@ -72,7 +72,8 @@ _META_TOKEN_RE = re.compile(
     r"|dvd(rip|r|screener|scr|5|9)?|dvd[-]?rip|dvd[-]?r|dvdscr"
     r"|hdtv|uhdtv|pdtv|dsr|dsrip|tvrip|stv"
     r"|hd[-]?tc|tc|telesync|telecine|cam|camera|r5|r6|screener|scr"
-    r"|amzn|amazon|nf|netflix|hulu|dsnp|disney|atvp|apple|hmax|hbomax|max"
+    # 注意：不把单独 "max" 当元数据——"Mad Max" 的 Max 是片名；HBO Max 用 hmax/hbomax 标记
+    r"|amzn|amazon|nf|netflix|hulu|dsnp|disney|atvp|apple|hmax|hbomax"
     r"|pcok|peacock|pmtp|paramount|shdr|showtime|appletv|vudu|fandango"
     r"|mubi|criterion|shoutfactory|arrow|radiance|capelight|kino|cocp|eureka|bfi"
     r"|baha|cr|crunchyroll|abema|ani-one|ani|b-global|bilibili|viutv|myvideo"
@@ -128,6 +129,18 @@ _GROUP_KEYWORDS_RE = re.compile(
     r"字幕|压制|制作组|发布组|字幕社|工作室|论坛|奶茶屋|茶屋|字幕组|汉化|翻译|搬运|资源组|分享组",
     re.IGNORECASE,
 )
+# 版本短语：整体剔除（如 Extended Version / Theatrical Cut / Director's Edition）
+_VER_PHRASE_RE = re.compile(
+    r"(?i)\b(?:extended|uncut|unrated|theatrical|remastered|anniversary|special|"
+    r"director'?s?|final|ultimate|complete|original|international)\s+(?:version|cut|edition)\b"
+)
+
+# 全大写"编码组-发布组"链（如 MNHD-FRDS），整段视为发布组而非片名
+_RE_GROUP_CHAIN = re.compile(r"^[A-Z0-9]{2,8}(?:-[A-Z0-9]{2,8})+$")
+
+# 尾部特集描述词：仅在标题主体之后出现时视为元数据（Pilot 单独成片名时保留）
+_SPECIAL_DESC_WORDS = frozenset({"pilot", "premiere", "prologue", "special"})
+
 _RE_KANA_TITLE = re.compile(r"[぀-ヿ]+")
 
 # 剧集说明/预告类词：出现在标题里是元数据，不是片名（试播集/首播/预告/第X集等）
@@ -355,6 +368,9 @@ def _extract_cn_from_prefix(text: str) -> str | None:
 
 def _extract_free_text(ctx: ParseContext, text: str) -> None:
     """从自由文本中提取名称"""
+    # 中西文边界补空格：避免"瑞克和莫蒂Rick and Morty"被当成一个混合词，
+    # 导致中文名混入英文字母、英文名被截断
+    text = re.sub(r"(?<=[\u4e00-\u9fff])(?=[A-Za-z])|(?<=[A-Za-z])(?=[\u4e00-\u9fff])", " ", text)
     text = text.replace("|", " ").replace("｜", " ")
     text = re.sub(r"\[[^\]]*\]", "", text).strip()
     text = re.sub(r"「[^」]*」", " ", text).strip()  # 日文括号→空格防粘连
@@ -376,11 +392,18 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
     # 【...】CJK 全角方括号标签（生/附日字/字幕/内嵌等）→ 元数据，移除
     text = re.sub(r"【[^】]*(?:生|附日字|字幕|熟肉|生肉|内嵌|内封|外挂|日字|简繁|多语|双语)[^】]*】", " ", text).strip()
 
-    # 提取发布组后缀 (空格-Name 格式)
-    team_match = re.search(r"\s-\s*([A-Za-z][A-Za-z0-9]*)\s*$", text)
-    if team_match:
-        ctx.release_group = team_match.group(1)
+    # 提取发布组后缀 (空格-Name 格式)，支持多词组名（如 "-Mo Cuishle"）。
+    # 要求每个词首字母大写且不含高频标题词，避免误伤 "Movie Title - The Beginning"
+    for team_match in re.finditer(r"\s-\s*([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,2})\s*$", text):
+        cand = team_match.group(1)
+        if any(w.lower() in _HIGH_FREQ_TITLE_WORDS for w in cand.split()):
+            continue
+        ctx.release_group = cand
         text = text[: team_match.start()].strip()
+        break
+
+    # 版本短语整体剔除（Extended Version / Theatrical Cut 等）
+    text = _VER_PHRASE_RE.sub(" ", text).strip()
 
     # 替换非数字间的点为分隔符（含数字后的末尾点如 2045.）
     text = re.sub(r"(?<!\d)\.(?!\d)|(?<=\d)\.(?!\d)", " ", text)
@@ -402,6 +425,10 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
     if group_match:
         ctx.release_group = group_match.group(1)
         text = text[: group_match.start()].strip()
+        # 形如 "MNHD-FRDS" 的"编码组-发布组"链：紧邻的全大写组名一并剥离
+        chain_prev = re.search(r"[-.\s]+([A-Z0-9]{2,8})$", text)
+        if chain_prev and any(c.isalpha() for c in chain_prev.group(1)):
+            text = text[: chain_prev.start()].strip()
 
     # 通用后缀剥词：剥离尾部短词（语种缩写、质量标签等）
     while True:
@@ -440,10 +467,22 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
             continue
         if len(word) <= 2 and word.lower() in ("h", "x", "e", "ac", "dd", "he", "av"):
             continue
+        # 全大写"编码组-发布组"链（MNHD-FRDS）：整段视为发布组
+        if _RE_GROUP_CHAIN.match(word):
+            if not ctx.release_group:
+                ctx.release_group = word.rsplit("-", 1)[-1]
+            continue
+        # 尾部特集描述词（Pilot/Premiere 等）：标题主体之后出现才算元数据
+        if idx > 0 and word.lower() in _SPECIAL_DESC_WORDS:
+            continue
         if word.isdigit():
-            # 纯数字词：位于名称中部（后面还有字母词）的是标题本体数字（The 100 Girlfriends），
-            # 末尾孤立数字视为解析残留丢弃
-            if any(w[:1].isalpha() for w in words[idx + 1 :]):
+            # 纯数字词：位于名称中部时，后面还有非元数据字母词才视为标题本体数字
+            # （The 100 Girlfriends）；末尾孤立数字视为解析残留丢弃（7.1 声道被拆成 "7 1"）。
+            # 位于名称起始处的多位数字是片名本体（24 / 1917），需保留
+            followed_by_title_word = any(
+                w[:1].isalpha() and not _META_TOKEN_RE.match(w) for w in words[idx + 1 :]
+            )
+            if followed_by_title_word or (idx == 0 and len(word) >= 2 and not cn_parts and not en_parts):
                 en_parts.append(word)
             continue
         # 处理"数字 + 元数据中文词"组合，如 "7声轨"、"3音轨"、"5声道"
