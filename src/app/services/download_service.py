@@ -426,6 +426,9 @@ class DownloadService:
         """
         active_tasks = self._download_history_repo.get_active_downloads()
         if not active_tasks:
+            # 留痕：列表为空时这是最常见的原因（本地无平台推送记录），
+            # 否则用户只能看到空列表而无法判断是"没推送过"还是"查询环节出问题"
+            log.info("[DownloadService]正在下载列表为空：下载历史中无状态为 downloading/completed 的记录")
             return {"items": [], "total": 0}
 
         # 按下载器分组（仅平台推送的任务）

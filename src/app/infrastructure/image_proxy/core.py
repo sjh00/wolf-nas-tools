@@ -143,7 +143,12 @@ async def _download_image(url, timeout=10, referer=None):
             response.raise_for_status()
             return response.content
         except Exception as e:
-            log.error(f"[ImageProxy]下载图片失败 {url}: {e!s}")
+            # 404 表示该媒体在服务端确实没有这张图（如 Jellyfin 条目的 Primary
+            # 图缺失），属预期内的空结果，降为 debug；其余错误才需要关注
+            if getattr(e, "response", None) is not None and getattr(e.response, "status_code", None) == 404:
+                log.debug(f"[ImageProxy]图片不存在（404，上游无此图）: {url}")
+            else:
+                log.error(f"[ImageProxy]下载图片失败 {url}: {e!s}")
             return None
         finally:
             async with _download_locks_lock:

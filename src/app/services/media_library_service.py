@@ -43,16 +43,21 @@ class MediaLibraryService:
         self._thread_executor.submit(self._media_server.sync_mediaserver)
 
     def get_media_count(self) -> dict | None:
-        """获取媒体库统计"""
+        """获取媒体库统计。
+
+        返回**原始数字**而非带千分位的展示字符串：该字段是数值型数据，
+        格式化成 "1,234" 后前端若直接 Number() 会得到 NaN（首页电影数曾因此恒为 0），
+        千分位展示应交给前端处理。
+        """
         media_counts = self._media_server.get_medias_count()
         user_count = self._media_server.get_user_count()
         if media_counts:
             return {
-                "Movie": "{:,}".format(media_counts.get("MovieCount")),
-                "Series": "{:,}".format(media_counts.get("SeriesCount")),
-                "Episodes": "{:,}".format(media_counts.get("EpisodeCount")) if media_counts.get("EpisodeCount") else "",
-                "Music": "{:,}".format(media_counts.get("SongCount")),
-                "User": user_count,
+                "Movie": media_counts.get("MovieCount") or 0,
+                "Series": media_counts.get("SeriesCount") or 0,
+                "Episodes": media_counts.get("EpisodeCount") or 0,
+                "Music": media_counts.get("SongCount") or 0,
+                "User": user_count or 0,
             }
         return None
 
