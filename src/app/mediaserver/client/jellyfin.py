@@ -470,10 +470,16 @@ class Jellyfin(_IMediaClient):
                             and not IpUtils.is_internal(self._play_host)
                             and res_item.get("ImageTags", {}).get("Primary")
                         ):
-                            return "{}Items/{}/Images/Primary?maxHeight=225&maxWidth=400&tag={}&quality=90".format(
-                                self._play_host,
-                                res_item.get("Id"),
-                                res_item.get("ImageTags", {}).get("Primary"),
+                            # 图片 URL 必须带 api_key：它由图片代理、浏览器 <img> 以及
+                            # TG/微信等外部客户端直接读取，这些场景无法附加 Authorization 头
+                            return (
+                                "{}Items/{}/Images/Primary"
+                                "?maxHeight=225&maxWidth=400&tag={}&quality=90&api_key={}".format(
+                                    self._play_host,
+                                    res_item.get("Id"),
+                                    res_item.get("ImageTags", {}).get("Primary"),
+                                    self._apikey,
+                                )
                             )
                         return img_url
         except (InfrastructureError, MediaServerError):
@@ -521,13 +527,14 @@ class Jellyfin(_IMediaClient):
         if not self._host or not self._apikey:
             return None
         if not remote:
-            image_url = f"{self._host}Items/{item_id}/Images/Primary"
+            # 图片 URL 必须带 api_key：图片代理/浏览器/外部消息客户端无法附加 Authorization 头
+            image_url = f"{self._host}Items/{item_id}/Images/Primary?api_key={self._apikey}"
             if inner:
                 return self.get_nt_image_url(image_url)
             return image_url
         else:
             host = self._play_host or self._host
-            image_url = f"{host}Items/{item_id}/Images/Primary"
+            image_url = f"{host}Items/{item_id}/Images/Primary?api_key={self._apikey}"
             if IpUtils.is_internal(host):
                 return self.get_nt_image_url(url=image_url, remote=True)
             return image_url
@@ -611,14 +618,14 @@ class Jellyfin(_IMediaClient):
             return ""
         if not remote:
             image_url = (
-                f"{self._host}Items/{item_id}/Images/Backdrop?tag={image_tag}&fillWidth=666"
+                f"{self._host}Items/{item_id}/Images/Backdrop?tag={image_tag}&fillWidth=666&api_key={self._apikey}"
             )
             if inner:
                 return self.get_nt_image_url(image_url)
             return image_url
         else:
             host = self._play_host or self._host
-            image_url = f"{host}Items/{item_id}/Images/Backdrop?tag={image_tag}&fillWidth=666"
+            image_url = f"{host}Items/{item_id}/Images/Backdrop?tag={image_tag}&fillWidth=666&api_key={self._apikey}"
             if IpUtils.is_internal(host):
                 return self.get_nt_image_url(url=image_url, remote=True)
             return image_url
@@ -638,7 +645,7 @@ class Jellyfin(_IMediaClient):
         if not remote:
             image_url = (
                 f"{self._host}Items/{item_id}/"
-                f"Images/Primary?tag={image_tag}&fillWidth=666&quality=96"
+                f"Images/Primary?tag={image_tag}&fillWidth=666&quality=96&api_key={self._apikey}"
             )
             if inner:
                 return self.get_nt_image_url(image_url)
@@ -646,7 +653,8 @@ class Jellyfin(_IMediaClient):
         else:
             host = self._play_host or self._host
             image_url = (
-                f"{host}Items/{item_id}/Images/Primary?tag={image_tag}&fillWidth=666&quality=96"
+                f"{host}Items/{item_id}/Images/Primary"
+                f"?tag={image_tag}&fillWidth=666&quality=96&api_key={self._apikey}"
             )
             if IpUtils.is_internal(host):
                 return self.get_nt_image_url(url=image_url, remote=True)
