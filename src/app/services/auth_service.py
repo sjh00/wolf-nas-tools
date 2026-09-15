@@ -170,6 +170,30 @@ class AuthService:
             return None
 
     @staticmethod
+    def is_token_expired(token: str) -> bool:
+        """判断是否为「本平台签发但已过期」的 Access Token。
+
+        与「无效/伪造 Token」区分：access token 仅 15 分钟有效，前端会在收到
+        401 后自动刷新并重试，所以过期属正常轮换，不该按安全事件告警；
+        而签名不匹配的 Token 才是需要关注的凭证问题。
+        """
+        if not token:
+            return False
+        # 先忽略过期校验解码：能过说明签名是本平台的，只是可能过期
+        try:
+            jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM], options={"verify_exp": False})
+        except (jwt.InvalidTokenError, ValueError):
+            return False
+        # 签名有效，再看是否确实过期
+        try:
+            jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
+        except jwt.ExpiredSignatureError:
+            return True
+        except (jwt.InvalidTokenError, ValueError):
+            return False
+        return False
+
+    @staticmethod
     def revoke_token(jti: str) -> None:
         """
         撤销 Token（将 jti 加入黑名单）
