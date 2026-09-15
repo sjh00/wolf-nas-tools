@@ -475,7 +475,10 @@ class DownloadService:
                     progress = progress_map.get(tid)
 
                     if not progress:
-                        # 任务在下载器中不存在，标记为完成
+                        # 任务在下载器中查不到 → 视为已完成。此分支必须留痕：
+                        # 若 hash 失配或任务被移除，记录会被静默标记完成并在列表里
+                        # 永久消失，从日志上看不出任何线索。
+                        self._warn_task_missing_once(did, tid, downloader_name, getattr(task, "state", None))
                         completed_ids.append((did, tid))
                         continue
 
@@ -535,6 +538,25 @@ class DownloadService:
         start = (page - 1) * page_size
         end = start + page_size
         return {"items": result[start:end], "total": total}
+
+    def _warn_task_missing_once(self, downloader_id: str, download_id: str, downloader_name: str, state) -> None:
+        """任务在下载器中查不到时告警一次（按任务去重，避免轮询刷屏）。
+
+        这是「正在下载列表为空」的常见隐藏原因：记录仍在 DOWNLOAD_HISTORY，
+        但下载器返回的列表里没有该 hash，于是每轮都被静默标记完成。
+        """
+        key = f"{downloader_id}:{download_id}"
+        warned = getattr(self, "_missing_warned", None)
+        if warned is None:
+            warned = set()
+            self._missing_warned = warned
+        if key in warned:
+            return
+        warned.add(key)
+        log.warn(
+            f"[DownloadService]任务在下载器 {downloader_name} 中不存在，已标记完成："
+            f"{download_id}（原状态 {state}）。若该任务实际仍在下载，请检查下载器地址与任务 hash 是否一致"
+        )
 
     def _build_display_info(self, task) -> tuple[str, str]:
         """根据下载历史任务构建显示标题和海报"""

@@ -1,7 +1,7 @@
 """正在下载列表：查询失败不得误标已完成。"""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.services.download_service import DownloadService
 
@@ -73,6 +73,20 @@ class TestActiveDownloadQueryFailure:
         history_repo.batch_update_state.assert_called_once()
         (items,), _ = history_repo.batch_update_state.call_args
         assert items == [("2", "hash1", "completed")]
+
+    def test_missing_task_logs_once_across_polls(self):
+        """任务在下载器中查不到时必须留痕（此前完全静默，导致列表为空却无从排查），
+        且按任务去重，避免 30s 轮询刷屏"""
+        svc, _history_repo, _client = _make_service([])
+
+        with patch("app.services.download_service.log") as mock_log:
+            svc.get_downloading_with_media_info()
+            first = len(mock_log.warn.call_args_list)
+            svc.get_downloading_with_media_info()
+            svc.get_downloading_with_media_info()
+
+        assert first == 1, "首次查不到任务应告警一条"
+        assert len(mock_log.warn.call_args_list) == 1, "同一任务重复轮询不应重复告警"
 
     def test_still_downloading_is_returned(self):
         """任务仍在下载中 → 出现在列表里"""
