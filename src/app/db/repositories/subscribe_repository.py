@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Integer, cast, or_
 from sqlalchemy.exc import IntegrityError
 
+import log
 from app.db.models import SubscribeHistory, SubscribeMovies, SubscribeTorrents, SubscribeTvEpisodes, SubscribeTvs
 from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.data_scope import apply_owner_scope
@@ -856,16 +857,31 @@ class SubscribeRepository(BaseRepository):
                 db.add(SubscribeTvEpisodes(RSSID=rid, EPISODES=",".join(episodes)))
 
     def get_rss_tv_episodes(self, rid: int | None) -> list[int] | None:
-        """
-        查询电视剧订阅缺失剧集
+        """查询电视剧订阅缺失剧集。
+
+        返回 None 表示该订阅没有剧集记录；返回 [] 表示有记录但当前没有缺失剧集。
+
+        EPISODES 存的是逗号分隔的集号，写入空列表时会存成空串，
+        而 `''.split(',')` 得到 `['']`，直接 int('') 会抛 ValueError 并中断
+        整个订阅处理流程（日志表现为 "invalid literal for int() with base 10: ''"），
+        因此这里逐个片段解析并跳过空片段。
         """
         if not rid:
             return []
         with self.session() as db:
             ret = db.query(SubscribeTvEpisodes.EPISODES).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == rid).first()
-            if ret:
-                return [int(epi) for epi in str(ret[0]).split(",")]
-            return None
+            if not ret:
+                return None
+            episodes: list[int] = []
+            for token in str(ret[0] or "").split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    episodes.append(int(token))
+                except ValueError:
+                    log.warn(f"[Subscribe]剧集订阅 {rid} 缺失剧集数据异常，已跳过片段：{token!r}")
+            return episodes
 
     def delete_rss_tv_episodes(self, rid: int | None) -> None:
         """
