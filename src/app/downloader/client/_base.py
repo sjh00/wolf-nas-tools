@@ -294,9 +294,16 @@ class _IDownloadClient(metaclass=ABCMeta):
 
     def get_downloading_progress(
         self, ids: list[str] | str | None = None, tag: str | list[str] | None = None
-    ) -> list[dict]:
-        """获取下载进度。子类可覆盖 _format_progress 或 _format_speed 来自定义。"""
-        torrents = self.get_downloading_torrents(ids=ids, tag=tag) or []
+    ) -> list[dict] | None:
+        """获取下载进度。子类可覆盖 _format_progress 或 _format_speed 来自定义。
+
+        返回 None 表示查询失败（下载器不可达/未就绪），与返回 []（查询成功但无
+        匹配任务）语义不同：调用方不得把失败当成"任务已不存在"，否则下载器抖动
+        一次就会把正在下载的任务误标为已完成。
+        """
+        torrents = self.get_downloading_torrents(ids=ids, tag=tag)
+        if torrents is None:
+            return None
         return [self._format_progress(t) for t in torrents]
 
     def _format_progress(self, torrent: Torrent) -> dict:
