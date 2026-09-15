@@ -85,12 +85,12 @@ def db_env():
         engine.dispose()
 
 
-def _service(downloader_id="2", progress=None, conf=None):
+def _service(progress=None):
     client = MagicMock()
     client.get_downloading_progress.return_value = progress
-    cfg = conf or {"id": downloader_id, "name": "qBittorrent", "type": "qbittorrent", "enabled": 1}
+    cfg = {"id": "2", "name": "qBittorrent", "type": "qbittorrent", "enabled": 1}
     downloader = MagicMock()
-    downloader.get_downloader_conf.side_effect = lambda did=None: cfg if did else {downloader_id: cfg}
+    downloader.get_downloader_conf.side_effect = lambda did=None: cfg if did else {"2": cfg}
     downloader.get_downloader.return_value = client
     return (
         DownloadService(
@@ -107,9 +107,15 @@ def _service(downloader_id="2", progress=None, conf=None):
     )
 
 
+def _read_state(mgr) -> str | None:
+    with mgr.session_scope() as db:
+        row = db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.DOWNLOAD_ID == _PUSHED_HASH).first()
+        return row.STATE if row else None
+
+
 class TestDownloadingEndToEnd:
-    def test_record_created_by_platform_is_listed(self, db_env):
-        """真实库里写入的 downloading 记录必须出现在列表中（hash 命中）"""
+    def test_pushed_task_with_progress_is_listed(self, db_env):
+        """真实库里写入的 downloading 记录 + 下载器命中 → 出现在列表中并被富化"""
         svc, _client = _service(
             progress=[
                 {
@@ -131,43 +137,43 @@ class TestDownloadingEndToEnd:
         # 用本地记录富化标题（含年份）
         assert "少年时代" in item["title"]
         assert item["downloader_name"] == "qBittorrent"
+        # 状态保持 downloading
+        assert _read_state(db_env) == "downloading"
 
-    def test_hash_mismatch_name_fallback_still_listed(self, db_env):
-        """下载器返回的 hash 与记录不一致时，按种子名兜底匹配并展示"""
-        svc, _client = _service(
-            progress=[{"id": "totally-different-hash", "name": _PUSHED_NAME, "progress": 3.0, "state": "Downloading"}]
-        )
-
-        result = svc.get_downloading_with_media_info()
-
-        assert result["total"] == 1
-        assert result["items"][0]["progress"] == 3.0
-
-    def test_both_mismatch_still_listed_without_progress(self, db_env):
-        """hash 与名称都对不上时仍展示（只是没有实时进度），不得消失"""
-        svc, _client = _service(
-            progress=[{"id": "other", "name": "Other.Movie.mkv", "progress": 9.0, "state": "Downloading"}]
-        )
-
-        result = svc.get_downloading_with_media_info()
-
-        assert result["total"] == 1
-        item = result["items"][0]
-        assert item["id"] == _PUSHED_HASH
-        assert item["progress"] == 0
-
-    def test_downloader_unreachable_keeps_record(self, db_env):
-        """下载器查询失败时不改状态、也不展示（数据不可信）"""
+    def test_query_failure_keeps_record_downloading(self, db_env):
+        """下载器查询失败 → 不展示、也不改状态"""
         svc, client = _service(progress=None)
         client.get_downloading_progress.return_value = None
 
         result = svc.get_downloading_with_media_info()
+
         assert result["items"] == []
+        assert _read_state(db_env) == "downloading", "查询失败不得把任务标记为完成"
 
-        # 记录状态必须仍是 downloading
-        from app.db.models.download import DOWNLOADHISTORY as Model
+    def test_completed_progress_exits_list(self, db_env):
+        """进度 100% → 退出列表并标记完成"""
+        svc, _client = _service(
+            progress=[{"id": _PUSHED_HASH, "name": _PUSHED_NAME, "progress": 100.0, "state": "Uploading"}]
+        )
 
-        with db_env.session_scope() as db:
-            row = db.query(Model).filter(Model.DOWNLOAD_ID == _PUSHED_HASH).first()
-            assert row is not None
-            assert row.STATE == "downloading", "查询失败不得把任务标记为完成"
+        result = svc.get_downloading_with_media_info()
+
+        assert result["items"] == []
+        assert _read_state(db_env) == "completed"
+
+    def test_missing_in_downloader_marked_completed(self, db_env):
+        """下载器里查不到该 hash → 按完成处理（清掉幽灵条目）"""
+        svc, _client = _service(progress=[])
+
+        result = svc.get_downloading_with_media_info()
+
+        assert result["items"] == []
+        assert _read_state(db_env) == "completed"
+
+    def test_queries_by_pushed_hash_only(self, db_env):
+        """只按平台推送的 hash 查询（全量拉取会导致接口超时）"""
+        svc, client = _service(progress=[])
+
+        svc.get_downloading_with_media_info()
+
+        assert client.get_downloading_progress.call_args.kwargs.get("ids") == [_PUSHED_HASH]
