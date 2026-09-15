@@ -575,3 +575,166 @@ class TestTailMetadataLeftover:
         result = parser.parse("24 S01 1080p WEB-DL AAC2.0 H.264-BTN")
         assert result is not None
         assert result.title_en == "24"
+
+
+class TestFieldLabelsNotInTitle:
+    """元数据字段标签（主演/导演/简介等）及其取值不应混入片名。
+
+    历史 bug：PT 站点种子的中文描述块 `东游令 | 主演: 张鼎 付明洋 玖月`
+    整块被当作片名去搜 TMDB，必然搜不到 → 条目恒为「无法识别媒体信息」。
+    """
+
+    def test_colon_form(self, parser):
+        result = parser.parse("东游令 2026 主演: 张鼎 付明洋 玖月")
+        assert result is not None
+        assert result.title_cn == "东游令"
+        assert result.year == "2026"
+
+    def test_space_and_dot_form(self, parser):
+        for title in (
+            "东游令 2026 主演 张鼎 付明洋 玖月 1080p",
+            "东游令.主演.张鼎.付明洋.玖月.2026.1080p.WEB-DL",
+            "东游令 2026 主演：张鼎、付明洋、玖月",
+        ):
+            result = parser.parse(title)
+            assert result is not None, title
+            assert result.title_cn == "东游令", title
+            assert result.year == "2026", title
+
+    def test_year_after_cast_block_kept(self, parser):
+        """字段标签出现在年份之前时，年份仍需识别出来"""
+        result = parser.parse("东游令 主演: 张鼎 付明洋 2026")
+        assert result is not None
+        assert result.title_cn == "东游令"
+        assert result.year == "2026"
+
+    def test_multiple_labels(self, parser):
+        result = parser.parse("东游令 2026[东游令 | 导演: 王五 | 主演: 张鼎 付明洋 | 1080p]")
+        assert result is not None
+        assert result.title_cn == "东游令"
+        assert result.resource_pix == "1080p"
+
+    def test_synopsis_value_removed(self, parser):
+        result = parser.parse("东游令 2026[东游令 | 简介: 该剧讲述了一段传奇故事]")
+        assert result is not None
+        assert result.title_cn == "东游令"
+
+    def test_real_pt_torrent_name(self, parser):
+        """库里真实存在的 PT 种子名（ptcafe 中文描述块）"""
+        title = (
+            "The Gentlemen 2026 S02 Complete 1080p NF WEB-DL x264 DDP5.1-PTerWEB"
+            "[绅士们 第二季/绅士们2 全8集 | 导演: 盖·里奇 主演: 西奥·詹姆斯 卡雅·斯考达里奥 米凯莱·莫罗尼 "
+            "[英语中字] | [内封多国字幕]]"
+        )
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_cn == "绅士们"
+        assert result.year == "2026"
+        assert "主演" not in (result.title_cn or "")
+        assert "导演" not in (result.title_cn or "")
+
+    def test_label_word_inside_title_not_stripped(self, parser):
+        """标签词被包在更长词里时（片名本体）不能被误删"""
+        for title, want_cn in (
+            ("爱的语言 2018 1080p", "爱的语言"),
+            ("窃听风云 2009 1080p", "窃听风云"),
+            ("类型分类 2020 1080p", "类型分类"),
+            ("我们的地区 2021 1080p", "我们的地区"),
+        ):
+            result = parser.parse(title)
+            assert result is not None, title
+            assert result.title_cn == want_cn, title
+
+
+class TestBracketMetadataNotInTitle:
+    """方括号内以竖线分隔的元数据段不应混入片名"""
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "东游令 2026[东游令 | 国语中字 | 1080p]",
+            "东游令 2026[东游令 | 1080p]",
+            "东游令 2026[东游令 | 2160p]",
+            "东游令 2026[东游令 | 国语中字]",
+            "东游令 2026[东游令 | WEB-DL]",
+        ],
+    )
+    def test_metadata_segment_dropped(self, parser, title):
+        result = parser.parse(title)
+        assert result is not None, title
+        assert result.title_cn == "东游令", title
+        assert result.year == "2026", title
+
+    def test_title_segment_kept(self, parser):
+        """含标题的竖线分段要保留（只有元数据段被丢弃）"""
+        result = parser.parse("明日方舟 2025[明日方舟 中配 | 国语中字] 1080p")
+        assert result is not None
+        assert result.title_cn == "明日方舟 中配"
+
+    def test_all_metadata_bracket_ignored(self, parser):
+        """整块都是元数据的方括号不产生片名"""
+        result = parser.parse("[国语中字] 明日方舟 2025 1080p")
+        assert result is not None
+        assert result.title_cn == "明日方舟"
+
+
+class TestLeadingBracketKeepsTitle:
+    """前导方括号内是「片名 | 标签」组合时，不能连片名一起删掉。
+
+    历史 bug：前导方括号只要命中语言/字幕标签词就整块删除，
+    `[明日方舟 中配 | 国语中字] 2025` 于是变成 ` 2025`，片名整个丢失。
+    """
+
+    def test_title_segment_survives(self, parser):
+        result = parser.parse("[明日方舟 中配 | 国语中字] 2025 1080p")
+        assert result is not None
+        assert result.title_cn == "明日方舟 中配"
+        assert result.year == "2025"
+
+    def test_title_segment_without_extra_tag(self, parser):
+        result = parser.parse("[明日方舟 | 国语中字] 2025 1080p")
+        assert result is not None
+        assert result.title_cn == "明日方舟"
+        assert result.year == "2025"
+
+    def test_season_marker_in_bracket(self, parser):
+        """括号内的季数标记应被正常消费，不留在片名里"""
+        result = parser.parse("[东游令 第一季 | 国语中字] 2026 1080p")
+        assert result is not None
+        assert result.title_cn == "东游令"
+        assert result.year == "2026"
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "[国语中字] 明日方舟 2025 1080p",
+            "[简繁日内封字幕] 明日方舟 2025 1080p",
+            "[桜都字幕组] 明日方舟 2025 1080p",
+            # 纯组名 / 纯标签 + 技术元数据：仍应整体删除，不把 1080p 提成片名
+            "[某某字幕组 | 1080p] 明日方舟 2025",
+            "[国语中字 | 1080p] 明日方舟 2025",
+        ],
+    )
+    def test_label_only_bracket_still_dropped(self, parser, title):
+        result = parser.parse(title)
+        assert result is not None, title
+        assert result.title_cn == "明日方舟", title
+        assert result.year == "2025", title
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "[绿茶字幕组] 穹庐下的魔女 / Tenmaku no Jaadugar [04][WebRip][1080p][繁日内嵌]",
+            "[北宇治字幕组&LoliHouse] 穹庐下的魔女 / Tenmaku no Jaadugar - 04 "
+            "[WebRip 1080p HEVC-10bit AAC][简繁日内封字幕]",
+        ],
+    )
+    def test_dmhy_format_unaffected(self, parser, title):
+        """dmhy/mikan 的「组名方括号」行为不变"""
+        result = parser.parse(title)
+        assert result is not None, title
+        assert result.episode == 4, title
+        assert "穹庐" in (result.title_cn or ""), title
+        assert "字幕组" not in (result.title_cn or ""), title
+
+

@@ -49,6 +49,96 @@ _LANGUAGE_SUBTITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---- 元数据字段标签 ----
+# PT/NFO/豆瓣 的中文描述块形如「东游令 | 导演: 王五 主演: 张三 李四」，
+# 标签及其取值属于独立字段，不是片名的一部分。
+# （历史 bug：整块被当成片名去搜 TMDB，必然搜不到 → 条目恒为「无法识别媒体信息」）
+#
+# 安全性来自「词边界」约束：标签前不能紧邻中日韩文字/字母数字，因此
+# 《爱的语言》《我们的地区》这类把标签词包在更长词里的片名不会被误伤；
+# 更长的「领衔主演」需排在「主演」之前，保证优先匹配更长的标签。
+_FIELD_LABEL_WORDS = (
+    "领衔主演",
+    "主演",
+    "导演",
+    "編劇",
+    "编剧",
+    "监制",
+    "監製",
+    "制片人",
+    "製片人",
+    "出品",
+    "发行",
+    "發行",
+    "配音",
+    "类型",
+    "類型",
+    "地区",
+    "地區",
+    "语言",
+    "語言",
+    "集数",
+    "集數",
+    "片长",
+    "片長",
+    "又名",
+    "别名",
+    "別名",
+    "简介",
+    "簡介",
+    "剧情",
+    "劇情",
+    "上映日期",
+    "首播",
+    "评分",
+    "評分",
+    "标签",
+    "標籤",
+    "演员表",
+    "演員表",
+)
+_FIELD_LABEL_BOUNDARY = r"(?<![A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff])"
+_FIELD_LABEL_RE = re.compile(
+    # 冒号形态：`主演: 张三` —— 冒号是强信号，连同冒号一起吃掉
+    _FIELD_LABEL_BOUNDARY + r"(?:" + "|".join(_FIELD_LABEL_WORDS) + r")\s*[:：]"
+    r"|"
+    # 无冒号形态：`主演 张三` —— 要求标签右边也是词边界
+    + _FIELD_LABEL_BOUNDARY
+    + r"(?:"
+    + "|".join(_FIELD_LABEL_WORDS)
+    + r")(?=[\s._\-\[\]【】|/]|$)"
+)
+# 字段取值：标签后紧跟的中文词序列（人名列表），以空格/点号/顿号/斜杠分隔
+_FIELD_VALUE_TOKEN_RE = re.compile(
+    r"[\s._\-、,，/／|]*(?:[\u4e00-\u9fff\u00b7\u30fb]{1,8})"
+)
+
+
+def strip_field_segments(text: str) -> str:
+    """剔除「字段标签 + 取值」片段：`主演: 张三 李四` / `主演.张三.李四` → 空。
+
+    仅在该标签确实作为独立词出现时才处理，避免误伤把标签词包在片名里的情况。
+    """
+    if not text or not any(word in text for word in _FIELD_LABEL_WORDS):
+        return text
+    parts: list[str] = []
+    pos = 0
+    for m in _FIELD_LABEL_RE.finditer(text):
+        if m.start() < pos:
+            continue
+        parts.append(text[pos : m.start()])
+        pos = m.end()
+        # 吃掉标签后的取值（人名列表）；遇到下一个字段标签即停止
+        while True:
+            vm = _FIELD_VALUE_TOKEN_RE.match(text, pos)
+            if not vm or vm.end() == pos:
+                break
+            if _FIELD_LABEL_RE.match(vm.group(0).strip(" \t._-、,，/／|")):
+                break
+            pos = vm.end()
+    parts.append(text[pos:])
+    return "".join(parts)
+
 
 def prepare_title(title: str) -> str:
     """统一标题预处理"""
@@ -71,6 +161,8 @@ def prepare_title(title: str) -> str:
     title = _RE_YEAR_RANGE.sub(r"\1\2", title)
     # 剔除 BONUS.DISC / .extras-N 花絮后缀，避免被当成正式标题/集数识别
     title = _RE_BONUS_SUFFIX.sub("", title)
+    # 剔除元数据字段标签及其取值（主演: 张三 李四 / 导演: 王五），避免描述块混入片名
+    title = strip_field_segments(title)
     # 下划线转空格（保留 SAC_2045、x265_10bit 等字母数字间有意义连接，其余拆开）
     title = re.sub(r"(?<![A-Za-z])_|_(?!\d)", " ", title)
 
@@ -85,6 +177,19 @@ def prepare_title(title: str) -> str:
             break
         # 语言/字幕/制作标记 → 移除
         if _LANGUAGE_SUBTITLE_RE.search(inner):
+            # 方括号内可能是「片名 | 标签」组合（如 [明日方舟 中配 | 国语中字]）：
+            # 整块删掉会连片名一起丢；逐段判断，只在确有片名段时保留它们。
+            # 保留段要求「含中文且自身不是标签」，因此 [某某字幕组 | 1080p] 这类
+            # 纯组名/纯元数据的前导括号仍会整体删除。
+            if "|" in inner or "｜" in inner:
+                kept = [
+                    p.strip()
+                    for p in re.split(r"[|｜]", inner)
+                    if p.strip() and StringUtils.is_chinese(p) and not _LANGUAGE_SUBTITLE_RE.search(p)
+                ]
+                if kept:
+                    title = re.sub(r"\s+", " ", " ".join(kept) + " " + title[m.end() :]).strip()
+                    continue
             title = title[m.end() :]
             continue
         # 发布组标记 → 移除
