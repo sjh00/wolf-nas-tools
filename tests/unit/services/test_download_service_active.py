@@ -1,8 +1,13 @@
-"""正在下载列表的两条硬约束：
+"""「正在下载」列表的语义与性能约束。
 
-1. 只展示**平台推送过**的任务（DOWNLOAD_HISTORY），不列下载器里的其他种子
-2. 推送过的任务**绝不隐藏**：hash 对不上时按种子名兜底，仍对不上也要展示
-   （否则「下载器里在下载、列表却为空」）
+语义：只展示**平台推送过**的任务（DOWNLOAD_HISTORY），并区分三种情况
+- 下载器查询失败 → 保持原状态（不得误标完成）
+- 下载器里查不到该任务 → 按完成处理并留痕
+- 下载器里仍在下载 → 展示实时进度
+
+性能：必须**按 hash 批量查询**（ids=...）。曾因改成"取下载器全部任务再本地匹配"
+导致超时——客户端为每个种子解析属性/tracker，代价是每种子 3 次额外 HTTP 请求，
+全量拉取会把接口拖过前端的 30s 超时。
 """
 
 from types import SimpleNamespace
@@ -17,12 +22,11 @@ _PUSHED_NAME = "Some.Release.2024.mkv"
 def _make_service(client_progress, client_progress_raises=False, downloader_enabled=1):
     """构造 DownloadService。
 
-    :param client_progress: 下载器返回的「正在下载」全量列表（None 表示查询失败）
+    :param client_progress: 下载器返回的进度列表（None 表示查询失败）
     """
     task = SimpleNamespace(
         downloader="2",
         download_id=_PUSHED_HASH,
-        state="downloading",
         torrent=_PUSHED_NAME,
         save_path="/downloads",
         year="2024",
@@ -60,8 +64,24 @@ def _make_service(client_progress, client_progress_raises=False, downloader_enab
     return svc, history_repo, client
 
 
-def _pushed(progress: float = 42.5, task_id: str = _PUSHED_HASH, name: str = _PUSHED_NAME) -> dict:
+def _progress(progress: float = 42.5, task_id: str = _PUSHED_HASH, name: str = _PUSHED_NAME) -> dict:
     return {"id": task_id, "name": name, "progress": progress, "state": "Downloading", "speed": "1MB/s"}
+
+
+class TestMustQueryByIds:
+    """性能回归守卫：不得改成不限 ids 的全量拉取。"""
+
+    def test_queries_with_ids(self):
+        svc, _repo, client = _make_service([_progress()])
+
+        svc.get_downloading_with_media_info()
+
+        assert client.get_downloading_progress.call_count == 1
+        kwargs = client.get_downloading_progress.call_args.kwargs
+        assert kwargs.get("ids") == [_PUSHED_HASH], (
+            "必须按平台推送的 hash 查询；不限 ids 会全量拉取并逐个解析 tracker，"
+            "导致接口超过前端 30s 超时"
+        )
 
 
 class TestQueryFailure:
@@ -85,100 +105,24 @@ class TestQueryFailure:
 
 
 class TestOnlyPushedTasksShown:
-    """约束 1：只展示平台推送过的任务"""
+    """只展示平台推送过的任务"""
 
-    def test_downloader_only_torrent_not_listed(self):
-        """用户在下载器里手动添加的种子（本地无记录）不得出现在列表里"""
-        progress = [
-            _pushed(),
-            {"id": "manual-hash", "name": "User.Manual.Download.mkv", "progress": 55.0, "state": "Downloading"},
-        ]
-        svc, _history_repo, _client = _make_service(progress)
+    def test_shows_pushed_task_with_progress(self):
+        svc, _repo, _client = _make_service([_progress()])
 
         result = svc.get_downloading_with_media_info()
 
-        ids = [i["id"] for i in result["items"]]
-        assert ids == [_PUSHED_HASH]
-        assert "manual-hash" not in ids
-
-    def test_local_record_enriches_title(self):
-        """展示的是推送过的任务，并用本地记录的标题/海报富化"""
-        svc, _history_repo, _client = _make_service([_pushed()])
-
-        result = svc.get_downloading_with_media_info()
-
-        assert len(result["items"]) == 1
+        assert result["total"] == 1
         item = result["items"][0]
         assert item["id"] == _PUSHED_HASH
-        assert item["title"] == "测试影片 (2024) "
         assert item["progress"] == 42.5
+        assert item["title"] == "测试影片 (2024) "
         assert item["downloader_name"] == "qBittorrent"
         assert item["save_path"] == "/downloads"
 
-
-class TestPushedTaskNeverHidden:
-    """约束 2：推送过的任务绝不隐藏"""
-
-    def test_hash_mismatch_falls_back_to_name(self):
-        """hash 对不上时按种子名兜底匹配 → 拿到真实进度"""
-        progress = [_pushed(progress=7.5, task_id="different-hash")]
-        svc, _history_repo, _client = _make_service(progress)
-
-        result = svc.get_downloading_with_media_info()
-
-        assert len(result["items"]) == 1
-        assert result["items"][0]["progress"] == 7.5
-
-    def test_unmatched_pushed_task_still_listed(self):
-        """hash 与种子名都对不上 → 仍然展示（无实时进度），而不是消失"""
-        progress = [{"id": "other", "name": "Other.mkv", "progress": 10.0, "state": "Downloading"}]
-        svc, history_repo, _client = _make_service(progress)
-
-        result = svc.get_downloading_with_media_info()
-
-        assert len(result["items"]) == 1
-        item = result["items"][0]
-        assert item["id"] == _PUSHED_HASH
-        assert item["title"] == "测试影片 (2024) "
-        # 不得因比对不到就改状态或标完成
-        history_repo.batch_update_state.assert_not_called()
-
-    def test_unmatched_logs_once_across_polls(self):
-        """比对不到要留痕，且按任务去重避免 30s 轮询刷屏"""
-        progress = [{"id": "other", "name": "Other.mkv", "progress": 10.0, "state": "Downloading"}]
-        svc, _history_repo, _client = _make_service(progress)
-
-        with patch("app.services.download_service.log") as mock_log:
-            svc.get_downloading_with_media_info()
-            svc.get_downloading_with_media_info()
-            svc.get_downloading_with_media_info()
-
-        assert mock_log.warn.call_count == 1
-
-
-class TestStatusReconciliation:
-    def test_completed_task_exits_list(self):
-        """进度达 100% → 退出「正在下载」列表并标记完成"""
-        svc, history_repo, _client = _make_service([_pushed(progress=100.0)])
-
-        result = svc.get_downloading_with_media_info()
-
-        assert result["items"] == []
-        (updated,), _ = history_repo.batch_update_state.call_args
-        assert updated == [("2", _PUSHED_HASH, "completed")]
-
-    def test_disabled_downloader_skipped(self):
-        """未启用的下载器不参与查询"""
-        svc, _history_repo, client = _make_service([], downloader_enabled=0)
-
-        result = svc.get_downloading_with_media_info()
-
-        assert result["items"] == []
-        client.get_downloading_progress.assert_not_called()
-
-    def test_no_history_returns_empty(self):
-        """本地无任何推送记录 → 即使下载器有一堆任务也不展示"""
-        svc, history_repo, client = _make_service([_pushed()])
+    def test_no_history_returns_empty_without_querying(self):
+        """本地无推送记录 → 即使下载器有一堆任务也不展示、也不发起查询"""
+        svc, history_repo, client = _make_service([_progress()])
         history_repo.get_active_downloads.return_value = []
 
         result = svc.get_downloading_with_media_info()
@@ -186,15 +130,67 @@ class TestStatusReconciliation:
         assert result == {"items": [], "total": 0}
         client.get_downloading_progress.assert_not_called()
 
+    def test_disabled_downloader_skipped(self):
+        """未启用的下载器不参与查询"""
+        svc, _repo, client = _make_service([], downloader_enabled=0)
+
+        result = svc.get_downloading_with_media_info()
+
+        assert result["items"] == []
+        client.get_downloading_progress.assert_not_called()
+
+    def test_other_torrent_in_downloader_not_shown(self):
+        """下载器里其它任务（非平台推送）不会出现——查询本身就只按我们的 hash"""
+        svc, _repo, client = _make_service([_progress(), _progress(task_id="manual", name="Manual.mkv")])
+
+        result = svc.get_downloading_with_media_info()
+
+        assert [i["id"] for i in result["items"]] == [_PUSHED_HASH]
+
+
+class TestStatusReconciliation:
+    def test_completed_task_exits_and_marked(self):
+        """进度达 100% → 退出列表并标记完成"""
+        svc, history_repo, _client = _make_service([_progress(progress=100.0)])
+
+        result = svc.get_downloading_with_media_info()
+
+        assert result["items"] == []
+        (updated,), _ = history_repo.batch_update_state.call_args
+        assert updated == [("2", _PUSHED_HASH, "completed")]
+
+    def test_missing_task_marked_completed_and_warned_once(self):
+        """下载器里查不到（含 hash 不一致）→ 按完成处理并留痕一次，避免幽灵条目"""
+        svc, history_repo, _client = _make_service([])
+
+        with patch("app.services.download_service.log") as mock_log:
+            result = svc.get_downloading_with_media_info()
+            svc.get_downloading_with_media_info()
+            svc.get_downloading_with_media_info()
+
+        assert result["items"] == []
+        (updated,), _ = history_repo.batch_update_state.call_args
+        assert updated == [("2", _PUSHED_HASH, "completed")]
+        assert mock_log.warn.call_count == 1, "同一任务重复轮询不应重复告警"
+
+    def test_empty_result_logs_diagnostic_summary(self):
+        """列表为空时输出诊断摘要，便于直接定位卡点"""
+        svc, _repo, _client = _make_service([])
+
+        with patch("app.services.download_service.log") as mock_log:
+            svc.get_downloading_with_media_info()
+
+        messages = [str(c) for c in mock_log.info.call_args_list]
+        assert any("正在下载列表为空" in m for m in messages)
+
 
 class TestPagination:
     def test_page_slice(self):
         """分页只作用于平台推送的任务集合"""
-        svc, history_repo, _client = _make_service([_pushed(), _pushed(task_id="hash2", name="Second.mkv")])
+        svc, history_repo, _client = _make_service([_progress(), _progress(task_id="hash2", name="Second.mkv")])
         second = SimpleNamespace(
             downloader="2",
             download_id="hash2",
-            state="downloading",
             torrent="Second.mkv",
             save_path="",
             year="",
