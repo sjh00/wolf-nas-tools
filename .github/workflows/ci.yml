@@ -1,10 +1,10 @@
 name: CI
 
 on:
-  push:
-    branches: [dev, main]
+  # 推送到 main 时由 build.yml 通过 workflow_call 复用本工作流（同一提交只跑一遍 CI）；
+  # 这里只负责 PR 检查。workflow_call 是 build.yml 的 `uses:` 所依赖的入口，勿删。
   pull_request:
-    branches: [dev, main]
+    branches: [main]
   workflow_call:
 
 jobs:

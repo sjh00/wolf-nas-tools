@@ -1,6 +1,6 @@
 # WolfNas - 多功能媒体库管理工具
 
-[![CI](https://github.com/sjh00/wolf-nas-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/sjh00/wolf-nas-tools/actions/workflows/ci.yml)
+[![CI](https://github.com/sjh00/wolf-nas-tools/actions/workflows/build.yml/badge.svg)](https://github.com/sjh00/wolf-nas-tools/actions/workflows/build.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/sjh00/wolf-nas-tools)](https://hub.docker.com/r/sjh00/wolf-nas-tools)
 [![Telegram Group](https://img.shields.io/badge/Telegram-Group-blue)](https://t.me/+UxUIoJMmH2YwYWE1)
 
