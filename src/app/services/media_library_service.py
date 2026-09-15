@@ -99,9 +99,12 @@ class MediaLibraryService:
         used_percent = round((used_space / total_space) * 100, 1)
 
         def fmt_space(val):
+            # 与 SiteUserInfo.__format_filesize 保持同一种格式（"{:.2f} {单位}"，不带千分位）：
+            # 前端 parseSize 的正则要求以数字开头，带千分位会匹配失败并静默返回 0；
+            # 同一批接口里出现两种尺寸格式也是隐患
             if val > 1024:
-                return f"{round(val / 1024, 2):,} TB"
-            return f"{round(val, 2):,} GB"
+                return f"{round(val / 1024, 2):.2f} TB"
+            return f"{round(val, 2):.2f} GB"
 
         return LibrarySpaceDTO(
             used_percent=used_percent,

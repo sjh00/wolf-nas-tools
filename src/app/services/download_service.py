@@ -531,8 +531,11 @@ class DownloadService:
                         completed_ids.append((did, tid))
                         continue
 
-                    if getattr(task, "state", None) != "downloading":
-                        active_ids.append((did, tid))
+                    # 下载器里仍在下载 → 状态纠正为 downloading。
+                    # 注意：DownloadHistoryEntity 未携带 state 字段（get_active_downloads
+                    # 只返回 downloading/completed），因此这里无条件回写：曾因下载器抖动
+                    # 被误标 completed 的记录，会在此纠正回来。
+                    active_ids.append((did, tid))
 
                     matched_count += 1
                     result.append(
