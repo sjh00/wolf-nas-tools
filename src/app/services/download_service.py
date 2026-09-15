@@ -455,11 +455,18 @@ class DownloadService:
             if not _client:
                 continue
             try:
-                progress_list = _client.get_downloading_progress(ids=ids) or []
+                progress_list = _client.get_downloading_progress(ids=ids)
             except (DomainError, ServiceError):
                 raise
-            except Exception:
-                progress_list = []
+            except Exception as e:
+                log.debug(f"[DownloadService]下载器 {did} 查询进度异常：{e}")
+                progress_list = None
+            if progress_list is None:
+                # 查询失败（下载器不可达/未就绪）：此时无法判定任务真实状态，
+                # 直接跳过本轮。若把失败当成"任务不存在"，下载器抖动一次就会把
+                # 仍在下载的任务全部误标为已完成并从"正在下载"列表里清掉。
+                log.warn(f"[DownloadService]下载器 {downloader_name} 进度查询失败，本轮跳过 {len(tasks)} 个任务")
+                continue
             progress_map = {p.get("id"): p for p in progress_list if p.get("id")}
 
             for task in tasks:

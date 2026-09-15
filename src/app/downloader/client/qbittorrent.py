@@ -394,6 +394,9 @@ class Qbittorrent(_IDownloadClient):
             TorrentStatus.Queued,
             TorrentStatus.Checking,
             TorrentStatus.Pending,
+            # 未识别状态也纳入：qb 新增/未知 state 若被排除，任务会被当作
+            # "下载器中不存在"，既从列表消失又被误标已完成
+            TorrentStatus.Unknown,
         ]
         torrents, error = self.get_torrents(ids=ids, status=statuses, tag=tag)
         # 排除已完成任务（pausedUP/stoppedUP 等会被映射为 Paused），只统计真正下载中的
@@ -1118,20 +1121,31 @@ class Qbittorrent(_IDownloadClient):
         return torrent_obj
 
     def _map_status(self, raw_state: Any) -> TorrentStatus:
-        if raw_state == "downloading":
+        # 必须覆盖 qBittorrent 的全部 state，遗漏的状态会落到 Unknown 而被
+        # get_downloading_torrents 的状态白名单过滤，表现为"下载器里有任务、
+        # 后端正在下载列表却为空"，进而被误判为已完成。
+        if raw_state in (
+            "downloading",
+            "metaDL",  # 磁力/种子元数据下载中
+            "forcedDL",
+            "forcedMetaDL",
+            "allocating",  # 分配磁盘空间
+        ):
             return TorrentStatus.Downloading
         elif raw_state == "stalledDL":
             return TorrentStatus.Pending
         elif raw_state in ("queuedDL", "queuedUP"):
             return TorrentStatus.Queued
-        elif raw_state in ("uploading", "stalledUP"):
+        elif raw_state in ("uploading", "stalledUP", "forcedUP"):
             return TorrentStatus.Uploading
-        elif raw_state in ("checkingUP", "checkingDL"):
+        elif raw_state in ("checkingUP", "checkingDL", "checkingResumeData"):
             return TorrentStatus.Checking
         elif raw_state in ("pausedUP", "pausedDL", "stoppedUP", "stoppedDL"):
             return TorrentStatus.Paused
-        elif raw_state == "error":
+        elif raw_state in ("error", "missingFiles"):
             return TorrentStatus.Error
+        elif raw_state == "moving":
+            return TorrentStatus.Checking
         else:
             return TorrentStatus.Unknown
 
