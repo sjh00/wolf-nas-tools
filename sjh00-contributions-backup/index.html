@@ -1,0 +1,2665 @@
+<!DOCTYPE html><html lang="zh" class="no-js"><head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="WolfNas 多功能媒体库管理工具使用文档">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/sjh00/wolf-nas-tools/sjh00-contributions-backup/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>sjh00 贡献备份与 v4 迁移 spec - WolfNas 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  <link href="../assets/stylesheets/glightbox.min.css" rel="stylesheet"><script src="../assets/javascripts/glightbox.min.js"></script><style id="glightbox-style">
+            html.glightbox-open { overflow: initial; height: 100%; }
+            .gslide-title { margin-top: 0px; user-select: text; }
+            .gslide-desc { color: #666; user-select: text; }
+            .gslide-image img { background: white; }
+            .gscrollbar-fixer { padding-right: 15px; }
+            .gdesc-inner { font-size: 0.75rem; }
+            body[data-md-color-scheme="slate"] .gdesc-inner { background: var(--md-default-bg-color); }
+            body[data-md-color-scheme="slate"] .gslide-title { color: var(--md-default-fg-color); }
+            body[data-md-color-scheme="slate"] .gslide-desc { color: var(--md-default-fg-color); }
+        </style></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#sjh00-贡献备份与-v4-迁移-spec" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="WolfNas 文档" class="md-header__button md-logo" aria-label="WolfNas 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"></path></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"></path></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            WolfNas 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              sjh00 贡献备份与 v4 迁移 spec
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo" aria-label="切换到深色模式" type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换到深色模式" for="__palette_1" hidden="">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"></path></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo" aria-label="切换到浅色模式" type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换到浅色模式" for="__palette_0" hidden="">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"></path></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required="">
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"></path></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix="">
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sjh00/wolf-nas-tools" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="WolfNas 文档" class="md-nav__button md-logo" aria-label="WolfNas 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"></path></svg>
+
+    </a>
+    WolfNas 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sjh00/wolf-nas-tools" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix="">
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装部署
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3">
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    使用指南
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    使用指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    基础配置
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AI 助手
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../search/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    资源搜索与探索
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sites/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    站点配置
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../filter_rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    过滤规则
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../download_management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    下载管理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../downloaders/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    下载器配置
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../media_servers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    媒体服务器
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../directory_sync/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    目录同步
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../media_library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    媒体库
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../media_organization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    媒体整理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rss/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RSS 订阅
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../indexers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    索引器配置
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../notifications/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    通知渠道配置
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../message_templates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    消息通知模板
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    服务与调度
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    存储后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../users/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    用户与权限
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4">
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    插件
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    插件
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    插件使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugin_development_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    插件开发
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5">
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开发者
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开发者
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    本地开发
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构文档
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent-mvp-detailed-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AI 助手设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    常见问题
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    更新日志
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#概览" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        概览
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="概览">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#贡献-vs-v4-现状速查" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        贡献 vs v4 现状速查
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#一用户认证结论" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        一、用户认证结论
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#二b-组--标题名称识别引擎16-个提交" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        二、B 组 — 标题/名称识别引擎（16 个提交）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="二、B 组 — 标题/名称识别引擎（16 个提交）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#6beeffc9-对于没有年份的电影电视剧尝试判断为今年" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6beeffc9 对于没有年份的电影电视剧，尝试判断为今年
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a026cdc1-完善含中文标题的识别" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        a026cdc1 完善含中文标题的识别
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#233b55e6-完善手动识别" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        233b55e6 完善手动识别
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3de1b8dc-处理如标题英文分隔符中文英文的情况" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3de1b8dc 处理如标题[英文,分隔符,中文]英文的情况
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#e3f5e727-去除名称中直接跟第一季共三季等词的情况" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        e3f5e727 去除名称中直接跟"第一季""共三季"等词的情况
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7c756d45--c5fd18ab-fix-标题含罗马数字的情况--revert合并说明" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7c756d45 / c5fd18ab fix 标题含罗马数字的情况 + Revert（合并说明）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7bbdf168-添加识别过程检索名称排除前面为序号的情况" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7bbdf168 添加识别过程检索名称排除前面为序号的情况
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75d31dbf-fix-添加识别过程检索名称排除前面为序号的情况" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        75d31dbf fix 添加识别过程检索名称排除前面为序号的情况
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4297c804-fix-ep-and-name-have-digit-qst" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4297c804 fix ep and name have digit qst
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26e7bde4-修正媒体元数据识别错误将作品名中的-season-去除的-bug" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        26e7bde4 修正媒体元数据识别错误将作品名中的 Season 去除的 bug
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8e7dadc2-补充名称识别修改单元测试情况" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8e7dadc2 补充名称识别修改单元测试情况
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#170d072c-历史记录更新正则搜索方式" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        170d072c 历史记录更新正则搜索方式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#01937eb6-手动识别和历史记录加入动态搜索" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        01937eb6 手动识别和历史记录加入动态搜索
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#28a24f82-减少动态搜索延时" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        28a24f82 减少动态搜索延时
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4bd87041-历史记录添加每页条数--fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4bd87041 历史记录添加每页条数 + fix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#b-组主要贡献要点汇总" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        B 组主要贡献要点汇总
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#b-组文件迁移对照dev--v4-预期落点" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        B 组文件迁移对照（dev → v4 预期落点）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#三c-组--订阅rss3-个提交" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        三、C 组 — 订阅/RSS（3 个提交）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="三、C 组 — 订阅/RSS（3 个提交）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#d4f22248-增加添加种时自动更新电影订阅信息" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        d4f22248 增加添加种时自动更新电影订阅信息
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#b69d1e54-增加-rss-订阅限定小时" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        b69d1e54 增加 rss 订阅限定小时
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27096553-修改订阅里站点搜索逻辑" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        27096553 修改订阅里站点搜索逻辑
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#c-组主要贡献要点汇总" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        C 组主要贡献要点汇总
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#四d-组--文件名url-解析--bonus-transfer3-个提交" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        四、D 组 — 文件名/URL 解析 + Bonus transfer（3 个提交）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="四、D 组 — 文件名/URL 解析 + Bonus transfer（3 个提交）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#f00e65cf-fix-tv-file-name-with-of" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        f00e65cf fix tv file name with 'of'
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#abbd6617-fix-url-with-" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        abbd6617 fix url with '+'
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#04edcb82-add-bonus-transfer--fixbonus花絮转移整套能力" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        04edcb82 add bonus transfer &amp; fix（BONUS/花絮转移整套能力）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#d-组主要贡献要点汇总" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        D 组主要贡献要点汇总
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#d-组迁移取舍建议" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        D 组迁移取舍建议
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#五e-组--过滤规则指定原始语言最高优先级rebase-后必须补加" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        五、E 组 — 过滤规则指定原始语言（最高优先级，rebase 后必须补加）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="五、E 组 — 过滤规则指定原始语言（最高优先级，rebase 后必须补加）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-设计目标" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 设计目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-字段与-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 字段与 schema
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-后端核心逻辑" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 后端核心逻辑
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 后端核心逻辑">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-appfilterpyfilter-类" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        a. app/filter.py（Filter 类）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#b-调用方传参均依赖-meta_infooriginal_language" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        b. 调用方传参（均依赖 meta_info.original_language）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#c-appmediamediapy--apphelpermeta_helperpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        c. app/media/media.py + app/helper/meta_helper.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#d-web-api-入口" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        d. Web API 入口
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-前端-uiv3-实现" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 前端 UI（v3 实现）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-v4-现状对照已再次确认" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. v4 现状对照（已再次确认）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-迁移到-v4-的实施要点精确路径" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 迁移到 v4 的实施要点（精确路径）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-迁移风险点" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 迁移风险点
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#e-组一句话贡献要点" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E 组一句话贡献要点
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#六g-组--模糊-fix-与文档标记24-个rebase-后按需逐个-git-show" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        六、G 组 — 模糊 fix 与文档标记（24+ 个，rebase 后按需逐个 git show）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="六、G 组 — 模糊 fix 与文档标记（24+ 个，rebase 后按需逐个 git show）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#模糊-fix无描述" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        模糊 fix（无描述）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#文档--历史标记rebase-时丢弃" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        文档 / 历史标记（rebase 时丢弃）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#七下一步" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        七、下一步
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="七、下一步">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#推荐验证用例集迁移完成后回归" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        推荐验证用例集（迁移完成后回归）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/sjh00/wolf-nas-tools/edit/master/docs/sjh00-contributions-backup.md" title="编辑此页" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"></path></svg>
+    </a>
+  
+  
+
+
+<h1 id="sjh00-贡献备份与-v4-迁移-spec">sjh00 贡献备份与 v4 迁移 spec<a class="headerlink" href="#sjh00-贡献备份与-v4-迁移-spec" title="Permanent link">¶</a></h1>
+<blockquote>
+<p>本文档用于在 rebase 到 <code>linyuan0213_nexus-media/master</code>（v4，tip=<code>fefa7572</code>，2026-07-05）后对照使用。rebase 前逐一"备份"sjh00 主要贡献的语义；rebase 后逐项检查 v4 是否已实现或更好，未实现且 sjh00 老代码更好的再手动迁移。</p>
+<p>本地备份文档，未 commit；rebase 后该文件可能需要重新落位或删除。</p>
+</blockquote>
+<h2 id="概览">概览<a class="headerlink" href="#概览" title="Permanent link">¶</a></h2>
+<ul>
+<li>上游基线：<code>linyuan0213_nexus-media/master</code> 与 <code>linyuan0213_nas-tools/master</code> 均被强制重置到 <code>fefa7572</code>（C.C，2026-07-05），属于 v4 重写（代码迁到 <code>src/app/</code>，采用 services/domain/di/schemas 分层架构）。</li>
+<li><code>dev</code> 上 sjh00 authored 的非 merge 提交共 60 个，构成本次备份全集。</li>
+<li><code>git merge-base dev linyuan0213_nexus-media/master</code> = 空（两条历史无共同祖先）→ 这就是"无法 merge 只能 rebase"的根因。</li>
+<li>沿用决策（来自用户）：</li>
+<li>用户认证：确保最终无任何"需认证才能继续使用"的拦路逻辑。<strong>v4 已无 sjh00 当年要绕开的"三方验证码激活门"</strong>，无需沿用 <code>ffad6103</code>。</li>
+<li>过滤规则指定原始语言（E 组）：是主要贡献，v4 缺失，rebase 后补加。</li>
+<li>B/C/D：先提炼备份，rebase 后逐项对照 v4 现状再迁移。</li>
+</ul>
+<h3 id="贡献-vs-v4-现状速查">贡献 vs v4 现状速查<a class="headerlink" href="#贡献-vs-v4-现状速查" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>组</th>
+<th>设计点</th>
+<th>是否已在 v4 实现</th>
+<th>处置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B</td>
+<td>序号前缀/重复年份/无年份兜底/onlyen 中文二次纯英匹配</td>
+<td>未确认（需逐项对照 v4 <code>src/app/media/</code>）</td>
+<td>rebase 后逐项验证</td>
+</tr>
+<tr>
+<td>B</td>
+<td>Season 在标题里被误剥离（<code>The Long Season</code> / <code>Cherry Season</code>）</td>
+<td>未确认</td>
+<td>强烈保留</td>
+</tr>
+<tr>
+<td>B</td>
+<td>集范围正则 <code>EP?\d{1,3}[ \.]\d{1,3}</code></td>
+<td>未放宽 <code>_episode_re</code>（v4 仍 <code>S\d{2}EP?(\d{2,4})</code>）</td>
+<td>与 D 组同补</td>
+</tr>
+<tr>
+<td>B</td>
+<td>历史记录/未识别页：每页条数/失效项/正则搜索/防抖</td>
+<td>v4 前端已为 SPA；后端可能仍需补 isexists 字段</td>
+<td>前端在新组件里等价重写</td>
+</tr>
+<tr>
+<td>C</td>
+<td>手动下载回写电影订阅（finish/over_edition）</td>
+<td>v4 已有 finish/over_edition 能力，但手下载链路未连接</td>
+<td>部分迁移</td>
+</tr>
+<tr>
+<td>C</td>
+<td>RSS 站点限定小时内订阅 (<code>withinhour</code>)</td>
+<td>v4 <code>rss_processor.py</code> 无该过滤</td>
+<td>未实现，可补</td>
+</tr>
+<tr>
+<td>C</td>
+<td>「只订阅不搜索」哨兵 <code>["#dontuse"]</code></td>
+<td>v4 用 <code>SubscribeState</code> 状态机等价承担</td>
+<td>不迁移，按 v4 模式</td>
+</tr>
+<tr>
+<td>D</td>
+<td>TV 文件名 <code>OF</code> token 边界</td>
+<td>v4 <code>name_parser.init_name</code> 无 OF 分支</td>
+<td>未实现，建议补</td>
+</tr>
+<tr>
+<td>D</td>
+<td>URL 含 <code>+</code> 处理（Jinja <code>urlquote</code> 双重编码）</td>
+<td>v4 前端框架级编码替代</td>
+<td>需求验证</td>
+</tr>
+<tr>
+<td>D</td>
+<td>BONUS/花絮整套转移能力</td>
+<td>v4 path_utils/filetransfer/path_resolver grep 全无 extras/bonus</td>
+<td>未实现，整套补</td>
+</tr>
+<tr>
+<td>E</td>
+<td>过滤规则指定原始语言</td>
+<td>v4 三处规则引擎 + DB schema + entity 全无</td>
+<td>rebase 后补加</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="一用户认证结论">一、用户认证结论<a class="headerlink" href="#一用户认证结论" title="Permanent link">¶</a></h2>
+<ul>
+<li>v4 tip 没有 <code>.so/.pyd</code> 编译后二进制 user 模块（sjh00 当年 <code>ffad6103</code> 删的那批东西在 v4 里压根不存在）。</li>
+<li>v4 虽有 RBAC（<code>src/app/services/rbac/</code>、<code>src/app/services/auth_service.py</code>），但那是<strong>用户登录/权限</strong>，不是 sjh00 要绕开的"三方站点验证码才允许使用"门。</li>
+<li>grep v4 tip 没有任何"软件激活码/联网验证授权"逻辑。</li>
+<li>⇒ "无恶心认证"诉求在 v4 base 上天然满足，<code>ffad6103</code> 无需沿用。</li>
+</ul>
+<hr>
+<h2 id="二b-组--标题名称识别引擎16-个提交">二、B 组 — 标题/名称识别引擎（16 个提交）<a class="headerlink" href="#二b-组--标题名称识别引擎16-个提交" title="Permanent link">¶</a></h2>
+<h3 id="6beeffc9-对于没有年份的电影电视剧尝试判断为今年">6beeffc9 对于没有年份的电影电视剧，尝试判断为今年<a class="headerlink" href="#6beeffc9-对于没有年份的电影电视剧尝试判断为今年" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/media.py</code></li>
+<li><strong>设计目标</strong>：当种子/文件名未识别出年份时，TMDB 搜索容易命不中或拿到错乱结果。本提交在搜索前把 <code>meta_info.year</code> 临时填为当前年份，让"无年份"标题也能按带年份的电影/电视剧检索分支走。</li>
+<li><strong>核心逻辑</strong>：在 <code>__get_media_info</code> 与 <code>get_media_info_on_files</code> 修正名称分支中，调用 <code>__search_tmdb(...)</code> 之前：
+  <div class="highlight"><pre><span></span><code>if not meta_info.year:
+    meta_info.year = date.today().year
+</code></pre></div>
+  仅作搜索条件补全，不影响最终元数据年份（TMDB 命中后以 TMDB 返回为准）。引入 <code>from datetime import date</code>。</li>
+<li><strong>迁移关注点</strong>：v4 对应逻辑在 <code>src/app/services/media_info_service.py</code> 的搜索调度处。若 v4 已有更完善的"无年份→多候选年份搜索"机制（逐年猜测或多搜索），不必迁这台硬塞当年。</li>
+</ul>
+<h3 id="a026cdc1-完善含中文标题的识别">a026cdc1 完善含中文标题的识别<a class="headerlink" href="#a026cdc1-完善含中文标题的识别" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/media.py</code>、<code>app/media/meta/_base.py</code>、<code>app/media/meta/metaanime.py</code>、<code>app/media/meta/metainfo.py</code>、<code>app/media/meta/metavideo.py</code></li>
+<li><strong>设计目标</strong>：当标题以中文为主、英文识别把中文混入造成 TMDB 匹配失败时，提供"只识别英文名称"的二次尝试通道，并修正电影年份+标题双重比对的逻辑短路问题。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li><code>MetaInfo/MetaAnime/MetaVideo/MetaBase</code> 全链路新增 <code>onlyen</code> 参数；<code>MetaVideo.__init_name_token</code> 处理中文 token 时：
+     <div class="highlight"><pre><span></span><code>if StringUtils.is_chinese(token):
+    if not self.onlyen:
+        # 原有把 token 作为 cn_name 的逻辑
+    # else: onlyen=True 时跳过中文 token，不写入 cn_name
+</code></pre></div></li>
+<li><code>Media.get_media_info</code> 增加 <code>onlyen=False</code> 参数，结尾兜底：
+     <div class="highlight"><pre><span></span><code>if not file_media_info and StringUtils.is_chinese(meta_info.get_name()):
+    return self.get_media_info(..., onlyen=True)
+</code></pre></div></li>
+<li><code>__search_tmdb</code> 内电影分支原先两次 <code>__compare_tmdb_names</code> 分别 return，改为先校验年份再 OR 比对 title/original_title：
+     <div class="highlight"><pre><span></span><code>if movie.release_date[0:4] == str(first_media_year):
+    if __compare_tmdb_names(name, title) or __compare_tmdb_names(name, original_title):
+        return movie
+</code></pre></div></li>
+<li>把 <code>get_media_info_on_files</code> 中那段巨大的"修正名称+缓存+TMDB"内联代码抽取为独立方法 <code>__get_media_tmdbinfo_on_file_with_notmdbinfo(...)</code>；同时修 <code>meta_info.org_string = parent_name</code> 原先漏赋值，避免 onlyen 重跑时丢失原始串。</li>
+<li><strong>迁移关注点</strong>：onlyen 这套"中文标题二次纯英匹配"策略需对照 <code>src/app/media/</code> 下新 Meta 类与 <code>media_info_service.py</code>。若 v4 已用 tmdb multi-search / 别名表做中英文回退可能已覆盖。</li>
+</ul>
+<h3 id="233b55e6-完善手动识别">233b55e6 完善手动识别<a class="headerlink" href="#233b55e6-完善手动识别" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>web/action.py</code>、<code>web/main.py</code>、<code>web/static/js/util.js</code>、<code>web/templates/rename/unidentification.html</code></li>
+<li><strong>设计目标</strong>：手动识别/未识别记录页补"每页条数可调"与"已不存在路径的可视化与批量选择"，并修 <code>pagenum/current_page</code> 字符串未转 int、<code>PageNum</code> 误传为 <code>currentPage</code> 的 bug。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li><code>WebAction</code> 处理未识别列表时给每条记录加 <code>isexists = os.path.exists(path)</code>；批量重新识别时跳过已不存在的项。</li>
+<li><code>web/main.py</code> 各页面统一：<code>pagenum = int(...) or 30</code>、<code>current_page = int(...) or 1</code>；模板 <code>PageNum</code> 改用 <code>Result.get("pageNum")</code>。</li>
+<li><code>util.js</code> 新增 <code>select_dataop_SelectALL(status, name, dataoption)</code> 按 <code>data-&lt;option&gt;</code> 自定义属性过滤全选。</li>
+<li>模板 <code>unidentification.html</code>：每页条数下拉 <code>(30,50,100,200,300,500,1000)</code>；<code>isexists=False</code> 行用 <code>&lt;del class="text-warning"&gt;</code>+"（路径已不存在）"；checkbox 加 <code>data-notexists="true"</code>；新增"选择无效项"按钮 <code>checknotexists_curpage()</code>。</li>
+<li><strong>迁移关注点</strong>：v4 前端已迁 SPA，后端 <code>isexists</code> 标记需在新 history/unknown list API 里保留；前端"每页条数 + 选择无效项"应在 v4 对应 Vue/React 组件里实现。</li>
+</ul>
+<h3 id="3de1b8dc-处理如标题英文分隔符中文英文的情况">3de1b8dc 处理如标题[英文,分隔符,中文]英文的情况<a class="headerlink" href="#3de1b8dc-处理如标题英文分隔符中文英文的情况" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/meta/metavideo.py</code></li>
+<li><strong>设计目标</strong>：修正 <code>e3f5e727</code> 引入的"去掉'第一季/共三季'等词"逻辑在标题形如 <code>英文名 中文名 第一季 英文名</code> 时的副作用——前面英文不应作为独立 <code>en_name</code> 留下，而应并入中文标题。</li>
+<li><strong>核心逻辑</strong>：处理首中文 token 时先检查 <code>self.en_name</code>：
+  <div class="highlight"><pre><span></span><code>if not self.cn_name:
+    token = re.sub(r'[全共第][0-9一二三四五六七八九十]+季全?', '', token, re.IGNORECASE)
+    if self.en_name:
+        self.cn_name = "%s %s" % (self.en_name, token)
+        self.en_name = ''
+    else:
+        self.cn_name = token
+</code></pre></div></li>
+<li><strong>示例</strong>：<code>Movie Name 电影名 S01 ...</code> 应得 <code>cn_name="Movie Name 电影名"</code>，而不是 <code>en_name="Movie Name"</code>/<code>cn_name="电影名"</code> 导致搜索分裂。</li>
+</ul>
+<h3 id="e3f5e727-去除名称中直接跟第一季共三季等词的情况">e3f5e727 去除名称中直接跟"第一季""共三季"等词的情况<a class="headerlink" href="#e3f5e727-去除名称中直接跟第一季共三季等词的情况" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/media.py</code>、<code>app/media/meta/metavideo.py</code></li>
+<li><strong>设计目标</strong>：(1) MetaVideo 在首个中文 token 上剥掉直接粘连的"第一季/共三季/第二季"等词；(2) 把媒体级"修正名称"逻辑从"仅电影/未知"扩展到电视剧，并新增"标题结尾重复年份"修正。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li>metavideo 中文首 token 分支前加：
+    <div class="highlight"><pre><span></span><code>token = re.sub(r'[全共第][0-9一二三四五六七八九十]+季全?', '', token, re.IGNORECASE)
+</code></pre></div></li>
+<li>media.py 修正名称判定不再限 MOVIE/UNKNOWN：
+    <div class="highlight"><pre><span></span><code>fmnspaceindex = meta_info.get_name().find(' ')
+if fmnspaceindex &gt; 0 and name[:fmnspaceindex].isdigit():
+    modifiedname = name[fmnspaceindex+1:]
+fmnendswithyear = ' %s' % meta_info.year
+if name.endswith(fmnendswithyear):
+    modifiedname = name[:-len(fmnendswithyear)]
+</code></pre></div></li>
+<li><strong>迁移关注点</strong>：上面正则需在 v4 的中文 token 清洗处保留；"序号前缀/重复年份尾巴"修正逻辑应在 <code>media_info_service.py</code> 的 modifiedname 计算处保留。</li>
+</ul>
+<h3 id="7c756d45--c5fd18ab-fix-标题含罗马数字的情况--revert合并说明">7c756d45 / c5fd18ab fix 标题含罗马数字的情况 + Revert（合并说明）<a class="headerlink" href="#7c756d45--c5fd18ab-fix-标题含罗马数字的情况--revert合并说明" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>设计目标</strong>：<code>7c756d45</code> 试图把"罗马数字 token"从"和阿拉伯数字混处理"中拆出独立走"拼装到已有 cn_name/en_name"分支，避免罗马数字（II/III）被误判为集/年。<code>c5fd18ab</code> 30 分钟后 revert，说明引入回归（怀疑把 S02 误并入标题）。</li>
+<li><strong>核心逻辑（7c756d45）</strong>：
+  <div class="highlight"><pre><span></span><code>if token.isdigit():
+    ...
+elif is_roman_digit:
+    if _last_token_type == "cnname":
+        cn_name = "%s %s" % (cn_name, token)
+    elif _last_token_type == "enname":
+        en_name = "%s %s" % (en_name, token)
+    _continue_flag = False
+</code></pre></div>
+  <code>c5fd18ab</code> 把 <code>is_roman_digit</code> 重新合并回旧分支，恢复原行为。</li>
+<li><strong>迁移建议</strong>：仅作为"已知未解决问题"标注，迁移时优先对照 v4 metavideo 等价类罗马数字处理是否更稳健；<strong>不要把这台已被回退的旧 hack 迁过去</strong>。</li>
+</ul>
+<h3 id="7bbdf168-添加识别过程检索名称排除前面为序号的情况">7bbdf168 添加识别过程检索名称排除前面为序号的情况<a class="headerlink" href="#7bbdf168-添加识别过程检索名称排除前面为序号的情况" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/media.py</code></li>
+<li><strong>设计目标</strong>：标题若以纯数字序号开头（<code>1 影片名</code>、<code>03.Movie.Title</code>），TMDB 直接用全名搜索会失败。本提交在 <code>__search_tmdb</code> 末尾兜底：未命中且开头是空格分隔的纯数字，则去数字段重搜一次。</li>
+<li><strong>核心逻辑</strong>：
+  <div class="highlight"><pre><span></span><code>if not info:
+    fmnspaceindex = file_media_name.find(' ')
+    if fmnspaceindex &gt; 0 and file_media_name[:fmnspaceindex].isdigit():
+        return self.__search_tmdb(file_media_name=file_media_name[fmnspaceindex+1:], ...)
+</code></pre></div></li>
+<li><strong>迁移建议</strong>：已被 <code>75d31dbf</code> 取代，迁移时以 <code>75d31dbf</code>/<code>e3f5e727</code> 的"modifiedname + cache_key"方案为准，<strong>不必单独迁这台</strong>。</li>
+</ul>
+<h3 id="75d31dbf-fix-添加识别过程检索名称排除前面为序号的情况">75d31dbf fix 添加识别过程检索名称排除前面为序号的情况<a class="headerlink" href="#75d31dbf-fix-添加识别过程检索名称排除前面为序号的情况" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/media.py</code>、<code>app/media/meta/_base.py</code></li>
+<li><strong>设计目标</strong>：修正 <code>7bbdf168</code> 两处问题：(1) 把"开头序号剥离"从 <code>__search_movie_by_name</code> 递归里拿出，统一在 <code>__get_media_info</code> 上层用 modifiedname 处理并联动缓存键；(2) <code>MetaBase</code> 新增 <code>set_name(modifiedname)</code> 用于命中后回写修正名。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li><code>__get_media_info</code>:
+    <div class="highlight"><pre><span></span><code>if meta_info.type in (MOVIE, UNKNOWN):
+    ix = meta_info.get_name().find(' ')
+    if ix &gt; 0 and name[:ix].isdigit():
+        modifiedname = name[ix+1:]
+media_key = __make_cache_key(meta_info)
+if cache and not meta.get_meta_data_by_key(media_key) and modifiedname:
+    media_key = __make_cache_key(meta_info, modifiedname=modifiedname)
+    use_modifiedname = True
+</code></pre></div>
+    命中后 <code>meta_info.set_name(modifiedname)</code>。</li>
+<li><code>_base.py</code>:
+    <div class="highlight"><pre><span></span><code>def set_name(self, modifiedname):
+    if cn_name and is_all_chinese(cn_name): cn_name = modifiedname
+    elif en_name: en_name = modifiedname
+    elif cn_name: cn_name = modifiedname
+</code></pre></div></li>
+<li>移除 <code>7bbdf168</code> 在 <code>__search_movie_by_name</code> 里加的 <code>fmnspaceindex</code> 递归分支。</li>
+<li><strong>迁移关注点</strong>：v4 的"标题净化→修正名→缓存键"应在 <code>media_info_service.py</code> 与缓存层保留这套联动；<code>set_name</code> 等价方法需在新 MetaBase 上保留。</li>
+</ul>
+<h3 id="4297c804-fix-ep-and-name-have-digit-qst">4297c804 fix ep and name have digit qst<a class="headerlink" href="#4297c804-fix-ep-and-name-have-digit-qst" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/meta/metavideo.py</code></li>
+<li><strong>设计目标</strong>：(1) <code>original_title</code> 局部变量被用于 resource_team/customization/DIY 判定，但 <code>original_title = title</code> 在某些路径下是已被 <code>rev_title</code> 处理过的串，改统一用 <code>self.org_string</code>；(2) <code>total_episodes &gt; 2</code> 单文件多集误判过滤只看 <code>fileflag</code>，遇到种子里 <code>EP01 02</code> 这种"显式集范围"会漏过，加入正则识别。</li>
+<li><strong>核心逻辑</strong>：
+  <div class="highlight"><pre><span></span><code>... re.findall(r'-D[Ii]Y@', self.org_string)
+... ReleaseGroupsMatcher().match(title=self.org_string)
+... CustomizationMatcher().match(title=self.org_string)
+...
+if re.search(r'[ \.\d]EP?\d{1,3}[ \.]\d{1,3}[ \.]', self.org_string, re.IGNORECASE) \
+      or (self.fileflag and self.total_episodes &gt; 2):
+    self.end_episode = None
+    self.total_episodes = 1
+</code></pre></div></li>
+<li><strong>迁移关注点</strong>：v4 MetaVideo 等价类需保留：资源组/自定义/DIY 匹配都基于 <code>org_string</code> 而非本地变量；"集范围正则 <code>EP?\d{1,3}[ \.]\d{1,3}</code>"判断"显式集范围"是硬规则，确认 v4 是否已有等价集范围解析。</li>
+</ul>
+<h3 id="26e7bde4-修正媒体元数据识别错误将作品名中的-season-去除的-bug">26e7bde4 修正媒体元数据识别错误将作品名中的 Season 去除的 bug<a class="headerlink" href="#26e7bde4-修正媒体元数据识别错误将作品名中的-season-去除的-bug" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/meta/metavideo.py</code></li>
+<li><strong>设计目标</strong>：英文名以 "Season" 结尾（<code>The Long Season</code>、<code>Cherry Season</code>）后跟 S01/年份时，原代码把季/年份剥离时把 "Season" 也归入季描述剥掉，导致标题被截成 <code>The Long</code>。本提交识别"Season 结尾"为"标题保留"信号。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li>把原"季/集/资源类型/分辨率"合并的 elif 拆分，季单独一支：
+    <div class="highlight"><pre><span></span><code>elif re.search(self._season_re, token, re.IGNORECASE):
+    if self.en_name and re.search(r"SEASON$", self.en_name, re.IGNORECASE):
+        self.en_name += ' '
+    self._stop_name_flag = True
+    return
+</code></pre></div></li>
+<li>处理年份时同理保留 Season：
+    <div class="highlight"><pre><span></span><code>elif self.en_name and re.search(r"SEASON$", self.en_name, re.IGNORECASE):
+    self.en_name += ' '
+self.year = token
+</code></pre></div></li>
+<li><code>" %s" % (self.en_name.strip(), self.year)</code> 用 strip 防止空格累积。</li>
+<li><strong>示例</strong>：<code>The Long Season 2023 …</code> 识别为 <code>The Long Season (2023)</code> 而非 <code>The Long (2023)</code>。</li>
+<li><strong>迁移关注点</strong>：v4 MetaVideo 等价类是否在做季/年份剥离前检查 en_name 结尾词。务必验证 <code>* Season S01 ...</code> 与 <code>* Season 2023</code> 两类样例。</li>
+</ul>
+<h3 id="8e7dadc2-补充名称识别修改单元测试情况">8e7dadc2 补充名称识别修改单元测试情况<a class="headerlink" href="#8e7dadc2-补充名称识别修改单元测试情况" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/meta/metavideo.py</code>、<code>tests/cases/meta_cases.py</code></li>
+<li><strong>设计目标</strong>：给 <code>26e7bde4</code> 补回归用例。</li>
+<li><strong>核心逻辑</strong>：<code>meta_cases</code> 列表头部新增两条：</li>
+<li><code>The Long Season 2017 2160p WEB-DL H265 AAC-XXX</code> → 电影，en_name="The Long Season"，year="2017"。</li>
+<li><code>Cherry Season S01 2014 2160p WEB-DL H265 AAC-XXX</code> → 电视剧，en_name="Cherry Season"，season="S01"，year="2014"。</li>
+<li><strong>迁移关注点</strong>：v4 元数据测试集应继承这两个 case；pytest 体系需改写签名。<strong>必须保留</strong>。</li>
+</ul>
+<h3 id="170d072c-历史记录更新正则搜索方式">170d072c 历史记录更新正则搜索方式<a class="headerlink" href="#170d072c-历史记录更新正则搜索方式" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/helper/db_helper.py</code>、<code>web/templates/rename/history.html</code></li>
+<li><strong>设计目标</strong>：历史记录搜索默认 <code>LIKE %kw%</code>，本提交新增约定：搜索串首尾都被 <code>/</code> 包裹时（如 <code>/a|b/</code>）按正则匹配。</li>
+<li><strong>核心逻辑</strong>：<code>DbHelper.get_transfer_history</code>:
+  <div class="highlight"><pre><span></span><code>if search[0] == search[-1] == '/':
+    search = search[1:-1]
+    ... .filter(SOURCE_FILENAME.regexp_match(search) | TITLE.regexp_match(search)) ...
+else:
+    search = f"%{search}%"
+    ... .like(search) ...
+</code></pre></div>
+  模板搜索框加 <code>placeholder="两头加/支持正则搜索，如/a|b/"</code>。</li>
+<li><strong>迁移关注点</strong>：v4 若换 SQLAlchemy/不同 ORM，注意 <code>regexp_match</code> 在 SQLite/MySQL 上的可用性（SQLite 需自定义 REGEXP 函数）。</li>
+</ul>
+<h3 id="01937eb6-手动识别和历史记录加入动态搜索">01937eb6 手动识别和历史记录加入动态搜索<a class="headerlink" href="#01937eb6-手动识别和历史记录加入动态搜索" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>web/templates/rename/history.html</code>、<code>web/templates/rename/unidentification.html</code></li>
+<li><strong>设计目标</strong>：搜索框从"回车才搜"升级为"输入停顿后自动搜"。</li>
+<li><strong>核心逻辑</strong>：
+  <div class="highlight"><pre><span></span><code>function gosearch(){ navmenu("...?s=" + keyword + "&amp;pagenum=" + pagenum); }
+var searchkeytimeout = null;
+$('#search_word').bind({
+    keypress: function(e){ if (e.keyCode == "13") gosearch(); },
+    keyup:    function(e){ clearTimeout(searchkeytimeout);
+                          searchkeytimeout = setTimeout(gosearch, 1000); }
+});
+</code></pre></div></li>
+<li><strong>迁移关注点</strong>：v4 前端用 input 事件 debounce（vue-use <code>useDebounceFn</code>），后端无需改动。</li>
+</ul>
+<h3 id="28a24f82-减少动态搜索延时">28a24f82 减少动态搜索延时<a class="headerlink" href="#28a24f82-减少动态搜索延时" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>web/templates/rename/history.html</code>、<code>web/templates/rename/unidentification.html</code></li>
+<li><strong>设计目标</strong>：把 <code>01937eb6</code> 的 1000ms 防抖降到 500ms。</li>
+<li><strong>核心逻辑</strong>：两处页面同改 <code>setTimeout(gosearch, 1000)</code> → <code>setTimeout(gosearch, 500)</code>。</li>
+<li><strong>迁移关注点</strong>：v4 拖到公共 composable，500ms 是合理默认。</li>
+</ul>
+<h3 id="4bd87041-历史记录添加每页条数--fix">4bd87041 历史记录添加每页条数 + fix<a class="headerlink" href="#4bd87041-历史记录添加每页条数--fix" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>web/action.py</code>、<code>web/templates/rename/history.html</code>、<code>web/templates/rename/unidentification.html</code></li>
+<li><strong>设计目标</strong>：历史记录页补齐与未识别页同款"每页条数下拉 + 路径失效标记/批量选择"，并修分页链接漏带 pagenum 的 bug。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li><code>WebAction.get_transfer_history</code> 给每条记录加：
+    <div class="highlight"><pre><span></span><code>isexists_source_path = os.path.exists(history.SOURCE_PATH) if history.SOURCE_PATH else True
+isexists_dest_path   = os.path.exists(history.DEST_PATH)   if history.DEST_PATH   else True
+</code></pre></div></li>
+<li>history.html：新增"选择无效项"下拉（三类：仅源无效 1 / 仅媒体库无效 2 / 均无效 3）；checkbox <code>data-notexists="1/2/3"</code>；每页条数下拉 <code>(30,50,100,200,300,500,1000)</code>；分页链接全部带 pagenum。</li>
+<li>unidentification.html 仅修分页链接漏带 pagenum。</li>
+<li><strong>迁移关注点</strong>：v4 历史 API 需返回源/目标路径的 isexists；前端"每页条数 + 失效项批量选择"需在新历史组件里实现。</li>
+</ul>
+<h3 id="b-组主要贡献要点汇总">B 组主要贡献要点汇总<a class="headerlink" href="#b-组主要贡献要点汇总" title="Permanent link">¶</a></h3>
+<ul>
+<li>标题序号前缀处理：剥离开头纯数字段，生成 modifiedname 用作二次搜索与缓存键联动，命中后用 <code>set_name</code> 回写修正名。</li>
+<li>标题结尾重复年份处理：剥掉与 <code>meta_info.year</code> 重复的年份尾巴。</li>
+<li>无年份兜底：搜索前临时把 year 填为当年。</li>
+<li>中文标题二次纯英文匹配：全链 <code>onlyen</code> 参数，中文名为主搜不到时跳过中文 token 只用英文重跑。</li>
+<li>中文 token 剥离季数描述词：正则 <code>[全共第][0-9一二三四五六七八九十]+季全?</code>。</li>
+<li>中英混合标题的英文片段归属判定。</li>
+<li>Season 在标题里被误剥离的修复（保留两条 pytest case）。</li>
+<li>集范围正则 + 资源组/DIY 匹配基于 <code>org_string</code>。</li>
+<li>历史记录/未识别页体验：每页条数 + 路径失效项可视化与三类批量勾选 + 正则搜索 + 500ms 防抖 + 修 <code>PageNum</code> 误传 bug。</li>
+</ul>
+<h3 id="b-组文件迁移对照dev--v4-预期落点">B 组文件迁移对照（dev → v4 预期落点）<a class="headerlink" href="#b-组文件迁移对照dev--v4-预期落点" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>dev 旧路径</th>
+<th>v4 预期落点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>app/media/media.py</code></td>
+<td><code>src/app/services/media_info_service.py</code> + <code>src/app/media/</code> 下搜索调度</td>
+</tr>
+<tr>
+<td><code>app/media/meta/metavideo.py</code></td>
+<td><code>src/app/media/</code> 下的视频 Meta 类</td>
+</tr>
+<tr>
+<td><code>app/media/meta/_base.py</code></td>
+<td>v4 MetaBase 等价类（<code>set_name</code>、<code>onlyen</code>）</td>
+</tr>
+<tr>
+<td><code>app/media/meta/metainfo.py</code> / <code>metaanime.py</code></td>
+<td>v4 MetaInfo 工厂与动漫 Meta（<code>onlyen</code> 透传）</td>
+</tr>
+<tr>
+<td><code>app/helper/db_helper.py</code></td>
+<td>v4 历史记录查询层</td>
+</tr>
+<tr>
+<td><code>web/action.py</code> / <code>web/main.py</code></td>
+<td>v4 history/unknown list API</td>
+</tr>
+<tr>
+<td><code>web/templates/rename/history.html</code> / <code>unidentification.html</code></td>
+<td>v4 前端组件</td>
+</tr>
+<tr>
+<td><code>web/static/js/util.js</code></td>
+<td>v4 前端公共工具</td>
+</tr>
+<tr>
+<td><code>tests/cases/meta_cases.py</code></td>
+<td>v4 元数据测试集</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="三c-组--订阅rss3-个提交">三、C 组 — 订阅/RSS（3 个提交）<a class="headerlink" href="#三c-组--订阅rss3-个提交" title="Permanent link">¶</a></h2>
+<h3 id="d4f22248-增加添加种时自动更新电影订阅信息">d4f22248 增加添加种时自动更新电影订阅信息<a class="headerlink" href="#d4f22248-增加添加种时自动更新电影订阅信息" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/indexer/client/builtin.py</code>(+1/-1)、<code>app/subscribe.py</code>(+32)、<code>web/action.py</code>(+10)</li>
+<li><strong>设计目标</strong>：Web 手动添加种子下载成功后，自动识别该媒体是否对应已有订阅，命中则按"洗版/普通"分别更新订阅状态，省去手动确认完成。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li>新增方法 <code>Subscribe.update_subscribe(self, meta_info)</code>：取 <code>mtype/title/year/season</code>，剧集 <code>season</code> 存在则 <code>year=None</code>，用 <code>self.get_subscribe_id(...)</code> 反查 <code>rssid</code>。</li>
+<li>命中后电影走 <code>get_subscribe_movies(rid=rssid)</code> 遍历：<ul>
+<li><code>over_edition</code> 为真 → <code>update_subscribe_over_edition(rtype=MediaType.MOVIE, rssid=rssid, media=meta_info)</code></li>
+<li>否则 → <code>finish_rss_subscribe(rssid=rssid, media=meta_info)</code></li>
+</ul>
+</li>
+<li>剧集留 TODO。</li>
+<li>触发点：<code>web/action.py::add_torrent/download</code> 手动下载入口 <code>ret</code> 为真后调。</li>
+<li>顺带把 builtin spider 超时 30s→90s。</li>
+<li><strong>v4 现状</strong>：v4 已重构为 <code>src/app/services/subscribe/management/</code>：<code>UpdateService.update_rss_subscribe</code> 是"按订阅 ID 更新字段"语义，<strong>不是</strong> sjh00 这里的"按 media 反查并自动 finish/over_edition"。<code>finish_service.finish_rss_subscribe</code>/<code>service.update_subscribe_over_edition</code> 能力已具备。但 v4 download 链路 (<code>download_service</code>、<code>handlers</code>、<code>download_core</code>) 未发现"手动下载成功后回写订阅状态"的连接点。</li>
+<li><strong>结论</strong>：部分已实现，<strong>手下载回写电影订阅链路需补</strong>；剧集 TODO 可在新 base 上一并填实。</li>
+</ul>
+<h3 id="b69d1e54-增加-rss-订阅限定小时">b69d1e54 增加 rss 订阅限定小时<a class="headerlink" href="#b69d1e54-增加-rss-订阅限定小时" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/helper/rss_helper.py</code>(+19)、<code>app/rss.py</code>(+6)、<code>app/sites/sites.py</code>(+1)、<code>web/templates/site/site.html</code>(+22)、<code>web/static/css/tabler.min.css</code>(+1)</li>
+<li><strong>设计目标</strong>：单站点配置"只订阅最近 N 小时内发布的种子"阈值，过滤过老 RSS 条目（刷流不受限）。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li>新增 <code>RssHelper.is_rss_inhour(rss_pubdate, site_withinhour) -&gt; bool</code>：<code>rss_pubdate</code> 空 → <code>False</code>；<code>site_withinhour</code> 非正整数 → <code>True</code>；否则 <code>rss_pubdate + timedelta(hours=site_withinhour) &gt;= datetime.now()</code>。</li>
+<li><code>app/rss.py</code>：从 <code>site_info</code> 取 <code>withinhour</code>，article 的 <code>pubdate</code> 不在窗口则日志并 <code>continue</code>。</li>
+<li>站点配置侧字段名 <code>withinhour</code>（存 site_note，UI <code>id=site_withinhour</code> type=number）。</li>
+<li><strong>v4 现状</strong>：v4 RSS 链路 <code>rss_processor.py</code> 仅解析 <code>pubDate</code> 为时间戳保存，全 src 无 <code>withinhour/is_rss_inhour/限定小时</code> 命中。<strong>未迁移</strong>。</li>
+<li><strong>结论</strong>：可在 v4 站点配置 + RSS processor 阶段补一个发布时间窗口过滤；UI 字段同名 <code>withinhour</code> 即可。</li>
+</ul>
+<h3 id="27096553-修改订阅里站点搜索逻辑">27096553 修改订阅里站点搜索逻辑<a class="headerlink" href="#27096553-修改订阅里站点搜索逻辑" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/subscribe.py</code>、<code>web/static/js/functions.js</code>、<code>web/templates/rss/user_rss.html</code></li>
+<li><strong>设计目标</strong>：允许订阅"只走 RSS、不进行站点搜索"——通过把 <code>search_sites</code> 设为 <code>["#dontuse"]</code> 哨兵表达该语义。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li>前端：用户搜索站点选空时写入 <code>["#dontuse"]</code>；回显时若已为 <code>["#dontuse"]</code> 不当作"全选"。</li>
+<li>后端：<code>get_subscribe_movies/tvs</code> 加守卫 <code>if search_sites != ["#dontuse"]: ...</code>；<code>search_target_*</code> 循环跳过条件扩为 <code>fuzzy_match or search_sites == ["#dontuse"]</code>。</li>
+<li><strong>v4 现状</strong>：<code>base_search.py</code> 仅有 <code>fuzzy_match</code> 跳过，无 <code>#dontuse</code> 哨兵。v4 用 <code>SubscribeState</code> 状态机控制是否触发搜索，可能以"状态"形式承担了"不搜索"语义。</li>
+<li><strong>结论</strong>：功能近似但实现不同，按 v4 架构另行映射，<strong>不必照搬 <code>#dontuse</code> 字面量</strong>。</li>
+</ul>
+<h3 id="c-组主要贡献要点汇总">C 组主要贡献要点汇总<a class="headerlink" href="#c-组主要贡献要点汇总" title="Permanent link">¶</a></h3>
+<ul>
+<li>手动下载成功后反查订阅并自动 finish/over_edition；spider 超时 30s→90s。</li>
+<li>站点级 RSS 限定小时（<code>withinhour</code> + <code>is_rss_inhour</code>，刷流不受限）。</li>
+<li>「只订阅不搜索」哨兵 <code>["#dontuse"]</code>（前端+后端守卫）。</li>
+</ul>
+<hr>
+<h2 id="四d-组--文件名url-解析--bonus-transfer3-个提交">四、D 组 — 文件名/URL 解析 + Bonus transfer（3 个提交）<a class="headerlink" href="#四d-组--文件名url-解析--bonus-transfer3-个提交" title="Permanent link">¶</a></h2>
+<h3 id="f00e65cf-fix-tv-file-name-with-of">f00e65cf fix tv file name with 'of'<a class="headerlink" href="#f00e65cf-fix-tv-file-name-with-of" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>app/media/meta/metavideo.py</code>(+3)</li>
+<li><strong>设计目标</strong>：修电视剧文件名含 <code>of</code>（如 <code>S01 of ShowName</code> 之类尾随 of）被吞入剧名/季解析的边界问题。</li>
+<li><strong>核心逻辑</strong>：<code>__init_name</code> 内 token 处理新增：
+  <div class="highlight"><pre><span></span><code>elif token.upper() == "OF":
+    self._last_token_type = "OF"
+    self._continue_flag = False
+</code></pre></div>
+  即把 <code>of</code> 视作终止名称追加的 token。</li>
+<li><strong>v4 现状</strong>：v4 <code>src/app/media/parser/video/name_parser.py::init_name</code> 仅有 <code>_name_se_words</code>/<code>AKA</code>，<strong>没有</strong> <code>OF</code> 分支。若 v4 真实文件名仍含 <code>of</code> 会复现该问题，<strong>建议迁移</strong>。</li>
+</ul>
+<h3 id="abbd6617-fix-url-with-">abbd6617 fix url with '+'<a class="headerlink" href="#abbd6617-fix-url-with-" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：<code>web/main.py</code>(+8)、两个 html 模板</li>
+<li><strong>设计目标</strong>：文件路径含 <code>+</code> 在 <code>navmenu("mediafile?dir=...")</code> 跳转时被异常解析，需对 URL 多重编码。</li>
+<li><strong>核心逻辑</strong>：新增 Jinja 模板过滤器：
+  <div class="highlight"><pre><span></span><code>@App.template_filter('urlquote')
+def urlencode_filter(text):
+    text = urllib.parse.quote(text)
+    return Markup(text)
+</code></pre></div>
+  模板对路径做 <code>| urlquote | urlquote</code> 双重编码。</li>
+<li><strong>v4 现状</strong>：v4 前端已是 SPA，无 Jinja 模板过滤器；路径参数由前端 API 客户端 <code>encodeURIComponent</code> 负责。</li>
+<li><strong>结论</strong>：实现不可移植，需求（路径含 <code>+</code>/特殊字符在记录页跳转里被正确编码）应以 v4 前端 URL 编码姿态替代。验证 v4 历史页跳转 <code>encodeURIComponent(dir)</code> 是否已覆盖。</li>
+</ul>
+<h3 id="04edcb82-add-bonus-transfer--fixbonus花絮转移整套能力">04edcb82 add bonus transfer &amp; fix（BONUS/花絮转移整套能力）<a class="headerlink" href="#04edcb82-add-bonus-transfer--fixbonus花絮转移整套能力" title="Permanent link">¶</a></h3>
+<ul>
+<li><strong>改动文件</strong>：</li>
+<li><code>app/filetransfer.py</code>(+152/-43) — 新增 <code>__transfer_extra_dir</code>、转移主循环增加"额外内容目录"识别，<code>__transfer_existing</code> 加 <code>isextras</code> 分支</li>
+<li><code>app/media/media.py</code>(+19/-8) — <code>Media</code> 扫描阶段新增 <code>PathUtils.is_extras</code>/<code>get_extras_dir</code> 跳过与 note 标记</li>
+<li><code>app/media/meta/metavideo.py</code>(+3/-1) — title 预处理剔除 <code>BONUS.DISC</code> 等后缀；<code>_episode_re</code> 调整为 <code>S\d{2}E?P?(\d{2,4})</code></li>
+<li><code>app/utils/path_utils.py</code>(+33/-1) — 新增 <code>is_extras</code> / <code>get_extras_dir</code> 静态方法</li>
+<li><strong>设计目标</strong>：识别"额外内容/花絮目录"（<code>BONUS.DISC</code>、<code>behind the scenes</code>/<code>deleted scenes</code>/<code>interviews</code>/<code>samples</code>/<code>shorts</code>/<code>featurettes</code>/<code>clips</code>），转移时按 <code>extras/</code> 季-子目录归档；跳过 TMDB 识别/转移历史/NFO&amp;海报/字幕事件，避免花絮被误当未识别媒体或污染主目录。</li>
+<li><strong>核心逻辑</strong>：</li>
+<li><code>app/utils/path_utils.py</code> 新增：<ul>
+<li><code>PathUtils.is_extras(path)</code>：</li>
+<li>目录名匹配 <code>.+?[\._ ]BONUS[\._ ]DISC|behind the scenes$|deleted scenes$|interviews$|scenes$|samples$|shorts$|featurettes$|clips$</code></li>
+<li>文件名匹配 <code>.+?[\._ ]BONUS[\._ ]DISC[\._ ]|.+?SP?\d{1,2}\.extras\.\d{2,}|.+?\.extras-\d+\.</code></li>
+<li><code>PathUtils.get_extras_dir(path)</code>：取父目录再按目录名同款正则判定</li>
+</ul>
+</li>
+<li><code>app/media/media.py</code>：<ul>
+<li>非目录文件先过 <code>get_bluray_dir</code> / <code>get_extras_dir</code> 跳过其下子文件</li>
+<li>每个文件 <code>isextras = PathUtils.is_extras(file_path)</code>；若 <code>isextras and len(file_name)&lt;12</code>：<code>file_name=parent_name</code>、<code>parent_name=parent_parent_name</code>（用父级目录做识别）</li>
+<li>识别后 <code>meta_info.note['is_extras'] = True</code>（<strong>关键 note 字段名</strong>）</li>
+</ul>
+</li>
+<li><code>app/filetransfer.py</code>：<ul>
+<li>新增 <code>__transfer_extra_dir(self, file_path, new_path, rmt_mode)</code>（与 <code>__transfer_bluray_dir</code> 同构）</li>
+<li>主循环 <code>extra_dir = PathUtils.get_extras_dir(in_path)</code> 优先判断</li>
+<li><code>__transfer_existing</code> 新增：<code>isextras = 'is_extras' in media.note and media.note['is_extras']</code>，命中时电影 <code>dir_name = os.path.join(dir_name, 'extras')</code>，剧集 <code>season_name = 'extras'</code>，文件名取 <code>os.path.splitext(media.org_string or "")[0]</code></li>
+<li><code>if not isextras:</code> 守卫包围 <code>insert_transfer_history</code> / <code>scraper.gen_scraper_files</code> / <code>EventSubtitleDownload</code></li>
+<li><code>media.org_string = file_name</code> 命中花絮时回填文件名给路径解析用</li>
+</ul>
+</li>
+<li><code>metavideo.py</code>：<ul>
+<li>标题预处理新增 <code>title = re.sub(r"[\._]BONUS[\._]DISC|\.extras-\d+", "", title, count=1, re.IGNORECASE)</code></li>
+<li><code>_episode_re</code>: <code>S\d{2}EP?(\d{2,4})</code> → <code>S\d{2}E?P?(\d{2,4})</code>（兼容 <code>S01P03</code> 花絮片段编号）</li>
+</ul>
+</li>
+<li><strong>v4 现状</strong>：v4 转移逻辑在 <code>src/app/services/transfer/</code>（<code>filetransfer_service.py</code>、<code>path_resolver.py</code>、<code>existence_checker.py</code>、<code>history_manager.py</code>、<code>handlers.py</code>）。<code>src/app/utils/path_utils.py</code> grep <code>extras/bonus/is_extras</code> 无命中。<code>filetransfer_service.py</code>、<code>path_resolver.py</code> 同 grep 无命中。<code>src/app/media/parser/regex.py::_episode_re</code> 仍是旧式 <code>S\d{2}EP?(\d{2,4})</code>，<strong>没有</strong> <code>E?P?</code> 调整。<code>name_parser.init_name</code> 无 <code>OF</code> 分支；标题预处理无 <code>BONUS.DISC</code>/<code>.extras-</code> 剔除。</li>
+<li><strong>结论</strong>：<strong>BONUS/花絮转移整套功能在 v4 未迁移</strong>——包括 <code>is_extras</code>/<code>get_extras_dir</code>、<code>media.note['is_extras']</code>、转移时归 <code>extras/</code>、跳过 scraper/history/字幕，以及 metavideo 的两处正则/OF 修复。建议作为完整功能 rip 重写到 v4 的 <code>services/transfer/</code> 体系。</li>
+</ul>
+<h3 id="d-组主要贡献要点汇总">D 组主要贡献要点汇总<a class="headerlink" href="#d-组主要贡献要点汇总" title="Permanent link">¶</a></h3>
+<ul>
+<li>修复 TV 文件名 <code>of</code> token 异常：<code>_last_token_type="OF"</code> 且 <code>_continue_flag=False</code>。</li>
+<li>URL 含 <code>+</code>：Jinja <code>urlquote</code> 双重编码（v4 用前端 <code>encodeURIComponent</code> 等价替代）。</li>
+<li>BONUS/花絮目录整套转移能力：</li>
+<li><code>PathUtils.is_extras</code>/<code>get_extras_dir</code> 多模式识别</li>
+<li><code>Media</code> 扫描跳过花絮子文件、<code>note['is_extras']</code> 透传</li>
+<li><code>__transfer_extra_dir</code>；电影归 <code>&lt;主目录&gt;/extras/</code>、剧集 <code>season_name='extras'</code></li>
+<li>命中花絮时不写 transfer_history/不生成 NFO/不发 <code>SubtitleDownload</code> 事件</li>
+<li>metavideo 剔除 <code>BONUS.DISC</code>/<code>.extras-</code> 并放宽 <code>_episode_re</code> 为 <code>S\d{2}E?P?(\d{2,4})</code></li>
+</ul>
+<h3 id="d-组迁移取舍建议">D 组迁移取舍建议<a class="headerlink" href="#d-组迁移取舍建议" title="Permanent link">¶</a></h3>
+<ul>
+<li><code>b69d1e54</code>、<code>04edcb82</code>、<code>f00e65cf</code>、<code>d4f22248</code>：v4 base 未发现对应实现，应作为候选项优先迁移。</li>
+<li><code>27096553</code>（<code>#dontuse</code> 哨兵）、<code>abbd6617</code>（Jinja urlquote）：v4 因状态机/前端框架不同等价或失效，按 v4 架构另行映射。</li>
+</ul>
+<hr>
+<h2 id="五e-组--过滤规则指定原始语言最高优先级rebase-后必须补加">五、E 组 — 过滤规则指定原始语言（最高优先级，rebase 后必须补加）<a class="headerlink" href="#五e-组--过滤规则指定原始语言最高优先级rebase-后必须补加" title="Permanent link">¶</a></h2>
+<h3 id="1-设计目标">1. 设计目标<a class="headerlink" href="#1-设计目标" title="Permanent link">¶</a></h3>
+<p>为过滤规则新增「指定原始语言」维度：规则中指定 TMDB 原始语言代码（zh/en/ja/ko/fr/de/ru/hi/other 或留空=全部），过滤引擎判断种子是否合规前，先用种子标题查/取缓存 TMDB 信息，得到条目 <code>original_language</code>，按代码前两位匹配；指定 <code>other</code> 表示「不在已知列表内的语言」。让用户能针对「只想下中文原始语言」「只想下英语原盘」等做更精细规则。</p>
+<h3 id="2-字段与-schema">2. 字段与 schema<a class="headerlink" href="#2-字段与-schema" title="Permanent link">¶</a></h3>
+<ul>
+<li>ORM：<code>CONFIGFILTERRULES.ORIGINAL_LANGUAGE = Column(Text)</code> —— 存 <code>zh/en/ja/ko/fr/de/ru/hi/other</code> 或 ''</li>
+<li>dict：<code>rule_info.get("original_language")</code>；API 入参 <code>rule_original_language</code></li>
+<li>前端控件：<code>#rule_original_language</code>（select，含"全部"+9 个语言项）</li>
+<li>集合常量：<code>self._language_options = [m.value for m in ModuleConf.DISCOVER_FILTER_CONF["tmdb_movie"]["with_original_language"]["options"] if value and value != 'other']</code></li>
+<li><code>scripts/sqls/init_filter.sql</code>：在 INCLUDE 列前插入 <code>ORIGINAL_LANGUAGE</code>，全部预置规则值为 ''</li>
+<li><code>scripts/sqls/update_filterrule_addorilang.sql</code> 完整内容：
+  <div class="highlight"><pre><span></span><code><span class="k">ALTER</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">main</span><span class="p">.</span><span class="n">CONFIG_FILTER_RULES</span><span class="w"> </span><span class="k">ADD</span><span class="w"> </span><span class="n">ORIGINAL_LANGUAGE</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">;</span>
+<span class="k">UPDATE</span><span class="w"> </span><span class="n">main</span><span class="p">.</span><span class="n">CONFIG_FILTER_RULES</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">ORIGINAL_LANGUAGE</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">''</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+</code></pre></div></li>
+</ul>
+<h3 id="3-后端核心逻辑">3. 后端核心逻辑<a class="headerlink" href="#3-后端核心逻辑" title="Permanent link">¶</a></h3>
+<h4 id="a-appfilterpyfilter-类">a. <code>app/filter.py</code>（Filter 类）<a class="headerlink" href="#a-appfilterpyfilter-类" title="Permanent link">¶</a></h4>
+<ul>
+<li>新增成员 <code>self._language_options</code></li>
+<li><code>get_filter_rule()</code> 转 dict 加入 <code>"original_language": rule.ORIGINAL_LANGUAGE or ''</code></li>
+<li><code>check_rules</code> 在 include 之前、order_seq 之后插入：
+  <div class="highlight"><pre><span></span><code><span class="n">rule_original_language</span> <span class="o">=</span> <span class="n">filter_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">'original_language'</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">rule_original_language</span> <span class="ow">and</span> <span class="n">rule_match</span><span class="p">:</span>
+    <span class="n">meta_original_language</span> <span class="o">=</span> <span class="n">meta_info</span><span class="o">.</span><span class="n">original_language</span>
+    <span class="k">if</span> <span class="n">meta_original_language</span><span class="p">:</span>
+        <span class="n">meta_original_language</span> <span class="o">=</span> <span class="n">meta_original_language</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">rule_original_language</span> <span class="o">==</span> <span class="s1">'other'</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">meta_original_language</span><span class="p">[:</span><span class="mi">2</span><span class="p">]</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_language_options</span><span class="p">:</span>
+                <span class="n">rule_match</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">elif</span> <span class="n">rule_original_language</span><span class="p">[:</span><span class="mi">2</span><span class="p">]</span> <span class="o">!=</span> <span class="n">meta_original_language</span><span class="p">[:</span><span class="mi">2</span><span class="p">]:</span>
+            <span class="n">rule_match</span> <span class="o">=</span> <span class="kc">False</span>
+</code></pre></div>
+  关键语义：
+  1) 规则未填语言 → 跳过
+  2) 规则填了但 meta 无 <code>original_language</code> → 不阻断
+  3) <code>other</code> → 命中已知列表视为不匹配
+  4) 其他语言 → 比较前两位字符</li>
+<li><code>check_torrent_filter</code> 不命中信息追加 <code>原始语言：{meta_info.original_language}</code></li>
+</ul>
+<h4 id="b-调用方传参均依赖-meta_infooriginal_language">b. 调用方传参（均依赖 <code>meta_info.original_language</code>）<a class="headerlink" href="#b-调用方传参均依赖-meta_infooriginal_language" title="Permanent link">¶</a></h4>
+<ul>
+<li><code>app/indexer/client/_base.py</code>：<code>check_torrent_filter</code> 之前先 <code>get_cache_info(meta_info)</code>；缓存 <code>id</code> 存在且 <code>original_language</code> 非空 → 赋值；否则 <code>get_media_info(title=..., subtitle=..., mtype=...)</code> 重新查 TMDB 并赋值。</li>
+<li><code>app/rss.py</code>：缓存命中条件由 <code>cache_info.get("id")</code> 改为 <code>cache_info.get("id") and cache_info.get("original_language") is not None</code>；显式 <code>media_info.original_language = cache_info.get("original_language")</code>。</li>
+<li><code>app/rsschecker.py</code>：同上两处识别改造。</li>
+<li><code>app/brushtask.py</code>：新增 <code>self.media = Media()</code>、<code>self._language_options</code>，选种循环里：
+  <div class="highlight"><pre><span></span><code><span class="n">rule_original_language</span> <span class="o">=</span> <span class="n">rss_rule</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"original_language"</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">rule_original_language</span><span class="p">:</span>
+    <span class="n">media_info</span> <span class="o">=</span> <span class="n">MetaInfo</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="n">title</span><span class="p">)</span>
+    <span class="n">cache_info</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">media</span><span class="o">.</span><span class="n">get_cache_info</span><span class="p">(</span><span class="n">media_info</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">cache_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"id"</span><span class="p">):</span>
+        <span class="n">meta_original_language</span> <span class="o">=</span> <span class="n">cache_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"original_language"</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">media_info</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">media</span><span class="o">.</span><span class="n">get_media_info</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="n">title</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">media_info</span> <span class="ow">and</span> <span class="n">media_info</span><span class="o">.</span><span class="n">original_language</span><span class="p">:</span>
+            <span class="n">meta_original_language</span> <span class="o">=</span> <span class="n">media_info</span><span class="o">.</span><span class="n">original_language</span>
+    <span class="k">if</span> <span class="n">meta_original_language</span><span class="p">:</span>
+        <span class="c1"># other / 前两位比较；不匹配 return False</span>
+</code></pre></div>
+  注意 brushtask 把 <code>original_language</code> 直接做成 <code>rss_rule</code> 字典字段，不走 Filter 类。</li>
+</ul>
+<h4 id="c-appmediamediapy--apphelpermeta_helperpy">c. <code>app/media/media.py</code> + <code>app/helper/meta_helper.py</code><a class="headerlink" href="#c-appmediamediapy--apphelpermeta_helperpy" title="Permanent link">¶</a></h4>
+<ul>
+<li><code>media.py</code> 生成 TMDB 缓存 dict 时新增 <code>"original_language": file_media_info.get("original_language")</code> 字段（来源 TMDB 详情接口）。</li>
+<li><code>meta_helper.py::insert_media_cache</code> 把 <code>original_language</code> 写入缓存 JSON。</li>
+</ul>
+<h4 id="d-web-api-入口">d. Web API 入口<a class="headerlink" href="#d-web-api-入口" title="Permanent link">¶</a></h4>
+<ul>
+<li><code>web/apiv1.py::FilterRuleUpdate</code>：<code>parser.add_argument('rule_original_language', type=str, help='指定原始语言', location='form')</code></li>
+<li><code>web/action.py</code>：
+  1) <code>add_or_edit_filterrule</code>：把 <code>data.get("rule_original_language")</code> 提出/传入 <code>item</code>
+  2) <code>get_filterrules</code>：每条 rule 加 <code>"original_language": rule.ORIGINAL_LANGUAGE</code>；分享/导出同加
+  3) <code>match_filter_rule</code>：title + subtitle 后规则通过则 <code>Media().get_media_info(title=title)</code> 拿到 <code>original_language</code> 赋给 <code>meta_info</code> 二次过滤
+  4) <code>get_filterrules</code> 解析 <code>init_filter.sql</code>：因新列插 INCLUDE 前，<code>rule.split(",")</code> 偏移：<code>rule[4]</code> → ORIGINAL_LANGUAGE、include 改 <code>rule[5]</code>、exclude 改 <code>rule[6]</code>（<strong>关键，否则恢复规则解析错位</strong>）</li>
+</ul>
+<h3 id="4-前端-uiv3-实现">4. 前端 UI（v3 实现）<a class="headerlink" href="#4-前端-uiv3-实现" title="Permanent link">¶</a></h3>
+<p><code>web/templates/setting/filterrule.html</code>：
+- 顶部 Jinja：<code>{% with language_dict = {"zh":"中文","en":"英语","ja":"日语","ko":"韩语","fr":"法语","de":"德语","ru":"俄语","hi":"印地语","other":"其他"} %}</code>
+- 规则列表项「促销」徽章后追加「原始语言」徽章（仅 <code>Rule.original_language</code> 存在时显示）
+- 编辑区把"优先级 <code>col-lg-6</code>"改 <code>col-lg-3</code>，旁加 <code>col-lg-3</code> 语言 select（id <code>rule_original_language</code>，「全部」+9 项）
+- JS：<code>show_filterrule_modal</code> 重置 <code>val('')</code>；加载详情 <code>val(ret.info.original_language)</code>；提交参数对象加 <code>rule_original_language: ...val()</code></p>
+<h3 id="5-v4-现状对照已再次确认">5. v4 现状对照（已再次确认）<a class="headerlink" href="#5-v4-现状对照已再次确认" title="Permanent link">¶</a></h3>
+<ul>
+<li><code>src/app/services/filter_service.py</code>（526 行）：</li>
+<li><code>get_rules</code> 字段：<code>id, group, name, pri, include, exclude, size, free, free_text</code> —— <strong>无 <code>original_language</code></strong></li>
+<li><code>FilterRuleEngine.check_rules</code>、<code>check_torrent_filter</code> 均无 original_language 分支</li>
+<li><code>import_filter_group</code>/<code>share_filter_group</code> 不带语言字段</li>
+<li><code>test_rule</code> 不查 TMDB</li>
+<li><code>src/app/indexer/core/filter_engine.py</code>（<code>IndexerFilterEngine</code>）：<code>check_torrent_filter</code>/<code>check_rules</code> 无 original_language 分支</li>
+<li><code>src/app/indexer/core/result_filter.py::_get_rules</code>：dict 字段 <code>include, exclude, size, free, pri</code>，不带 original_language</li>
+<li><code>src/app/services/subscribe/matcher.py</code> 第 184 行起：手写"重建规则 dict"调用 <code>FilterRuleEngine</code>（必须同步加 <code>original_language</code>，否则即使规则库保存了语言，订阅这条路径仍不生效）</li>
+<li>DB schema：<code>src/app/db/models/config.py::CONFIGFILTERRULES</code> 列 <code>ID, GROUP_ID, ROLE_NAME, PRIORITY, INCLUDE, EXCLUDE, SIZE_LIMIT, NOTE</code> —— 无 <code>ORIGINAL_LANGUAGE</code></li>
+<li><code>src/app/db/data/init_filter.sql</code>：列顺序同上，预置规则无语言列</li>
+<li>alembic 全部 migration（约 50 个 versions）无任何给 <code>CONFIG_FILTER_RULES</code> 加 <code>ORIGINAL_LANGUAGE</code> 列（<code>5ec25bdc842f_split_rule_id_columns.py</code>、<code>f8a9b0c1d2e3_rename_rss_tables_to_subscribe_tables.py</code> 只动 ForeignKey/索引/表重命名）</li>
+<li><code>src/app/domain/entities/config.py::FilterRuleEntity</code>：字段 <code>id, group_id, name, include, exclude, note, priority, create_time, update_time</code> —— 无 original_language</li>
+<li><code>src/app/db/repositories/config_repo_adapter.py::FilterRuleRepositoryAdapter.insert</code>：签名 <code>(group_id, name, include, exclude, note, priority)</code>，需补字段映射。</li>
+<li>媒体信息 v4 利好：<code>src/app/media/models.py::MediaInfo</code> 已有 <code>original_language: str | None</code>，<code>set_tmdb_info</code> line 459 <code>self.original_language = info.get("original_language")</code>。<strong>TMDB 识别流程元数据已就绪</strong>，只需让「过滤发现」与「规则侧保存读取」对接。</li>
+<li>BRUSH/RSS：<code>SITEBRUSHRULE.RSS_RULE</code> 是 <code>Text</code>（JSON 字符串），<code>src/app/domain/engine/brush_rule_engine.py::check_rss_rule</code> dict-style <code>rule.get("size"/"include"/"exclude"/"free"/"hr"/"peercount"/"pubdate"/"exclude_subscribe"/"category_*"/"label_*")</code>，无 <code>original_language</code> 键；v4 刷流独立成 <code>brush/rss_checker.py</code>/<code>scheduler.py</code>/<code>torrent_lifecycle.py</code></li>
+<li>模块配置：v4 不存在 <code>ModuleConf.DISCOVER_FILTER_CONF</code>（<code>tmdb_movie</code>/<code>with_original_language</code>/<code>DISCOVER_FILTER</code> 全 0 命中），<code>_language_options</code> 必须改写为本地常量</li>
+<li>前端：v4 仓库为纯后端（grep 任何 <code>.html/.vue/.tsx</code> 均 0 命中），过滤规则/刷流规则页在外部前端项目；后端经 <code>src/api/routers/filter.py</code> 等 API 暴露</li>
+</ul>
+<h3 id="6-迁移到-v4-的实施要点精确路径">6. 迁移到 v4 的实施要点（精确路径）<a class="headerlink" href="#6-迁移到-v4-的实施要点精确路径" title="Permanent link">¶</a></h3>
+<p><strong>A. DB schema（必须走 alembic，不能直接改 <code>init_filter.sql</code>）</strong>
+- 新增 <code>alembic/versions/xxxx_add_original_language_to_filter_rules.py</code>：
+  - <code>upgrade()</code>: <code>op.batch_alter_table("CONFIG_FILTER_RULES")</code> 加 <code>sa.Column("ORIGINAL_LANGUAGE", sa.Text, nullable=True)</code>；随后 <code>UPDATE</code> backfill <code>''</code>（参考同目录 <code>5ec25bdc842f_split_rule_id_columns.py</code> 的 <code>batch_op.add_column</code> 写法，SQLite 兼容必须 <code>batch_alter_table</code>）
+  - <code>downgrade()</code>: 反向 <code>drop_column</code>
+- <code>init_filter.sql</code> 可不动（新库由 alembic init 之后跑 trivial migration 完成）；若希望预置规则默认语言标签，可选加 NOTE 之前的列，不影响现有解析顺序。</p>
+<p><strong>B. ORM 模型</strong>
+- <code>src/app/db/models/config.py::CONFIGFILTERRULES</code> 加 <code>ORIGINAL_LANGUAGE: Mapped[str | None] = mapped_column(Text, nullable=True)</code></p>
+<p><strong>C. Entity / Adapter</strong>
+- <code>src/app/domain/entities/config.py::FilterRuleEntity</code> 加 <code>original_language: str | None</code>，<code>from_orm</code> <code>original_language=orm_model.ORIGINAL_LANGUAGE or ""</code>
+- <code>src/app/db/repositories/config_repo_adapter.py::FilterRuleRepositoryAdapter.insert</code> 透传 <code>item["original_language"]</code>，检查 <code>src/app/db/repositories/config_repository.py::insert_filter_rule</code> 是否做白名单映射，如需补 <code>ORIGINAL_LANGUAGE</code> 列写入</p>
+<p><strong>D. 服务层（三处必须同步，否则"保存但实效"）</strong>
+- <code>src/app/services/filter_service.py</code>：
+  - <code>get_rules</code> 每条 <code>rule_info</code> 加 <code>"original_language": rule.ORIGINAL_LANGUAGE or ''</code>
+  - <code>FilterRuleEngine.check_rules</code> 在 include 前加 sjh00 判断段；类级新增常量 <code>_LANGUAGE_OPTIONS = {"zh","en","ja","ko","fr","de","ru","hi"}</code>（与前端一致，<code>other</code> 不进集合）
+  - <code>check_torrent_filter</code> 不命中信息追加 <code>原始语言：{meta_info.original_language or "未知"}</code>
+  - <code>import_filter_group</code>/<code>share_filter_group</code> 输入输出 dict 加 <code>original_language</code>
+  - <code>test_rule(title, subtitle, size, rulegroup)</code>：先 <code>meta_info(title, subtitle)</code> 跑一次；若命中且规则组中存在任意 <code>original_language</code> 非空，注入 <code>Media</code> 依赖二查 TMDB 拿到 <code>original_language</code> 后二次过滤返回；"未填语言"时复用旧流程不增负担
+- <code>src/app/indexer/core/filter_engine.py::IndexerFilterEngine.check_rules</code> 加同段判断（v4 索引器搜索路径实际在用 <code>IndexerFilterEngine</code>，<strong>双写必须</strong>）
+- <code>_LANGUAGE_OPTIONS</code> 建议提到 <code>app/core/</code> 或 <code>app/domain/</code> 公共常量避免重复</p>
+<p><strong>E. 注入「原始语言」元数据（无需新增 TMDB 查询，因 v4 已就绪）</strong>
+- <code>src/app/indexer/core/result_filter.py::match_filter</code>（命中 TMDB 后第三阶段）补"规则含 original_language 非空则二次过滤"；<code>local_filter</code> 第一阶段（无 TMDB）<strong>不做语言过滤</strong>——避免大量无语言数据种子误伤
+- <code>src/app/services/subscribe/matcher.py</code> 第 184–225 行重建规则 dict 同步加 <code>original_language=e.original_language</code>（单值字符串，不涉及 split 差异）；订阅路径才会生效</p>
+<p><strong>F. BRUSH / RSS 选种</strong>
+- <code>SITEBRUSHRULE.RSS_RULE</code> 已是 Text JSON，无需 schema 变化，直接加 <code>original_language</code> 键
+- <code>src/app/domain/engine/brush_rule_engine.py::check_rss_rule</code> 的 <code>rule_checks</code> dict 新增：
+  </p><div class="highlight"><pre><span></span><code><span class="s2">"original_language"</span><span class="p">:</span> <span class="k">lambda</span> <span class="n">rv</span><span class="p">:</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_match_original_language</span><span class="p">(</span><span class="n">media_info</span><span class="p">,</span> <span class="n">rv</span><span class="p">),</span>
+</code></pre></div>
+  新增 <code>_match_original_language(media_info, rule_value)</code> 实现 other/前两位逻辑；<code>media_info.original_language</code> 为空按 sjh00 守卫 "不阻断"（return True）
+- v4 <code>MediaInfo.original_language</code> 由 <code>set_tmdb_info</code> 自动赋值，订阅相关不再需手动从 <code>cache_info</code> 读<p></p>
+<p><strong>G. API 路由</strong>
+- <code>src/api/routers/filter.py::AddFilterRuleRequest</code> 加 <code>rule_original_language: str | None = None</code>
+- <code>add_filterrule</code> 端点 <code>item</code> dict 加 <code>"original_language": req.rule_original_language</code>
+- <code>RuleTestRequest</code> 不需要新字段；若希望便于调试可在 <code>data</code> 返回 <code>original_language</code> 字段</p>
+<p><strong>H. 前端</strong>
+- 本仓库无前端文件，需在外部 nexus-media 团队的另一前端项目"过滤规则"设置页与"刷流任务"规则编辑组件各加语言下拉
+- 控件 id 建议保持 <code>rule_original_language</code>，下拉值与后端常量一致；刷流侧字段名 <code>original_language</code>；规则渲染徽章按 sjh00 设计</p>
+<h3 id="7-迁移风险点">7. 迁移风险点<a class="headerlink" href="#7-迁移风险点" title="Permanent link">¶</a></h3>
+<ol>
+<li><strong>三处规则匹配需同步</strong>：<code>FilterRuleEngine</code>、<code>IndexerFilterEngine</code>、<code>subscribe/matcher.py</code> 三处必须同步补 <code>original_language</code>，移除任一即留下"规则保存了但过滤不生效"的隐性 bug。</li>
+<li>alembic 必须 <code>batch_alter_table</code> 兼容 SQLite；为已存在规则 backfill <code>''</code>，避免 NULL/空字符串混用。</li>
+<li>indexer <code>local_filter</code> 第一阶段无 TMDB，<code>original_language</code> 通常为空；若把语言判断放 <code>check_rules</code> 静态方法，必须保证"rule 填了但 meta 为空"时不阻断（sjh00 原守卫），否则大量无语言数据种子被误杀。</li>
+<li>v4 没有 <code>ModuleConf.DISCOVER_FILTER_CONF</code>，<code>_language_options</code> 列表来源必须重新定义并与前端 <code>language_dict</code> 严格对齐。</li>
+<li><code>test_rule</code> 在 v4 当前不查 TMDB；做二次回查需注入 <code>Media</code> 服务并控制 TMDB 速率；可选改造保留 v4 轻量。</li>
+<li>前端位于独立仓——本仓库后端改好后，前端若不在同 PR 提交会出现"后端可保存但 UI 看不见"的过期状态。</li>
+<li>v4 刷流 <code>RSS_RULE</code> 是 JSON；新字段加入时兼容旧 JSON（缺 key 默认 <code>''</code>，按守卫跳过），否则老刷流任务会全判不匹配导致刷流停止。</li>
+<li><code>share_filter_group</code>/<code>import_filter_group</code> 字段对齐：分享出去的规则组必须带语言字段；导入端必须容错（缺 <code>original_language</code> 键默认 <code>''</code>，不要 KeyError）。</li>
+</ol>
+<h3 id="e-组一句话贡献要点">E 组一句话贡献要点<a class="headerlink" href="#e-组一句话贡献要点" title="Permanent link">¶</a></h3>
+<p>为过滤规则增加「指定 TMDB 原始语言」维度（zh/en/ja/ko/fr/de/ru/hi/other），可在 indexer / 订阅 / 自定义 RSS / 刷流各路径上对接已有 <code>media_info.original_language</code>，按语言代码前两位或「其他」做规则匹配，让用户能按"原始语言"精细化筛选资源。</p>
+<hr>
+<h2 id="六g-组--模糊-fix-与文档标记24-个rebase-后按需逐个-git-show">六、G 组 — 模糊 fix 与文档标记（24+ 个，rebase 后按需逐个 git show）<a class="headerlink" href="#六g-组--模糊-fix-与文档标记24-个rebase-后按需逐个-git-show" title="Permanent link">¶</a></h2>
+<p>未提炼说明，列出 hash 与主题供后续按需查看。rebase 后如需逐项检查可 <code>git show &lt;hash&gt;</code> 一一比对。</p>
+<h3 id="模糊-fix无描述">模糊 fix（无描述）<a class="headerlink" href="#模糊-fix无描述" title="Permanent link">¶</a></h3>
+<p><code>36d04dab</code> <code>90747a63</code> <code>eae8811c</code> <code>e93cdb4c</code> <code>605f515c</code> <code>18059d2f</code> <code>dadf1dd5</code> <code>b0b52d65</code> <code>12dde990</code> <code>5da62848</code> <code>201bde3e</code> <code>ae2be3b3</code> <code>f44645b4</code> <code>696383a0</code> <code>eecc792d</code> <code>0a4b218c</code> <code>61eb3533</code> <code>db02e2be</code> <code>3ff1e9f5</code> <code>a7ea1fb4</code> <code>959bade3</code> <code>e56fe957</code> <code>15947c9c</code> <code>aa8425ea</code>(change) <code>1ea76d81</code>(update)</p>
+<p>这些是 2023-04~08 占位 fix，多见于 dev 同区域、与已识别主题提交相邻；大概率被 v4 的整体重构自然覆盖，默认不沿用，仅当某条恰好对 v4 现状仍问题时再单独评估。</p>
+<h3 id="文档--历史标记rebase-时丢弃">文档 / 历史标记（rebase 时丢弃）<a class="headerlink" href="#文档--历史标记rebase-时丢弃" title="Permanent link">¶</a></h3>
+<ul>
+<li><code>70f26400</code> Update index.js</li>
+<li><code>853bc46f</code> / <code>96d77174</code> / <code>f1ee66b2</code> Update README.md</li>
+<li><code>03a04e0e</code> ori 3.2.3（快照标记）</li>
+<li><code>ed6e5d2f</code> Merge '3.2.3' into dev（历史标记，author=sjh00）</li>
+</ul>
+<hr>
+<h2 id="七下一步">七、下一步<a class="headerlink" href="#七下一步" title="Permanent link">¶</a></h2>
+<ul>
+<li>实际 rebase 动作另开一轮 plan 输出（命令序列、冲突预案、E 组补加顺序、验证用例）。</li>
+<li>rebase 后逐项检查 v4 是否已实现或更好：</li>
+<li>已实现/v4 更好 → 丢弃 sjh00 老代码</li>
+<li>未实现且 sjh00 更好 → 按本文档「迁移关注点」逐项手工迁移到 v4 新结构</li>
+<li>E 组（过滤规则原始语言）按本文档第五节完整实施要点补加。</li>
+</ul>
+<h3 id="推荐验证用例集迁移完成后回归">推荐验证用例集（迁移完成后回归）<a class="headerlink" href="#推荐验证用例集迁移完成后回归" title="Permanent link">¶</a></h3>
+<ol>
+<li><code>The Long Season 2017 2160p WEB-DL H265 AAC-XXX</code> → 电影、en_name=The Long Season、year=2017</li>
+<li><code>Cherry Season S01 2014 2160p WEB-DL H265 AAC-XXX</code> → 电视剧、season=S01、year=2014</li>
+<li><code>Movie Name 电影名 S01 ...</code> → cn_name="Movie Name 电影名"（不掉英文片头）</li>
+<li><code>1 Movie Title 2023</code> → 标题序号剥离为 <code>Movie Title</code>，缓存键联动</li>
+<li>含中文标题种子 TMDB 命中率为 0 → onlyen 二次纯英搜索命中</li>
+<li>BONUS.DISC / <code>.extras-1</code> 目录转移 → 归 <code>extras/</code>，不写 transfer_history、不生成 NFO、不发 SubtitleDownload</li>
+<li><code>S01P03</code> 之类花絮片段编号 → <code>_episode_re</code> 放宽命中</li>
+<li>站点配 <code>withinhour=24</code> → 仅订阅最近 24h 内种子；刷流不受限</li>
+<li>过滤规则指定 <code>orilang=zh</code> → 中文原始语言命中、英语原始语言被过滤；指定 <code>other</code> → 已知列表外语言命中；rule 填了 meta 无 <code>original_language</code> → 不阻断</li>
+<li>历史/未识别页路径含 <code>+</code> 跳转正常编码</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden="">
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"></path></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.indexes", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "content.action.edit", "content.tabs.link", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  
+<script id="init-glightbox">const lightbox = GLightbox({"touchNavigation": true, "loop": false, "zoomable": true, "draggable": true, "openEffect": "zoom", "closeEffect": "zoom", "slideEffect": "slide"});
+document$.subscribe(()=>{ lightbox.reload(); });
+</script></body></html>
