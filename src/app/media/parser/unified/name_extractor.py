@@ -296,6 +296,14 @@ def _extract_bracket_name(ctx: ParseContext, prepared_text: str, original_text: 
                 ctx.release_group = bc_clean
             continue
 
+        # PT 描述块（`片名 | 国语中字 | 1080p`）：竖线分段后只保留非元数据段，
+        # 否则整块会被当作片名（历史 bug：`[东游令 | 国语中字 | 1080p]` 片名带上元数据）
+        if "|" in bc_clean or "｜" in bc_clean:
+            kept = [p.strip() for p in re.split(r"[|｜]", bc_clean) if p.strip() and not _is_metadata(p.strip())]
+            if not kept:
+                continue
+            bc_clean = " ".join(kept)
+
         # 提取 bracket 前的文本作为潜在中文名
         prefix = prepared_text[: m.start()].strip()
         cn_in_prefix = _extract_cn_from_prefix(prefix)
