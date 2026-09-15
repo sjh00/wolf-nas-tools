@@ -138,6 +138,20 @@ def get_current_user(
     if user_ctx:
         return user_ctx
 
+    # 区分「本平台签发但已过期」与「无效凭证」：
+    # access token 仅 15 分钟有效，前端收到 401 会自动刷新并重试，
+    # 属正常轮换；只有真正无效/伪造的凭证才需要人工检查。
+    if auth_header:
+        token = auth_header.split()[-1] if " " in auth_header else auth_header
+        if AuthService.is_token_expired(token):
+            raise AuthError(
+                "登录已过期，请重新登录",
+                errcode=ErrorCode.UNAUTHORIZED,
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                headers={"WWW-Authenticate": "Bearer"},
+                details={"expired": True},
+            )
+
     raise AuthError(
         "安全认证未通过，请检查登录状态、Token 或 ApiKey",
         errcode=ErrorCode.UNAUTHORIZED,

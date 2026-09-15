@@ -29,6 +29,10 @@ async def nexus_error_handler(request: Request, exc: NexusError) -> JSONResponse
     """业务异常：携带 errcode 与 http_status"""
     if exc.http_status >= 500:
         log.error(f"[API]业务异常: {request.method} {request.url.path} - {exc}")
+    elif exc.details.get("expired"):
+        # access token 正常过期（15 分钟有效），前端会自动刷新并重试，
+        # 不是配置或凭证问题，降为 debug 免得每 15 分钟刷一条告警
+        log.debug(f"[API]Access Token 已过期（前端将自动刷新）: {request.method} {request.url.path}")
     else:
         log.warn(f"[API]业务异常: {request.method} {request.url.path} - {exc}")
     return JSONResponse(
