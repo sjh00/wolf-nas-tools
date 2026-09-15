@@ -16,6 +16,7 @@ from app.events.payloads import (
     TransferFailPayload,
 )
 from app.media.parser import RegexParser
+from app.services.filetransfer_service import is_transfer_skip
 from app.services.transfer_pipeline import TransferPipeline
 
 
@@ -100,6 +101,10 @@ def handle_download_completed(
 
         def _post_process(task: TransferTask, success: bool, msg: str) -> None:
             if not success:
+                # 跳过不是失败：不打「已整理」标签，保留任务待下轮重试
+                if is_transfer_skip(msg):
+                    log.info(f"[Event]任务 {payload.task_id} 本轮跳过（保留待下轮重试）: {msg}")
+                    return
                 log.warn(f"[Event]任务 {payload.task_id} 转移失败: {msg}")
                 if client:
                     client.set_torrents_status(ids=payload.task_id, tags=payload.tags)

@@ -61,8 +61,14 @@ class DistributedLockRepository(BaseRepository):
             return False
 
     def extend(self, lock_key: str, token: str, additional_seconds: int) -> bool:
-        """延长锁过期时间."""
+        """延长锁过期时间。
+
+        语义与 Redis 实现（EXPIRE key N）保持一致：把过期时间设为「当前时间 + N」，
+        而非在当前过期时间上累加。累加语义会让心跳续期不断推迟过期时间，进程退出后
+        锁长时间不失效，阻塞后续重试。
+        """
         try:
+            expires = int(time.time()) + additional_seconds
             with self.session() as db:
                 stmt = (
                     update(DISTRIBUTEDLOCK)
@@ -70,7 +76,7 @@ class DistributedLockRepository(BaseRepository):
                         DISTRIBUTEDLOCK.LOCK_KEY == lock_key,
                         DISTRIBUTEDLOCK.TOKEN == token,
                     )
-                    .values(EXPIRES_AT=DISTRIBUTEDLOCK.EXPIRES_AT + additional_seconds)
+                    .values(EXPIRES_AT=expires)
                 )
                 result = db.execute(stmt)
                 db.commit()

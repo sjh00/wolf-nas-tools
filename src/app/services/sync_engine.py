@@ -19,8 +19,10 @@ from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepos
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferHistoryRepositoryAdapter
 from app.domain.entities.transfer_task import SourceType, TransferTask
+from app.infrastructure.distributed_lock import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
+from app.services.filetransfer_service import is_transfer_skip
 from app.services.transfer_engine import TransferEngine
 from app.services.transfer_pipeline import TransferPipeline
 from app.storage.backends.base import StorageBackend, StorageConfig, StorageType
@@ -31,6 +33,10 @@ from app.utils import PathUtils
 
 _synced_lock = threading.Lock()
 _observer_lock = threading.Lock()
+
+# 整批目录同步的分布式锁 TTL（秒）。由 lock_heartbeat 续期，故可取得较短：
+# 进程意外退出后最多阻塞该时长，不会像原先固定 300s 无续期那样中途易主。
+_SYNC_TRANSFER_LOCK_TTL = 120
 
 
 class FileMonitorHandler(FileSystemEventHandler):
@@ -292,7 +298,12 @@ class SyncEngine:
         try:
             ret, msg = self._pipeline.process(task)
             if not ret:
-                log.error(f"[Sync]{event_path} 转移失败：{msg}")
+                # 跳过（如目标正被其他实例转移、已在历史中）属瞬态状态，下轮会重试，
+                # 记 INFO；只有真正失败才记 ERROR，避免日志噪音掩盖真问题
+                if is_transfer_skip(msg):
+                    log.info(f"[Sync]{event_path} 跳过：{msg}")
+                else:
+                    log.error(f"[Sync]{event_path} 转移失败：{msg}")
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
@@ -300,34 +311,37 @@ class SyncEngine:
 
     def transfer_sync(self, sid: str | None = None) -> None:
         lock_key = f"sync:transfer_sync:{sid or 'all'}"
-        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=300)
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=_SYNC_TRANSFER_LOCK_TTL)
         acquired = lock.acquire()
         if not acquired:
             log.info(f"[Sync]transfer_sync({sid or 'all'}) 正在执行，跳过")
             return
 
-        try:
-            sids = [sid] if sid else self._monitor_ids
-            for sid in sids:
-                cfg = self.get_sync_path_conf(sid)
-                if not cfg:
-                    continue
-                try:
-                    src_backend = self._resolve_backend(cfg.src_backend_id)
-                    dst_backend = self._resolve_backend(cfg.dst_backend_id)
-                except (ServiceError, RepositoryError, DomainError):
-                    raise
-                except Exception as e:
-                    log.error(f"[Sync]解析后端失败: {e}")
-                    continue
-                if not cfg.rename:
-                    self._batch_link(cfg, src_backend, dst_backend)
-                else:
-                    self._batch_transfer(cfg, src_backend)
-        finally:
-            with _synced_lock:
-                self._synced_files.clear()
-            lock.release()
+        # 心跳续期：整批同步可能远超 TTL，续期避免中途被其他实例重复进入；
+        # TTL 保持较短，进程意外退出后能快速释放而不长时间阻塞后续同步
+        with lock_heartbeat(lock, _SYNC_TRANSFER_LOCK_TTL):
+            try:
+                sids = [sid] if sid else self._monitor_ids
+                for sid in sids:
+                    cfg = self.get_sync_path_conf(sid)
+                    if not cfg:
+                        continue
+                    try:
+                        src_backend = self._resolve_backend(cfg.src_backend_id)
+                        dst_backend = self._resolve_backend(cfg.dst_backend_id)
+                    except (ServiceError, RepositoryError, DomainError):
+                        raise
+                    except Exception as e:
+                        log.error(f"[Sync]解析后端失败: {e}")
+                        continue
+                    if not cfg.rename:
+                        self._batch_link(cfg, src_backend, dst_backend)
+                    else:
+                        self._batch_transfer(cfg, src_backend)
+            finally:
+                with _synced_lock:
+                    self._synced_files.clear()
+                lock.release()
 
     def _batch_link(self, cfg: SyncPathConfig, src_backend: StorageBackend, dst_backend: StorageBackend) -> None:
         files = PathUtils.get_dir_files(cfg.source)

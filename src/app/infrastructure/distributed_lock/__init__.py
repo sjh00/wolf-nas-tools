@@ -2,6 +2,7 @@
 
 from app.infrastructure.distributed_lock.base import DistributedLock, LockAcquisitionError
 from app.infrastructure.distributed_lock.db_lock import DbDistributedLock
+from app.infrastructure.distributed_lock.heartbeat import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import LockManager, get_lock_manager, with_distributed_lock
 from app.infrastructure.distributed_lock.redis_lock import RedisDistributedLock
 
@@ -12,5 +13,6 @@ __all__ = [
     "DbDistributedLock",
     "LockManager",
     "get_lock_manager",
+    "lock_heartbeat",
     "with_distributed_lock",
 ]

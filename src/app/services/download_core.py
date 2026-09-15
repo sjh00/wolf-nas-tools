@@ -401,29 +401,32 @@ class DownloadCore:
         if not _client:
             return None
         try:
-            return _client.get_downloading_torrents(tag=tag, ids=ids) or []
+            # 不要把失败(None)压成空列表：调用方据 None 判断"下载器不可达"，
+            # 误报为空会让刷流认为还有下种额度而超量下载
+            return _client.get_downloading_torrents(tag=tag, ids=ids)
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
             return None
 
-    def get_downloading_progress(self, downloader_id=None, ids=None):
+    def get_downloading_progress(self, downloader_id=None, ids=None) -> list[dict] | None:
         if not downloader_id:
             downloader_id = self._client_factory.default_downloader_id
         downloader_conf = self._client_factory.get_downloader_conf(downloader_id)
         only_wolf_nas = downloader_conf.get("only_wolf_nas") if downloader_conf else None
         _client = self._client_factory.get_client(downloader_id)
         if not _client:
-            return []
+            return None
         tag = [PT_TAG] if only_wolf_nas else None
         try:
-            return _client.get_downloading_progress(tag=tag, ids=ids) or []
+            # 同上：None 表示查询失败，区别于"查询成功但无任务"([])
+            return _client.get_downloading_progress(tag=tag, ids=ids)
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
-            return []
+            return None
 
     def get_completed_torrents(self, downloader_id=None, ids=None, tag=None) -> list[TorrentInfo]:
         if not downloader_id:

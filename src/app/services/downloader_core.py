@@ -17,6 +17,7 @@ from app.core.constants import PT_TAG
 from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.downloader.client_factory import DownloadClientFactory
 from app.services.download_core import DownloadCore
+from app.services.filetransfer_service import is_transfer_skip
 from app.services.transfer_coordinator import TransferCoordinator
 from app.services.transfer_pipeline import TransferPipeline
 
@@ -181,6 +182,11 @@ class DownloaderCore:
                         tags=task.get("tags"),
                     ):
                         if not success:
+                            # 跳过（目标正被其他实例转移）不是失败：此时绝不能打「已整理」
+                            # 标签，否则该任务会被永久视为已处理而不再重试
+                            if is_transfer_skip(msg):
+                                log.info(f"[Downloader]任务 {tid} 本轮跳过（保留待下轮重试）：{msg}")
+                                return
                             log.warn(f"[Downloader]任务 {tid} 转移失败：{msg}")
                             client.set_torrents_status(ids=tid, tags=tags)
                             return
