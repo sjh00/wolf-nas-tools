@@ -576,6 +576,98 @@ class TestTailMetadataLeftover:
         assert result is not None
         assert result.title_en == "24"
 
+    def test_from_series_not_stripped_as_metadata(self, parser):
+        """剧名 From 不能被当成 PT 元数据词 From/Share&PD 剥掉"""
+        result = parser.parse("From.S01E03.Choosing.Day.2160p.WEB-DL.AAC5.1.H.265-CHDWEB.mkv")
+        assert result is not None
+        assert result.title_en == "From"
+        assert result.season == 1
+        assert result.episode == 3
+
+    def test_numeric_movie_title_2012(self, parser):
+        """片名就是年份数字的电影（2012）应保留为标题，出品年取后面的 2009"""
+        result = parser.parse("2012.2009.UHD.BluRay.2160p.HEVC.TrueHD.Atmos.7.1-BeyondHD")
+        assert result is not None
+        assert result.title_en == "2012"
+        assert result.year == "2009"
+
+    def test_wonder_woman_1984_keeps_title_year(self, parser):
+        """Wonder Woman 1984 2020：片名里的 1984 保留，出品年取 2020"""
+        result = parser.parse("Wonder Woman 1984 2020 1080p BluRay")
+        assert result is not None
+        assert "1984" in (result.title_en or "")
+        assert result.year == "2020"
+
+    def test_large_ep_range_is_season_pack(self, parser):
+        """EP001-EP131 是全集包，不应把 1-131 当成要入库的单集区间"""
+        result = parser.parse(
+            "Dragon.Ball.Super.EP001-EP131ed.2015.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS"
+        )
+        assert result is not None
+        assert result.title_en == "Dragon Ball Super"
+        assert result.year == "2015"
+        assert result.episode is None
+        assert result.end_episode is None
+
+    def test_single_ep_still_parsed(self, parser):
+        """单集 EP078 仍应识别为第 78 集"""
+        result = parser.parse("Dragon.Ball.Super.EP078.2015.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS.mp4")
+        assert result is not None
+        assert result.title_en == "Dragon Ball Super"
+        assert result.episode == 78
+
+    def test_broadcast_prefix_stripped(self, parser):
+        """CCTV4K.Shan.He.Jin.Xiu 应去掉台标前缀再识别，He 不能当编码碎片丢掉"""
+        result = parser.parse(
+            "CCTV4K.Shan.He.Jin.Xiu.2022.E05.20230202.4K.UHDTV.HLG10.HEVC-HDCTV.ts"
+        )
+        assert result is not None
+        assert "Cctv" not in (result.title_en or "")
+        assert result.title_en == "Shan He Jin Xiu"
+        assert result.year == "2022"
+        assert result.episode == 5
+
+    def test_numeric_movie_title_65(self, parser):
+        """短数字片名 65 不能因长度 < 3 被丢掉"""
+        result = parser.parse("65.2023.2160p.WEB-DL.DDP5.1.Atmos.H.265.HDR-KKYY@CHDBits.mkv")
+        assert result is not None
+        assert result.title_en == "65"
+        assert result.year == "2023"
+
+    def test_end_game_not_stripped_as_metadata(self, parser):
+        """End Game 是片名，end/game 不能当附加片段词剥光"""
+        result = parser.parse("End.Game.2021.1080p.WEB-DL.H264.AAC-TJUPT.mp4")
+        assert result is not None
+        assert result.title_en == "End Game"
+        assert result.year == "2021"
+
+    def test_site_code_prefix_stripped(self, parser):
+        """47BT.人生切割术 应去掉站点水印前缀"""
+        result = parser.parse("47BT.人生切割术.S01E06.2022.WEB-DL.2160p.10Bit.DV.HDR10.HEVC.DDP5.1.Atmos.mkv")
+        assert result is not None
+        assert result.title_cn == "人生切割术"
+        assert "47" not in (result.title_en or "")
+        assert result.season == 1
+        assert result.episode == 6
+        assert result.year == "2022"
+
+    def test_year_range_not_episode(self, parser):
+        """2007-2009 是合集年份区间，不是 2007-2009 集"""
+        result = parser.parse("Equator.Ep03.of.6.2007-2009.Bluray.1080p.LPCM2.0.x265.10bit-CHD.mkv")
+        assert result is not None
+        assert result.title_en == "Equator"
+        assert result.episode == 3
+        assert result.end_episode is None
+        assert result.year == "2007"
+
+    def test_part_number_kept_in_title(self, parser):
+        """A Chinese Odyssey Part 1 的 1 应留在片名里，不是集号"""
+        result = parser.parse("A.Chinese.Odyssey.Part.1.1995.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS.mkv")
+        assert result is not None
+        assert result.title_en == "A Chinese Odyssey Part 1"
+        assert result.year == "1995"
+        assert result.episode is None
+
 
 class TestFieldLabelsNotInTitle:
     """元数据字段标签（主演/导演/简介等）及其取值不应混入片名。

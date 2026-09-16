@@ -8,6 +8,27 @@ import cn2an
 
 from .base import ExtractionRule
 
+
+def _is_year_token(value: int) -> bool:
+    return 1900 <= value <= 2030
+
+
+def _dash_ep_range_extract(match: re.Match[str], _: str) -> dict[str, list[int]] | None:
+    begin, end = int(match.group(1)), int(match.group(2))
+    # 2007-2009 / 1996-2018 是合集年份区间，不是集数
+    if _is_year_token(begin) and _is_year_token(end) and end >= begin:
+        return None
+    return {"episode": [begin, end]}
+
+
+def _cn2an_extract(match: re.Match[str]) -> dict[str, int] | None:
+    try:
+        val = int(cn2an.cn2an(match.group(1), mode="smart"))
+        return {"episode": val}
+    except Exception:
+        return None
+
+
 RULES: list[ExtractionRule] = [
     ExtractionRule(
         name="sxxexx_resolution_tight",
@@ -78,6 +99,16 @@ RULES: list[ExtractionRule] = [
         _extract_fn=lambda m, _: {"episode": [int(m.group(1)), int(m.group(2))]},
     ),
     ExtractionRule(
+        name="ep_to_ep_range",
+        # EP001-EP131 / EP01-08 / EP001-EP131ed（ed=edited 合集后缀）
+        pattern=re.compile(r"\bEP?(\d{1,4})[-~]EP?(\d{1,4})(?:ed)?\b", re.IGNORECASE),
+        category="episode",
+        priority=89,
+        confidence=0.9,
+        stop=True,
+        _extract_fn=lambda m, _: {"episode": [int(m.group(1)), int(m.group(2))]},
+    ),
+    ExtractionRule(
         name="ep_dash_num_range",
         pattern=re.compile(r"\bEP?(\d{1,4})[-~](\d{1,4})\b", re.IGNORECASE),
         category="episode",
@@ -93,7 +124,7 @@ RULES: list[ExtractionRule] = [
         priority=85,
         confidence=0.85,
         stop=True,
-        _extract_fn=lambda m, _: {"episode": [int(m.group(1)), int(m.group(2))]},
+        _extract_fn=_dash_ep_range_extract,
     ),
     ExtractionRule(
         name="bracket_ep",
@@ -183,12 +214,3 @@ RULES: list[ExtractionRule] = [
         stop=True,
     ),
 ]
-
-
-def _cn2an_extract(match: re.Match[str]) -> dict[str, int] | None:
-
-    try:
-        val = int(cn2an.cn2an(match.group(1), mode="smart"))
-        return {"episode": val}
-    except Exception:
-        return None

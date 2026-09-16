@@ -40,12 +40,19 @@ _RE_YEAR_RANGE = re.compile(r"([\s.]+)(\d{4})-(\d{4})")
 _RE_LEADING_BRACKET = re.compile(r"^\s*[\[【](.+?)[\]】]")
 # 额外内容/花絮后缀（BONUS.DISC、extras-N）：识别标题时剔除，避免混入正式标题/集数
 _RE_BONUS_SUFFIX = re.compile(r"[\._ ]BONUS[\._ ]DISC|\.extras-\d+", re.IGNORECASE)
+# 电视台/频道前缀：CCTV4K.Shan.He.Jin.Xiu → Shan.He.Jin.Xiu
+_RE_BROADCAST_PREFIX = re.compile(
+    r"^(?:CCTV(?:\d+K?|HD|4K)?|CETV\d*|BTV|HBTV|TJTV|SITV|CGTN|NHK|BBC|ITV|CNN|PBS)[\s._-]+",
+    re.IGNORECASE,
+)
+# 站点水印前缀：47BT.人生切割术 → 人生切割术
+_RE_SITE_CODE_PREFIX = re.compile(r"^(?:\d{1,3}BT)[\s._-]+", re.IGNORECASE)
 # 语言/字幕/制作/类别标记 — 出现在方括号中时应视为标签而非标题
 _LANGUAGE_SUBTITLE_RE = re.compile(
     r"[粤粵][语語]|[国國][语語]|日[语語]|繁[体體]|简[体體]|外挂|内嵌|内封|多[语語]|双[语語]"
     r"|[无無]字|生肉|熟肉|中字|繁中|简[中裡]|多国|[国國]漫|日漫|美漫|[动動]漫|[动動]画"
     r"|合成|[压壓]制|配音|二次|字幕|搬[运運]|转载|整理|补档|重发|新番|完结|连载"
-    r"|Hi[- ]?Res|USB|From|Share&PD|无损",
+    r"|Hi[- ]?Res|USB|Share&PD|无损",
     re.IGNORECASE,
 )
 
@@ -158,7 +165,10 @@ def prepare_title(title: str) -> str:
     title = _RE_AUDIO_BITRATE.sub("", title)
     title = _RE_AUDIO_CHANNELS.sub("", title)
     title = _RE_DATE.sub("", title)
+    # 合集年份区间保留起始年作为出品年，去掉结束年，避免 2007-2009 被当成 EP 范围
     title = _RE_YEAR_RANGE.sub(r"\1\2", title)
+    title = _RE_BROADCAST_PREFIX.sub("", title)
+    title = _RE_SITE_CODE_PREFIX.sub("", title)
     # 剔除 BONUS.DISC / .extras-N 花絮后缀，避免被当成正式标题/集数识别
     title = _RE_BONUS_SUFFIX.sub("", title)
     # 剔除元数据字段标签及其取值（主演: 张三 李四 / 导演: 王五），避免描述块混入片名

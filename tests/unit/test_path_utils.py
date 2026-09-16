@@ -86,3 +86,7 @@ class TestPathUtils:
     def test_get_parent_paths(self):
         assert PathUtils.get_parent_paths("/a/b/c", 1) == "/a/b"
         assert PathUtils.get_parent_paths("/a/b/c", 2) == "/a"
+
+    def test_is_extras_bonus_disc(self):
+        assert PathUtils.is_extras("/media/DUNKIRK_BONUS_DISC.iso") is True
+        assert PathUtils.is_extras("/media/Movie.2017.1080p.mkv") is False
