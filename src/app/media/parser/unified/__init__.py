@@ -43,10 +43,13 @@ class UnifiedParser(BaseParser):
         confidence = self._calculate_confidence(ctx)
         season, end_season = self._to_int_pair(ctx.season)
         episode, end_episode = self._to_int_pair(ctx.episode)
-        # 超大集范围（EP001-EP131）是整季/全集包，不是要转移的单集区间
-        if episode is not None and end_episode is not None and end_episode - episode >= 20:
+        # 超大集范围（EP001-EP131）是整部/多季合集包，不是要转移的单集区间。
+        # 阈值 50：一季常见 12/13/24/26 集（TV 01-26）必须保留；百集以上才视为整部包。
+        if episode is not None and end_episode is not None and end_episode - episode >= 50:
             episode = None
             end_episode = None
+            if season is None:
+                season = 1
         # 有集数但无季数（裸集号/第X集/方括号集号）时默认第 1 季，与 v3 行为一致
         if episode is not None and season is None:
             season = 1
