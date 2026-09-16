@@ -205,3 +205,28 @@ class TestPagination:
 
         assert result["total"] == 2
         assert len(result["items"]) == 1
+
+
+class TestResolveUploadedTorrent:
+    def test_string_temp_name(self, tmp_path, monkeypatch):
+        from app.infrastructure.temp import manager as temp_mod
+
+        monkeypatch.setattr(temp_mod.temp_manager, "get_temp_path", lambda name: str(tmp_path / name))
+        name, path = DownloadService._resolve_uploaded_torrent("abc.torrent")
+        assert name == "abc.torrent"
+        assert path.endswith("abc.torrent")
+
+    def test_dict_with_path(self, tmp_path):
+        f = tmp_path / "x.torrent"
+        f.write_bytes(b"d8:announce")
+        name, path = DownloadService._resolve_uploaded_torrent({"filename": "orig.torrent", "path": str(f)})
+        assert name == "orig.torrent"
+        assert path == str(f)
+
+    def test_legacy_flask_shape(self, tmp_path, monkeypatch):
+        from app.infrastructure.temp import manager as temp_mod
+
+        monkeypatch.setattr(temp_mod.temp_manager, "get_temp_path", lambda name: str(tmp_path / name))
+        name, path = DownloadService._resolve_uploaded_torrent({"upload": {"filename": "legacy.torrent"}})
+        assert name == "legacy.torrent"
+        assert path.endswith("legacy.torrent")
