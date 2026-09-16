@@ -608,6 +608,18 @@ class TestTailMetadataLeftover:
         assert result.year == "2015"
         assert result.episode is None
         assert result.end_episode is None
+        assert result.season == 1
+
+    def test_tv_season_pack_26_keeps_episode_range(self, parser):
+        """TV 01-26 是一季 26 集，应保留 E01-E26 并默认 S01，不能当超大合集清空"""
+        result = parser.parse(
+            "[xyx98]传颂之物/Utawarerumono/うたわれるもの[BDrip][1920x1080][TV 01-26 Fin]"
+            "[hevc-yuv420p10 flac_ac3][ENG PGS]"
+        )
+        assert result is not None
+        assert result.season == 1
+        assert result.episode == 1
+        assert result.end_episode == 26
 
     def test_single_ep_still_parsed(self, parser):
         """单集 EP078 仍应识别为第 78 集"""
