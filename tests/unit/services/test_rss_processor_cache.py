@@ -72,3 +72,11 @@ class TestRssHelperCache:
         helper.parse_rssxml("https://example.com/rss1", proxy=False)
         helper.parse_rssxml("https://example.com/rss2", proxy=False)
         assert mock_http_client.return_value.get.call_count == 2
+
+
+class TestCanonicalEnclosure:
+    def test_strips_rotating_downhash(self):
+        a = "https://ubits.club/download.php?id=362934&downhash=aaa"
+        b = "https://ubits.club/download.php?id=362934&downhash=bbb"
+        assert RssHelper.canonicalize_enclosure(a) == RssHelper.canonicalize_enclosure(b)
+        assert RssHelper.canonicalize_enclosure(a) == "https://ubits.club/download.php?id=362934"
