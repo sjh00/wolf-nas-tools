@@ -4,7 +4,7 @@ import log
 from app.events import Event, on_event
 from app.events.constants import DOWNLOAD_COMPLETED, DOWNLOAD_FAILED, DOWNLOAD_STARTED
 from app.events.payloads import DownloadCompletedPayload, DownloadFailedPayload, DownloadStartedPayload
-from app.services.download_event_queue import download_event_queue, put_download_event
+from app.services.download_event_queue import put_download_event
 
 
 @on_event(DOWNLOAD_STARTED)
@@ -14,7 +14,6 @@ def handle_download_started(event: Event) -> None:
     if not isinstance(payload, DownloadStartedPayload):
         payload = DownloadStartedPayload(**payload)
     log.info(f"[Event]下载开始: {payload.media_info.get('title')}")
-    queue_size_before = download_event_queue.qsize()
     put_download_event(
         {
             "event": DOWNLOAD_STARTED,
@@ -25,7 +24,6 @@ def handle_download_started(event: Event) -> None:
             },
         }
     )
-    log.debug(f"[SSE]放入队列后 size={download_event_queue.qsize()} (before={queue_size_before})")
 
 
 @on_event(DOWNLOAD_FAILED)
