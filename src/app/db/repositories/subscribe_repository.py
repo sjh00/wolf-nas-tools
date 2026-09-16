@@ -1082,11 +1082,23 @@ class SubscribeRepository(BaseRepository):
     # ==================== RSS Torrents ====================
 
     def get_rss_torrent_by_enclosure(self, enclosure: str) -> SubscribeTorrents | None:
-        """根据 enclosure 获取 RSS 种子记录"""
+        """根据 enclosure 获取 RSS 种子记录。
+
+        RSS 下载链常带轮换 JWT（downhash），按完整 URL 比对会漏；同时匹配去参后的路径。
+        """
         if not enclosure:
             return None
+        base = enclosure.split("&", 1)[0] if enclosure.startswith("magnet:") else enclosure.split("?", 1)[0]
         with self.session() as db:
-            return db.query(SubscribeTorrents).filter(enclosure == SubscribeTorrents.ENCLOSURE).first()
+            return (
+                db.query(SubscribeTorrents)
+                .filter(
+                    (SubscribeTorrents.ENCLOSURE == enclosure)
+                    | (SubscribeTorrents.ENCLOSURE == base)
+                    | (SubscribeTorrents.ENCLOSURE.like(f"{base}?%"))
+                )
+                .first()
+            )
 
     def get_rss_torrent_by_name(self, torrent_name: str) -> SubscribeTorrents | None:
         """根据 torrent_name 获取 RSS 种子记录"""
@@ -1101,7 +1113,9 @@ class SubscribeRepository(BaseRepository):
         """插入 RSS 种子记录"""
         if enclosure and enclosure.startswith("magnet:"):
             enclosure = enclosure.split("&")[0]
-        elif enclosure and len(enclosure) > 4000:
+        elif enclosure:
+            enclosure = enclosure.split("?", 1)[0]
+        if enclosure and len(enclosure) > 4000:
             enclosure = enclosure[:4000]
         with self.session() as db:
             db.add(
@@ -1120,7 +1134,9 @@ class SubscribeRepository(BaseRepository):
         """简式插入 RSS 种子记录"""
         if enclosure and enclosure.startswith("magnet:"):
             enclosure = enclosure.split("&")[0]
-        elif enclosure and len(enclosure) > 4000:
+        elif enclosure:
+            enclosure = enclosure.split("?", 1)[0]
+        if enclosure and len(enclosure) > 4000:
             enclosure = enclosure[:4000]
         with self.session() as db:
             db.add(

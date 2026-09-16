@@ -17,7 +17,7 @@ from app.db.repositories.config_repo_adapter import FilterGroupRepositoryAdapter
 from app.domain.enums import ProgressKey
 from app.domain.mediatypes import MediaType
 from app.indexer.core.batch_identifier import BatchIdentifier
-from app.indexer.core.filter_engine import IndexerFilterEngine
+from app.indexer.core.filter_engine import IndexerFilterEngine, filters_from_rule_entities, is_disabled_filter_rule
 from app.indexer.core.miss_collector import get_miss_collector
 from app.indexer.core.models import FilterStats, SearchCandidate
 from app.infrastructure.cache_system import get_cache_manager
@@ -86,21 +86,7 @@ class ResultFilter:
             filters = []
         else:
             rulegroup_info = group.to_dict()
-            entities = self._rule_repo.get_by_group(group.id)
-            filters = []
-            for e in entities:
-                include_str = e.include or ""
-                exclude_str = e.exclude or ""
-                filters.append(
-                    {
-                        "include": [x.strip() for x in include_str.splitlines() if x.strip()] if include_str else None,
-                        "exclude": [x.strip() for x in exclude_str.splitlines() if x.strip()] if exclude_str else None,
-                        "size": None,
-                        "free": e.note,
-                        "pri": e.priority,
-                        "original_language": e.original_language or "",
-                    }
-                )
+            filters = filters_from_rule_entities(self._rule_repo.get_by_group(group.id))
 
         self._rule_cache[cache_key] = (rulegroup_info, filters)
         log.info(
@@ -125,6 +111,10 @@ class ResultFilter:
             return match_flag, res_order, match_msg
 
         rulegroup_id = filter_args.get("rule")
+        if is_disabled_filter_rule(rulegroup_id):
+            return True, res_order, ""
+        if rulegroup_id in (0, "0"):
+            rulegroup_id = None
         rulegroup_info, filters = self._get_rules(rulegroup_id)
         match_flag, res_order, rule_name = self._engine.check_rules(meta_info, rulegroup_info, filters)
         if not match_flag:

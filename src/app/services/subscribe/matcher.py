@@ -4,7 +4,12 @@ import log
 from app.core.settings import settings
 from app.db.repositories.config_repo_adapter import FilterGroupRepositoryAdapter, FilterRuleRepositoryAdapter
 from app.domain.mediatypes import MediaType
-from app.indexer.core.filter_engine import IndexerFilterEngine
+from app.indexer.core.filter_engine import (
+    IndexerFilterEngine,
+    filters_from_rule_entities,
+    is_default_filter_rule,
+    is_disabled_filter_rule,
+)
 from app.media.identity.matcher import get_target_matcher
 from app.media.models import MediaInfo
 from app.sites.site_cache import SiteCache
@@ -228,8 +233,10 @@ class SubscribeMatcher:
                 hit_and_run=hit_and_run,
             )
 
-        # 过滤规则
-        filter_rule = match_rss_info.get("filter_rule") or site_filter_rule
+        # 过滤规则：0/空 = 默认规则组；-1 = 不过滤
+        filter_rule = match_rss_info.get("filter_rule")
+        if is_default_filter_rule(filter_rule):
+            filter_rule = site_filter_rule
         filter_dict = {
             "restype": match_rss_info.get("filter_restype"),
             "pix": match_rss_info.get("filter_pix"),
@@ -251,30 +258,15 @@ class SubscribeMatcher:
             downloadvolumefactor=download_volume_factor,
         )
 
-        if match_filter_flag and filter_rule:
-            # 站点规则过滤
-            group = group_repo.get_by_id(int(filter_rule)) if str(filter_rule).isdigit() else None
+        if match_filter_flag and not is_disabled_filter_rule(filter_rule):
+            group = None
+            if filter_rule and str(filter_rule).isdigit() and int(filter_rule) > 0:
+                group = group_repo.get_by_id(int(filter_rule))
+            if group is None:
+                group = next((g for g in (group_repo.get_all() or []) if g.default), None)
             if group:
                 rulegroup_info = group.to_dict()
-                entities = rule_repo.get_by_group(group.id)
-                filters_list = []
-                for e in entities:
-                    include_str = e.include or ""
-                    exclude_str = e.exclude or ""
-                    filters_list.append(
-                        {
-                            "include": [x.strip() for x in include_str.split(",") if x.strip()]
-                            if include_str
-                            else None,
-                            "exclude": [x.strip() for x in exclude_str.split(",") if x.strip()]
-                            if exclude_str
-                            else None,
-                            "size": None,
-                            "free": e.note,
-                            "pri": e.priority,
-                            "original_language": e.original_language or "",
-                        }
-                    )
+                filters_list = filters_from_rule_entities(rule_repo.get_by_group(group.id))
                 match_filter_flag, res_order, rule_name = self._filter.check_rules(
                     media_info, rulegroup_info, filters_list
                 )

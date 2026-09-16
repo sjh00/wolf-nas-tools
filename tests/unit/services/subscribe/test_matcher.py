@@ -27,6 +27,18 @@ def _make_media_info(mtype, title, year, tmdb_id=None):
     return media_info
 
 
+@pytest.fixture(autouse=True)
+def _stub_filter_repos():
+    with (
+        patch("app.services.subscribe.matcher.FilterGroupRepositoryAdapter") as mock_g,
+        patch("app.services.subscribe.matcher.FilterRuleRepositoryAdapter") as mock_r,
+    ):
+        mock_g.return_value.get_by_id.return_value = None
+        mock_g.return_value.get_all.return_value = []
+        mock_r.return_value.get_by_group.return_value = []
+        yield
+
+
 @pytest.fixture
 def matcher():
     return SubscribeMatcher()
@@ -343,3 +355,35 @@ class TestMultiUserFanout:
         match_flag, _, match_info = self._match(matcher, media_info, rss_tvs)
         assert match_flag is True
         assert match_info.get("sibling_rssids") is None
+
+
+class TestDefaultFilterRule:
+    def test_filter_rule_zero_uses_default_group(self, matcher):
+        media_info = _make_media_info(MediaType.MOVIE, "逃出绝命街", "2026")
+        media_info.org_string = "The End of Oak Street 2026 1080p AMZN WEB-DL H264 DDP5.1-SCOPE"
+        media_info.rev_string = media_info.org_string
+        media_info.size = 8 * 1024**3
+        rss_movies = {1: {"name": "逃出绝命街", "year": "2026", "tmdbid": None, "fuzzy_match": False, "filter_rule": 0}}
+        default_group = MagicMock()
+        default_group.id = 10003
+        default_group.default = True
+        default_group.to_dict.return_value = {"id": 10003, "name": "日常观影-免费"}
+        rule = MagicMock()
+        rule.include = "[中国國][字配]|国语|國語|中文\n1080[pi]"
+        rule.exclude = ""
+        rule.size_limit = "1,30"
+        rule.note = None
+        rule.priority = 2
+        rule.original_language = ""
+        with (
+            patch("app.services.subscribe.matcher.FilterGroupRepositoryAdapter") as mock_g,
+            patch("app.services.subscribe.matcher.FilterRuleRepositoryAdapter") as mock_r,
+        ):
+            mock_g.return_value.get_by_id.return_value = None
+            mock_g.return_value.get_all.return_value = [default_group]
+            mock_r.return_value.get_by_group.return_value = [rule]
+            match_flag, msgs, _ = matcher.match(
+                media_info, rss_movies, {}, "test_site", None, "", False, "", {}, False
+            )
+        assert match_flag is False
+        assert any("过滤规则" in m for m in msgs)

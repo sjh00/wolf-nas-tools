@@ -16,6 +16,42 @@ from app.media import ReleaseGroupsMatcher
 from app.utils import StringUtils
 
 
+def split_rule_patterns(raw: str | None) -> list[str] | None:
+    """过滤规则包含/排除项：v3 以换行分隔 AND 条件，不能按逗号切开正则。"""
+    if not raw:
+        return None
+    parts = [x.strip() for x in str(raw).replace("\r\n", "\n").split("\n") if x.strip()]
+    return parts or None
+
+
+def is_default_filter_rule(rule) -> bool:
+    """订阅 FILTER_RULE 为空/0 表示使用站点默认规则组，不是不过滤。"""
+    return rule in (None, "", 0, "0")
+
+
+def is_disabled_filter_rule(rule) -> bool:
+    return str(rule) == "-1"
+
+
+def filters_from_rule_entities(entities) -> list[dict]:
+    """把规则实体转成 check_rules 所需的 filters 列表。"""
+    filters: list[dict] = []
+    for e in entities or []:
+        include_str = getattr(e, "include", "") or ""
+        exclude_str = getattr(e, "exclude", "") or ""
+        filters.append(
+            {
+                "include": split_rule_patterns(include_str),
+                "exclude": split_rule_patterns(exclude_str),
+                "size": getattr(e, "size_limit", None) or None,
+                "free": getattr(e, "note", None),
+                "pri": getattr(e, "priority", 0),
+                "original_language": getattr(e, "original_language", "") or "",
+            }
+        )
+    return filters
+
+
 class IndexerFilterEngine:
     """
     索引器过滤引擎（纯逻辑，无状态）
