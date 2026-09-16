@@ -289,18 +289,24 @@ class DownloadService:
 
         uploaded_files = []
         try:
-            # 处理上传的种子文件
+            # 处理上传的种子文件（支持：临时文件名、绝对路径、旧 Flask 结构）
             for file_item in files:
                 if not file_item:
                     continue
-                file_name = file_item.get("upload", {}).get("filename")
-                file_path = temp_manager.get_temp_path(file_name)
+                file_name, file_path = self._resolve_uploaded_torrent(file_item)
+                if not file_name or not file_path:
+                    log.warn(f"[Download]无法解析上传的种子文件: {file_item!r}")
+                    continue
+                if not os.path.exists(file_path):
+                    log.warn(f"[Download]种子文件不存在: {file_path}")
+                    continue
                 uploaded_files.append(file_path)
-                media_info = self._media.get_media_info(title=file_name)
+                identify_title = title or file_name
+                media_info = self._media.get_media_info(title=identify_title)
                 if not media_info:
                     media_info = MediaInfo()
-                    media_info.title = file_name
-                media_info.org_string = file_name
+                    media_info.title = identify_title
+                media_info.org_string = identify_title
                 media_info.site = "WEB"
                 if page_url:
                     media_info.page_url = page_url
@@ -406,6 +412,24 @@ class DownloadService:
                     log.warn(f"[Web]删除上传的临时文件失败: {tmp_file}, {e!s}")
 
         return DownloadResultDTO(success=True, message="添加下载完成！")
+
+    @staticmethod
+    def _resolve_uploaded_torrent(file_item) -> tuple[str, str]:
+        """解析前端传入的种子文件引用，返回 (识别用文件名, 本地路径)。"""
+        if isinstance(file_item, str):
+            name = os.path.basename(file_item)
+            if os.path.isabs(file_item) and os.path.exists(file_item):
+                return name, file_item
+            return name, temp_manager.get_temp_path(name)
+        if isinstance(file_item, dict):
+            nested = file_item.get("upload") or {}
+            name = nested.get("filename") or file_item.get("filename") or file_item.get("name") or ""
+            path = nested.get("path") or file_item.get("path") or ""
+            if path and os.path.exists(path):
+                return os.path.basename(name or path), path
+            if name:
+                return os.path.basename(name), temp_manager.get_temp_path(os.path.basename(name))
+        return "", ""
 
     # ---------- 正在下载任务（含媒体信息拼装） ----------
 

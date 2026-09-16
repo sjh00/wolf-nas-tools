@@ -6,8 +6,9 @@ Download Router — FastAPI 迁移
 import json
 import os
 import queue
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -31,10 +32,15 @@ from app.downloader.client_factory import DownloadClientFactory
 from app.downloader.registry import get_all_clients
 from app.downloader.status import TORRENT_STATUS_LABELS
 from app.events.constants import DOWNLOAD_FAILED
+from app.infrastructure.temp import temp_manager
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
-from app.services.download_event_queue import download_event_queue, put_download_event
+from app.services.download_event_queue import (
+    put_download_event,
+    subscribe_download_events,
+    unsubscribe_download_events,
+)
 from app.services.download_service import DownloadService
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.filetransfer_service import FileTransferService as FileTransfer
@@ -389,6 +395,23 @@ def resolve_download_url(
     if not url:
         return fail(msg="无法获取下载链接")
     return success(data={"url": url})
+
+
+@router.post("/tasks/upload_torrent", response_model=CommonResponse, summary="上传种子文件")
+async def upload_torrent_file(
+    file: UploadFile = File(...),
+    user: UserContext = Depends(require_any_permission("download:create", "download:manage")),
+):
+    filename = Path(file.filename or "").name
+    if not filename.lower().endswith(".torrent"):
+        return fail(msg="仅支持 .torrent 文件")
+    dest = temp_manager.create_temp_file(prefix="upload_", suffix=".torrent")
+    contents = await file.read()
+    if not contents:
+        return fail(msg="种子文件为空")
+    with open(dest, "wb") as f:
+        f.write(contents)
+    return success(data={"filename": os.path.basename(dest), "original_name": filename})
 
 
 @router.post("/tasks/add_torrent", response_model=CommonResponse, summary="添加种子下载任务")
@@ -862,19 +885,27 @@ def truncate_blacklist(
     return success()
 
 
-def _event_stream_generator(q):
+def _event_stream_generator(q=None):
+    owned = q is None
+    if owned:
+        q = subscribe_download_events()
     log.info(f"[SSE]客户端已连接下载事件流 (queue_id={hex(id(q))})")
-    while True:
-        try:
-            item = q.get(timeout=1)
-            log.debug(f"[SSE]推送事件: {item.get('event')}")
-            yield f"event: {item['event']}\ndata: {JsonUtils.dumps(item['data'])}\n\n"
-        except queue.Empty:
-            yield ": keepalive\n\n"
+    try:
+        while True:
+            try:
+                item = q.get(timeout=1)
+                log.debug(f"[SSE]推送事件: {item.get('event')}")
+                yield f"event: {item['event']}\ndata: {JsonUtils.dumps(item['data'])}\n\n"
+            except queue.Empty:
+                yield ": keepalive\n\n"
+    finally:
+        if owned:
+            unsubscribe_download_events(q)
+        log.info(f"[SSE]客户端已断开下载事件流 (queue_id={hex(id(q))})")
 
 
 @router.get("/events", summary="下载事件实时推送 (SSE)")
 def download_events(
     user: UserContext = Depends(require_any_permission("download:view", "download:manage")),
 ):
-    return StreamingResponse(_event_stream_generator(download_event_queue), media_type="text/event-stream")
+    return StreamingResponse(_event_stream_generator(), media_type="text/event-stream")
