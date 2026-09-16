@@ -260,10 +260,14 @@ class SubscribeMatcher:
 
         if match_filter_flag and not is_disabled_filter_rule(filter_rule):
             group = None
-            if filter_rule and str(filter_rule).isdigit() and int(filter_rule) > 0:
-                group = group_repo.get_by_id(int(filter_rule))
-            if group is None:
-                group = next((g for g in (group_repo.get_all() or []) if g.default), None)
+            try:
+                if filter_rule and str(filter_rule).isdigit() and int(filter_rule) > 0:
+                    group = group_repo.get_by_id(int(filter_rule))
+                if group is None:
+                    group = next((g for g in (group_repo.get_all() or []) if g.default), None)
+            except Exception as err:  # noqa: BLE001
+                log.debug(f"[SubscribeMatcher]加载过滤规则组失败，跳过规则组匹配: {err}")
+                group = None
             if group:
                 rulegroup_info = group.to_dict()
                 filters_list = filters_from_rule_entities(rule_repo.get_by_group(group.id))
