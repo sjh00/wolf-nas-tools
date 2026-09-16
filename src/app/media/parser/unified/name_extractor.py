@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from app.media.parser.unified.constants import _ANIME_NO_WORDS, _NAME_CLEANUP_RE, _NAME_NOSTRING_RE
+from app.media.parser.unified.constants import _ANIME_NO_WORDS, _NAME_NOSTRING_RE, _NAME_YEAR_RE
 from app.utils import StringUtils
 from app.utils.chinese_utils import to_simplified
 
@@ -73,7 +73,7 @@ _META_TOKEN_RE = re.compile(
     r"|hdtv|uhdtv|pdtv|dsr|dsrip|tvrip|stv"
     r"|hd[-]?tc|tc|telesync|telecine|cam|camera|r5|r6|screener|scr"
     # 注意：不把单独 "max" 当元数据——"Mad Max" 的 Max 是片名；HBO Max 用 hmax/hbomax 标记
-    r"|amzn|amazon|nf|netflix|hulu|dsnp|disney|atvp|apple|hmax|hbomax"
+    r"|amzn|amazon|nf|netflix|hulu|dsnp|disney|atvp|apple|hmax|hbomax|itunes"
     r"|pcok|peacock|pmtp|paramount|shdr|showtime|appletv|vudu|fandango"
     r"|mubi|criterion|shoutfactory|arrow|radiance|capelight|kino|cocp|eureka|bfi"
     r"|baha|cr|crunchyroll|abema|ani-one|ani|b-global|bilibili|viutv|myvideo"
@@ -102,12 +102,12 @@ _META_TOKEN_RE = re.compile(
     r"|complete|batch|collection|pack|trilogy|quadrilogy"
     r"|mini[-]?series|mini|ova\d*|special|ova|ond[ae]s?|sp\d*"
     r"|ep(isode)?\d*|part\d+|chapter\d*|vol(ume)?\d*"
-    r"|final|end|fin|the[-]?end"
     # --- 频道 ---
     r"|bbc|itv|channel\s*[45]|cnn|fox|abc|nbc|cbs|hbo|starz|showtime|amc|tnt|tbs|fx|syfy"
+    r"|cctv\d*k?|cgtn|nhk"
     # --- 附加片段 ---
     r"|plus|extra|bonus|deleted|featurette|behind[-]?the[-]?scenes|making[-]?of|gag[-]?reel|trailer|teaser"
-    r"|shot|game|interview|preview|sneak[-]?peek|recap|highlights"
+    r"|shot|interview|preview|sneak[-]?peek|recap|highlights"
     # --- 容器 ---
     r"|mp4|mkv|avi|ts|m2ts|mov|wmv|flv|rmvb|iso|img"
     # --- 其他 ---
@@ -116,7 +116,7 @@ _META_TOKEN_RE = re.compile(
     r"|nvenc|qsv|amf|vce|x26[45]"
     r"|s\d{2,4}"
     # --- 类型/杂项标签 ---
-    r"|from|share|pd|disc|hi[-]?res|usb"
+    r"|share|pd|disc|hi[-]?res|usb"
     r"|se\d{1,2}"
     r"|@\w+"
     r"|[0-9a-fA-F]{8}"
@@ -421,6 +421,8 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
 
     # 移除十进制版本号
     text = re.sub(r"\b\d+\.\d+\b", "", text).strip()
+    # 集数总量说明（Ep03 of 6）不是片名
+    text = re.sub(r"\bof\s+\d+\b", " ", text, flags=re.IGNORECASE).strip()
 
     # 清理尾部方括号（追踪器标签如 [rartv]、[ettv] 等）
     text = re.sub(r"(?i)\[[a-z0-9]+\]\s*$", "", text).strip()
@@ -449,6 +451,10 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
         # 只剩 1-2 个词时视为标题，不再剥离
         if len(stripped.split()) <= 2:
             break
+        # Part/Vol 后的数字是片名（A Chinese Odyssey Part 1）
+        prev_word = stripped.split()[-1].lower()
+        if m.group(1).isdigit() and prev_word in {"part", "vol", "volume", "chapter", "pt"}:
+            break
         text = stripped
 
     # 再次清理残留的点号与尾部连字符/分隔符
@@ -458,7 +464,8 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
 
     if not text or text in _ANIME_NO_WORDS:
         return
-    if len(text) < 3 and not StringUtils.is_chinese(text):
+    # 纯数字短片名（65 / 24 / 2012）不能因长度 < 3 被丢掉
+    if len(text) < 3 and not StringUtils.is_chinese(text) and not text.isdigit():
         return
 
     words = text.split()
@@ -473,7 +480,8 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
             continue
         if _META_TOKEN_RE.match(word):
             continue
-        if len(word) <= 2 and word.lower() in ("h", "x", "e", "ac", "dd", "he", "av"):
+        # 仅丢掉编码碎片（H.264 拆出的 H/X），不要误伤 He/E 这类片名词
+        if len(word) == 1 and word.lower() in ("h", "x"):
             continue
         # 全大写"编码组-发布组"链（MNHD-FRDS）：整段视为发布组
         if _RE_GROUP_CHAIN.match(word):
@@ -487,10 +495,23 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
             # 纯数字词：位于名称中部时，后面还有非元数据字母词才视为标题本体数字
             # （The 100 Girlfriends）；末尾孤立数字视为解析残留丢弃（7.1 声道被拆成 "7 1"）。
             # 位于名称起始处的多位数字是片名本体（24 / 1917），需保留
+            # 片名中的年份（Wonder Woman 1984）不是出品年时也保留
             followed_by_title_word = any(
                 w[:1].isalpha() and not _META_TOKEN_RE.match(w) for w in words[idx + 1 :]
             )
-            if followed_by_title_word or (idx == 0 and len(word) >= 2 and not cn_parts and not en_parts):
+            is_title_year = (
+                len(word) == 4
+                and 1900 <= int(word) <= 2030
+                and word != str(ctx.year or "")
+            )
+            prev = words[idx - 1].lower() if idx > 0 else ""
+            after_part_word = prev in {"part", "vol", "volume", "chapter", "pt"}
+            if (
+                followed_by_title_word
+                or is_title_year
+                or after_part_word
+                or (idx == 0 and len(word) >= 2 and not cn_parts and not en_parts)
+            ):
                 en_parts.append(word)
             continue
         # 处理"数字 + 元数据中文词"组合，如 "7声轨"、"3音轨"、"5声道"
@@ -618,6 +639,25 @@ def _is_metadata(text: str) -> bool:
     return False
 
 
+def _strip_name_noise(name: str, release_year: str | None = None) -> str:
+    """剥离季集标记与合集词。
+
+    年份：仅剥掉与出品年相同的尾巴（Movie 2020 → Movie），片名中的年份保留
+    （Wonder Woman 1984）。若剥离后为空则保留原名（片名即年份，如 2012）。
+    """
+    stripped = re.sub(rf"{_NAME_NOSTRING_RE}", "", name, flags=re.IGNORECASE).strip()
+    stripped = re.sub(r"\b(C(?:omplete|OMPLETE)|全集|合集|Season\s+\d+)\b", "", stripped, flags=re.IGNORECASE).strip()
+    if release_year and re.search(rf"\b{re.escape(release_year)}\b", stripped):
+        candidate = re.sub(rf"[\s._-]*{re.escape(release_year)}\s*$", "", stripped).strip()
+        if candidate:
+            stripped = candidate
+    if stripped:
+        return stripped
+    if re.fullmatch(_NAME_YEAR_RE, name.strip()):
+        return name.strip()
+    return stripped
+
+
 def clean_names(ctx: ParseContext) -> None:
     """清理并标准化提取到的名称"""
     if ctx.cn_name:
@@ -626,12 +666,12 @@ def clean_names(ctx: ParseContext) -> None:
         ctx.cn_name = " ".join(_dedup_adjacent(ctx.cn_name.split()))
         _, ctx.cn_name, _, _, _, _ = StringUtils.get_keyword_from_string(ctx.cn_name)
         if ctx.cn_name:
-            ctx.cn_name = re.sub(rf"{_NAME_NOSTRING_RE}", "", ctx.cn_name, flags=re.IGNORECASE).strip()
-            ctx.cn_name = re.sub(_NAME_CLEANUP_RE, "", ctx.cn_name, flags=re.IGNORECASE).strip()
-            ctx.cn_name = to_simplified(ctx.cn_name)
+            ctx.cn_name = _strip_name_noise(ctx.cn_name, ctx.year)
+            if ctx.cn_name:
+                ctx.cn_name = to_simplified(ctx.cn_name)
     if ctx.en_name:
         ctx.en_name = re.sub(r"[\s\|\/\[\]\(\)（）【】「」『』＜＞]+", " ", ctx.en_name).strip()
         ctx.en_name = " ".join(_dedup_adjacent(ctx.en_name.split()))
-        ctx.en_name = re.sub(rf"{_NAME_NOSTRING_RE}", "", ctx.en_name, flags=re.IGNORECASE).strip()
-        ctx.en_name = re.sub(_NAME_CLEANUP_RE, "", ctx.en_name, flags=re.IGNORECASE).strip()
-        ctx.en_name = ctx.en_name.title()
+        ctx.en_name = _strip_name_noise(ctx.en_name, ctx.year)
+        if ctx.en_name:
+            ctx.en_name = ctx.en_name.title()

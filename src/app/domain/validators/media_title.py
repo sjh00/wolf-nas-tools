@@ -33,7 +33,7 @@ _ADULT_PATTERNS = re.compile(
     r"private\.com|privatecasting|legalporno|kink\.com|devianthardcore|"
     r"boundgangbangs|sexandsubmission|hogtied|whippedass|devicebondage|"
     r"obedient|collared|slut|whore|bitch|cumshot|blowjob|anal|threesome|gangbang|"
-    r"interracial|milf|teen|mature|stepmom|stepsis|stepbro|stepdad|"
+    r"interracial|milf|stepmom|stepsis|stepbro|stepdad|"
     r"alison tyler|ava addams|lisa ann|riley reid|mia khalifa|kimmy granger|"
     r"lena paul|abella danger|kendra lust|brandi love|jordi|johnny sins"
     r")\b",
