@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import defusedxml.minidom  # type: ignore[import-untyped]
 
@@ -32,6 +32,20 @@ class RssHelper:
 
     def _cache_key(self, url: str, proxy: bool) -> str:
         return f"rss:{url}:proxy={proxy}"
+
+    _VOLATILE_QUERY_KEYS = frozenset({"downhash", "passkey", "authkey", "token", "jwt", "sign", "uid"})
+
+    @classmethod
+    def canonicalize_enclosure(cls, url: str | None) -> str:
+        """去掉 RSS 下载链里轮换的 JWT/passkey，避免同一种子每轮都被当成新资源。"""
+        if not url:
+            return ""
+        if url.startswith("magnet:"):
+            return url.split("&", 1)[0]
+        parts = urlsplit(url)
+        volatile = cls._VOLATILE_QUERY_KEYS
+        kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() not in volatile]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
 
     @staticmethod
     def _looks_like_torrent_url(url: str) -> bool:
@@ -185,7 +199,7 @@ class RssHelper:
         """
         将RSS的记录插入数据库
         """
-        enclosure = media_info.enclosure
+        enclosure = self.canonicalize_enclosure(media_info.enclosure)
         if enclosure and len(enclosure) > 8192:
             enclosure = enclosure[:8192]
         self._repo.insert(
@@ -204,7 +218,7 @@ class RssHelper:
         """
         if not enclosure:
             return True
-        return self._repo.is_exists_by_enclosure(enclosure)
+        return self._repo.is_exists_by_enclosure(self.canonicalize_enclosure(enclosure))
 
     def is_rssd_by_simple(self, torrent_name, enclosure):
         """
@@ -212,13 +226,13 @@ class RssHelper:
         """
         if not torrent_name and not enclosure:
             return True
-        return self._repo.is_exists_by_name(torrent_name, enclosure)
+        return self._repo.is_exists_by_name(torrent_name, self.canonicalize_enclosure(enclosure) if enclosure else None)
 
     def simple_insert_rss_torrents(self, title, enclosure):
         """
         将RSS的记录插入数据库（简式）
         """
-        self._repo.simple_insert(title, enclosure)
+        self._repo.simple_insert(title, self.canonicalize_enclosure(enclosure))
 
     def simple_delete_rss_torrents(self, title, enclosure=None):
         """

@@ -254,12 +254,16 @@ class RssFeedStrategy:
             if not title:
                 continue
 
-            if enclosure and enclosure in seen_enclosures:
+            enclosure_key = self.rsshelper.canonicalize_enclosure(enclosure) if enclosure else ""
+            if enclosure_key and enclosure_key in seen_enclosures:
                 continue
-            if enclosure and self.rsshelper.is_rssd_by_enclosure(enclosure):
+            if enclosure and (
+                self.rsshelper.is_rssd_by_enclosure(enclosure)
+                or self.rsshelper.is_rssd_by_simple(title, None)
+            ):
                 log.info(f"[RssFeedStrategy] {title} 已成功订阅过")
                 continue
-            seen_enclosures.add(enclosure or "")
+            seen_enclosures.add(enclosure_key or "")
 
             to_identify.append({"idx": idx, "title": title})
 
@@ -428,6 +432,11 @@ class RssFeedStrategy:
                                 missing = rss_no_exists.get(media_info.tmdb_id)
                                 log.info(f"[RssFeedStrategy] {media_info.get_title_string()} 订阅缺失季集：{missing}")
                         if exist_flag:
+                            log.info(
+                                f"[RssFeedStrategy] {media_info.get_title_string()} "
+                                f"媒体库已存在且未开洗版，完成订阅"
+                            )
+                            self.subscribe.finish_rss_subscribe(rssid=match_info.get("id"), media=media_info)
                             continue
                     else:
                         if media_info.type != MediaType.MOVIE and media_info.get_episode_list():
