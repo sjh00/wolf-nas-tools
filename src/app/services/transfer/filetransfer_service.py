@@ -761,12 +761,13 @@ class FileTransferService:
 
                 reg_path = bluray_disk_dir if bluray_disk_dir else file_item
 
+                title_text = (media.get_title_string() if media else "") or ""
+                title_core = title_text.replace("(", "").replace(")", "").strip()
                 if (
                     not media
                     or not media.tmdb_info
-                    or not media.get_title_string()
-                    or media.get_title_string().strip().isdigit()
-                    or len(media.get_title_string().strip()) < 2
+                    or not title_text.strip()
+                    or (len(title_core) < 2 and not title_core.isdigit())
                     or not int(media.tmdb_id or 0)
                 ):
                     fc, ac, am = self._handle_unrecognized_file(
