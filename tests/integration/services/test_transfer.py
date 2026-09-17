@@ -53,7 +53,7 @@ class TestTransferPathResolver:
 
         fmt = resolver.get_format_dict(media, media_service)
         assert fmt["title"] == "Test Movie"
-        assert fmt["year"] == 2024
+        assert fmt["year"] == "2024"
         assert fmt["season"] == 1
 
     def test_get_movie_dest_path(self):
