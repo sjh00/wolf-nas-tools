@@ -212,19 +212,22 @@ class TransferRepository(BaseRepository):
         """
         if not limit or limit <= 0:
             limit = 100
+        file_key = func.coalesce(TRANSFERHISTORY.DEST_PATH, "") + "\0" + func.coalesce(
+            TRANSFERHISTORY.DEST_FILENAME, ""
+        )
         with self.session() as db:
             rows = (
                 db.query(
                     TRANSFERHISTORY.TMDBID,
-                    TRANSFERHISTORY.TITLE,
-                    TRANSFERHISTORY.YEAR,
+                    func.max(TRANSFERHISTORY.TITLE),
+                    func.max(TRANSFERHISTORY.YEAR),
                     func.count(func.distinct(TRANSFERHISTORY.DEST_PATH)).label("dir_count"),
-                    func.count(func.distinct(TRANSFERHISTORY.DEST_FILENAME)).label("file_count"),
+                    func.count(func.distinct(file_key)).label("file_count"),
                 )
                 .filter(TRANSFERHISTORY.TMDBID.isnot(None), TRANSFERHISTORY.TMDBID > 0)
-                .group_by(TRANSFERHISTORY.TMDBID, TRANSFERHISTORY.TITLE, TRANSFERHISTORY.YEAR)
-                .having(func.count(func.distinct(TRANSFERHISTORY.DEST_FILENAME)) > 1)
-                .order_by(TRANSFERHISTORY.TITLE.asc())
+                .group_by(TRANSFERHISTORY.TMDBID)
+                .having(func.count(func.distinct(file_key)) > 1)
+                .order_by(func.max(TRANSFERHISTORY.TITLE).asc())
                 .limit(int(limit))
                 .all()
             )

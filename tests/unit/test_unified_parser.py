@@ -842,3 +842,53 @@ class TestLeadingBracketKeepsTitle:
         assert "字幕组" not in (result.title_cn or ""), title
 
 
+class TestCollectionNoise:
+    """合集/系列包装不得污染片名；合集根目录不能当搜索上下文。"""
+
+    def test_ghibli_collection_suffix_stripped(self, parser):
+        result = parser.parse("千与千寻的神隐 吉卜力作品合集 2001")
+        assert result is not None
+        assert result.title_cn == "千与千寻的神隐"
+        assert result.year == "2001"
+        assert "合集" not in (result.title_cn or "")
+
+    def test_star_series_prefix_stripped(self, parser):
+        result = parser.parse("007系列之07金刚钻 007系列 1971")
+        assert result is not None
+        assert "系列" not in (result.title_cn or "")
+        assert "金刚钻" in (result.title_cn or "")
+        assert result.year == "1971"
+
+    def test_collection_context_detects_pack_roots(self):
+        from app.media.parser.unified.preprocessor import is_collection_context
+
+        assert is_collection_context("吉卜力作品合集") is True
+        assert is_collection_context("Mission.Impossible.I-VI") is True
+        assert is_collection_context("Rick and Morty S01-S05") is True
+        assert is_collection_context("千与千寻的神隐") is False
+        assert is_collection_context("乡村爱情15") is False
+
+    def test_post_process_ignores_collection_parent(self, parser):
+        from typing import cast
+
+        from app.media.lookup.tmdb_lookup import TmdbLookup
+        from app.media.parser.regex import RegexParser
+        from app.media.service import MediaService
+
+        svc = MediaService(tmdb_lookup=cast(TmdbLookup, object()), llm_parser=RegexParser())
+        title = "千与千寻的神隐 2001 1080p BluRay"
+        parsed = parser.parse(title)
+        post = svc._post_process(parsed, title, "吉卜力作品合集")
+        assert post is not None
+        assert post.title_cn == "千与千寻的神隐"
+        assert "合集" not in (post.title_cn or "")
+
+    def test_parent_context_skips_collection_roots(self):
+        from app.media.service import MediaService
+
+        ctx = MediaService._parent_context_for_identify("千与千寻的神隐", "吉卜力作品合集")
+        assert "合集" not in ctx
+        assert "千与千寻的神隐" in ctx
+        assert MediaService._parent_context_for_identify("Mission.Impossible.I-VI", "") == ""
+
+

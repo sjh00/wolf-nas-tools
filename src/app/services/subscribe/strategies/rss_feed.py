@@ -546,11 +546,10 @@ class RssFeedStrategy:
         unique_media: list = []
         for _m in rss_download_torrents:
             _enclosure = getattr(_m, "enclosure", "") or ""
-            _key = (
-                _enclosure
-                if _enclosure and not _enclosure.startswith("magnet:")
-                else (getattr(_m, "page_url", "") or "")
-            )
+            if _enclosure and not _enclosure.startswith("magnet:"):
+                _key = self.rsshelper.canonicalize_enclosure(_enclosure)
+            else:
+                _key = getattr(_m, "page_url", "") or ""
             _key = _key or str(getattr(_m, "rssid", "") or "")
             if not _key:
                 unique_media.append(_m)

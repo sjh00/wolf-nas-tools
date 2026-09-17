@@ -90,3 +90,5 @@ class TestPathUtils:
     def test_is_extras_bonus_disc(self):
         assert PathUtils.is_extras("/media/DUNKIRK_BONUS_DISC.iso") is True
         assert PathUtils.is_extras("/media/Movie.2017.1080p.mkv") is False
+        assert PathUtils.is_extras("/media/Mission.Impossible.I-VI/Extras/feature.mkv") is True
+        assert PathUtils.is_extras("/media/Movie.2017.extras-01.mkv") is True

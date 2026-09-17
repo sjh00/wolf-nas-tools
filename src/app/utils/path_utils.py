@@ -239,13 +239,16 @@ class PathUtils:
         basedir = os.path.basename(path)
         if re.search(
             r".+?[\._ ]BONUS[\._ ]DISC"
-            r"|behind the scenes$"
-            r"|deleted scenes$"
+            r"|behind[\._ -]the[\._ -]scenes$"
+            r"|deleted[\._ -]scenes$"
             r"|interviews$"
-            r"|scenes$"
+            r"|featurettes$"
+            r"|making[\._ -]of$"
+            r"|gag[\._ -]reel$"
+            r"|extras$"
+            r"|bonus$"
             r"|samples$"
             r"|shorts$"
-            r"|featurettes$"
             r"|clips$",
             basedir,
             re.IGNORECASE,
@@ -254,12 +257,21 @@ class PathUtils:
         if re.search(
             r".+?[\._ ]BONUS[\._ ]DISC[\._ ]"
             r"|.+?SP?\d{1,2}\.extras\.\d{2,}"
-            r"|.+?\.extras-\d+\.",
-            os.path.basename(path),
+            r"|.+?\.extras-\d+\."
+            r"|[\._ -]extras[\._ -]",
+            basedir,
             re.IGNORECASE,
         ):
             return True
-        return False
+        # 路径段是花絮目录：.../Extras/...、.../Bonus Disc/...
+        normalized = path.replace("\\", "/")
+        return bool(
+            re.search(
+                r"/(?:extras|bonus(?:[\._ -]disc)?|featurettes|behind[\._ -]the[\._ -]scenes)/",
+                f"{normalized}/",
+                re.IGNORECASE,
+            )
+        )
 
     @staticmethod
     def get_extras_dir(path: str) -> str | None:

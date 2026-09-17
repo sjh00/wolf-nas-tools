@@ -22,6 +22,7 @@ from app.media.models import MediaInfo
 from app.media.parser.base import BaseParser, ParserResult
 from app.media.parser.episode_mapper import EpisodeMapper
 from app.media.parser.regex import RegexParser
+from app.media.parser.unified.preprocessor import is_collection_context, strip_collection_noise
 from app.storage.backends.base import StorageBackend
 from app.utils import EpisodeFormat, PathUtils, StringUtils
 
@@ -92,13 +93,18 @@ class MediaService:
                     parsed.title_en = prefix
 
         # 2. 中文名补充：标题无中文名且副标题含中文 → 从副标题补提中文名；
-        #    副标题解析出的英文名仅在主标题缺失时才采用，避免无意义目录名（如 /tmp）覆盖真实标题
-        if not parsed.title_cn and subtitle:
+        #    副标题解析出的英文名仅在主标题缺失时才采用，避免无意义目录名（如 /tmp）覆盖真实标题。
+        #    合集/系列根目录不能拼进搜索词（吉卜力作品合集 / 周星驰合集）。
+        if parsed.title_cn:
+            parsed.title_cn = strip_collection_noise(parsed.title_cn)
+        if parsed.title_en:
+            parsed.title_en = strip_collection_noise(parsed.title_en)
+        if not parsed.title_cn and subtitle and not is_collection_context(subtitle):
             sub_parsed = self._parser.parse(subtitle, "")
             if sub_parsed and sub_parsed.title_cn:
-                parsed.title_cn = sub_parsed.title_cn
+                parsed.title_cn = strip_collection_noise(sub_parsed.title_cn)
             elif sub_parsed and sub_parsed.title_en and not parsed.title_en:
-                parsed.title_en = sub_parsed.title_en
+                parsed.title_en = strip_collection_noise(sub_parsed.title_en)
 
         # 3. 名称末尾年份提取
         if not parsed.year:
@@ -123,6 +129,18 @@ class MediaService:
                 info.total_episodes = (info.end_episode - info.begin_episode) + 1
             else:
                 info.total_episodes = 1
+
+    @staticmethod
+    def _parent_context_for_identify(parent_name: str, parent_parent_name: str) -> str:
+        """文件识别的父目录上下文：合集根不拼进搜索词，单作品目录才当 fallback。"""
+        parts: list[str] = []
+        for name in (parent_name, parent_parent_name):
+            if not name or name in (".", "/", "\\") or is_collection_context(name):
+                continue
+            cleaned = strip_collection_noise(name)
+            if cleaned and cleaned not in parts:
+                parts.append(cleaned)
+        return " ".join(parts)
 
     @staticmethod
     def _fill_episode_from_parent_paths(file_path: str, parsed: ParserResult | None) -> None:
@@ -201,8 +219,8 @@ class MediaService:
         if isinstance(title, str) and ("/" in title or "\\" in title):
             parent = os.path.basename(os.path.dirname(title)).strip()
             title = os.path.basename(title)
-            if parent and parent not in (".", "/", "") and not subtitle:
-                subtitle = parent
+            if parent and parent not in (".", "/", "") and not subtitle and not is_collection_context(parent):
+                subtitle = strip_collection_noise(parent)
         title, subtitle = self._apply_words(title, subtitle)
         parsed = self._parser.parse(title, subtitle)
         if not parsed and not self._parser.is_llm:
@@ -926,17 +944,16 @@ class MediaService:
         titles = [i["title"] for i in items]
         parsed_list = self._parser.parse_batch(titles)
 
-        # 2.2 fallback：从父目录提取信息
+        # 2.2 fallback：从父目录提取信息（合集根不拼进搜索词）
         for idx, item in enumerate(items):
-            if not parsed_list[idx]:
-                parsed_list[idx] = self._parser.parse(
-                    item["title"], f"{item['parent_name']} {item['parent_parent_name']}"
-                )
+            parent_ctx = self._parent_context_for_identify(item["parent_name"], item["parent_parent_name"])
+            if not parsed_list[idx] and parent_ctx:
+                parsed_list[idx] = self._parser.parse(item["title"], parent_ctx)
             # 公共后处理（与 identify / identify_batch 一致）
             parsed_list[idx] = self._post_process(
                 parsed_list[idx],
                 item["title"],
-                f"{item['parent_name']} {item['parent_parent_name']}",
+                parent_ctx,
             )
             # 文件名解析不出集号时，从父目录名提取（动漫单集目录常携带 S01E07）
             if parsed_list[idx]:
@@ -1145,7 +1162,7 @@ class MediaService:
             if score > best_score:
                 best_score = score
                 best = c
-        return best if best_score >= 0.6 else None
+        return best if best_score >= 0.75 else None
 
     # ---------- TMDB 代理方法 ----------
 

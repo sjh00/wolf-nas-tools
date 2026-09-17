@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 import log
-from app.core.constants import PT_TAG
+from app.core.constants import PT_TAG, RESEED_TAG
 from app.db.repositories.indexer_site_config_repo_adapter import IndexerSiteConfigRepositoryAdapter
 from app.domain.enums import SearchType
 from app.events import Event
@@ -148,6 +148,19 @@ class DownloadPipeline:
             log.warn(f"[DownloadPipeline]{msg}: {title}")
             self._fail(media_info, in_from, msg, user_id=user_id)
             return downloader_id, None, msg
+
+        # 同名同体量、不同下载地址：视为同一份文件，不重复入队，只打辅种标签
+        existing_id = self._reuse_same_content_torrent(
+            downloader=downloader,
+            title=title,
+            media_info=media_info,
+            dl_files_folder=dl_files_folder,
+            content=content,
+            tags=tags,
+        )
+        if existing_id:
+            log.info(f"[DownloadPipeline]同文件已在下载器中，跳过重复下载并标记辅种：{title} id={existing_id}")
+            return downloader_id, existing_id, ""
 
         # ---------- 阶段3：添加任务 ----------
         download_id = self._stage_add(
@@ -385,6 +398,83 @@ class DownloadPipeline:
             is_paused = bool(is_paused)
 
         return {"download_attr": download_attr, "downloader_id": downloader_id, "tags": tags, "is_paused": is_paused}
+
+    def _reuse_same_content_torrent(
+        self,
+        downloader,
+        title: str,
+        media_info,
+        dl_files_folder,
+        content,
+        tags,
+    ) -> str | None:
+        """下载器里已有同名同大小任务时视为同一文件：加辅种标签，不重复添加。"""
+        if not downloader:
+            return None
+        torrent_name = (dl_files_folder or getattr(media_info, "org_string", None) or title or "").strip()
+        size = int(getattr(media_info, "size", 0) or 0)
+        if not torrent_name and not size:
+            return None
+        try:
+            torrents, error = downloader.get_torrents()
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[DownloadPipeline]查询下载器任务失败，跳过同文件去重：{e}")
+            return None
+        if error or not torrents:
+            return None
+        name_key = torrent_name.casefold()
+        hit = None
+        for t in torrents:
+            t_name = (getattr(t, "name", None) or "").strip()
+            t_size = int(getattr(t, "size", 0) or 0)
+            same_name = bool(name_key and t_name.casefold() == name_key)
+            same_size = bool(size > 0 and t_size > 0 and t_size == size)
+            if same_name and same_size:
+                hit = t
+                break
+        if not hit or not getattr(hit, "id", None):
+            return None
+        existing_id = str(hit.id)
+        merged_tags = list(tags or [])
+        if RESEED_TAG not in merged_tags:
+            merged_tags.append(RESEED_TAG)
+        for label in list(getattr(hit, "labels", None) or []):
+            if label and label not in merged_tags:
+                merged_tags.append(label)
+        try:
+            downloader.set_torrents_tag(ids=existing_id, tags=merged_tags)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[DownloadPipeline]辅种标签写入失败：{e}")
+        trackers = self._extract_trackers_from_content(content)
+        if trackers and hasattr(downloader, "add_torrent_trackers"):
+            try:
+                downloader.add_torrent_trackers(existing_id, trackers)
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[DownloadPipeline]辅种 tracker 添加失败：{e}")
+        return existing_id
+
+    @staticmethod
+    def _extract_trackers_from_content(content) -> list[str]:
+        if not content or isinstance(content, str):
+            return []
+        try:
+            decoded = Torrent._safe_decode(content)
+        except Exception:  # noqa: BLE001
+            return []
+        urls: list[str] = []
+        announce = decoded.get("announce")
+        if isinstance(announce, bytes):
+            announce = announce.decode("utf-8", errors="ignore")
+        if isinstance(announce, str) and announce:
+            urls.append(announce)
+        for tier in decoded.get("announce-list") or []:
+            items = tier if isinstance(tier, list) else [tier]
+            for item in items:
+                if isinstance(item, bytes):
+                    item = item.decode("utf-8", errors="ignore")
+                if isinstance(item, str) and item and item not in urls:
+                    urls.append(item)
+        return urls
 
     # ---------- 阶段3：添加任务 ----------
 

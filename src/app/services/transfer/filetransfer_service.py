@@ -41,6 +41,7 @@ from app.infrastructure.thread import ThreadExecutor
 from app.media import MediaService
 from app.media import meta_info as meta_info_fn
 from app.media.parser import RegexParser
+from app.media.parser.unified.preprocessor import is_collection_context
 from app.message import Message
 from app.schemas.media import TransferMediaDTO
 from app.services.scrape_queue_service import ScrapeQueueService
@@ -79,6 +80,22 @@ def strip_skip_prefix(message: str | None) -> str:
 def skip_message(message: str) -> str:
     """构造带跳过标记的消息（幂等）。"""
     return f"{TRANSFER_SKIP_PREFIX}{strip_skip_prefix(message)}"
+
+
+_SOFT_TRANSFER_MARKERS = (
+    "无法识别媒体信息",
+    "无法从文件名中识别出集数",
+    "无法从文件名中识别出季集信息",
+    "目录下未找到媒体文件",
+)
+
+
+def is_soft_transfer_failure(message: str | None) -> bool:
+    """识别未命中 / 合集附属内容：应记 warn，不应当系统故障打 ERROR。"""
+    text = str(message or "").strip()
+    if not text:
+        return True
+    return any(marker in text for marker in _SOFT_TRANSFER_MARKERS)
 
 
 _mirror_queue: MemoryMessageQueue | None = None
@@ -751,6 +768,18 @@ class FileTransferService:
                 if not udf_flag and re.search(r"[./\s\[]+Sample[/\.\s\]]+", file_item, re.IGNORECASE):
                     log.warn(f"[Rmt]{file_item} 可能是预告片，跳过...")
                     continue
+                parent_dir = os.path.basename(os.path.dirname(file_item))
+                parent_parent_dir = os.path.basename(os.path.dirname(os.path.dirname(file_item)))
+                identified = bool(media and int(media.tmdb_id or 0))
+                if not udf_flag and not identified:
+                    if PathUtils.is_extras(file_item) or PathUtils.get_extras_dir(file_item):
+                        log.warn(f"[Rmt]{file_item} 为花絮/附属内容，跳过入库")
+                        continue
+                    if media and media.begin_episode is None and (
+                        is_collection_context(parent_dir) or is_collection_context(parent_parent_dir)
+                    ):
+                        log.warn(f"[Rmt]{file_item} 位于合集目录且无集数，按附属内容跳过，避免误当剧集入库失败")
+                        continue
 
                 file_name = os.path.basename(file_item)
                 self.progress.update(
@@ -1334,6 +1363,8 @@ class FileTransferService:
                     if not ret:
                         if is_transfer_skip(ret_msg):
                             log.info(f"[Rmt]{path} 跳过：{ret_msg}")
+                        elif is_soft_transfer_failure(ret_msg):
+                            log.warn(f"[Rmt]{path} 未完成识别/入库：{ret_msg or '无详细原因'}")
                         else:
                             log.error(f"[Rmt]{path} 处理失败：{ret_msg}")
 
