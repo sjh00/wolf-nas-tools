@@ -401,7 +401,7 @@ class TransferPathResolver:
             "rev_name": StringUtils.clear_file_name(os.path.splitext(media.rev_string or "")[0]),
             "original_title": StringUtils.clear_file_name(media.original_title),
             "name": StringUtils.clear_file_name(media.get_name()),
-            "year": media.year,
+            "year": self._resolve_year(media),
             "edition": media.get_edtion_string() or None,
             "videoFormat": media.resource_pix,
             "source": media.resource_type,
@@ -424,6 +424,27 @@ class TransferPathResolver:
             if not media_format_dict[i]:
                 media_format_dict[i] = "\t"
         return media_format_dict
+
+    @staticmethod
+    def _resolve_year(media) -> str | None:
+        """优先用已识别年份；缺失时从 TMDB 详情/上映日补齐，避免目录变成「片名 ()」。"""
+        year = getattr(media, "year", None)
+        if year and str(year).strip() not in ("", "\t"):
+            return str(year).strip()
+        info = getattr(media, "tmdb_info", None) or {}
+        date = (
+            getattr(media, "release_date", None)
+            or info.get("release_date")
+            or info.get("first_air_date")
+            or ""
+        )
+        date = str(date)
+        if len(date) >= 4 and date[:4].isdigit():
+            filled = date[:4]
+            if hasattr(media, "year"):
+                media.year = filled
+            return filled
+        return year
 
     def get_movie_dest_path(self, media_info, media_service=None):
         """计算电影文件路径."""

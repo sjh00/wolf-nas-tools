@@ -22,7 +22,7 @@ from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.infrastructure.distributed_lock import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
-from app.services.filetransfer_service import is_transfer_skip
+from app.services.filetransfer_service import is_soft_transfer_failure, is_transfer_skip
 from app.services.transfer_engine import TransferEngine
 from app.services.transfer_pipeline import TransferPipeline
 from app.storage.backends.base import StorageBackend, StorageConfig, StorageType
@@ -302,6 +302,8 @@ class SyncEngine:
                 # 记 INFO；只有真正失败才记 ERROR，避免日志噪音掩盖真问题
                 if is_transfer_skip(msg):
                     log.info(f"[Sync]{event_path} 跳过：{msg}")
+                elif is_soft_transfer_failure(msg):
+                    log.warn(f"[Sync]{event_path} 未完成识别/入库：{msg or '无详细原因'}")
                 else:
                     log.error(f"[Sync]{event_path} 转移失败：{msg}")
         except (ServiceError, RepositoryError, DomainError):

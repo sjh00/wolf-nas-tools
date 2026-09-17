@@ -52,6 +52,8 @@ def _seed(db_session):
         _mk(200, "/media/movie/B(2021)", "B.2021.1080p.BluRay.mkv", "B", "2021"),
         _mk(300, "/media/tv/C", "C.S01E01.mkv", "C", "2022"),
         _mk(300, "/media/tv/C2", "C.S01E03.mkv", "C", "2022"),
+        _mk(400, "/media/gof/电影", "Same.2023.mkv", "D", "2023"),
+        _mk(400, "/media/favorites/电影", "Same.2023.mkv", "D", "2023"),
     ]
     for row in rows:
         db_session.add(TRANSFERHISTORY(**row))
@@ -66,6 +68,7 @@ class TestGetMultiVersionGroups:
         tmdb_ids = {g["tmdb_id"] for g in groups}
         assert 100 in tmdb_ids  # 同目录 2 文件 -> 多版本
         assert 300 in tmdb_ids  # 跨目录 -> 多版本
+        assert 400 in tmdb_ids  # 同文件名不同目录 -> 多版本
         assert 200 not in tmdb_ids  # 单文件 -> 不算
 
     def test_same_dir_multiple_files_counts(self, db_session):
@@ -74,6 +77,13 @@ class TestGetMultiVersionGroups:
         repo = _TestableTransferRepository(db_session)
         groups = {g["tmdb_id"]: g for g in repo.get_multi_version_groups()}
         assert groups[100]["file_count"] == 2
+
+    def test_same_filename_different_dirs_counts(self, db_session):
+        _seed(db_session)
+        repo = _TestableTransferRepository(db_session)
+        groups = {g["tmdb_id"]: g for g in repo.get_multi_version_groups()}
+        assert groups[400]["file_count"] == 2
+        assert groups[400]["dir_count"] == 2
 
 
 class _HistoryManagerStub:

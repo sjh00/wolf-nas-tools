@@ -40,6 +40,24 @@ _RE_YEAR_RANGE = re.compile(r"([\s.]+)(\d{4})-(\d{4})")
 _RE_LEADING_BRACKET = re.compile(r"^\s*[\[【](.+?)[\]】]")
 # 额外内容/花絮后缀（BONUS.DISC、extras-N）：识别标题时剔除，避免混入正式标题/集数
 _RE_BONUS_SUFFIX = re.compile(r"[\._ ]BONUS[\._ ]DISC|\.extras-\d+", re.IGNORECASE)
+# 合集/系列包装尾巴：CJK 无 \b，必须整段剥，否则「千与千寻的神隐 吉卜力作品合集」会整串去搜 TMDB
+_RE_COLLECTION_TAIL = re.compile(
+    r"(?:"
+    r"[\s._\-]*(?:吉卜力)?作品合集"
+    r"|[\s._\-]*系列合集"
+    r"|[\s._\-]*电影合集"
+    r"|[\s._\-]*剧集合集"
+    r"|[\s._\-]*导演合集"
+    r"|[\s._\-]*(?:Complete\s+)?Collections?"
+    r"|[\s._\-]*全集"
+    r"|[\s._\-]*合集"
+    r"|[\s._\-]*\d+系列"
+    r"|[\s._\-]+系列"
+    r")+$",
+    re.IGNORECASE,
+)
+# 「007系列之07金刚钻」这类序号包装，只剥前缀包装词
+_RE_SERIES_OF_PREFIX = re.compile(r"^(?:\d{2,3}系列之\d+\s*)")
 # 电视台/频道前缀：CCTV4K.Shan.He.Jin.Xiu → Shan.He.Jin.Xiu
 _RE_BROADCAST_PREFIX = re.compile(
     r"^(?:CCTV(?:\d+K?|HD|4K)?|CETV\d*|BTV|HBTV|TJTV|SITV|CGTN|NHK|BBC|ITV|CNN|PBS)[\s._-]+",
@@ -121,6 +139,32 @@ _FIELD_VALUE_TOKEN_RE = re.compile(
 )
 
 
+def strip_collection_noise(text: str) -> str:
+    """剥合集/系列包装词，保留作品名。剥空则退回原文，避免误删整名。"""
+    if not text:
+        return text
+    cleaned = _RE_SERIES_OF_PREFIX.sub("", text).strip()
+    cleaned = re.sub(r"[\s._\-]*\d+系列", " ", cleaned)
+    cleaned = _RE_COLLECTION_TAIL.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._-\t")
+    return cleaned or text
+
+
+def is_collection_context(name: str) -> bool:
+    """父目录是否为合集/跨季包根。这类目录不能拼进搜索词。"""
+    if not name or name in (".", "/", "\\"):
+        return True
+    return bool(
+        re.search(
+            r"合集|Collection|全季|系列"
+            r"|S\d{1,2}\s*[-~]\s*S\d{1,2}"
+            r"|[._\- ]I{1,3}[-~]V?I{0,3}V?\b",
+            name,
+            re.IGNORECASE,
+        )
+    )
+
+
 def strip_field_segments(text: str) -> str:
     """剔除「字段标签 + 取值」片段：`主演: 张三 李四` / `主演.张三.李四` → 空。
 
@@ -171,6 +215,7 @@ def prepare_title(title: str) -> str:
     title = _RE_SITE_CODE_PREFIX.sub("", title)
     # 剔除 BONUS.DISC / .extras-N 花絮后缀，避免被当成正式标题/集数识别
     title = _RE_BONUS_SUFFIX.sub("", title)
+    title = strip_collection_noise(title)
     # 剔除元数据字段标签及其取值（主演: 张三 李四 / 导演: 王五），避免描述块混入片名
     title = strip_field_segments(title)
     # 下划线转空格（保留 SAC_2045、x265_10bit 等字母数字间有意义连接，其余拆开）

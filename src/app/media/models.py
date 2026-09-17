@@ -514,7 +514,7 @@ class MediaInfo(BaseModel):
                     if tr.get("iso_639_1") == "en" and tr.get("data", {}).get("name"):
                         self.en_name = tr["data"]["name"].strip()
                         break
-            if self.release_date:
+            if self.release_date and (not self.year or str(self.year).strip() in ("", "\t")):
                 self.year = self.release_date[0:4]
             self.category = get_category(rule_map.get("movie"), info)
             self.poster_path = ImageProxy.get_tmdbimage_url(info.get("poster_path")) if info.get("poster_path") else ""
@@ -546,7 +546,7 @@ class MediaInfo(BaseModel):
                     if tr.get("iso_639_1") == "en" and tr.get("data", {}).get("name"):
                         self.en_name = tr["data"]["name"].strip()
                         break
-            if self.release_date:
+            if self.release_date and (not self.year or str(self.year).strip() in ("", "\t")):
                 self.year = self.release_date[0:4]
             if self.type == MediaType.MOVIE:
                 self.category = get_category(rule_map.get("movie"), info)

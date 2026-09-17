@@ -33,6 +33,13 @@ def test_render_default():
     assert out == "FBI (2018)/FBI - S08E07"
 
 
+def test_render_empty_year_drops_empty_parens():
+    d = {"title": "看见", "year": "\t"}
+    out = nf.render("{title} ({year})", d)
+    assert out == "看见"
+    assert "()" not in out
+
+
 def test_render_optional_segment_filled():
     d = {"en_title": "FBI", "year": "2018"}
     out = nf.render("{en_title: {en_title} ({year})}", d)

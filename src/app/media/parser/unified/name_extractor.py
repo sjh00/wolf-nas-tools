@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from app.media.parser.unified.constants import _ANIME_NO_WORDS, _NAME_NOSTRING_RE, _NAME_YEAR_RE
+from app.media.parser.unified.preprocessor import strip_collection_noise
 from app.utils import StringUtils
 from app.utils.chinese_utils import to_simplified
 
@@ -647,6 +648,7 @@ def _strip_name_noise(name: str, release_year: str | None = None) -> str:
     """
     stripped = re.sub(rf"{_NAME_NOSTRING_RE}", "", name, flags=re.IGNORECASE).strip()
     stripped = re.sub(r"\b(C(?:omplete|OMPLETE)|全集|合集|Season\s+\d+)\b", "", stripped, flags=re.IGNORECASE).strip()
+    stripped = strip_collection_noise(stripped)
     if release_year and re.search(rf"\b{re.escape(release_year)}\b", stripped):
         candidate = re.sub(rf"[\s._-]*{re.escape(release_year)}\s*$", "", stripped).strip()
         if candidate:

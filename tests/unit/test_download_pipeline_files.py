@@ -57,3 +57,62 @@ class TestFileTypeMismatch:
         DownloadPipeline._check_file_type_mismatch(media_info, ["a.mkv", "b.mkv"])
         captured = capsys.readouterr()
         assert "类型推断不一致" not in captured.err
+
+
+class TestReuseSameContentTorrent:
+    def test_same_name_and_size_tags_reseed(self):
+        from unittest.mock import MagicMock
+
+        from app.core.constants import RESEED_TAG
+
+        existing = MagicMock()
+        existing.name = "Same.Title.1080p"
+        existing.size = 123456
+        existing.id = "hash-exist"
+        existing.labels = ["WOLFNAS"]
+        downloader = MagicMock()
+        downloader.get_torrents.return_value = ([existing], False)
+
+        media = MagicMock()
+        media.org_string = "Same.Title.1080p"
+        media.size = 123456
+
+        pipeline = DownloadPipeline.__new__(DownloadPipeline)
+        hit = pipeline._reuse_same_content_torrent(
+            downloader=downloader,
+            title="Same.Title.1080p",
+            media_info=media,
+            dl_files_folder="Same.Title.1080p",
+            content=b"not-a-torrent",
+            tags=["WOLFNAS"],
+        )
+        assert hit == "hash-exist"
+        tags = downloader.set_torrents_tag.call_args.kwargs["tags"]
+        assert RESEED_TAG in tags
+
+    def test_different_size_not_reused(self):
+        from unittest.mock import MagicMock
+
+        existing = MagicMock()
+        existing.name = "Same.Title.1080p"
+        existing.size = 1
+        existing.id = "hash-exist"
+        existing.labels = []
+        downloader = MagicMock()
+        downloader.get_torrents.return_value = ([existing], False)
+
+        media = MagicMock()
+        media.org_string = "Same.Title.1080p"
+        media.size = 999
+
+        pipeline = DownloadPipeline.__new__(DownloadPipeline)
+        hit = pipeline._reuse_same_content_torrent(
+            downloader=downloader,
+            title="Same.Title.1080p",
+            media_info=media,
+            dl_files_folder="Same.Title.1080p",
+            content=b"",
+            tags=[],
+        )
+        assert hit is None
+        downloader.set_torrents_tag.assert_not_called()

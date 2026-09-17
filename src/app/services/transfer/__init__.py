@@ -5,6 +5,7 @@ from app.services.transfer.existence_checker import MediaExistenceChecker
 from app.services.transfer.filetransfer_service import (
     TRANSFER_SKIP_PREFIX,
     FileTransferService,
+    is_soft_transfer_failure,
     is_transfer_skip,
     skip_message,
     strip_skip_prefix,
@@ -19,6 +20,7 @@ __all__ = [
     "MediaExistenceChecker",
     "TransferHistoryManager",
     "TransferCleanupService",
+    "is_soft_transfer_failure",
     "is_transfer_skip",
     "skip_message",
     "strip_skip_prefix",

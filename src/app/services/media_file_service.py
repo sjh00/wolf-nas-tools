@@ -113,6 +113,20 @@ class MediaFileService:
             name = os.path.basename(norm) or label
             return {"name": name, "path": norm, "type": ptype, "backend_id": backend_id or "local"}
 
+        def _disambiguate_names(items: list) -> None:
+            """同名路径加上一级父目录前缀，避免侧栏一排「电影/TV」。"""
+            by_name: dict[str, list] = {}
+            for item in items:
+                by_name.setdefault(item["name"], []).append(item)
+            for group in by_name.values():
+                if len(group) < 2:
+                    continue
+                for item in group:
+                    parts = [p for p in item["path"].split("/") if p]
+                    parent = parts[-2] if len(parts) >= 2 else ""
+                    if parent:
+                        item["name"] = f"{parent}/{item['name']}"
+
         def _dedupe(paths: list, seen: set) -> list:
             result = []
             for item in paths:
@@ -195,6 +209,9 @@ class MediaFileService:
             log.debug(f"[FileOps]忽略异常: {e}")
         sync_source_paths = _dedupe(sync_source_paths, seen_src)
         sync_dest_paths = _dedupe(sync_dest_paths, seen_dst)
+        _disambiguate_names(library_paths)
+        _disambiguate_names(sync_source_paths)
+        _disambiguate_names(sync_dest_paths)
 
         default_path = media.get("media_default_path")
         if not default_path:
