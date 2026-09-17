@@ -132,7 +132,11 @@ def render(fmt: str, fmt_dict: dict) -> str:
         out = out.format(**fmt_dict)
     except (KeyError, ValueError):
         pass
-    return re.sub(r"[-_\s.]*\t", "", out)
+    # 空字段用 \t 哨兵占位，清掉哨兵及其紧贴的分隔符
+    out = re.sub(r"[-_\s.]*\t", "", out)
+    # {title} ({year}) 在 year 为空时会留下 "看见 ()"，一并去掉空括号
+    out = re.sub(r"\s*[（(]\s*[）)]", "", out)
+    return out
 
 
 def split_format(fmt: str, media_type: str) -> dict:

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.services.filetransfer_service import (
     TRANSFER_SKIP_PREFIX,
+    is_soft_transfer_failure,
     is_transfer_skip,
     skip_message,
     strip_skip_prefix,
@@ -24,6 +25,10 @@ class TestSkipMarker:
 
     def test_plain_failure_not_recognized(self):
         assert is_transfer_skip("搜索媒体信息出错") is False
+        assert is_soft_transfer_failure("搜索媒体信息出错") is False
+        assert is_soft_transfer_failure("无法识别媒体信息") is True
+        assert is_soft_transfer_failure("识别失败，无法从文件名中识别出集数") is True
+        assert is_soft_transfer_failure("") is True
 
     def test_empty_not_recognized(self):
         assert is_transfer_skip(None) is False

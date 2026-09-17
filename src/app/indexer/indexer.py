@@ -399,7 +399,7 @@ class Indexer:
         )
         self._ensure_clients()
         if not self._clients:
-            log.error("没有配置索引器，无法搜索！")
+            log.warn("没有配置索引器，无法搜索！")
             return []
 
         # 扁平化所有 (client, indexer) 工作项
@@ -429,7 +429,7 @@ class Indexer:
             work_items = filtered_items
 
         if not work_items:
-            log.error("没有可用索引器站点，无法搜索！")
+            log.warn("没有可用索引器站点，无法搜索！")
             return []
 
         start_time = datetime.datetime.now()

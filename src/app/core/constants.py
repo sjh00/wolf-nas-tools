@@ -98,6 +98,8 @@ TMDB_IMAGE_SIZE = {
 
 # 添加下载时增加的标签
 PT_TAG = "WOLFNAS"
+# 同文件不同下载地址（跨站辅种）时打的标签
+RESEED_TAG = "辅种"
 
 # 电影默认命名格式
 DEFAULT_MOVIE_FORMAT = "{title} ({year})/{title} ({year})-{part} - {videoFormat}"

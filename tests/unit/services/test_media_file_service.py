@@ -143,3 +143,19 @@ class TestResolveBackend:
         service._storage_backend_repo.get_by_id.return_value = None
         with pytest.raises(ResourceNotFoundError):
             service._resolve_backend("99")
+
+
+class TestLibraryPathNames:
+    def test_duplicate_leaf_names_get_parent_prefix(self, service):
+        media = {
+            "movie_path": ["/store/gof/电影", "/store/favorites/电影"],
+            "tv_path": ["/store/gof/TV", "/store/tvandshows/TV"],
+        }
+        sync_svc = MagicMock()
+        sync_svc.get_sync_paths.return_value = {}
+        result = service.get_library_paths(media, sync_svc)
+        names = [p["name"] for p in result["library_paths"]]
+        assert "gof/电影" in names
+        assert "favorites/电影" in names
+        assert "gof/TV" in names
+        assert "tvandshows/TV" in names
