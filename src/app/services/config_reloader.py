@@ -49,10 +49,24 @@ class ConfigReloader:
     def _register_defaults(self) -> None:
         """注册需要重建的 provider 及工厂函数."""
         self.register("system_config", self.PRIORITY_SETTINGS)
-        self.register("tmdb_client", self.PRIORITY_INFRA, factory=lambda: TmdbClient())
+        self.register("tmdb_client", self.PRIORITY_INFRA, factory=self._reset_tmdb_client)
         self.register_media_server()
         self.register_agent_rag()
         self.register_scheduler_jobs()
+
+    def _reset_tmdb_client(self) -> None:
+        """原地重置 TMDB 客户端（不替换实例）。
+
+        TmdbLookup/TmdbSearch/TmdbDetail 与 MediaService 都持有启动时创建的同一实例，
+        替换 context.tmdb_client 对已装配组件不生效 —— 会导致网页改完 API Key 后
+        仍报「TMDB API Key 未设置！」。
+        """
+        client = getattr(self._context, "tmdb_client", None)
+        if client is None:
+            object.__setattr__(self._context, "tmdb_client", TmdbClient())
+            return None
+        client.reset()
+        return None
 
     def register_media_server(self) -> None:
         """媒体服务器配置变更时清除类型/实例缓存，下次访问按新配置重建（支持 emby↔jellyfin 切换）。"""

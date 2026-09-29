@@ -43,8 +43,24 @@ class TmdbClient:
         """重置配置并清除缓存（热重载时由 ConfigReloader 调用）"""
         self._init_config()
         self.redis_cache.clear()
+        # API Key 缺失期间 TMDB 查询必然失败并被 24h 负缓存（tmdb_lookup 命名空间），
+        # 配置修好后必须一并清理，否则同一标题在 TTL 内仍返回"未找到"
+        lookup_cache = get_cache_manager().get("tmdb_lookup")
+        if lookup_cache is not None:
+            lookup_cache.clear()
 
     def _init_config(self):
+        # 先清空再按当前配置重建：否则清空/更换 API Key 后仍会沿用旧客户端（表现为"Key 未设置"依旧）
+        self.tmdb = None
+        self.search = None
+        self.movie = None
+        self.tv = None
+        self.episode = None
+        self.person = None
+        self.find = None
+        self.trending = None
+        self.discover = None
+        self.genre = None
         app = settings.get("app")
         media = settings.get("media")
         _lang = media.get("tmdb_language", "zh")
