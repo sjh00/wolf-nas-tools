@@ -232,7 +232,7 @@ class BaseSearchStrategy:
                             "exclude": rss_info.get("filter_exclude"),
                             "free": rss_info.get("filter_free"),
                         }
-                        search_result, _, _, _ = self._searcher.search_one_media(
+                        search_result, _, _, downloaded_count = self._searcher.search_one_media(
                             media_info=media_info,
                             in_from=SearchType.SUBSCRIBE,
                             no_exists=no_exists,
@@ -240,13 +240,20 @@ class BaseSearchStrategy:
                             filters=filters,
                             user_id=rss_info.get("user_id"),
                         )
-                        if search_result:
-                            if over_edition:
+                        if over_edition:
+                            if search_result:
                                 if self._service:
                                     self._service.update_subscribe_over_edition(
                                         rtype=search_result.type, rssid=rid, media=search_result
                                     )
-                            elif self._service:
+                            else:
+                                self._movie_repo.update_state(
+                                    title=None, year=None, rssid=rid, state=SubscribeState.RUNNING.value
+                                )
+                        elif search_result or downloaded_count:
+                            # 电影无缺失集概念：本轮只要有下载成功即视为订阅完成，
+                            # 否则每轮会从下一个站点重复下载同一部电影
+                            if self._service:
                                 self._service.finish_rss_subscribe(rssid=rid, media=media_info)
                         else:
                             self._movie_repo.update_state(
