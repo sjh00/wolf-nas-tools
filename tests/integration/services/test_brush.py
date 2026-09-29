@@ -3,9 +3,17 @@
 from datetime import time as dtime
 from unittest.mock import MagicMock, patch
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db.models import SITEBRUSHTASK, Base
+from app.db.repositories.brush_repository import BrushRepository
+from app.db.session import SessionManager
 from app.services.brush.helpers import BrushTaskHelper
 from app.services.brush.repository import BrushTaskRepository
 from app.services.brush.scheduler import BrushTaskScheduler
+from app.services.brush_service import BrushService
 
 
 class TestBrushTaskRepository:
@@ -46,6 +54,59 @@ class TestBrushTaskRepository:
         repo = BrushTaskRepository(mock_repo)
         repo.update_brushtask_state(None, None)
         mock_repo.update_brushtask_state.assert_called_once_with(tid=None, state="")
+
+
+class TestBrushTaskSavePath:
+    """「保存目录」留空（前端 clearable Select 传 null）不应导致保存报错."""
+
+    _PAYLOAD = {
+        "brushtask_name": "测试刷流任务",
+        "brushtask_site": "1",
+        "brushtask_free": "",
+        "brushtask_rssurl": "",
+        "brushtask_interval": "10",
+        "brushtask_downloader": "1",
+        "brushtask_totalsize": "0",
+        "brushtask_time_range": "",
+        "brushtask_active_weekdays": "",
+        "brushtask_download_switch": "Y",
+        "brushtask_remove_switch": "Y",
+        "brushtask_stop_switch": "Y",
+        "brushtask_daily_delete_limit": "",
+        "brushtask_max_seeding": "",
+        "brushtask_hr_limit": "",
+        "brushtask_label": "",
+        "brushtask_transfer": 0,
+        "brushtask_sendmessage": 0,
+        "brushtask_state": "N",
+    }
+
+    @pytest.fixture
+    def brush_repo(self):
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        manager = SessionManager()
+        manager._engine = engine
+        manager._factory = sessionmaker(bind=engine)
+        BrushRepository._session_manager = manager
+        yield BrushRepository()
+        engine.dispose()
+
+    def test_none_savepath_coerced_to_empty_string(self):
+        svc = BrushService(brush_task=MagicMock(), rule_repo=MagicMock())
+        item = svc.build_task_item({**self._PAYLOAD, "brushtask_savepath": None})
+        assert item["savepath"] == ""
+
+    def test_none_savepath_persists_without_integrity_error(self, brush_repo):
+        svc = BrushService(brush_task=MagicMock(), rule_repo=MagicMock())
+        item = svc.build_task_item({**self._PAYLOAD, "brushtask_savepath": None})
+
+        brush_repo.update_brushtask(None, item)
+
+        with brush_repo.session() as db:
+            rows = db.query(SITEBRUSHTASK).all()
+            assert rows
+            assert rows[0].SAVEPATH == ""
 
 
 class TestBrushTaskScheduler:
