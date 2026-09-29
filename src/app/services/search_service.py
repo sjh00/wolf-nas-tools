@@ -433,11 +433,12 @@ class Searcher:
         if not download_items:
             log.info(f"[Searcher]{media_info.title} 未下载到资源")
             return None, no_exists, len(media_list), 0
-        else:
-            log.info(f"[Searcher]实际下载了 {len(download_items)} 个资源")
-            if left_medias:
-                return None, no_exists, len(media_list), len(download_items)
-            return download_items[0], no_exists, len(media_list), len(download_items)
+        log.info(f"[Searcher]实际下载了 {len(download_items)} 个资源")
+        # 电影没有"缺失集"概念：剩余候选只是同一部片的其它站点资源，不代表未完成。
+        # 返回已下载项，避免订阅/搜索链路误判为"无结果"而重复下载或重复建订阅。
+        if left_medias and getattr(media_info, "type", None) != MediaType.MOVIE:
+            return None, no_exists, len(media_list), len(download_items)
+        return download_items[0], no_exists, len(media_list), len(download_items)
 
     def get_search_result_by_id(self, dl_id):
         if self.search_repo is None:
