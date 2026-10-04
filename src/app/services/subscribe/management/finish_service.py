@@ -73,7 +73,10 @@ class SubscribeFinishService:
             rss = self._tv_repo.get_all(rssid=rssid)
             if not rss:
                 return
-            total = rss[0].TOTAL_EP
+            # TOTAL = 该季总集数（新增时由 TMDB/用户总集数写入，恒有值）；
+            # TOTAL_EP 是"用户填写的总集数"可空字段，不能作为历史展示来源，
+            # 否则历史卡片会显示"共 0 集"（旧行为取 TOTAL_EP + 完成时的 CURRENT_EP 相减恒为 0）
+            total = rss[0].TOTAL or rss[0].TOTAL_EP
             over_edition = bool(rss[0].OVER_EDITION) if hasattr(rss[0], "OVER_EDITION") else False
             owner_user_id = getattr(rss[0], "USER_ID", None)
             self._history_repo.upsert(

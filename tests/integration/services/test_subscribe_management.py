@@ -75,9 +75,10 @@ class TestSubscribeFinishService:
         rss.NAME = "Test TV"
         rss.YEAR = "2024"
         rss.TMDBID = "456"
-        rss.TOTAL_EP = 10
+        rss.TOTAL = 12  # 该季总集数（历史展示取此值）
+        rss.TOTAL_EP = None  # 用户未填"总集数"
         rss.SEASON = "S01"
-        rss.CURRENT_EP = 1
+        rss.CURRENT_EP = 12  # 完成时已推进到末集
         tv_repo.get_all.return_value = [rss]
         history_repo = MagicMock()
         event_bus = MagicMock()
@@ -91,7 +92,30 @@ class TestSubscribeFinishService:
         media.to_dict.return_value = {}
         svc.finish_rss_subscribe(1, media, delete_fn)
         history_repo.upsert.assert_called_once()
+        upsert_kwargs = history_repo.upsert.call_args.kwargs
+        assert upsert_kwargs["total"] == 12  # 回归：此前取 TOTAL_EP(None) → 历史显示"共 0 集"
+        assert upsert_kwargs["start"] == 12
         delete_fn.assert_called_once_with(mtype=MediaType.TV, rssid=1)
+
+    def test_finish_tv_legacy_total_ep_fallback(self):
+        """TOTAL 为空（历史数据）时回退用 TOTAL_EP"""
+        tv_repo = MagicMock()
+        rss = MagicMock()
+        rss.NAME = "Legacy TV"
+        rss.YEAR = "2020"
+        rss.TMDBID = "789"
+        rss.TOTAL = None
+        rss.TOTAL_EP = 10
+        rss.SEASON = "S01"
+        rss.CURRENT_EP = 3
+        tv_repo.get_all.return_value = [rss]
+        history_repo = MagicMock()
+        svc = SubscribeFinishService(MagicMock(), tv_repo, history_repo, MagicMock(), MagicMock())
+        media = MagicMock()
+        media.type = MediaType.TV
+        media.to_dict.return_value = {}
+        svc.finish_rss_subscribe(1, media, MagicMock())
+        assert history_repo.upsert.call_args.kwargs["total"] == 10
 
     def test_finish_no_rss_found(self):
         movie_repo = MagicMock()
