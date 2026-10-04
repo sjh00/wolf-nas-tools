@@ -16,6 +16,7 @@ from api.deps import (
     get_system_config_service,
 )
 from api.routers import subscription as subscription_router
+from app.domain.enums import SystemConfigKey
 from app.domain.mediatypes import MediaType
 from app.schemas.auth import UserContext
 
@@ -110,6 +111,29 @@ class TestSubscriptionRouter:
         assert resp.status_code == 200
         mock_subscribe_service.add_rss_subscribe.assert_called_once()
 
+    def test_add_rss_media_forwards_start_episode(self, client, mock_subscribe_service):
+        """新增订阅需把开始集数/总集数传给服务层（此前漏传 → 从第 1 集开始下载）"""
+        resp = client.post(
+            "/api/v1/subscription/add",
+            json={"name": "Test", "type": "tv", "season": "1", "total_ep": 12, "current_ep": 5},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 0
+        kwargs = mock_subscribe_service.add_rss_subscribe.call_args.kwargs
+        assert kwargs["total_ep"] == 12
+        assert kwargs["current_ep"] == 5
+
+    def test_update_rss_media_forwards_start_episode(self, client, mock_subscribe_service):
+        resp = client.post(
+            "/api/v1/subscription/update",
+            json={"rssid": "1", "name": "Test", "type": "tv", "season": "1", "total_ep": 12, "current_ep": 5},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 0
+        kwargs = mock_subscribe_service.update_rss_subscribe.call_args.kwargs
+        assert kwargs["total_ep"] == 12
+        assert kwargs["current_ep"] == 5
+
     def test_update_rss_media_missing_id(self, client):
         resp = client.post("/api/v1/subscription/update", json={"name": "Test"})
         assert resp.status_code == 200
@@ -121,6 +145,17 @@ class TestSubscriptionRouter:
         assert resp.json()["code"] == 0
         assert resp.json()["data"]["rssid"] == 1
         mock_subscribe_service.update_rss_subscribe.assert_called_once()
+
+    def test_save_default_setting_anime_writes_tv_key(self, client, mock_system_config):
+        """动漫保存默认设置应落到电视剧键（否则被静默丢弃，AI 新增订阅拿不到默认设置）"""
+        resp = client.post(
+            "/api/v1/subscription/default_setting/save",
+            json={"mtype": "anime", "restype": "1080p"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 0
+        mock_system_config.set.assert_called_once()
+        assert mock_system_config.set.call_args.kwargs["key"] == SystemConfigKey.DefaultSubscribeSettingTV
 
     def test_delete_rss_history(self, client, mock_history_service):
         resp = client.post("/api/v1/subscription/history/delete", json={"rssid": "1"})

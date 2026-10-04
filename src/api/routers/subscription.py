@@ -294,7 +294,7 @@ def add_rss_media(
             name=req.name,
             rssid=None,
         )
-    code, msg, media_info = _invoke_for_seasons(req.season, kwargs, svc.add_rss_subscribe)
+    code, msg, media_info = _invoke_for_seasons(req.season, kwargs, svc.add_rss_subscribe, req.total_ep, req.current_ep)
 
     # code 0=成功, 9=订阅已存在(幂等)；其余为真实失败，需上报而非伪装成功
     if code not in (0, 9):
@@ -488,7 +488,8 @@ def save_default_rss_setting(
     data = req.model_dump()
     data.pop("mtype", None)
     parsed = MediaType.from_string(mtype or "")
-    if parsed == MediaType.TV:
+    # 动漫与电视剧共用一份默认设置（读取侧同样把 ANIME 归到 TV），否则动漫页保存会被静默丢弃
+    if parsed in (MediaType.TV, MediaType.ANIME):
         cfg.set(key=SystemConfigKey.DefaultSubscribeSettingTV, value=data)
     elif parsed == MediaType.MOVIE:
         cfg.set(key=SystemConfigKey.DefaultSubscribeSettingMOV, value=data)
