@@ -110,3 +110,34 @@ class TestResubscribeContinuation:
         )
         inserted_kw = svc._tv_repo.insert.call_args.kwargs
         assert inserted_kw["current_ep"] == 26
+
+
+class TestDefaultSubscribeSetting:
+    """未显式传值的字段应套用默认订阅设置（AI 工具不属于前端表单预填路径）."""
+
+    def test_agent_add_applies_default_over_edition_and_filters(self):
+        svc = _build_service()
+        svc._system_config.get.return_value = {"over_edition": "1", "restype": "1080p", "pix": "1080p"}
+        svc._media.get_media_info.return_value = _make_media_info()
+        svc._media.get_tmdb_season_episodes_num.return_value = 48
+
+        code, _, _ = svc.add_rss_subscribe(
+            name="测试", year="2023", mtype=MediaType.TV, season=1, channel="auto", state="R"
+        )
+
+        assert code == 0
+        inserted_kw = svc._tv_repo.insert.call_args.kwargs
+        assert inserted_kw["over_edition"] == 1  # 修复前恒为 0（参数默认值是 False 导致判空失效）
+        assert inserted_kw["filter_restype"] == "1080p"
+        assert inserted_kw["filter_pix"] == "1080p"
+
+    def test_explicit_over_edition_false_wins_over_default(self):
+        """显式传入 False 时以调用方为准，不被默认设置覆盖."""
+        svc = _build_service()
+        svc._system_config.get.return_value = {"over_edition": "1"}
+        svc._media.get_media_info.return_value = _make_media_info()
+        svc._media.get_tmdb_season_episodes_num.return_value = 48
+
+        svc.add_rss_subscribe(name="测试", year="2023", mtype=MediaType.TV, season=1, over_edition=False)
+
+        assert svc._tv_repo.insert.call_args.kwargs["over_edition"] == 0

@@ -60,7 +60,8 @@ class SubscribeAddService:
         mediaid: str | None = None,
         rss_sites: list[str] | str | None = None,
         search_sites: list[str] | str | None = None,
-        over_edition: bool | int = False,
+        # None = 未显式指定，新增时应用默认订阅设置的"洗版"；显式 True/False 以调用方为准
+        over_edition: bool | int | None = None,
         filter_restype: str | None = None,
         filter_pix: str | None = None,
         filter_team: str | None = None,
