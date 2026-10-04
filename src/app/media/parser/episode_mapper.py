@@ -154,12 +154,19 @@ class EpisodeMapper:
             log.warn(f"[EpisodeMapper]推断失败: {e}")
             return None
 
-    def map(self, tmdb_id: int, source_season: int | None, source_episode: int | None) -> tuple[int, int] | None:
+    def map(
+        self,
+        tmdb_id: int,
+        source_season: int | None,
+        source_episode: int | None,
+        source_end_ep: int | None = None,
+    ) -> tuple[int, int] | tuple[int, int, int, int] | None:
         """
-        将 Parser 解析的季集映射到 TMDB 标准季集
+        将 Parser 解析的季集映射到 TMDB 标准季集（基于推断出的季块）
 
         Returns:
-            (target_season, target_episode) 或 None（无需映射/失败）
+            (target_season, target_episode) 或 (sn, ep_start, end_sn, end_ep)；
+            None = 无需映射/失败
         """
         if not source_season or not source_episode or source_season < 1:
             return None
@@ -178,8 +185,16 @@ class EpisodeMapper:
             log.warn(f"[EpisodeMapper]映射后集号 {target_ep} 超出范围 (E{start_ep}-E{end_ep})")
             return None
 
-        log.info(f"[EpisodeMapper]TMDB:{tmdb_id} S{source_season:02d}E{source_episode:02d} → S01E{target_ep:02d}")
-        return 1, target_ep
+        if not source_end_ep or source_end_ep == source_episode:
+            log.info(f"[EpisodeMapper]TMDB:{tmdb_id} S{source_season:02d}E{source_episode:02d} → S01E{target_ep:02d}")
+            return 1, target_ep
+
+        target_end = min(start_ep + source_end_ep - 1, end_ep)
+        log.info(
+            f"[EpisodeMapper]TMDB:{tmdb_id} "
+            f"S{source_season:02d}E{source_episode:02d}-E{source_end_ep:02d} → S01E{target_ep:02d}-E{target_end:02d}"
+        )
+        return 1, target_ep, 1, target_end
 
     def map_auto(
         self,
@@ -261,7 +276,12 @@ class EpisodeMapper:
                             return None
                         break
 
-        # 快速检查未命中 → 无可靠映射，不猜测
+        # TMDB 没有该季（动漫常按季度连贯编号：S03E01 = 绝对第 49 集）→
+        # 回退到由 air_date 推断出的季块映射（合并季 → S01E绝对集号）
+        mapped = self.map(tmdb_id, source_season, source_episode, source_end_ep)
+        if mapped:
+            return mapped
+        # 快速检查未命中且无法回退 → 不猜测
         return None
 
     def map_batch(self, items: list[dict]) -> list[tuple[int, int] | tuple[int, int, int, int] | None]:
