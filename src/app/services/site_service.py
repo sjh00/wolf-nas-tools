@@ -193,12 +193,11 @@ class SiteService:
             return list(merged.values())
 
         merged = {s["name"]: {**s, "source": "builtin", "third_party": False} for s in builtin}
-        for name, site in list(merged.items()):
+        for name, site in merged.items():
             cfg = config_by_name.get(name.lower())
+            # 站点维护列表需要展示"搜索已关闭"的站点（否则关闭后站点消失、无法再开启），
+            # 因此这里不过滤 enabled：调用方（搜索/索引器）自会按启用状态过滤
             site["enabled"] = cfg.enabled if cfg else True
-            if not site["enabled"]:
-                del merged[name]
-                continue
             site["download_setting"] = cfg.download_setting if cfg else None
             site["default_settings"] = cfg.default_settings if cfg else None
             site["site_public"] = engine_by_name.get(name, site.get("public", False))
