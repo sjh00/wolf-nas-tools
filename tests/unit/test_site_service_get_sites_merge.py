@@ -87,3 +87,31 @@ class TestSiteServiceGetSitesMerge:
                 statistic=(flag == "statistic"),
                 public=True,
             )
+
+    def test_full_mode_keeps_disabled_builtin_site(self, site_service_with_third_party):
+        """关闭「搜索启用」的站点不应从维护列表消失（否则无法再开启）
+
+        关闭开关写入的是 source="builtin" 的配置行；此前该站会被 del 掉，
+        而后面的第三方合并又会跳过 builtin 行，于是站点彻底消失。
+        """
+        repo = site_service_with_third_party._indexer_site_config_repo
+        repo.list_all.return_value = [
+            IndexerSiteConfigEntity(id=11, site_name="M-Team", source="builtin", enabled=False, public=False),
+        ]
+
+        result = site_service_with_third_party.get_sites(basic=False)
+
+        mteam = [r for r in result if r["name"] == "M-Team"]
+        assert mteam, "关闭搜索的站点不应从列表中消失"
+        assert mteam[0]["enabled"] is False
+
+    def test_full_mode_keeps_disabled_third_party_site(self, site_service_with_third_party):
+        repo = site_service_with_third_party._indexer_site_config_repo
+        repo.list_all.return_value = [
+            IndexerSiteConfigEntity(id=10, site_name="1337x", source="jackett", enabled=False, public=True),
+        ]
+
+        result = site_service_with_third_party.get_sites(basic=False)
+
+        third_party = [r for r in result if r.get("third_party")]
+        assert third_party and third_party[0]["enabled"] is False
