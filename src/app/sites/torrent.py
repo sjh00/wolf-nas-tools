@@ -1,7 +1,7 @@
 import datetime
 import os.path
 import re
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import bencodepy
 from bencode import bdecode
@@ -163,7 +163,20 @@ class Torrent:
                 config=HttpClientConfig(proxy_url=proxy_url),
                 rate_limiter=rate_limiter_engine,
             )
-            req = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
+            # 不自动跟随跳转：Prowlarr/Jackett 的下载接口会 302 到 magnet:，
+            # httpx 跟随会抛 "Request URL has an unsupported protocol 'magnet://'"。
+            req = client.get(url=url, headers=headers, auth=auth, follow_redirects=False, **rl_kwargs)
+            redirect_hops = 0
+            while getattr(req, "status_code", 200) in (301, 302, 303, 307, 308) and redirect_hops < 3:
+                location = str(req.headers.get("location") or "").strip()
+                if location.startswith("magnet:"):
+                    log.info(f"[Torrent]站点返回磁力跳转，直接使用磁力链接：{url[:200]}")
+                    return None, location, "磁力链接"
+                if not location:
+                    break
+                url = urljoin(url, location)
+                req = client.get(url=url, headers=headers, auth=auth, follow_redirects=False, **rl_kwargs)
+                redirect_hops += 1
         except HttpClientError as exc:
             log.warn(f"[Torrent]下载请求失败, url={url[:200]}, status={exc.status_code}, err={str(exc)}")
             if exc.status_code == 429:
