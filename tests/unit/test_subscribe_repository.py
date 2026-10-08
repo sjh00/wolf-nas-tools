@@ -149,3 +149,55 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
             assert ep is not None
             assert ep.EPISODES.startswith("5,")
             assert ep.EPISODES.endswith(",48")
+
+
+class TestDescTruncation:
+    """DESC 为 varchar(255)，更新路径必须截断，否则 PostgreSQL 报 StringDataRightTruncation。"""
+
+    def _setup_repo(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db.models.base import Base
+        from app.db.models.subscribe import SubscribeMovies, SubscribeTvs
+        from app.db.session import SessionManager
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        mgr = SessionManager()
+        mgr._engine = engine
+        mgr._factory = sessionmaker(bind=engine, expire_on_commit=False)
+        SubscribeRepository._session_manager = mgr
+        with mgr.session_scope() as db:
+            db.add(SubscribeTvs(NAME="剧", SEASON="S01", TMDBID="1", STATE="R"))
+            db.add(SubscribeMovies(NAME="片", TMDBID="2", STATE="R"))
+        return mgr
+
+    def test_update_rss_tv_truncates_long_desc(self):
+        mgr = self._setup_repo()
+        repo = SubscribeRepository()
+        long_desc = "字" * 400
+        repo.update_rss_tv(rssid=1, desc=long_desc)
+        with mgr.session_scope() as db:
+            row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row.DESC == long_desc[:200]
+            assert len(row.DESC) == 200
+
+    def test_update_rss_movie_truncates_long_desc(self):
+        mgr = self._setup_repo()
+        repo = SubscribeRepository()
+        long_desc = "字" * 400
+        repo.update_rss_movie(rssid=1, desc=long_desc)
+        with mgr.session_scope() as db:
+            from app.db.models.subscribe import SubscribeMovies
+
+            row = db.query(SubscribeMovies).filter(SubscribeMovies.ID == 1).first()
+            assert row.DESC == long_desc[:200]
+            assert len(row.DESC) == 200
+
+    def test_trim_desc_handles_none_and_short(self):
+        from app.db.repositories.subscribe_repository import _trim_desc
+
+        assert _trim_desc(None) == ""
+        assert _trim_desc("abc") == "abc"
+        assert len(_trim_desc("x" * 300)) == 200
