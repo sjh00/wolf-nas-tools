@@ -1,5 +1,23 @@
 # 版本历史
 
+## v4.21.10 (2026-10-08)
+
+### 新增
+
+- 媒体服务器：测试连接时校验用户ID，误填登录用户名会给出明确提示（如 Emby 不再直接 500），仅 Emby/Jellyfin
+
+### 修复
+
+- 搜索：PostgreSQL 下搜索结果落库不再报 `uq_search_pageurl_site_session` 约束不存在（改用唯一索引推断）
+- 订阅：修复 PostgreSQL 下编辑订阅时剧情简介超长导致的 `StringDataRightTruncation`
+- 下载：修复 Prowlarr/Jackett 下载接口返回 301/302 跳转到 magnet 时无法下载（HTTP 客户端不再把 3xx 当错误抛出）
+- 消息：修复 Webhook 消息渠道「额外查询参数」留空时测试报错 `'NoneType' object has no attribute 'strip'`
+- Docker：修复 PUID/PGID 非 0 时 nginx 运行时目录权限不足导致容器启动失败
+
+### 其他
+
+- 插件：内置「Webhook」更名为「Webhook 事件」，与「Webhook 消息」区分
+
 ## v4.21.9 (2026-10-08)
 
 ### 新增
