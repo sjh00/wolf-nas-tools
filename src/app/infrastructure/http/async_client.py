@@ -212,7 +212,9 @@ class AsyncHttpClient:
 
         async def _do_request() -> httpx2.Response:
             response = await self._client.request(method, url, **kwargs)
-            if raise_on_error:
+            # httpx 的 raise_for_status 对 3xx 也会抛错；重定向应交给调用方处理，
+            # 故仅在真正的错误状态码（>=400）时抛错。
+            if raise_on_error and response.status_code >= 400:
                 response.raise_for_status()
             return response
 
