@@ -137,43 +137,7 @@ class SearchRepository(BaseRepository):
             if not mappings:
                 return
 
-            if dialect == "mysql":
-                stmt = mysql_insert(SEARCHRESULTINFO).values(mappings)
-                stmt = stmt.on_duplicate_key_update(
-                    TORRENT_NAME=stmt.inserted.TORRENT_NAME,
-                    ENCLOSURE=stmt.inserted.ENCLOSURE,
-                    DESCRIPTION=stmt.inserted.DESCRIPTION,
-                    SIZE=stmt.inserted.SIZE,
-                    SEEDERS=stmt.inserted.SEEDERS,
-                    PEERS=stmt.inserted.PEERS,
-                )
-                db.execute(stmt)
-            elif dialect == "postgresql":
-                stmt = pg_insert(SEARCHRESULTINFO).values(mappings)
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uq_search_pageurl_site_session",
-                    set_={
-                        "TORRENT_NAME": stmt.excluded.TORRENT_NAME,
-                        "ENCLOSURE": stmt.excluded.ENCLOSURE,
-                        "SIZE": stmt.excluded.SIZE,
-                        "SEEDERS": stmt.excluded.SEEDERS,
-                        "PEERS": stmt.excluded.PEERS,
-                    },
-                )
-                db.execute(stmt)
-            else:
-                stmt = sqlite_insert(SEARCHRESULTINFO).values(mappings)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["PAGEURL", "SITE", "SEARCH_SESSION_ID"],
-                    set_={
-                        "TORRENT_NAME": stmt.excluded.TORRENT_NAME,
-                        "ENCLOSURE": stmt.excluded.ENCLOSURE,
-                        "SIZE": stmt.excluded.SIZE,
-                        "SEEDERS": stmt.excluded.SEEDERS,
-                        "PEERS": stmt.excluded.PEERS,
-                    },
-                )
-                db.execute(stmt)
+            db.execute(self._build_upsert_stmt(dialect, mappings))
             db.commit()
             # 概率性清理：删除 24 小时以上的旧记录
             if random.random() < 0.1:
@@ -185,6 +149,40 @@ class SearchRepository(BaseRepository):
                 )
                 if deleted:
                     db.commit()
+
+    @staticmethod
+    def _build_upsert_stmt(dialect: str, mappings: list[dict]):
+        """按方言构建 upsert 语句。
+
+        唯一键为 (PAGEURL, SITE, SEARCH_SESSION_ID)。该唯一性在模型与迁移中均以唯一索引
+        （uq_search_pageurl_site_session）提供，而非表约束；PostgreSQL 的
+        `ON CONFLICT ON CONSTRAINT` 只接受表约束，故统一用 `index_elements` 推断唯一索引。
+        """
+        conflict_cols = ["PAGEURL", "SITE", "SEARCH_SESSION_ID"]
+        if dialect == "mysql":
+            stmt = mysql_insert(SEARCHRESULTINFO).values(mappings)
+            return stmt.on_duplicate_key_update(
+                TORRENT_NAME=stmt.inserted.TORRENT_NAME,
+                ENCLOSURE=stmt.inserted.ENCLOSURE,
+                DESCRIPTION=stmt.inserted.DESCRIPTION,
+                SIZE=stmt.inserted.SIZE,
+                SEEDERS=stmt.inserted.SEEDERS,
+                PEERS=stmt.inserted.PEERS,
+            )
+        if dialect == "postgresql":
+            stmt = pg_insert(SEARCHRESULTINFO).values(mappings)
+        else:
+            stmt = sqlite_insert(SEARCHRESULTINFO).values(mappings)
+        return stmt.on_conflict_do_update(
+            index_elements=conflict_cols,
+            set_={
+                "TORRENT_NAME": stmt.excluded.TORRENT_NAME,
+                "ENCLOSURE": stmt.excluded.ENCLOSURE,
+                "SIZE": stmt.excluded.SIZE,
+                "SEEDERS": stmt.excluded.SEEDERS,
+                "PEERS": stmt.excluded.PEERS,
+            },
+        )
 
     def get_search_result_by_id(self, dl_id):
         """
