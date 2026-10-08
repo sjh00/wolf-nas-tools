@@ -25,6 +25,16 @@ if TYPE_CHECKING:
     from app.media.models import MediaInfo
 
 
+# DESC 列为 varchar(255)，存的是 TMDB 简介（可能超长）；SQLite 不校验长度，
+# PostgreSQL 严格校验会抛 StringDataRightTruncation，故所有写入路径统一截断。
+_DESC_MAX_LEN = 200
+
+
+def _trim_desc(desc: str | None) -> str:
+    """按仓库既有约定截断简介，保证新增/更新/历史各写入路径一致。"""
+    return (desc or "")[:_DESC_MAX_LEN]
+
+
 class SubscribeRepository(BaseRepository):
     """
     RSS订阅仓储
@@ -183,7 +193,7 @@ class SubscribeRepository(BaseRepository):
                     "YEAR": year,
                     "IMAGE": image,
                     "NOTE": note,
-                    "DESC": desc,
+                    "DESC": _trim_desc(desc),
                 }
             )
 
@@ -192,7 +202,7 @@ class SubscribeRepository(BaseRepository):
         更新订阅电影的DESC
         """
         with self.session() as db:
-            db.query(SubscribeMovies).filter(int(rid) == SubscribeMovies.ID).update({"DESC": desc})
+            db.query(SubscribeMovies).filter(int(rid) == SubscribeMovies.ID).update({"DESC": _trim_desc(desc)})
 
     def update_rss_filter_order(self, rtype: str, rssid: int, res_order: str) -> None:
         """
@@ -275,7 +285,7 @@ class SubscribeRepository(BaseRepository):
         save_path = save_path or ""
         note = note or ""
         keyword = keyword or (media_info.title if media_info else "")
-        desc = (desc or "")[:200]
+        desc = _trim_desc(desc)
         if not media_info:
             return -1
         if not media_info.title:
@@ -312,7 +322,7 @@ class SubscribeRepository(BaseRepository):
                     DOWNLOAD_SETTING=download_setting,
                     FUZZY_MATCH=fuzzy_match,
                     STATE=state,
-                    DESC=desc,
+                    DESC=_trim_desc(desc),
                     NOTE=note,
                     KEYWORD=keyword,
                     ADD_DATE=time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -365,6 +375,8 @@ class SubscribeRepository(BaseRepository):
                 update_fields[col] = JsonUtils.dumps(v)
             elif k == "filter_free":
                 update_fields[col] = None if v is None else (1 if v else 0)
+            elif col == "DESC":
+                update_fields[col] = _trim_desc(v if isinstance(v, str) else str(v))
             else:
                 update_fields[col] = v
         if not update_fields:
@@ -502,7 +514,7 @@ class SubscribeRepository(BaseRepository):
                     "TOTAL": total,
                     "LACK": lack,
                     "IMAGE": image,
-                    "DESC": desc,
+                    "DESC": _trim_desc(desc),
                     "NOTE": note,
                 }
             )
@@ -512,7 +524,7 @@ class SubscribeRepository(BaseRepository):
         更新订阅电视剧的DESC
         """
         with self.session() as db:
-            db.query(SubscribeTvs).filter(int(rid) == SubscribeTvs.ID).update({"DESC": desc})
+            db.query(SubscribeTvs).filter(int(rid) == SubscribeTvs.ID).update({"DESC": _trim_desc(desc)})
 
     def is_exists_rss_tv(self, title: str, year: str | None = None, season: str | None = None) -> bool:
         """
@@ -581,7 +593,7 @@ class SubscribeRepository(BaseRepository):
         keyword = keyword or (media_info.title if media_info else "")
         total_ep = int(total_ep) if total_ep else 0
         current_ep = int(current_ep) if current_ep else 0
-        desc = (desc or "")[:200]
+        desc = _trim_desc(desc)
         if not media_info:
             return -1
         if not media_info.title:
@@ -631,7 +643,7 @@ class SubscribeRepository(BaseRepository):
                     TOTAL=total,
                     LACK=lack,
                     STATE=state,
-                    DESC=desc,
+                    DESC=_trim_desc(desc),
                     NOTE=note,
                     KEYWORD=keyword,
                     ADD_DATE=time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -689,6 +701,8 @@ class SubscribeRepository(BaseRepository):
                 update_fields[col] = JsonUtils.dumps(v)
             elif k == "filter_free":
                 update_fields[col] = None if v is None else (1 if v else 0)
+            elif col == "DESC":
+                update_fields[col] = _trim_desc(v if isinstance(v, str) else str(v))
             else:
                 update_fields[col] = v
         if not update_fields:
@@ -1033,7 +1047,7 @@ class SubscribeRepository(BaseRepository):
                     TMDBID=tmdbid,
                     SEASON=season,
                     IMAGE=image,
-                    DESC=desc,
+                    DESC=_trim_desc(desc),
                     TOTAL=total,
                     START=start,
                     NOTE=note,
@@ -1092,7 +1106,7 @@ class SubscribeRepository(BaseRepository):
             if existing:
                 existing.RSSID = rssid
                 existing.IMAGE = image
-                existing.DESC = desc
+                existing.DESC = _trim_desc(desc)
                 existing.TOTAL = total
                 existing.START = start
                 existing.NOTE = note
@@ -1107,7 +1121,7 @@ class SubscribeRepository(BaseRepository):
                         TMDBID=tmdbid,
                         SEASON=season,
                         IMAGE=image,
-                        DESC=desc,
+                        DESC=_trim_desc(desc),
                         TOTAL=total,
                         START=start,
                         NOTE=note,
