@@ -126,8 +126,9 @@ class Jellyfin(_IMediaClient):
 
     def get_status(self):
         """
-        测试连通性
+        测试连通性；若配置了 user_id，先校验其为真实用户 Id（常见误填登录用户名会导致服务器 500）
         """
+        self.validate_user_id(self._client_config.get("user_id"), self.get_users(), self.client_name)
         return bool(self.get_medias_count())
 
     def __get_jellyfin_librarys(self):
@@ -172,9 +173,9 @@ class Jellyfin(_IMediaClient):
             log.error(f"[{self.client_name}]连接Users出错：" + str(e))
             return 0
 
-    def get_user(self, user_name=None):
+    def get_users(self):
         """
-        获得管理员用户
+        获取用户列表（用于校验配置的 user_id）
         """
         if not self._host or not self._apikey:
             return None
@@ -182,23 +183,31 @@ class Jellyfin(_IMediaClient):
         try:
             res = HttpClient().get(req_url, headers=self._auth_headers())
             if res:
-                users = res.json()
-                # 先查询是否有与当前用户名称匹配的
-                if user_name:
-                    for user in users:
-                        if user.get("Name") == user_name:
-                            return user.get("Id")
-                # 查询管理员
-                for user in users:
-                    if user.get("Policy", {}).get("IsAdministrator"):
-                        return user.get("Id")
-            else:
-                log.error(f"[{self.client_name}]Users 未获取到返回数据")
+                return res.json()
+            log.error(f"[{self.client_name}]Users 未获取到返回数据")
         except (InfrastructureError, MediaServerError):
             raise
         except Exception as e:  # noqa: BLE001
             ExceptionUtils.exception_traceback(e)
             log.error(f"[{self.client_name}]连接Users出错：" + str(e))
+        return None
+
+    def get_user(self, user_name=None):
+        """
+        获得管理员用户
+        """
+        users = self.get_users()
+        if not users:
+            return None
+        # 先查询是否有与当前用户名称匹配的
+        if user_name:
+            for user in users:
+                if user.get("Name") == user_name:
+                    return user.get("Id")
+        # 查询管理员
+        for user in users:
+            if user.get("Policy", {}).get("IsAdministrator"):
+                return user.get("Id")
         return None
 
     def get_server_id(self):
