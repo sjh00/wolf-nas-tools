@@ -90,6 +90,16 @@ def test_raise_for_status_enabled(mock_httpx_status_error):
     client.close()
 
 
+def test_redirect_response_not_raised(mock_httpx_redirect):
+    # 3xx 不应被 raise_for_status 抛错：调用方（如 Prowlarr/Jackett 下载 302 到 magnet:）
+    # 需要读取 Location 自行跟进
+    client = HttpClient()
+    resp = client.get("https://example.com", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("magnet:")
+    client.close()
+
+
 # ==================== 限流器测试 ====================
 
 
@@ -459,6 +469,17 @@ def mock_httpx_status_error():
 
 
 @pytest.fixture
+def mock_httpx_redirect():
+    with patch.object(httpx2.Client, "request") as mock_req:
+        mock_req.return_value = httpx2.Response(
+            302,
+            headers={"location": "magnet:?xt=urn:btih:ABC"},
+            request=httpx2.Request("GET", "https://example.com"),
+        )
+        yield mock_req
+
+
+@pytest.fixture
 def mock_async_client():
     with (
         patch.object(httpx2.AsyncClient, "request") as mock_req,
@@ -494,3 +515,26 @@ def mock_async_status_error():
             418, content=b"teapot", request=httpx2.Request("GET", "https://example.com")
         )
         yield mock_req
+
+
+@pytest.fixture
+def mock_async_redirect():
+    with (
+        patch.object(httpx2.AsyncClient, "request") as mock_req,
+        patch.object(httpx2.AsyncClient, "aclose", return_value=None),
+    ):
+        mock_req.return_value = httpx2.Response(
+            302,
+            headers={"location": "https://cdn.example.com/a.torrent"},
+            request=httpx2.Request("GET", "https://example.com"),
+        )
+        yield mock_req
+
+
+@pytest.mark.asyncio
+async def test_async_redirect_response_not_raised(mock_async_redirect):
+    # 3xx 不应被 raise_for_status 抛错，调用方需自行处理重定向
+    client = AsyncHttpClient(config=HttpClientConfig(enable_http2=False))
+    resp = await client.get("https://example.com", follow_redirects=False)
+    assert resp.status_code == 302
+    await client.close()
