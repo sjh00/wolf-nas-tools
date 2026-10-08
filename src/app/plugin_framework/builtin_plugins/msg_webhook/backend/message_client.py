@@ -123,6 +123,8 @@ class Webhook(_IMessageClient):
 
     @classmethod
     def __parse_json(cls, json_str, attr_name):
+        if not json_str:
+            return None
         json_str = json_str.strip()
         if not json_str:
             return None
