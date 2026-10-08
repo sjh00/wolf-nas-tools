@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Base
@@ -91,3 +92,16 @@ class TestInsertSearchResults:
 
         rows = repo.get_search_results(session_id=session_id)
         assert len(rows) == 50
+
+
+class TestBuildUpsertStmt:
+    def test_postgres_infers_unique_index_not_constraint(self):
+        # 唯一性由唯一索引提供，PostgreSQL 不能用 ON CONFLICT ON CONSTRAINT，否则报
+        # constraint "uq_search_pageurl_site_session" for table "SEARCH_RESULT_INFO" does not exist
+        stmt = SearchRepository._build_upsert_stmt(
+            "postgresql",
+            [{"PAGEURL": "https://example.com/t/1", "SITE": "site-a", "SEARCH_SESSION_ID": "sess"}],
+        )
+        sql = str(stmt.compile(dialect=postgresql.dialect()))
+        assert 'ON CONFLICT ("PAGEURL", "SITE", "SEARCH_SESSION_ID") DO UPDATE' in sql
+        assert "ON CONSTRAINT" not in sql
