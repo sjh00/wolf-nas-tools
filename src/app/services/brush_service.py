@@ -210,14 +210,14 @@ class BrushService:
         )
 
     @staticmethod
-    def check_remove_rule(remove_rule: dict | None, params: dict):
+    def check_remove_rule(remove_rule: dict | None, params: dict, attr_unknown: bool = False):
         """委托给领域规则引擎：检查是否符合删种规则"""
-        return BrushRuleEngine.check_remove_rule(remove_rule=remove_rule, params=params)
+        return BrushRuleEngine.check_remove_rule(remove_rule=remove_rule, params=params, attr_unknown=attr_unknown)
 
     @staticmethod
-    def check_stop_rule(stop_rule: dict | None, params: dict):
+    def check_stop_rule(stop_rule: dict | None, params: dict, attr_unknown: bool = False):
         """委托给领域规则引擎：检查是否符合停种规则"""
-        return BrushRuleEngine.check_stop_rule(stop_rule=stop_rule, params=params)
+        return BrushRuleEngine.check_stop_rule(stop_rule=stop_rule, params=params, attr_unknown=attr_unknown)
 
     @staticmethod
     def format_rule_html(rules: dict | None) -> str:
