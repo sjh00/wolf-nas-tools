@@ -34,9 +34,7 @@ class BrushTorrentLifecycle:
         """删种规则是否依赖种子详情页属性（free/hr/pubdate），避免对每颗种子做无谓详情请求消耗站点限流."""
         if not remove_rule:
             return False
-        return any(
-            remove_rule.get(key) not in ("#", "N", None, "") for key in ("freestatus", "hr", "hr_time", "pubdate")
-        )
+        return any(remove_rule.get(key) not in ("#", "N", None, "") for key in BrushRuleEngine.REMOVE_ATTR_RULE_KEYS)
 
     def remove_task_torrents(self, taskid: int | None, taskinfo: dict) -> None:
         if taskinfo.get("state") != BrushTaskState.RUNNING.value:
@@ -179,6 +177,7 @@ class BrushTorrentLifecycle:
 
             enclosure = torrent_id_maps.get(torrent_id)
             torrent_url, torrent_attr = (None, {})
+            attr_unknown = False
             if enclosure and need_attr:
                 # 详情属性优先用详情页 URL（M-Team 等 enclosure 为一次性签名链接，无法提取 TID）
                 attr_url = torrent_page_url_maps.get(torrent_id) or enclosure
@@ -186,10 +185,14 @@ class BrushTorrentLifecycle:
                     site_info if isinstance(site_info, dict) else {}, attr_url, use_cache=False
                 )
                 if torrent_attr is None:
-                    # 详情属性抓取失败（限流/网络等）：不能据此判定“免费到期”而误删，
-                    # 本轮跳过该种子，下个周期再评估
-                    log.warn(f"[Brush]任务 {task_name} 种子 {torrent.name} 属性未知（详情抓取失败），跳过本轮删种判断")
-                    continue
+                    # 详情属性抓取失败（限流/网络等）：属性相关条件无法判定（避免按“非免费”误删），
+                    # 但做种时间/等待时间等与属性无关的条件仍需执行，故不跳过整颗种子。
+                    attr_unknown = True
+                    torrent_attr = {}
+                    log.warn(
+                        f"[Brush]任务 {task_name} 种子 {torrent.name} 属性未知（详情抓取失败），"
+                        f"本轮仅评估与属性无关的删种条件"
+                    )
 
             torrent_params = {
                 "seeding_time": torrent.seeding_time,
@@ -217,7 +220,9 @@ class BrushTorrentLifecycle:
                     }
                 )
 
-            need_delete, delete_type = BrushRuleEngine.check_remove_rule(remove_rule, torrent_params)
+            need_delete, delete_type = BrushRuleEngine.check_remove_rule(
+                remove_rule, torrent_params, attr_unknown=attr_unknown
+            )
             if need_delete:
                 delete_type_str = (
                     ",".join([d.value for d in delete_type]) if isinstance(delete_type, list) else delete_type.value
@@ -302,6 +307,7 @@ class BrushTorrentLifecycle:
                 if not enclosure:
                     continue
                 torrent_attr = {}
+                attr_unknown = False
                 if stopfree_enabled:
                     # 详情属性优先用详情页 URL（M-Team 等 enclosure 为一次性签名链接，无法提取 TID）
                     attr_url = torrent_page_url_maps.get(torrent_id) or enclosure
@@ -309,10 +315,13 @@ class BrushTorrentLifecycle:
                         site_info if isinstance(site_info, dict) else {}, attr_url, use_cache=False
                     )
                     if torrent_attr is None:
-                        # 属性未知（抓取失败）：不据此执行停种，等待下轮
-                        log.warn(f"[Brush]{torrent_name} 属性未知（详情抓取失败），跳过本轮停种判断")
-                        continue
-                    log.debug(f"[Brush]{torrent_url} 解析详情 {torrent_attr}")
+                        # 属性未知（抓取失败）：stopfree 无法判定而跳过，
+                        # 但分享率/做种时间等与属性无关的停种条件仍需执行。
+                        attr_unknown = True
+                        torrent_attr = {}
+                        log.warn(f"[Brush]{torrent_name} 属性未知（详情抓取失败），本轮仅评估与属性无关的停种条件")
+                    else:
+                        log.debug(f"[Brush]{torrent_url} 解析详情 {torrent_attr}")
 
                 need_stop, stop_type = BrushRuleEngine.check_stop_rule(
                     stop_rule,
@@ -323,6 +332,7 @@ class BrushTorrentLifecycle:
                         "avg_upspeed": torrent.avg_upload_speed,
                         **torrent_attr,
                     },
+                    attr_unknown=attr_unknown,
                 )
                 if need_stop:
                     if isinstance(stop_type, list):
