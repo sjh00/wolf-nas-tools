@@ -959,9 +959,14 @@ class MediaService:
         # 2.2 fallback：从父目录提取信息
         for idx, item in enumerate(items):
             if not parsed_list[idx]:
-                parsed_list[idx] = self._parser.parse(
-                    item["title"], f"{item['parent_name']} {item['parent_parent_name']}"
-                )
+                try:
+                    parsed_list[idx] = self._parser.parse(
+                        item["title"], f"{item['parent_name']} {item['parent_parent_name']}"
+                    )
+                except Exception as err:
+                    # 单个文件解析失败（如 LLM 限流）不应中断整批：标记为未解析继续
+                    log.warn(f"[Rmt]文件名解析失败，跳过：{str(err)}")
+                    parsed_list[idx] = None
             # 公共后处理（与 identify / identify_batch 一致）
             parsed_list[idx] = self._post_process(
                 parsed_list[idx],
