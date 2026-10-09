@@ -597,11 +597,15 @@ class SyncService:
 
     @staticmethod
     def rename_file(path: str, name: str) -> SimpleResultDTO:
-        """重命名文件/目录"""
+        """重命名文件/目录（仅允许同目录内重命名，杜绝路径穿越）"""
         if not path or not name:
             return SimpleResultDTO(success=True)
+        # 仅取文件名部分：name 含 / 或 ../ 或为绝对路径时不得逃逸原目录
+        safe_name = os.path.basename(str(name).strip())
+        if not safe_name or safe_name in (".", ".."):
+            return SimpleResultDTO(success=False, message="无效的文件名")
         try:
-            shutil.move(path, os.path.join(os.path.dirname(path), name))
+            shutil.move(path, os.path.join(os.path.dirname(path), safe_name))
             return SimpleResultDTO(success=True)
         except (ServiceError, RepositoryError, DomainError):
             raise

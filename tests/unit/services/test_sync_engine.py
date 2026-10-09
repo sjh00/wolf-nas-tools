@@ -170,6 +170,46 @@ class TestSyncEngine:
         eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
         eng._pipeline.process.assert_not_called()
 
+    def test_do_link_relinks_when_history_hit_but_target_missing(self, engine, tmp_path):
+        """回归 #193：目标媒体文件被删除后，命中历史也应清理并重新硬链接."""
+        eng, _, _ = engine
+        eng._history_repo.is_sync_in_history.return_value = True
+        src = tmp_path / "src"
+        src.mkdir()
+        dst_root = tmp_path / "dst"
+        dst_root.mkdir()
+        src_file = src / "movie.mkv"
+        src_file.write_text("x", encoding="utf-8")  # 目标 dst/movie.mkv 不存在
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(dst_root)
+        cfg.operation = "link"
+
+        eng._do_link(str(src_file), cfg)
+
+        eng._history_repo.delete_sync_history.assert_called_once_with(str(src_file), str(dst_root))
+        eng._transfer._execute.assert_called_once()
+
+    def test_do_link_skips_when_target_exists(self, engine, tmp_path):
+        eng, _, _ = engine
+        eng._history_repo.is_sync_in_history.return_value = True
+        src = tmp_path / "src"
+        src.mkdir()
+        dst_root = tmp_path / "dst"
+        dst_root.mkdir()
+        src_file = src / "movie.mkv"
+        src_file.write_text("x", encoding="utf-8")
+        (dst_root / "movie.mkv").write_text("y", encoding="utf-8")  # 目标存在
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(dst_root)
+        cfg.operation = "link"
+
+        eng._do_link(str(src_file), cfg)
+
+        eng._history_repo.delete_sync_history.assert_not_called()
+        eng._transfer._execute.assert_not_called()
+
     def test_transfer_sync_parallel(self, engine, tmp_path):
         """transfer_sync 应使用线程池并发处理多个文件."""
         from concurrent.futures import Future
