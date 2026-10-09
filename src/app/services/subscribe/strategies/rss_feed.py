@@ -1,5 +1,7 @@
 """RSS Feed 轮询策略 — 从站点 RSS Feed 收集资源并匹配订阅."""
 
+import re
+
 import log
 from app.core.exceptions import (
     DownloadError,
@@ -601,11 +603,21 @@ class RssFeedStrategy:
                     if not item.rssid:
                         continue
                     item_eps = item.get_episode_list() if hasattr(item, "get_episode_list") else []
-                    unknown_season_episode = not item_eps and getattr(item, "begin_season", None) is None
+                    raw_name = f"{getattr(item, 'org_string', '') or ''} {getattr(item, 'rev_string', '') or ''}"
+                    whole_season_hint = bool(
+                        re.search(r"complete|全集|合集|\bFin\b|全\s*\d+\s*[集话話]", raw_name, re.IGNORECASE)
+                    )
+                    # 整季由“季号 / 集数范围或清单 / 全集标记”识别；三者皆无才算无法判定
+                    known_season_episode = (
+                        bool(item_eps)
+                        or getattr(item, "begin_season", None) is not None
+                        or bool(getattr(item, "total_episodes", 0))
+                        or whole_season_hint
+                    )
                     if item.over_edition:
                         __update_over_edition(item)
-                    elif unknown_season_episode:
-                        # 季集都识别不到（如解析失败）：不得据此判定订阅完成，避免误判，交给下一轮
+                    elif not known_season_episode:
+                        # 季号与集号范围都无法识别：不据此判定订阅完成，避免误判，交给下一轮
                         log.warn(f"[RssFeedStrategy]{getattr(item, 'org_string', '')} 未识别到季集，不判定订阅完成")
                         __update_tv_rss(item, rss_no_exists.get(item.tmdb_id) if rss_no_exists else None)
                     elif not rss_no_exists or not rss_no_exists.get(item.tmdb_id):
