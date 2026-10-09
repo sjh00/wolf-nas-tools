@@ -97,10 +97,20 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="bracket_ep",
-        pattern=re.compile(r"\[(\d{1,4})(?:[vV]\d+)?\]"),
+        # 支持 [14]、[14v2]，以及 [14+sp14]/[06+sp06]（正片集号 + 同号特别篇，取正片集号）
+        pattern=re.compile(r"\[(\d{1,4})(?:[vV]\d+)?(?:\s*\+\s*[sS][pP]\d*)?\]"),
         category="episode",
         priority=80,
         confidence=0.9,
+        stop=True,
+    ),
+    ExtractionRule(
+        name="ep_plus_special",
+        # 裸集号 + 特别篇：14+sp14 / 06+SP06 → 取正片集号
+        pattern=re.compile(r"\b(\d{1,4})\s*\+\s*[sS][pP]\d*\b"),
+        category="episode",
+        priority=78,
+        confidence=0.85,
         stop=True,
     ),
     ExtractionRule(
