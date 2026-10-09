@@ -3,10 +3,11 @@
 import os
 import threading
 
+from app.core.settings import settings
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
 from app.infrastructure.http.retry import HttpRetryConfig
-from app.infrastructure.tmdb import get_rate_limiter
+from app.infrastructure.tmdb import get_rate_limiter, get_retry_handler
 from app.utils.config_tools import get_proxies
 
 from .as_obj import AsObj
@@ -15,6 +16,11 @@ from .exceptions import TMDbError
 # 语言必须线程隔离：TMDB_LANGUAGE 原用全局环境变量，多线程并发（转移/识别/别名补取）
 # 会相互覆盖，导致转移重命名拿到英文标题。改为线程本地，各线程互不影响。
 _tmdb_local = threading.local()
+
+
+def _tmdb_rate() -> str:
+    """TMDB 请求速率（令牌桶），来自 app.tmdb_rate 配置."""
+    return str((settings.get("app") or {}).get("tmdb_rate") or "40/10s")
 
 
 def _proxy_url_from_settings() -> str | None:
@@ -104,14 +110,19 @@ class TMDb:
         )
 
         client = self._get_client()
-        req = client.request(
-            method,
-            url,
-            data=data,
-            rate_limit_key="tmdb:api",
-            rate_limit_rate="4/s",
-            rate_limit_timeout=60,
-        )
+
+        def _do_request():
+            return client.request(
+                method,
+                url,
+                data=data,
+                rate_limit_key=f"tmdb:{self.api_key}",
+                rate_limit_rate=_tmdb_rate(),
+                rate_limit_timeout=60,
+            )
+
+        # 429/5xx 退避重试（尊重 Retry-After），由全局 TMDB 重试处理器执行
+        req = get_retry_handler().execute(_do_request)
 
         headers = req.headers
         if "X-RateLimit-Remaining" in headers:
