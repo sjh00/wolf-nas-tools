@@ -111,6 +111,7 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
         repo.update_rss_tv_lack(title=None, year=None, season=None, rssid=1, lack_episodes=[31, 32, 33])
         with mgr.session_scope() as db:
             row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row is not None
             assert row.LACK == 3
             assert row.CURRENT_EP == 31  # 首个待下载集推进
 
@@ -122,6 +123,7 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
         repo.update_rss_tv_lack(title=None, year=None, season=None, rssid=1, lack_episodes=list(range(31, 49)))
         with mgr.session_scope() as db:
             row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row is not None
             assert row.LACK == 18
             assert row.CURRENT_EP == 31
 
@@ -131,6 +133,7 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
         repo.update_rss_tv_lack(title=None, year=None, season=None, rssid=1, lack_episodes=[])
         with mgr.session_scope() as db:
             row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row is not None
             assert row.LACK == 0
             assert row.CURRENT_EP == 26  # 无缺失集时不改 current_ep（完成态由 STATE 表达）
 
@@ -143,6 +146,7 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
         repo.update_rss_tv(rssid=1, current_ep=5, total=48)
         with mgr.session_scope() as db:
             row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row is not None
             assert row.CURRENT_EP == 5
             assert row.LACK == 44  # 5..48 共 44 集
             ep = db.query(SubscribeTvEpisodes).filter(SubscribeTvEpisodes.RSSID == 1).first()
@@ -180,6 +184,7 @@ class TestDescTruncation:
         repo.update_rss_tv(rssid=1, desc=long_desc)
         with mgr.session_scope() as db:
             row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row is not None
             assert row.DESC == long_desc[:200]
             assert len(row.DESC) == 200
 
@@ -192,6 +197,7 @@ class TestDescTruncation:
             from app.db.models.subscribe import SubscribeMovies
 
             row = db.query(SubscribeMovies).filter(SubscribeMovies.ID == 1).first()
+            assert row is not None
             assert row.DESC == long_desc[:200]
             assert len(row.DESC) == 200
 

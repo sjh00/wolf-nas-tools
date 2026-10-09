@@ -253,7 +253,7 @@ class PluginRegistry:
                         else (existing_state.installed if existing_state else True)
                     )
                     new_manifest_dict = manifest.to_dict()
-                    stored_manifest_dict = JsonUtils.loads(existing_orm.MANIFEST_JSON or "{}")
+                    stored_manifest_dict = JsonUtils.loads(existing_orm.MANIFEST_JSON or "{}") if existing_orm else {}
                     normalized_stored = self._normalize_manifest_dict(stored_manifest_dict)
                     normalized_new = self._normalize_manifest_dict(new_manifest_dict)
                     if existing_orm and normalized_stored == normalized_new:

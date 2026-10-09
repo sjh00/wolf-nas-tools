@@ -31,7 +31,7 @@ class DistributedLockRepository(BaseRepository):
                 .values(TOKEN=token, INSTANCE=instance, EXPIRES_AT=expires)
             )
             result = db.execute(stmt)
-            if result.rowcount > 0:
+            if getattr(result, "rowcount", 0) > 0:
                 db.commit()
                 return True
 
@@ -55,7 +55,7 @@ class DistributedLockRepository(BaseRepository):
                 )
                 result = db.execute(stmt)
                 db.commit()
-                return result.rowcount > 0
+                return getattr(result, "rowcount", 0) > 0
         except Exception as e:
             log.error(f"[DbLock]释放锁异常: {lock_key}, {e}")
             return False
@@ -74,7 +74,7 @@ class DistributedLockRepository(BaseRepository):
                 )
                 result = db.execute(stmt)
                 db.commit()
-                return result.rowcount > 0
+                return getattr(result, "rowcount", 0) > 0
         except Exception as e:
             log.error(f"[DbLock]延长锁异常: {lock_key}, {e}")
             return False
