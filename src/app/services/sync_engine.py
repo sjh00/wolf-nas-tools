@@ -268,6 +268,11 @@ class SyncEngine:
             log.error(f"[Sync]{event_path} 同步失败：{e}")
 
     def _do_transfer(self, event_path: str, cfg: SyncPathConfig) -> None:
+        # 已转移过的路径（同步历史 / 转移黑名单）直接跳过，避免每个扫描周期重复处理与刷日志
+        if self._history_repo.is_sync_in_history(event_path, cfg.dest):
+            return
+        if self._transfer._blacklist.is_exists(event_path):
+            return
         if os.path.isdir(event_path):
             # 目录：仅当包含真实媒体文件时才交给转移流水线，
             # 避免空目录/仍在下载（仅 .part/.!qb）的目录每周期反复报错
