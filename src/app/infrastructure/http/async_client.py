@@ -196,6 +196,9 @@ class AsyncHttpClient:
         cache_bypass = kwargs.pop("cache_bypass", False)
 
         if self._rate_limiter and rate_limit_key and rate_limit_rate:
+            # 未显式指定超时时给有限默认值，避免桶耗尽时无限阻塞
+            if rate_limit_timeout is None:
+                rate_limit_timeout = 30.0
             acquired = self._rate_limiter.acquire(
                 key=rate_limit_key,
                 rate=rate_limit_rate,
@@ -268,11 +271,19 @@ class AsyncHttpClient:
     async def delete(self, url: str, **kwargs: Any) -> httpx2.Response:
         return await self.request("DELETE", url, **kwargs)
 
-    async def close(self) -> None:
+    def _release(self) -> None:
         if self._closed:
             return
         self._closed = True
         _pool.release(self._config)
+
+    async def close(self) -> None:
+        self._release()
+
+    def __del__(self):
+        # 兜底释放：调用方忘记 close 时，对象回收即归还连接池引用
+        with contextlib.suppress(Exception):
+            self._release()
 
     async def __aenter__(self):
         return self

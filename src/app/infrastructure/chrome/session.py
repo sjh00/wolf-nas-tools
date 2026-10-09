@@ -78,7 +78,15 @@ class BrowserSession(_BaseBrowserSession):
         # 浏览器并发闸门：占满时阻塞等待，避免 chrome 实例/标签页被挤爆
         self._slot = browser_slot()
         self._slot.__enter__()
-        self._ensure_session()
+        try:
+            self._ensure_session()
+        except Exception:
+            # __enter__ 抛异常时不会调用 __exit__，必须在此归还并发名额
+            slot = self._slot
+            self._slot = None
+            if slot is not None:
+                slot.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc: Any) -> None:

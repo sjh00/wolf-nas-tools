@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
 import uuid
@@ -140,7 +141,14 @@ class NexusModel(Model):
                         content = part.content if isinstance(part.content, str) else JsonUtils.dumps(part.content)
                         out.append({"role": "tool", "tool_call_id": part.tool_call_id, "content": content})
                     elif isinstance(part, RetryPromptPart):
-                        out.append({"role": "user", "content": part.content})
+                        # 带 tool_call_id 的重试提示按 tool 消息回填，保证与 assistant.tool_calls 配对
+                        if getattr(part, "tool_call_id", None):
+                            retry_content = (
+                                part.content if isinstance(part.content, str) else JsonUtils.dumps(part.content)
+                            )
+                            out.append({"role": "tool", "tool_call_id": part.tool_call_id, "content": retry_content})
+                        else:
+                            out.append({"role": "user", "content": part.content})
             elif isinstance(msg, ModelResponse):
                 text = "".join(p.content for p in msg.parts if isinstance(p, TextPart))
                 calls = [
@@ -198,6 +206,15 @@ class PydanticChatAgent:
         self._memory_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent-memory")
         # 按用户合并：同一用户仅保留一个待抽取任务，避免慢 LLM 抽取积压
         self._pending_extractions: set[str] = set()
+
+    def close(self) -> None:
+        """关闭内部线程池（热重载/释放时调用），避免 executor 泄漏."""
+        with contextlib.suppress(Exception):
+            self._memory_executor.shutdown(wait=False, cancel_futures=True)
+
+    def __del__(self):
+        with contextlib.suppress(Exception):
+            self.close()
 
     # 一次性操作动作：不作为稳定偏好抽取（订阅/下载/搜索等是即时指令，非长期偏好）
     _ACTION_INTENT = (
@@ -319,17 +336,18 @@ class PydanticChatAgent:
         on_token: Callable[[str], None] | None = None,
         reasoning: ReasoningConfig | None = None,
         channel: str = "",
+        on_reasoning: Callable[[str], None] | None = None,
+        on_tool_call: Callable[[str, dict, str], None] | None = None,
     ) -> Agent:
-        self._on_token = on_token
         if not get_provider():
             raise RuntimeError("Agent Provider 未配置")
         tools_schema = self._tool_executor.list_tools()
         model = NexusModel(
             self._svc,
             tools_schema,
-            on_token=self._on_token,
-            on_reasoning=self._on_reasoning,
-            on_tool_call=self._on_tool_call,
+            on_token=on_token,
+            on_reasoning=on_reasoning,
+            on_tool_call=on_tool_call,
             reasoning=reasoning,
         )
         tools = [self._make_tool(s, session_id, user_id, user_permissions, channel=channel) for s in tools_schema]
@@ -356,7 +374,6 @@ class PydanticChatAgent:
         key = MemoryKey(user_id=user_id or session_id, channel=channel, session_id=session_id)
 
         reasoning_parts: list[str] = []
-        self._reasoning_parts = reasoning_parts
 
         def _collect_reasoning(text: str) -> None:
             reasoning_parts.append(text)
@@ -384,9 +401,6 @@ class PydanticChatAgent:
                 }
             )
 
-        self._on_reasoning = _collect_reasoning
-        self._on_tool_call = _collect_tool_call
-
         instructions = ""
         if self._long_term:
             try:
@@ -404,6 +418,8 @@ class PydanticChatAgent:
                 on_token=on_token,
                 reasoning=reasoning,
                 channel=channel,
+                on_reasoning=_collect_reasoning,
+                on_tool_call=_collect_tool_call,
             )
             # 恢复会话历史：多轮对话上下文（checkpoint 持久化的 pydantic-ai 消息）
             message_history = self._load_checkpoint(session_id, user_id, channel)
