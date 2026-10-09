@@ -50,6 +50,12 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
             return []
         return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]
 
+    def get_by_tmdb(self, tmdb_id: int | str | None) -> list[DownloadHistoryEntity]:
+        rows = self._repo.get_download_history_by_tmdb(tmdb_id)
+        if not rows:
+            return []
+        return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]
+
     def get_by_path(self, path: str) -> DownloadHistoryEntity | None:
         row = self._repo.get_download_history_by_path(path)
         if not row:

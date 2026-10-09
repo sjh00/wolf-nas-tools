@@ -8,6 +8,7 @@ from app.domain.mediatypes import MediaType
 from app.events import Event
 from app.events.constants import SUBSCRIBE_FINISHED
 from app.events.payloads import SubscribeFinishedPayload
+from app.media import MediaInfo
 from app.services.subscribe.management.utils import tv_filter_signature
 
 
@@ -111,3 +112,87 @@ class SubscribeFinishService:
             f"{media.get_season_string()} 订阅完成，删除订阅..."
         )
         self._message.send_rss_finished_message(media_info=media, owner_user_id=getattr(rss[0], "USER_ID", None))
+
+    def finalize_tv_by_rssid(self, rssid: int | None, mtype: MediaType | None, delete_subscribe_fn) -> None:
+        """转移确认后按订阅行定稿：写历史、删订阅、联动兄弟、发通知。
+
+        与 finish_rss_subscribe 不同，无需完整 media 对象：转移事件仅携带 tmdb/季/集，
+        所需字段从订阅行恢复，避免依赖转移链路构造媒体。
+        """
+        if not rssid:
+            return
+        rss = self._tv_repo.get_all(rssid=rssid)
+        if not rss:
+            return
+        row = rss[0]
+        resolved_type = mtype or MediaType.TV
+        media = MediaInfo(type=resolved_type, tmdb_id=str(row.TMDBID or ""))
+        media.title = row.NAME
+        media.year = row.YEAR
+        season_str = str(row.SEASON).strip() if row.SEASON is not None else ""
+        if season_str.isdigit():
+            media.begin_season = int(season_str)
+        media.over_edition = bool(row.OVER_EDITION)
+        media.total_episodes = int(row.TOTAL or 0)
+        total = row.TOTAL or row.TOTAL_EP
+        owner_user_id = getattr(row, "USER_ID", None)
+        self._history_repo.upsert(
+            rssid=rssid,
+            rtype=MediaTypeMapper.to_tmdb(resolved_type),
+            name=row.NAME,
+            year=row.YEAR,
+            season=row.SEASON,
+            tmdbid=row.TMDBID,
+            image=row.IMAGE,
+            desc=row.DESC,
+            total=total,
+            start=row.CURRENT_EP,
+            user_id=owner_user_id,
+        )
+        delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
+        self._finish_sibling_tvs(row, media, delete_subscribe_fn)
+        self._event_bus.publish(
+            Event(
+                event_type=SUBSCRIBE_FINISHED,
+                payload=SubscribeFinishedPayload(media_info=media.to_dict(), rssid=rssid),
+            )
+        )
+        log.info(f"[Subscribe]{resolved_type.value} {media.get_title_string()} 订阅完成（转移确认），删除订阅...")
+        self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
+
+    def finalize_movie_by_rssid(self, rssid: int | None, delete_subscribe_fn) -> None:
+        """转移确认后按订阅行定稿电影订阅：写历史、删订阅、发通知。"""
+        if not rssid:
+            return
+        rss = self._movie_repo.get_all(rssid=rssid)
+        if not rss:
+            return
+        row = rss[0]
+        owner_user_id = getattr(row, "USER_ID", None)
+        over_edition = bool(getattr(row, "OVER_EDITION", False))
+        self._history_repo.upsert(
+            rssid=rssid,
+            rtype=MediaTypeMapper.to_tmdb(MediaType.MOVIE),
+            name=row.NAME,
+            year=row.YEAR,
+            tmdbid=row.TMDBID,
+            image=row.IMAGE,
+            desc=row.DESC,
+            user_id=owner_user_id,
+        )
+        delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
+        # 仅洗版电影完成后清理下载历史（允许后续升级重下）
+        if self._download_repo and row.TMDBID and over_edition:
+            self._download_repo.delete_by_tmdb(row.TMDBID, None)
+        media = MediaInfo(type=MediaType.MOVIE, tmdb_id=str(row.TMDBID or ""))
+        media.title = row.NAME
+        media.year = row.YEAR
+        media.over_edition = over_edition
+        self._event_bus.publish(
+            Event(
+                event_type=SUBSCRIBE_FINISHED,
+                payload=SubscribeFinishedPayload(media_info=media.to_dict(), rssid=rssid),
+            )
+        )
+        log.info(f"[Subscribe]movie {media.get_title_string()} 订阅完成（转移确认），删除订阅...")
+        self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)

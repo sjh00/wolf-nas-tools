@@ -71,3 +71,10 @@ def test_uninitialized_uses_current_ep_range():
     """缺失列表未初始化时，用订阅 current_ep 兜底构造初始范围"""
     lack, _state = _run(current_missing=None, transfer_eps=[5], total=12)
     assert isinstance(lack, list)
+
+
+def test_uninitialized_unknown_total_skips_update():
+    """缺失未初始化且总集数未知时不得误判完成（不写状态）"""
+    lack, state = _run(current_missing=None, transfer_eps=[5], total=0)
+    assert lack is None
+    assert state is None
