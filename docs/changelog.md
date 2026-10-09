@@ -1,5 +1,23 @@
 # 版本历史
 
+## v4.22.0 (2026-10-09)
+
+### 新增
+
+- 限流：支持 Redis 分布式并发限流，AI 模型调用按账号并发上限统一排队（`agent.max_concurrency`，默认 5）
+- 运维：新增慢请求日志（超过 `app.slow_request_ms` 默认 1000ms 记录 method/path/耗时）
+
+### 优化
+
+- 稳定性：API 限流中间件改为纯 ASGI 且判定移出事件循环、Redis 可用性加缓存，消除 Redis 抖动引发的整站间歇性超时
+- 数据库：连接池可配置并调大（`DATABASE__POOL_SIZE/MAX_OVERFLOW/POOL_TIMEOUT`），调度任务改用独立连接池（`DATABASE__SCHEDULER_*`）
+- TMDB：按 API Key 限流、速率可配（`app.tmdb_rate`，默认 40/10s），429/5xx 按 `Retry-After` 退避重试
+
+### 修复
+
+- 手动转移：填了 TMDB ID 仍报「无法查询到 TMDB 信息」——改为实时查询详情并纠正媒体类型
+- 媒体识别：AI 识别失败（如限流）降级为未识别，不再中断整批转移
+
 ## v4.21.11 (2026-10-08)
 
 ### 修复
