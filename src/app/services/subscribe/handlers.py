@@ -124,6 +124,14 @@ def handle_media_episode_transferred(event: Event) -> None:
             log.info(f"[Subscribe]电视剧 {payload.title} S{payload.season} 全部集数已下载完成")
             # 完成态不参与后续轮询；不调用 update_lack([])，避免写入空串导致后续读取 int("") 抛 ValueError
             tv_repo.update_state(title=None, year=None, season=None, rssid=rssid, state=SubscribeState.COMPLETED.value)
+            # 同媒体其他用户的订阅联动完成（共享媒体库；ADR-021 记账分离）。
+            # RSS 阶段不再删除订阅，该联动移交到转移落盘核定处。
+            subs = tv_repo.get_all(rssid=rssid)
+            if subs:
+                s = subs[0]
+                tv_repo.update_state(
+                    title=s.name, year=s.year, season=s.season, rssid=None, state=SubscribeState.COMPLETED.value
+                )
     except Exception as e:
         log.error(f"[Event]更新订阅进度失败：{e!s}")
 

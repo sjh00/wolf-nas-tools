@@ -1,5 +1,6 @@
 """Tests for app.services.subscribe coordinator, search engine, and strategies."""
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from app.domain.mediatypes import MediaType
@@ -309,6 +310,31 @@ class TestRssFeedStrategy:
         strategy.downloader.batch_download.return_value = ([], [])  # type: ignore[union-attr]
         strategy._download_matched_torrents([media], {})
         coord.try_acquire.assert_called_once()
+
+    def test_rss_download_does_not_finish_subscription(self):
+        """整季包下载后不删除订阅：完成一律由转移落盘文件核定。"""
+        strategy = self._make_strategy()
+        media = MagicMock()
+        media.type = MediaType.TV
+        media.begin_episode = None
+        media.enclosure = "http://site/a.torrent"
+        media.page_url = "http://site/page"
+        media.rssid = 5
+        media.over_edition = False
+        media.tmdb_id = 1
+        media.begin_season = 1
+        media.total_episodes = 12
+        media.get_episode_list.return_value = list(range(1, 13))
+        media.res_order = 1
+        media.site_order = 1
+        media.seeders = 1
+        downloader = cast(Any, strategy.downloader)
+        downloader.get_torrent_episodes.return_value = (list(range(1, 13)), "/tmp/a.torrent")
+        downloader.batch_download.return_value = ([media], {})
+
+        strategy._download_matched_torrents([media], {1: None})
+
+        cast(Any, strategy.subscribe).finish_rss_subscribe.assert_not_called()
 
     def test_get_default_rss_sites_no_system_config(self):
         strategy = self._make_strategy()

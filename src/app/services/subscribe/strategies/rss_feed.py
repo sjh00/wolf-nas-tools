@@ -1,7 +1,5 @@
 """RSS Feed 轮询策略 — 从站点 RSS Feed 收集资源并匹配订阅."""
 
-import re
-
 import log
 from app.core.exceptions import (
     DownloadError,
@@ -466,25 +464,7 @@ class RssFeedStrategy:
             return
         if self.downloader is None:
             return
-        finished_rss_torrents = []
         updated_rss_torrents = []
-
-        def __finish_rss(download_item):
-            if not download_item:
-                return
-            if not download_item.rssid or download_item.rssid in finished_rss_torrents:
-                return
-            finished_rss_torrents.append(download_item.rssid)
-            if self.subscribe is None:
-                return
-            self.subscribe.finish_rss_subscribe(rssid=download_item.rssid, media=download_item)
-            # 同媒体其他用户的订阅联动完成（共享媒体库已满足，ADR-021 5.4 记账分离）
-            for sibling_id in getattr(download_item, "sibling_rssids", None) or []:
-                if sibling_id in finished_rss_torrents:
-                    continue
-                finished_rss_torrents.append(sibling_id)
-                log.info(f"[RssFeedStrategy] 联动完成兄弟订阅 rssid={sibling_id}（同一媒体共享下载）")
-                self.subscribe.finish_rss_subscribe(rssid=sibling_id, media=download_item)
 
         def __update_tv_rss(download_item, left_media):
             if not download_item or not left_media:
@@ -602,28 +582,12 @@ class RssFeedStrategy:
                 for item in download_items:
                     if not item.rssid:
                         continue
-                    item_eps = item.get_episode_list() if hasattr(item, "get_episode_list") else []
-                    raw_name = f"{getattr(item, 'org_string', '') or ''} {getattr(item, 'rev_string', '') or ''}"
-                    whole_season_hint = bool(
-                        re.search(r"complete|全集|合集|\bFin\b|全\s*\d+\s*[集话話]", raw_name, re.IGNORECASE)
-                    )
-                    # 整季由“季号 / 集数范围或清单 / 全集标记”识别；三者皆无才算无法判定
-                    known_season_episode = (
-                        bool(item_eps)
-                        or getattr(item, "begin_season", None) is not None
-                        or bool(getattr(item, "total_episodes", 0))
-                        or whole_season_hint
-                    )
                     if item.over_edition:
                         __update_over_edition(item)
-                    elif not known_season_episode:
-                        # 季号与集号范围都无法识别：不据此判定订阅完成，避免误判，交给下一轮
-                        log.warn(f"[RssFeedStrategy]{getattr(item, 'org_string', '')} 未识别到季集，不判定订阅完成")
-                        __update_tv_rss(item, rss_no_exists.get(item.tmdb_id) if rss_no_exists else None)
-                    elif not rss_no_exists or not rss_no_exists.get(item.tmdb_id):
-                        __finish_rss(item)
                     else:
-                        __update_tv_rss(item, rss_no_exists.get(item.tmdb_id))
+                        # 订阅完成一律由转移落盘文件核定（subscribe/handlers.handle_media_episode_transferred）；
+                        # RSS 阶段只更新缺失，绝不在此删除订阅，避免按标题/预测误判完成（顾头不顾尾）。
+                        __update_tv_rss(item, rss_no_exists.get(item.tmdb_id) if rss_no_exists else None)
                 log.info(f"[RssFeedStrategy] 实际下载了 {len(download_items)} 个资源")
             else:
                 log.info("[RssFeedStrategy] 未下载到任何资源")

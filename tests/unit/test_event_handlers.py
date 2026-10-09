@@ -157,6 +157,7 @@ class TestSubscribeHandlers:
 
         mock_repo = MagicMock()
         mock_repo.get_id.return_value = 42
+        mock_repo.get_all.return_value = []
         mock_ep_repo = MagicMock()
         mock_ep_repo.get.return_value = [1, 2, 3, 4, 5]
 
@@ -179,3 +180,33 @@ class TestSubscribeHandlers:
         mock_repo.update_state.assert_called_with(title=None, year=None, season=None, rssid=42, state="C")
         # 完成时不再调用 update_lack（避免写入空串导致后续 int("") 崩溃）
         mock_repo.update_lack.assert_not_called()
+
+    def test_handle_media_episode_transferred_completes_siblings(self):
+        """完成时联动同媒体其他用户的订阅（共享媒体库，转移到此核定）。"""
+        from types import SimpleNamespace
+
+        from app.services.subscribe.handlers import handle_media_episode_transferred
+
+        mock_repo = MagicMock()
+        mock_repo.get_id.return_value = 42
+        mock_repo.get_all.return_value = [SimpleNamespace(name="Test TV", year="2024", season="1")]
+        mock_ep_repo = MagicMock()
+        mock_ep_repo.get.return_value = [1, 2, 3]
+
+        with (
+            patch("app.services.subscribe.handlers.SubscribeTvRepositoryAdapter", return_value=mock_repo),
+            patch("app.services.subscribe.handlers.SubscribeTvEpisodeRepositoryAdapter", return_value=mock_ep_repo),
+        ):
+            event = Event(
+                event_type=MEDIA_EPISODE_TRANSFERRED,
+                payload={
+                    "tmdb_id": "123",
+                    "title": "Test TV",
+                    "season": "1",
+                    "episodes": [1, 2, 3],
+                    "total_episodes": 3,
+                },
+            )
+            handle_media_episode_transferred(event)
+
+        mock_repo.update_state.assert_any_call(title="Test TV", year="2024", season="1", rssid=None, state="C")
