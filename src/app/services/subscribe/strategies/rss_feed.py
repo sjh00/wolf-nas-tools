@@ -600,8 +600,14 @@ class RssFeedStrategy:
                 for item in download_items:
                     if not item.rssid:
                         continue
+                    item_eps = item.get_episode_list() if hasattr(item, "get_episode_list") else []
+                    unknown_season_episode = not item_eps and getattr(item, "begin_season", None) is None
                     if item.over_edition:
                         __update_over_edition(item)
+                    elif unknown_season_episode:
+                        # 季集都识别不到（如解析失败）：不得据此判定订阅完成，避免误判，交给下一轮
+                        log.warn(f"[RssFeedStrategy]{getattr(item, 'org_string', '')} 未识别到季集，不判定订阅完成")
+                        __update_tv_rss(item, rss_no_exists.get(item.tmdb_id) if rss_no_exists else None)
                     elif not rss_no_exists or not rss_no_exists.get(item.tmdb_id):
                         __finish_rss(item)
                     else:
