@@ -1,6 +1,6 @@
 import threading
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import log
 from app.core.settings import settings
@@ -90,7 +90,9 @@ class SynologyChat(_IMessageClient):
             else:
                 web_port = getattr(app_cfg, "web_port", 3000)
             _api_key = self._apikey_service.get_or_create_system_key("MessageWebhook")
-            ds_url = f"http://127.0.0.1:{web_port}/api/plugin-framework/webhooks/msg_synologychat/callback?apikey={_api_key}"
+            ds_url = (
+                f"http://127.0.0.1:{web_port}/api/plugin-framework/webhooks/msg_synologychat/callback?apikey={_api_key}"
+            )
             self._polling_stop.clear()
             self._polling_future = ThreadExecutor(name="synology_poll").submit(self._start_polling, ds_url)
 
@@ -211,16 +213,33 @@ class SynologyChat(_IMessageClient):
             return False, str(msg_e)
 
     def __get_bot_users(self):
-        if not self._domain or not self._token:
+        if not self._webhook_url:
             return []
-        req_url = (
-            f"{self._domain}/webapi/entry.cgi?api=SYNO.Chat.External&method=user_list&version=2&token={self._token}"
-        )
         try:
+            # 基于 webhook URL 本身构造 user_list 地址，保留路径前缀（兼容反向代理子路径），
+            # 并优先使用 URL 内的 token（与机器人一致），避免单独配置的 token 不一致导致拿不到用户
+            parsed = urlsplit(self._webhook_url)
+            token = (parse_qs(parsed.query).get("token") or [None])[0] or self._token
+            if not token:
+                log.warn("[SynologyChat]缺少 token，无法获取机器人可见用户")
+                return []
+            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            req_url = f"{base}?api=SYNO.Chat.External&method=user_list&version=2&token={quote(str(token))}"
             ret = self._req.get(url=req_url)
-            users = ret.json().get("data", {}).get("users", []) or []
-            return [user.get("user_id") for user in users]
-        except Exception:
+            body = ret.json()
+            if not body or body.get("success") is False:
+                log.warn(f"[SynologyChat]获取机器人可见用户失败: {body}")
+                return []
+            users = (body.get("data") or {}).get("users") or []
+            user_ids = [user.get("user_id") for user in users if user.get("user_id")]
+            if not user_ids:
+                log.warn(
+                    f"[SynologyChat]机器人当前没有对任何用户可见，请在 Synology Chat 中将该机器人添加/分享给用户；"
+                    f"接口返回: {body}"
+                )
+            return user_ids
+        except Exception as e:
+            log.error(f"[SynologyChat]获取机器人可见用户异常: {e}")
             return []
 
     def __send_request(self, payload_data):
