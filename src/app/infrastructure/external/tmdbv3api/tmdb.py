@@ -93,6 +93,9 @@ class TMDb:
 
     @staticmethod
     def _get_obj(result, key="results", all_details=False):
+        # 响应异常（None/非 dict）时返回空列表，避免下游 result[key] 报 'NoneType' is not subscriptable
+        if not isinstance(result, dict):
+            return []
         if "success" in result and result["success"] is False:
             raise TMDbError(result["status_message"])
         if all_details is True or key is None:
@@ -130,7 +133,12 @@ class TMDb:
         if "X-RateLimit-Reset" in headers:
             self._reset = int(headers["X-RateLimit-Reset"])
 
-        json_data = req.json()
+        try:
+            json_data = req.json()
+        except ValueError as e:
+            raise TMDbError(f"TMDB 返回非 JSON 响应：{e}") from e
+        if not isinstance(json_data, dict):
+            raise TMDbError("TMDB 返回空/异常响应")
 
         if "page" in json_data:
             os.environ["PAGE"] = str(json_data["page"])
