@@ -19,6 +19,13 @@ def mock_redis_unavailable():
 
 
 class TestRateLimitMiddleware:
+    def test_is_pure_asgi_not_base_http(self):
+        # 回归：中间件必须是纯 ASGI，限流判定放到线程池，
+        # 避免同步 Redis 调用阻塞事件循环导致整站间歇性超时
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        assert not issubclass(RateLimitMiddleware, BaseHTTPMiddleware)
+
     def test_exempt_paths_bypass_limit(self, mock_redis_unavailable):
         app = FastAPI()
         app.add_middleware(RateLimitMiddleware, rate="1/m")
