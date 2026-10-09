@@ -13,6 +13,7 @@ DownloadCore - 下载核心业务逻辑
 
 import os
 import threading
+import time
 from typing import Any
 
 import log
@@ -319,6 +320,10 @@ class DownloadCore:
                     downloader_id=downloader_id, ids=ids
                 ),
                 return_items=download_items,
+                get_torrent_episodes_by_tid_callback=self.get_torrent_episodes_by_tid,
+                remove_torrents_callback=lambda ids, downloader_id: self.delete_torrents(
+                    downloader_id=downloader_id, ids=ids, delete_file=False
+                ),
             )
 
         left_medias = [item for item in media_list if item not in download_items]
@@ -564,7 +569,11 @@ class DownloadCore:
                 proxy=site_info.get("proxy") or False,
             )
             if not files:
-                log.error(f"[Downloader]读取种子文件集数出错：{retmsg}")
+                if str(url).startswith("magnet:"):
+                    # 磁力链接无文件清单属正常情况：加入下载器后再读取（见 get_torrent_episodes_by_tid）
+                    log.debug(f"[Downloader]磁力链接无文件清单，跳过预解析：{str(url)[:80]}...")
+                else:
+                    log.error(f"[Downloader]读取种子文件集数出错：{retmsg}")
                 if file_path:
                     Torrent.delete_torrent_file(file_path)
                 self._episode_cache.set(cache_key, ([], None))
@@ -579,6 +588,33 @@ class DownloadCore:
                 episodes = list(set(episodes).union(set(meta.get_episode_list())))
             self._episode_cache.set(cache_key, (list(episodes), file_path))
             return episodes, file_path
+
+    def get_torrent_episodes_by_tid(self, tid, downloader_id=None, page_url=None, timeout: float = 15.0) -> list:
+        """磁力等无文件清单的场景：任务加入下载器后读取其解析出的文件清单并解析集数。
+
+        轮询等待下载器取回元数据（默认最多 15s），解析不到则返回空列表（调用方按整包处理）。
+        """
+        delay = 0.5
+        waited = 0.0
+        files = None
+        while waited < timeout:
+            files = self.get_files(tid=tid, downloader_id=downloader_id)
+            if files:
+                break
+            time.sleep(delay)
+            waited += delay
+        if not files:
+            return []
+        episodes: list = []
+        for f in files:
+            name = f.get("name") if isinstance(f, dict) else None
+            if not name or os.path.splitext(name)[-1].lower() not in RMT_MEDIAEXT:
+                continue
+            meta = meta_info(name)
+            if not meta.begin_episode:
+                continue
+            episodes = list(set(episodes).union(set(meta.get_episode_list())))
+        return episodes
 
     # ---------- 历史记录 / 配置 CRUD 代理 ----------
 
