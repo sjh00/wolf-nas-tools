@@ -46,6 +46,7 @@ from app.db.engine import get_engine
 from app.di.builders.context_builder import build_app_context
 from app.downloader.client import init_clients as init_downloaders
 from app.indexer.client import init_clients as init_indexers
+from app.infrastructure.http.slow_request_middleware import SlowRequestLoggingMiddleware
 from app.infrastructure.rate_limiter.middleware import RateLimitMiddleware
 from app.infrastructure.redis import RedisStore
 from app.infrastructure.thread import ThreadExecutor
@@ -177,6 +178,11 @@ app.add_middleware(
 
 # 速率限制中间件：Redis 可用时分布式限流，否则降级为内存限流
 app.add_middleware(RateLimitMiddleware, rate="60/m")
+
+
+# 慢请求日志：超过阈值（app.slow_request_ms，默认 1000ms）打印告警
+_slow_request_ms = float((settings.get("app") or {}).get("slow_request_ms", 1000))
+app.add_middleware(SlowRequestLoggingMiddleware, slow_ms=_slow_request_ms)
 
 
 @app.middleware("http")
