@@ -27,6 +27,7 @@ class TransferHistoryEntity:
     dest_path: str
     dest_filename: str
     date: str
+    dst_backend: str | None = None
 
     @property
     def is_renamed(self) -> bool:
@@ -78,6 +79,7 @@ class TransferHistoryEntity:
             dest_path=orm_model.DEST_PATH or "",
             dest_filename=orm_model.DEST_FILENAME or "",
             date=orm_model.DATE or "",
+            dst_backend=getattr(orm_model, "DST_BACKEND", None),
         )
 
     def __getattr__(self, name: str) -> Any:

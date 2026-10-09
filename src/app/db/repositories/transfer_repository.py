@@ -237,6 +237,18 @@ class TransferRepository(BaseRepository):
                 is not None
             )
 
+    def get_transfer_history_by_source_full_path(self, source_full_path: str) -> TRANSFERHISTORY | None:
+        """据源文件全路径取最近一条转移记录（用于校验目标是否仍存在）."""
+        path = os.path.dirname(source_full_path)
+        filename = os.path.basename(source_full_path)
+        with self.session() as db:
+            return (
+                db.query(TRANSFERHISTORY)
+                .filter(TRANSFERHISTORY.SOURCE_PATH == path, TRANSFERHISTORY.SOURCE_FILENAME == filename)
+                .order_by(TRANSFERHISTORY.DATE.desc())
+                .first()
+            )
+
     def delete_transfer_log_by_id(self, logid: int) -> None:
         """
         根据logid删除记录

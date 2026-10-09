@@ -64,6 +64,12 @@ class TransferHistoryRepositoryAdapter:
     def delete_sync_history(self, path: str, dest: str) -> None:
         self._repo.delete_sync_history(path, dest)
 
+    def get_by_source(self, source_full_path: str) -> TransferHistoryEntity | None:
+        row = self._repo.get_transfer_history_by_source_full_path(source_full_path)
+        if not row:
+            return None
+        return TransferHistoryEntity.from_orm(row)
+
     # 兼容旧Repository方法名
     def get_transfer_info_by(
         self, tmdbid: int | None, season: str | None = None, season_episode: str | None = None
