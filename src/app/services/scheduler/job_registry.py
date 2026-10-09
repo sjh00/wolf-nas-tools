@@ -8,6 +8,7 @@ from apscheduler.jobstores.base import JobLookupError
 
 import log
 from app.core.exceptions import RepositoryError, ServiceError
+from app.db.engine import scheduler_engine_context
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.services.scheduler.models import TaskConfig
 from app.utils import ExceptionUtils
@@ -33,7 +34,9 @@ class JobRegistry:
                 log.info(f"[Scheduler]任务 {job_id} 跳过执行（锁被占用）")
                 return None
             try:
-                return func(*args, **kwargs)
+                # 调度任务使用独立连接池，避免与 API 请求争用同一连接池
+                with scheduler_engine_context():
+                    return func(*args, **kwargs)
             finally:
                 try:
                     lock.release()

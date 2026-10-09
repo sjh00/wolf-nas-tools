@@ -17,7 +17,12 @@ from sqlalchemy import text
 import log
 from app.core.root_path import get_project_root
 from app.core.settings import settings
-from app.db.engine import get_engine, get_session_factory
+from app.db.engine import (
+    get_engine,
+    get_engine_override,
+    get_session_factory,
+    get_session_factory_override,
+)
 from app.db.models import Base
 from app.db.sql_adapter import get_sql_adapter
 
@@ -42,14 +47,20 @@ class SessionManager:
         self._engine = get_engine()
         self._factory = get_session_factory()
 
+    def _resolve_factory(self):
+        """调度任务上下文存在时使用其专用工厂，否则用本实例的工厂"""
+        override = get_session_factory_override()
+        return override if override is not None else self._factory
+
     @property
     def engine(self):
-        return self._engine
+        override = get_engine_override()
+        return override if override is not None else self._engine
 
     @property
     def session(self):
         """创建一个新的 Session。调用方必须负责 close。"""
-        return self._factory()
+        return self._resolve_factory()()
 
     @contextmanager
     def session_scope(self):
@@ -57,7 +68,7 @@ class SessionManager:
         事务范围的 session 上下文管理器。
         自动 commit/rollback/close，确保连接及时归还连接池。
         """
-        sess = self._factory()
+        sess = self._resolve_factory()()
         try:
             yield sess
             sess.commit()
