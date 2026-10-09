@@ -54,12 +54,16 @@ class SyncService:
         media_cache: MediaCache,
         thread_executor: ThreadExecutor,
         storage_backend_repo: StorageBackendRepositoryAdapter,
+        media_service=None,
     ):
         self._sync = sync
         self._filetransfer = filetransfer
         self._media_cache = media_cache
         self._thread_executor = thread_executor
         self._storage_backend_repo = storage_backend_repo
+        # 手动转移需实时按 TMDB ID 查询详情（媒体服务会实时请求并回写缓存），
+        # 不能只依赖只读缓存，否则缓存未命中时报「识别失败，无法查询到TMDB信息」
+        self._media_service = media_service
 
     # ---------- 同步目录校验 ----------
 
@@ -265,17 +269,42 @@ class SyncService:
     def _resolve_manual_tmdb_info(self, media_type, tmdbid):
         """手动转移解析 TMDB 信息；类型选错（如电视剧按电影）时回退另一类型.
 
-        返回 (tmdb_info, media_type)；回退命中时返回纠正后的类型，避免入库到错误目录。
+        优先**实时查询**（不依赖缓存是否命中），返回 (tmdb_info, media_type)；
+        回退命中时返回纠正后的类型，避免入库到错误目录。
         """
         primary = media_type or MediaType.MOVIE
-        info = self._media_cache.get_tmdb_info(mtype=primary, tmdbid=tmdbid)
-        if info:
-            return info, primary
+        alternates = [primary]
         alt = MediaType.TV if primary == MediaType.MOVIE else MediaType.MOVIE
-        info = self._media_cache.get_tmdb_info(mtype=alt, tmdbid=tmdbid)
-        if info:
-            return info, alt
+        if alt not in alternates:
+            alternates.append(alt)
+        for mtype in alternates:
+            info = self._fetch_tmdb_info(mtype, tmdbid)
+            if info:
+                return info, self._media_type_from_info(info, mtype)
         return None, primary
+
+    def _fetch_tmdb_info(self, mtype, tmdbid):
+        """按 TMDB ID 查询详情：媒体服务实时查询优先，回退只读缓存"""
+        media_service = getattr(self, "_media_service", None)
+        if media_service is not None:
+            try:
+                return media_service.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
+            except Exception as err:
+                log.warn(f"[Rmt]查询TMDB详情失败：{str(err)}")
+                return None
+        return self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
+
+    @staticmethod
+    def _media_type_from_info(info, fallback):
+        """以 TMDB 详情里的 media_type 为准纠正类型，缺失时用回退值"""
+        mtype = info.get("media_type") if isinstance(info, dict) else None
+        if isinstance(mtype, MediaType):
+            return mtype
+        if mtype:
+            parsed = MediaType.from_string(str(mtype))
+            if parsed != MediaType.UNKNOWN:
+                return parsed
+        return fallback
 
     def _submit_manual_transfer(
         self,
