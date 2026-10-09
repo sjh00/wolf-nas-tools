@@ -118,14 +118,14 @@ class SearchRepository(BaseRepository):
                 }
                 if session_id:
                     mapping["SEARCH_SESSION_ID"] = session_id
-                if user_id:
+                if user_id is not None:
                     mapping["USER_ID"] = str(user_id)
                 mapping["CREATED_AT"] = datetime.now(timezone.utc).replace(tzinfo=None)
                 mappings.append(mapping)
 
             # 按 DB 唯一约束 (PAGEURL, SITE, SEARCH_SESSION_ID) 去重
             # MySQL 唯一键为 PAGEURL 前缀索引（191 字符），其余库使用完整列
-            dialect = inspect(db.bind).dialect.name
+            dialect = inspect(db.get_bind()).dialect.name
             pageurl_prefix = 191 if dialect == "mysql" else None
             deduped = {}
             for m in mappings:

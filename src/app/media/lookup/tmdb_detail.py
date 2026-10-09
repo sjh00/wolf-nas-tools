@@ -16,14 +16,18 @@ class TmdbDetail:
             mtype = MediaType.UNKNOWN
         if language:
             self.client.set_language(language)
-        cached = self.client.redis_cache.get_tmdb_info(mtype, tmdbid, language, extra=append_to_response or "")
+        # 缓存键用“实际生效语言”：language 未显式传入时取线程本地语言（可能已被调用方 set_language），
+        # 与默认语言相同则沿用 default 键，避免跨语言污染
+        active_lang = getattr(self.client.tmdb, "language", None) if self.client.tmdb else None
+        cache_lang = language or (active_lang if active_lang and active_lang != self.client._default_language else None)
+        cached = self.client.redis_cache.get_tmdb_info(mtype, tmdbid, cache_lang, extra=append_to_response or "")
         if cached:
             log.debug(f"[Meta]从缓存获取TMDB信息: {mtype.value}/{tmdbid}")
             if language:
                 self.client.set_language()
             return cached
         deduper = get_deduper()
-        cache_key = f"tmdb_info:{mtype.value}:{tmdbid}:{language or 'default'}:{append_to_response or ''}"
+        cache_key = f"tmdb_info:{mtype.value}:{tmdbid}:{cache_lang or 'default'}:{append_to_response or ''}"
 
         def _fetch():
             if not self.client.tmdb:
@@ -39,8 +43,9 @@ class TmdbDetail:
                     info["media_type"] = MediaType.TV
             if info:
                 info["genre_ids"] = get_genre_ids_from_detail(info.get("genres"))
-                info = update_tmdbinfo_cn_title(info, self.client._default_language)
-            self.client.redis_cache.set_tmdb_info(mtype, tmdbid, info, language, extra=append_to_response or "")
+                # 以本次实际语言决定是否补中文名：language="en" 时不得覆盖为中文
+                info = update_tmdbinfo_cn_title(info, language or active_lang or self.client._default_language)
+            self.client.redis_cache.set_tmdb_info(mtype, tmdbid, info, cache_lang, extra=append_to_response or "")
             return info
 
         result = deduper.execute(cache_key, _fetch)
