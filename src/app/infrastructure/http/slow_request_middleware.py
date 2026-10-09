@@ -25,18 +25,24 @@ class SlowRequestLoggingMiddleware:
 
         start = time.perf_counter()
         status = 0
+        content_type = ""
 
         async def _send(message: Message) -> None:
-            nonlocal status
+            nonlocal status, content_type
             if message["type"] == "http.response.start":
                 status = message.get("status", 0)
+                for key, value in message.get("headers", []):
+                    if key.lower() == b"content-type":
+                        content_type = value.decode("latin-1", "ignore")
             await send(message)
 
         try:
             await self.app(scope, receive, _send)
         finally:
             duration_ms = (time.perf_counter() - start) * 1000
-            if duration_ms >= self._slow_ms:
+            # SSE/流式响应天生长连接，耗时=连接存活时长，不作为慢请求告警（避免噪声）
+            is_stream = "text/event-stream" in content_type
+            if duration_ms >= self._slow_ms and not is_stream:
                 method = scope.get("method", "")
                 path = scope.get("path", "")
                 client = scope.get("client")
