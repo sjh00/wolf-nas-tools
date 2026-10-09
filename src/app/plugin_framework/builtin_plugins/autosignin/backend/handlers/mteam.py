@@ -28,6 +28,7 @@ class MTeam(SiteSigninHandler):
     site_id = "mteam"
     _API_PATH = "/api/member/updateLastBrowse"
     _FALLBACK_SECRET = "HLkPcWmycL57mfJt"
+    _DEFAULT_WEBVERSION = "2000"
 
     def __init__(self, plugin_ctx, rate_limiter=None):
         super().__init__(plugin_ctx, rate_limiter)
@@ -48,10 +49,13 @@ class MTeam(SiteSigninHandler):
         jwt = local_storage.get("auth")
         did = local_storage.get("did")
         visitor_id = local_storage.get("visitorId")
-        # localStorage 无 webversion 时使用当前站点前端版本
-        webversion = local_storage.get("webversion") or "1170"
         if not jwt:
             return SigninResult.fail(site, "localStorage auth 为空")
+        # 设备指纹必须与浏览器一致：缺任一项会显著提高风控命中率（切勿空发）
+        if not did or not visitor_id:
+            return SigninResult.fail(site, "localStorage 缺少 did/visitorId，请在真实浏览器登录后同步 CookieCloud")
+        # webversion 优先用浏览器同步值，缺失时回退当前站点前端版本（避免写死旧版本导致指纹不一致）
+        webversion = local_storage.get("webversion") or self._DEFAULT_WEBVERSION
 
         home_url = self._resolve_home_url(site_def)
         secret = self._fetch_secret(home_url, site) or self._FALLBACK_SECRET
@@ -65,15 +69,15 @@ class MTeam(SiteSigninHandler):
             "accept": "application/json, text/plain, */*",
             "authorization": jwt,
             "cache-control": "no-cache",
-            "did": did or "",
+            "did": did,
             "dnt": "1",
             "origin": home_url,
             "pragma": "no-cache",
             "priority": "u=1, i",
-            "referer": f"{home_url}/login",
+            "referer": f"{home_url}/index",
             "ts": str(timestamp_s),
             "user-agent": ctx.ua or get_ua(),
-            "visitorid": visitor_id or "",
+            "visitorid": visitor_id,
             "webversion": webversion,
         }
         # 浏览器指纹类请求头（sec-ch-ua / accept-language / sec-fetch-* 等）取站点维护中维护的 headers
@@ -196,6 +200,11 @@ class MTeam(SiteSigninHandler):
             # 登录态(JWT)过期：切勿自动重新登录（密码/浏览器登录会触发站点风控）。
             # 提示用户在真实浏览器登录后同步 CookieCloud localStorage 即可静默续期
             return SigninResult.fail(site, "M-Team 登录态已过期，请在真实浏览器重新登录并同步 CookieCloud")
+        # 风控：同一会话在其它环境/IP 被使用会触发“疑似登录凭证泄露”并吊销，需重新登录
+        if any(k in message for k in ("泄露", "吊销", "異常", "异常登录")) or "revok" in message_lower:
+            return SigninResult.fail(
+                site, "M-Team 判定登录凭证异常并吊销会话，请在真实浏览器重新登录（勿与自动化并发）后同步 CookieCloud"
+            )
         if "重复" in message or "already" in message_lower or "frequently" in message_lower:
             return SigninResult.already(site)
 
