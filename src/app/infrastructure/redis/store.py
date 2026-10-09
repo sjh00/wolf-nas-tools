@@ -1,6 +1,7 @@
 """Redis 存储 — 连接管理与键值/哈希/列表/有序集合/Stream 操作."""
 
 import threading
+import time
 from typing import Any
 
 import log
@@ -13,16 +14,25 @@ redis_cfg = settings.redis
 
 
 class RedisStore:
+    # 可用性快速路径有效期（秒）：避免每次操作都 PING，Redis 抖动时不再逐请求阻塞调用方
+    _RECHECK_INTERVAL = 5.0
+
     def __init__(self):
         self._client: StrictRedis | None = None
         self._available = False
+        self._last_ok = 0.0
         self._lock = threading.RLock()
 
     def _ensure_connection(self) -> StrictRedis | None:
         with self._lock:
+            now = time.time()
             if self._available and self._client is not None:
+                # 快速路径：近期已确认可用则直接复用，不再 PING
+                if now - self._last_ok < self._RECHECK_INTERVAL:
+                    return self._client
                 try:
                     self._client.ping()
+                    self._last_ok = now
                     return self._client
                 except RedisError:
                     self._available = False
@@ -40,6 +50,7 @@ class RedisStore:
                     )
                     self._client.ping()
                     self._available = True
+                    self._last_ok = time.time()
                     log.debug("RedisStore 连接成功")
                     return self._client
                 except RedisError as e:
@@ -290,6 +301,18 @@ class RedisStore:
             return result if isinstance(result, int) else 0
         except RedisError as e:
             log.debug(f"RedisStore zadd 失败 {name}: {e}")
+            return 0
+
+    def zrem(self, name: str, *values: str) -> int:
+        """从有序集合删除成员"""
+        client = self._ensure_connection()
+        if client is None:
+            return 0
+        try:
+            result = client.zrem(name, *values)
+            return result if isinstance(result, int) else 0
+        except RedisError as e:
+            log.debug(f"RedisStore zrem 失败 {name}: {e}")
             return 0
 
     def ttl(self, key: str) -> int:
