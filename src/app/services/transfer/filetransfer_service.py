@@ -180,6 +180,13 @@ class FileTransferService:
                     for h in history:
                         if not getattr(h, "source_path", "") or not os.path.exists(str(getattr(h, "source_path", ""))):
                             continue
+                        # 目标硬链接/文件必须实际存在，否则视为缺失（如目标被删除）→ 触发重新硬链接
+                        dest_path = str(getattr(h, "dest_path", "") or "")
+                        dest_filename = str(getattr(h, "dest_filename", "") or "")
+                        dest_file = os.path.join(dest_path, dest_filename) if dest_path and dest_filename else ""
+                        backend = getattr(h, "dst_backend", None) or "local"
+                        if not dest_file or not self._existence.exists(dest_file, backend):
+                            continue
                         se = h.season_episode or ""
                         parts = se.replace("S", "").split("E")
                         if len(parts) >= 2 and parts[0].isdigit() and int(parts[0]) == int(season):

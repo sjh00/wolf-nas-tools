@@ -283,12 +283,40 @@ class SyncEngine:
         except Exception as e:
             log.error(f"[Sync]{event_path} 同步失败：{e}")
 
+    def _destination_exists_for_source(self, source_path: str, cfg: SyncPathConfig) -> bool:
+        """据转移历史校验该源文件的目标是否仍实际存在（目标被删则返回 False）。"""
+        try:
+            rec = self._history_repo.get_by_source(source_path)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]查询转移历史失败，回退按存在处理: {e}")
+            return True
+        if not rec:
+            return False
+        dest_path = str(getattr(rec, "dest_path", "") or "")
+        dest_filename = str(getattr(rec, "dest_filename", "") or "")
+        if not dest_path or not dest_filename:
+            return False
+        dst_backend = None
+        try:
+            if cfg.dst_backend_id and cfg.dst_backend_id != "local":
+                dst_backend = self._resolve_backend(cfg.dst_backend_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]解析目标后端失败，回退本地判断: {e}")
+        return self._sync_target_exists(os.path.join(dest_path, dest_filename), dst_backend)
+
     def _do_transfer(self, event_path: str, cfg: SyncPathConfig) -> None:
-        # 已转移过的路径（同步历史 / 转移黑名单）直接跳过，避免每个扫描周期重复处理与刷日志
+        # 已转移过的路径（同步历史 / 转移黑名单）在目标仍存在时跳过，避免每个扫描周期重复处理；
+        # 目标已被删除（如清空媒体目录）时清理记录并重新同步（重新硬链接）
         if self._history_repo.is_sync_in_history(event_path, cfg.dest):
-            return
+            if os.path.isdir(event_path) or self._destination_exists_for_source(event_path, cfg):
+                return
+            log.info(f"[Sync]{event_path} 目标已不存在，清理同步历史并重新同步")
+            self._history_repo.delete_sync_history(event_path, cfg.dest)
         if self._transfer._blacklist.is_exists(event_path):
-            return
+            if os.path.isdir(event_path) or self._destination_exists_for_source(event_path, cfg):
+                return
+            log.info(f"[Sync]{event_path} 目标已不存在，清理黑名单并重新同步")
+            self._transfer._blacklist.delete(event_path)
         if os.path.isdir(event_path):
             # 目录：仅当包含真实媒体文件时才交给转移流水线，
             # 避免空目录/仍在下载（仅 .part/.!qb）的目录每周期反复报错

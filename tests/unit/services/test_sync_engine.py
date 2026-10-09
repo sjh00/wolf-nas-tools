@@ -152,23 +152,41 @@ class TestSyncEngine:
         eng._pipeline.process.assert_called_once()
 
     def test_do_transfer_skips_blacklisted(self, engine, tmp_path):
-        """已转移过（黑名单命中）的路径应跳过，避免每个扫描周期重复处理."""
+        """已转移过（黑名单命中）且目标仍存在的路径应跳过，避免每个扫描周期重复处理."""
         eng, _, _ = engine
         cfg = SyncPathConfig(_Row())
         cfg.source = str(tmp_path / "src")
         cfg.dest = str(tmp_path / "dst")
         eng._transfer._blacklist.is_exists.return_value = True
-        eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
+        with patch.object(eng, "_destination_exists_for_source", return_value=True):
+            eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
         eng._pipeline.process.assert_not_called()
 
     def test_do_transfer_skips_synced_history(self, engine, tmp_path):
-        """同步历史命中时也应跳过."""
+        """同步历史命中且目标仍存在时也应跳过."""
         eng, _, _ = engine
         cfg = SyncPathConfig(_Row())
         cfg.dest = str(tmp_path / "dst")
         eng._history_repo.is_sync_in_history.return_value = True
-        eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
+        with patch.object(eng, "_destination_exists_for_source", return_value=True):
+            eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
         eng._pipeline.process.assert_not_called()
+
+    def test_do_transfer_relinks_when_target_missing(self, engine, tmp_path):
+        """回归：rename/转移模式下目标被删除，命中黑名单也应清理并重新同步（重新硬链接）."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "movie.mkv").write_text("x", encoding="utf-8")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "dst")
+        eng._transfer._blacklist.is_exists.return_value = True
+        eng._pipeline.process.return_value = (True, "ok")
+        with patch.object(eng, "_destination_exists_for_source", return_value=False):
+            eng._do_transfer(str(src / "movie.mkv"), cfg)
+        eng._transfer._blacklist.delete.assert_called_once()
+        eng._pipeline.process.assert_called_once()
 
     def test_do_link_relinks_when_history_hit_but_target_missing(self, engine, tmp_path):
         """回归 #193：目标媒体文件被删除后，命中历史也应清理并重新硬链接."""

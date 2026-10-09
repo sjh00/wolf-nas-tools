@@ -24,6 +24,10 @@ class MediaExistenceChecker:
             return False
         return backend.exists(path)
 
+    def exists(self, path: str, backend_id: str = "local") -> bool:
+        """公开的存在性检查（支持本地/远程后端）."""
+        return self._exists(path, backend_id)
+
     def _get_dir_files(self, path: str, backend_id: str = "local", exts: str | list | None = None) -> list[str]:
         """根据后端获取目录下匹配扩展名的文件列表."""
         if not path:
