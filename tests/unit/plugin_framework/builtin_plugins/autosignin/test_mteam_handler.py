@@ -35,8 +35,22 @@ def test_response_code_number_zero_is_success():
     assert result.ok is True
 
 
-def test_response_code_one_is_failure():
-    res = _FakeResponse(json.dumps({"code": "1", "message": "FAIL"}))
+def test_response_code_one_fail_is_now_success():
+    # 2026-10 起 updateLastBrowse 成功返回 {"code":"1","message":"FAIL","data":null}
+    res = _FakeResponse(json.dumps({"code": "1", "message": "FAIL", "data": None}))
+    result = _handler()._check_response(res, "M-Team")
+    assert result.ok is True
+
+
+def test_response_code_one_fail_message_is_success_number_code():
+    res = _FakeResponse(json.dumps({"code": 1, "message": "FAIL", "data": None}))
+    result = _handler()._check_response(res, "M-Team")
+    assert result.ok is True
+
+
+def test_response_other_code_one_message_still_failure():
+    # 仅新的成功标志（message=FAIL）视为成功，其它 code=1 报文不误判
+    res = _FakeResponse(json.dumps({"code": "1", "message": "SOME ERROR"}))
     result = _handler()._check_response(res, "M-Team")
     assert result.ok is False
 

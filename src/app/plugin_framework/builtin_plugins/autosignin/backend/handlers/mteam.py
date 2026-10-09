@@ -182,12 +182,17 @@ class MTeam(SiteSigninHandler):
         except Exception:
             return SigninResult.fail(site, "解析 JSON 响应失败")
 
-        if data.get("code") in (0, "0") or data.get("success") is True:
-            return SigninResult.success(site)
-
+        code = data.get("code")
         message = str(data.get("message", ""))
         message_lower = message.lower()
-        if data.get("code") in (401, "401") or "full authentication" in message_lower:
+
+        if data.get("success") is True or str(code) in ("0",):
+            return SigninResult.success(site)
+        # 2026-10 起 updateLastBrowse 成功返回 {"code":"1","message":"FAIL","data":null}
+        if str(code) == "1" and message.upper() == "FAIL":
+            return SigninResult.success(site)
+
+        if str(code) == "401" or "full authentication" in message_lower:
             # 登录态(JWT)过期：切勿自动重新登录（密码/浏览器登录会触发站点风控）。
             # 提示用户在真实浏览器登录后同步 CookieCloud localStorage 即可静默续期
             return SigninResult.fail(site, "M-Team 登录态已过期，请在真实浏览器重新登录并同步 CookieCloud")
