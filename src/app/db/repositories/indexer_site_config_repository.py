@@ -55,7 +55,7 @@ class IndexerSiteConfigRepository(BaseRepository):
 
     def _dialect_name(self) -> str:
         with self.session() as db:
-            return inspect(db.bind).dialect.name
+            return inspect(db.get_bind()).dialect.name
 
     def _upsert_sqlite(self, values: dict) -> None:
         stmt = sqlite_insert(INDEXERSITECONFIG).values(values)

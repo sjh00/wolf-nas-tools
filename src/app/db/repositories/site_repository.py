@@ -34,7 +34,7 @@ class SiteRepository(BaseRepository):
         查询1个站点信息
         """
         with self.session() as db:
-            return db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).all()
+            return db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).all()
 
     def insert_config_site(
         self,
@@ -77,7 +77,7 @@ class SiteRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).delete()
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).delete()
 
     def update_config_site(
         self,
@@ -99,7 +99,7 @@ class SiteRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).update(
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).update(
                 {
                     "NAME": name,
                     "PRI": site_pri,
@@ -121,7 +121,7 @@ class SiteRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).update({"NOTE": note})
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).update({"NOTE": note})
 
     def update_site_cookie_ua(self, tid: int | None, cookie: str, ua: str | None = None) -> None:
         """
@@ -130,14 +130,14 @@ class SiteRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            rec = db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).first()
-            if rec.NOTE:
+            rec = db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).first()
+            if rec and rec.NOTE:
                 note = JsonUtils.loads(rec.NOTE)
                 if ua:
                     note["ua"] = ua
             else:
                 note = {}
-            db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).update(
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).update(
                 {"COOKIE": cookie, "NOTE": JsonUtils.dumps(note)}
             )
 
@@ -148,7 +148,7 @@ class SiteRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            db.query(CONFIGSITE).filter(int(tid) == CONFIGSITE.ID).update({"RSSURL": rssurl})
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(tid)).update({"RSSURL": rssurl})
 
     # ==================== Site User Statistics ====================
 
@@ -157,7 +157,7 @@ class SiteRepository(BaseRepository):
         更新站点用户数据中站点名称
         """
         with self.session() as db:
-            db.query(SITEUSERINFOSTATS).filter(old_name == SITEUSERINFOSTATS.SITE).update({"SITE": new_name})
+            db.query(SITEUSERINFOSTATS).filter(SITEUSERINFOSTATS.SITE == old_name).update({"SITE": new_name})
 
     def update_site_user_statistics(self, site_user_infos: list) -> None:
         """
@@ -228,7 +228,7 @@ class SiteRepository(BaseRepository):
         if not url:
             return False
         with self.session() as db:
-            return db.query(SITEUSERINFOSTATS).filter(url == SITEUSERINFOSTATS.URL).first() is not None
+            return db.query(SITEUSERINFOSTATS).filter(SITEUSERINFOSTATS.URL == url).first() is not None
 
     def is_site_user_statistics_exists(self, url: str) -> bool:
         """
@@ -237,7 +237,7 @@ class SiteRepository(BaseRepository):
         if not url:
             return False
         with self.session() as db:
-            return db.query(SITEUSERINFOSTATS).filter(url == SITEUSERINFOSTATS.URL).first() is not None
+            return db.query(SITEUSERINFOSTATS).filter(SITEUSERINFOSTATS.URL == url).first() is not None
 
     def get_site_user_statistics(self, num: int = 100, strict_urls: list | None = None) -> list[SITEUSERINFOSTATS]:
         """
@@ -298,7 +298,7 @@ class SiteRepository(BaseRepository):
         判断站点图标是否存在
         """
         with self.session() as db:
-            count = db.query(SITEFAVICON).filter(site == SITEFAVICON.SITE).count()
+            count = db.query(SITEFAVICON).filter(SITEFAVICON.SITE == site).count()
             return count > 0
 
     def get_site_favicons(self, site: str | None = None) -> list[SITEFAVICON]:
@@ -307,7 +307,7 @@ class SiteRepository(BaseRepository):
         """
         with self.session() as db:
             if site:
-                return db.query(SITEFAVICON).filter(site == SITEFAVICON.SITE).all()
+                return db.query(SITEFAVICON).filter(SITEFAVICON.SITE == site).all()
             else:
                 return db.query(SITEFAVICON).all()
 
@@ -318,7 +318,7 @@ class SiteRepository(BaseRepository):
         更新站点做种数据中站点名称
         """
         with self.session() as db:
-            db.query(SITEUSERSEEDINGINFO).filter(old_name == SITEUSERSEEDINGINFO.SITE).update({"SITE": new_name})
+            db.query(SITEUSERSEEDINGINFO).filter(SITEUSERSEEDINGINFO.SITE == old_name).update({"SITE": new_name})
 
     def update_site_seed_info(self, site_user_infos: list) -> None:
         """
@@ -358,14 +358,14 @@ class SiteRepository(BaseRepository):
         判断做种数据是否已存在
         """
         with self.session() as db:
-            return db.query(SITEUSERSEEDINGINFO).filter(url == SITEUSERSEEDINGINFO.URL).first() is not None
+            return db.query(SITEUSERSEEDINGINFO).filter(SITEUSERSEEDINGINFO.URL == url).first() is not None
 
     def get_site_seeding_info(self, site: str) -> tuple | None:
         """
         查询站点做种信息
         """
         with self.session() as db:
-            return db.query(SITEUSERSEEDINGINFO.SEEDING_INFO).filter(site == SITEUSERSEEDINGINFO.SITE).first()
+            return db.query(SITEUSERSEEDINGINFO.SEEDING_INFO).filter(SITEUSERSEEDINGINFO.SITE == site).first()
 
     # ==================== Site Statistics History ====================
 
@@ -378,7 +378,7 @@ class SiteRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(SITESTATISTICSHISTORY)
-                .filter(url == SITESTATISTICSHISTORY.URL, date == SITESTATISTICSHISTORY.DATE)
+                .filter(SITESTATISTICSHISTORY.URL == url, SITESTATISTICSHISTORY.DATE == date)
                 .first()
                 is not None
             )
@@ -388,7 +388,7 @@ class SiteRepository(BaseRepository):
         更新站点统计数据中站点名称
         """
         with self.session() as db:
-            db.query(SITESTATISTICSHISTORY).filter(old_name == SITESTATISTICSHISTORY.SITE).update({"SITE": new_name})
+            db.query(SITESTATISTICSHISTORY).filter(SITESTATISTICSHISTORY.SITE == old_name).update({"SITE": new_name})
 
     def insert_site_statistics_history(self, site_user_infos: list) -> None:
         """
@@ -411,7 +411,7 @@ class SiteRepository(BaseRepository):
             if urls:
                 records = (
                     db.query(SITESTATISTICSHISTORY.URL)
-                    .filter(date_now == SITESTATISTICSHISTORY.DATE, SITESTATISTICSHISTORY.URL.in_(urls))
+                    .filter(SITESTATISTICSHISTORY.DATE == date_now, SITESTATISTICSHISTORY.URL.in_(urls))
                     .all()
                 )
                 existing_records = {r[0] for r in records}
@@ -448,9 +448,10 @@ class SiteRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(SITESTATISTICSHISTORY)
-                .filter(site == SITESTATISTICSHISTORY.SITE)
+                .filter(SITESTATISTICSHISTORY.SITE == site)
                 .order_by(SITESTATISTICSHISTORY.DATE.asc())
                 .limit(days)
+                .all()
             )
 
     def get_site_statistics_recent_sites(

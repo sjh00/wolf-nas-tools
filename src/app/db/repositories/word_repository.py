@@ -67,7 +67,7 @@ class WordRepository(BaseRepository):
         with self.session() as db:
             if not wid:
                 db.query(CUSTOMWORDS).delete()
-            db.query(CUSTOMWORDS).filter(int(wid or 0) == CUSTOMWORDS.ID).delete()
+            db.query(CUSTOMWORDS).filter(CUSTOMWORDS.ID == int(wid or 0)).delete()
             db.commit()
             return True
 
@@ -83,7 +83,7 @@ class WordRepository(BaseRepository):
             return True
         with self.session() as db:
             if wid:
-                db.query(CUSTOMWORDS).filter(int(wid) == CUSTOMWORDS.ID).update({"ENABLED": int(enabled)})
+                db.query(CUSTOMWORDS).filter(CUSTOMWORDS.ID == int(wid)).update({"ENABLED": int(enabled)})
             else:
                 db.query(CUSTOMWORDS).update({"ENABLED": int(enabled)})
             db.commit()
@@ -103,18 +103,18 @@ class WordRepository(BaseRepository):
         """
         with self.session() as db:
             if wid:
-                return db.query(CUSTOMWORDS).filter(int(wid) == CUSTOMWORDS.ID).all()
+                return db.query(CUSTOMWORDS).filter(CUSTOMWORDS.ID == int(wid)).all()
             elif gid:
                 return (
                     db.query(CUSTOMWORDS)
-                    .filter(int(gid) == CUSTOMWORDS.GROUP_ID)
+                    .filter(CUSTOMWORDS.GROUP_ID == int(gid))
                     .order_by(CUSTOMWORDS.ENABLED.desc(), CUSTOMWORDS.TYPE, CUSTOMWORDS.REGEX, CUSTOMWORDS.ID)
                     .all()
                 )
             elif enabled is not None:
                 return (
                     db.query(CUSTOMWORDS)
-                    .filter(int(enabled) == CUSTOMWORDS.ENABLED)
+                    .filter(CUSTOMWORDS.ENABLED == int(enabled))
                     .order_by(CUSTOMWORDS.GROUP_ID, CUSTOMWORDS.TYPE, CUSTOMWORDS.REGEX, CUSTOMWORDS.ID)
                     .all()
                 )
@@ -190,8 +190,8 @@ class WordRepository(BaseRepository):
         if not gid:
             return True
         with self.session() as db:
-            db.query(CUSTOMWORDS).filter(int(gid) == CUSTOMWORDS.GROUP_ID).delete()
-            db.query(CUSTOMWORDGROUPS).filter(int(gid) == CUSTOMWORDGROUPS.ID).delete()
+            db.query(CUSTOMWORDS).filter(CUSTOMWORDS.GROUP_ID == int(gid)).delete()
+            db.query(CUSTOMWORDGROUPS).filter(CUSTOMWORDGROUPS.ID == int(gid)).delete()
             db.commit()
             return True
 
@@ -209,15 +209,15 @@ class WordRepository(BaseRepository):
         """
         with self.session() as db:
             if gid:
-                return db.query(CUSTOMWORDGROUPS).filter(int(gid) == CUSTOMWORDGROUPS.ID).all()
+                return db.query(CUSTOMWORDGROUPS).filter(CUSTOMWORDGROUPS.ID == int(gid)).all()
             if tmdbid and gtype:
                 return (
                     db.query(CUSTOMWORDGROUPS)
-                    .filter(int(tmdbid) == CUSTOMWORDGROUPS.TMDBID, int(gtype) == CUSTOMWORDGROUPS.TYPE)
+                    .filter(CUSTOMWORDGROUPS.TMDBID == int(tmdbid), CUSTOMWORDGROUPS.TYPE == int(gtype))
                     .all()
                 )
             if tmdbid:
-                return db.query(CUSTOMWORDGROUPS).filter(int(tmdbid) == CUSTOMWORDGROUPS.TMDBID).all()
+                return db.query(CUSTOMWORDGROUPS).filter(CUSTOMWORDGROUPS.TMDBID == int(tmdbid)).all()
             return db.query(CUSTOMWORDGROUPS).all()
 
     def is_custom_word_group_existed(self, tmdbid=None, gtype=None):
@@ -236,7 +236,7 @@ class WordRepository(BaseRepository):
         with self.session() as db:
             count = (
                 db.query(CUSTOMWORDGROUPS)
-                .filter(int(tmdbid) == CUSTOMWORDGROUPS.TMDBID, int(gtype) == CUSTOMWORDGROUPS.TYPE)
+                .filter(CUSTOMWORDGROUPS.TMDBID == int(tmdbid), CUSTOMWORDGROUPS.TYPE == int(gtype))
                 .count()
             )
             return count > 0

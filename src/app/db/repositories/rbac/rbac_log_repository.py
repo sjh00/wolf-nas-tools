@@ -4,8 +4,6 @@ RBAC Repository
 处理用户、角色、权限、菜单的数据库操作
 """
 
-from sqlalchemy import desc
-
 from app.db.models.rbac import (
     RBACOperationLog,
     RBACUserLoginLog,
@@ -60,7 +58,9 @@ class RBACLogRepository(BaseRepository):
                 query = query.filter(RBACUserLoginLog.USER_ID == user_id)
 
             total = query.count()
-            logs = query.order_by(desc(RBACUserLoginLog.LOGIN_AT)).offset((page - 1) * page_size).limit(page_size).all()
+            logs = (
+                query.order_by(RBACUserLoginLog.LOGIN_AT.desc()).offset((page - 1) * page_size).limit(page_size).all()
+            )
 
             return logs, total
 
@@ -115,13 +115,16 @@ class RBACLogRepository(BaseRepository):
             query = db.query(RBACOperationLog)
 
             if user_id:
-                query = query.filter(user_id == RBACOperationLog.USER_ID)
+                query = query.filter(RBACOperationLog.USER_ID == user_id)
             if module:
                 query = query.filter(RBACOperationLog.MODULE == module)
 
             total = query.count()
             logs = (
-                query.order_by(desc(RBACOperationLog.OPERATED_AT)).offset((page - 1) * page_size).limit(page_size).all()
+                query.order_by(RBACOperationLog.OPERATED_AT.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
             )
 
             return logs, total
