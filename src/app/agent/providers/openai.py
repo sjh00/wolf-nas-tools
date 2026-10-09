@@ -9,6 +9,7 @@ from app.agent.providers.base import (
     BaseEmbeddingProvider,
     BaseProvider,
     ChatToolResponse,
+    LLMThrottle,
     ProviderConfig,
     ReasoningConfig,
     ToolCall,
@@ -91,9 +92,16 @@ class OpenAIProvider(BaseProvider):
             raise
 
     def _create(self, kwargs: dict[str, Any]) -> Any:
-        """发起补全请求；模型不支持推理参数时剥离 reasoning 后重试一次（并记忆该模型）"""
+        """发起补全请求；模型不支持推理参数时剥离 reasoning 后重试一次（并记忆该模型）。
+
+        经共享 LLMThrottle 发出：并发闸门（避免超账号并发上限）+ 429 退避重试。
+        """
+
+        def _call(kw: dict[str, Any]) -> Any:
+            return LLMThrottle.call(self._client.chat.completions.create, **kw)
+
         try:
-            return self._client.chat.completions.create(**kwargs)
+            return _call(kwargs)
         except APIStatusError as e:
             if (
                 e.status_code == 400
@@ -102,7 +110,7 @@ class OpenAIProvider(BaseProvider):
             ):
                 stripped = {k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "extra_body")}
                 log.debug("[OpenAIProvider]模型不支持推理参数，剥离后重试")
-                resp = self._client.chat.completions.create(**stripped)
+                resp = _call(stripped)
                 self._reasoning_unsupported.add(self._config.model)
                 return resp
             raise
@@ -258,7 +266,7 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        resp = self._client.embeddings.create(model=self._model, input=texts)
+        resp = LLMThrottle.call(self._client.embeddings.create, model=self._model, input=texts)
         vectors = [list(map(float, item.embedding)) for item in resp.data]
         if vectors and self._dimension is None:
             self._dimension = len(vectors[0])

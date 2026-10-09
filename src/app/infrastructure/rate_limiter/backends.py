@@ -3,9 +3,11 @@
 支持令牌桶和滑动窗口两种算法，Redis/内存双后端，支持等待模式.
 """
 
+import contextlib
 import re
 import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections import deque
 
@@ -30,6 +32,11 @@ def _parse_rate(rate: str) -> tuple[float, int]:
 class RateLimitBackend(ABC):
     """限流后端抽象基类."""
 
+    def __init__(self):
+        # 并发限流 state：key -> (信号量, 上限)。默认进程内实现，Redis 后端覆盖为分布式。
+        self._concurrency: dict[str, tuple[threading.BoundedSemaphore, int]] = {}
+        self._concurrency_lock = threading.Lock()
+
     @abstractmethod
     def acquire(self, key: str, rate: float, burst: int, tokens: int, timeout: float | None) -> bool:
         """原子化获取许可.
@@ -45,11 +52,41 @@ class RateLimitBackend(ABC):
     def get_status(self, key: str | None = None) -> dict:
         """获取限流状态."""
 
+    def acquire_concurrency(self, key: str, limit: int, timeout: float | None = None) -> str | None:
+        """并发限流（默认进程内）：限制 key 的同时在途数；``limit <= 0`` 不限制。
+
+        返回释放所需的令牌：获取成功返回非空字符串，不限制返回空串，超时/失败返回 None。
+        """
+        limit = int(limit)
+        if limit <= 0:
+            return ""
+        with self._concurrency_lock:
+            entry = self._concurrency.get(key)
+            if entry is None or entry[1] != limit:
+                entry = (threading.BoundedSemaphore(limit), limit)
+                self._concurrency[key] = entry
+            sem = entry[0]
+        if timeout is None:
+            sem.acquire()
+            return uuid.uuid4().hex
+        return uuid.uuid4().hex if sem.acquire(timeout=timeout) else None
+
+    def release_concurrency(self, key: str, token: str) -> None:
+        """归还并发名额（默认进程内）。"""
+        if not token:
+            return
+        with self._concurrency_lock:
+            entry = self._concurrency.get(key)
+        if entry is not None:
+            with contextlib.suppress(ValueError):
+                entry[0].release()
+
 
 class MemoryTokenBucketBackend(RateLimitBackend):
     """内存令牌桶后端（线程安全）."""
 
     def __init__(self):
+        super().__init__()
         self._buckets: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._stats: dict[str, dict] = {}
@@ -103,6 +140,7 @@ class MemorySlidingWindowBackend(RateLimitBackend):
     """内存滑动窗口后端（线程安全）."""
 
     def __init__(self):
+        super().__init__()
         self._windows: dict[str, deque[float]] = {}
         self._lock = threading.Lock()
         self._stats: dict[str, dict] = {}
@@ -184,8 +222,11 @@ class RedisTokenBucketBackend(RateLimitBackend):
     """
 
     def __init__(self):
+        super().__init__()
         self._redis = RedisStore()
         self._script_sha: str | None = None
+        # 并发租约 TTL（秒）：持有者异常退出后租约自动过期回收
+        self._conc_ttl = 300
 
     def _load_script(self) -> str | None:
         return self._redis.script_load(self._TOKEN_BUCKET_SCRIPT)
@@ -214,6 +255,37 @@ class RedisTokenBucketBackend(RateLimitBackend):
 
     def get_status(self, key=None) -> dict:
         return {}
+
+    def acquire_concurrency(self, key: str, limit: int, timeout: float | None = None) -> str | None:
+        """分布式并发限流（zset 租约）：成员=令牌，分值=过期时间，跨实例共享同一 key.
+
+        获取时先清理过期租约再计数；成功则加入带 TTL 的租约。Redis 不可用时降级为不限制。
+        """
+        limit = int(limit)
+        if limit <= 0:
+            return ""
+        if not self._redis.is_available():
+            return ""
+        name = f"concurrency:{key}"
+        member = uuid.uuid4().hex
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            now = time.time()
+            self._redis.zremrangebyscore(name, 0, now)
+            count = self._redis.zcard(name)
+            if count < limit and self._redis.zadd(name, {member: now + self._conc_ttl}) > 0:
+                self._redis.expire(name, self._conc_ttl + 60)
+                return member
+            if timeout == 0:
+                return None
+            if deadline is not None and time.time() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def release_concurrency(self, key: str, token: str) -> None:
+        if not token:
+            return
+        self._redis.zrem(f"concurrency:{key}", token)
 
 
 class RateLimitEngine:
@@ -278,6 +350,18 @@ class RateLimitEngine:
     def try_acquire(self, key: str, rate: str = "10/m", tokens: int = 1) -> bool:
         """不等待，立即返回."""
         return self.acquire(key, rate, tokens=tokens, timeout=0)
+
+    def acquire_concurrency(self, key: str, limit: int, timeout: float | None = None) -> str | None:
+        """并发限流：限制 key 的同时在途数；``limit <= 0`` 表示不限制。
+
+        委托给当前后端：Redis 后端为跨实例分布式（zset 租约），内存后端为进程内信号量。
+        返回释放所需令牌（不限制返回空串，超时/失败返回 None），需与 ``release_concurrency`` 配对。
+        """
+        return self._backend.acquire_concurrency(key, limit, timeout)
+
+    def release_concurrency(self, key: str, token: str) -> None:
+        """归还并发名额（与 ``acquire_concurrency`` 配对，传入其返回的令牌）。"""
+        self._backend.release_concurrency(key, token)
 
     def get_status(self, key: str | None = None) -> dict:
         """获取限流状态."""
