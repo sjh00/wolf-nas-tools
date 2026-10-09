@@ -52,11 +52,16 @@ class MediaRecognizer:
         if not self.ready:
             return None
         log.info(f"[MediaRecognizer]识别单个文件名: {filename[:80]}...")
-        result = self._svc.structured_chat(
-            messages=[{"role": "user", "content": filename}],
-            system_prompt=MEDIA_RECOGNITION_PROMPT,
-            response_model=MediaResult,
-        )
+        try:
+            result = self._svc.structured_chat(
+                messages=[{"role": "user", "content": filename}],
+                system_prompt=MEDIA_RECOGNITION_PROMPT,
+                response_model=MediaResult,
+            )
+        except Exception as e:
+            # 识别失败（如限流/网络）不应中断整批转移：降级为未识别，由后续逻辑兜底
+            log.warn(f"[MediaRecognizer]识别失败，降级为未识别: {e}")
+            return None
         if result and (result.title_en or result.title_cn):
             log.info(f"[MediaRecognizer]识别成功: cn={result.title_cn}, en={result.title_en}, type={result.type}")
         else:
