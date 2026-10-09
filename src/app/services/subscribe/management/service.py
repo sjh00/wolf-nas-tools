@@ -1,5 +1,6 @@
 """Subscribe service - 订阅业务 Facade."""
 
+import datetime
 import re
 import time
 from typing import Any
@@ -9,6 +10,7 @@ from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAd
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SystemConfigKey
 from app.domain.mediatypes import MediaType
+from app.media import MediaInfo
 from app.media.external.bangumi import Bangumi
 from app.services.subscribe.management.add_service import SubscribeAddService
 from app.services.subscribe.management.finish_service import SubscribeFinishService
@@ -119,6 +121,76 @@ class SubscribeService:
 
     def finish_rss_subscribe(self, rssid, media):
         return self._finish_svc.finish_rss_subscribe(rssid, media, self.delete_subscribe)
+
+    def finalize_tv_by_rssid(self, rssid, mtype=None):
+        """转移确认后按订阅行定稿（无需 media 对象）。"""
+        return self._finish_svc.finalize_tv_by_rssid(rssid, mtype, self.delete_subscribe)
+
+    def finalize_movie_by_rssid(self, rssid):
+        """转移确认后按订阅行定稿电影订阅。"""
+        return self._finish_svc.finalize_movie_by_rssid(rssid, self.delete_subscribe)
+
+    def media_exists(self, media, total_ep=None) -> bool:
+        """媒体是否已入库（用于待转移定稿判定）。"""
+        try:
+            exist_flag, _, _ = self._downloader.check_exists_medias(meta_info=media, total_ep=total_ep)
+            return bool(exist_flag)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Subscribe]媒体入库检查失败: {e!s}")
+            return False
+
+    def _pending_stale(self, tmdb_id, cutoff) -> bool:
+        """该订阅最近的下载记录是否已早于 cutoff（用于判定待转移是否超时滞留）。"""
+        if not self._download_repo or not tmdb_id:
+            return False
+        try:
+            rows = self._download_repo.get_by_tmdb(tmdb_id) or []
+        except Exception:  # noqa: BLE001
+            return False
+        if not rows:
+            return False  # 无下载记录：保守不处理
+        latest = max(rows, key=lambda r: getattr(r, "date", "") or "")
+        try:
+            dt = datetime.datetime.strptime((getattr(latest, "date", "") or "").strip(), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return False
+        return dt < cutoff
+
+    def reconcile_pending_transfers(self, timeout_minutes: int = 180, now=None) -> None:
+        """清理“待转移”订阅：已入库则定稿；超时未入库则重开重试，避免永久滞留。
+
+        定稿会删除订阅行，因此残留的 COMPLETED 即“登记后未定稿”的待转移订阅。
+        """
+        now = now or datetime.datetime.now()
+        cutoff = now - datetime.timedelta(minutes=max(int(timeout_minutes), 1))
+        for tv in self._tv_repo.get_all(state=SubscribeState.COMPLETED.value) or []:
+            try:
+                season = int(getattr(tv, "season", 0) or 1)
+                total = int(getattr(tv, "total", 0) or 0)
+                media = MediaInfo(type=MediaType.TV, tmdb_id=str(getattr(tv, "tmdb_id", "") or ""))
+                media.title = getattr(tv, "name", "") or ""
+                media.year = getattr(tv, "year", "") or ""
+                media.begin_season = season
+                media.total_episodes = total
+                if self.media_exists(media, total_ep={season: total}):
+                    self.finalize_tv_by_rssid(tv.id, MediaType.TV)
+                elif self._pending_stale(getattr(tv, "tmdb_id", ""), cutoff):
+                    self.update_rss_state(MediaType.TV, tv.id, SubscribeState.RUNNING.value)
+                    log.info(f"[Subscribe]待转移超时，重开订阅 rssid={tv.id}（{media.title}）")
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Subscribe]待转移电视剧清理失败 rssid={getattr(tv, 'id', None)}: {e!s}")
+        for mv in self._movie_repo.get_all(state=SubscribeState.COMPLETED.value) or []:
+            try:
+                media = MediaInfo(type=MediaType.MOVIE, tmdb_id=str(getattr(mv, "tmdb_id", "") or ""))
+                media.title = getattr(mv, "name", "") or ""
+                media.year = getattr(mv, "year", "") or ""
+                if self.media_exists(media):
+                    self.finalize_movie_by_rssid(mv.id)
+                elif self._pending_stale(getattr(mv, "tmdb_id", ""), cutoff):
+                    self.update_rss_state(MediaType.MOVIE, mv.id, SubscribeState.RUNNING.value)
+                    log.info(f"[Subscribe]电影待转移超时，重开订阅 rid={mv.id}（{media.title}）")
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Subscribe]待转移电影清理失败 rid={getattr(mv, 'id', None)}: {e!s}")
 
     def get_subscribe_movies(self, rid=None, state=None, user=None):
         return self._query_svc.get_subscribe_movies(rid, state, user=user)

@@ -1,5 +1,7 @@
 """RSS Feed 轮询策略 — 从站点 RSS Feed 收集资源并匹配订阅."""
 
+import re
+
 import log
 from app.core.exceptions import (
     DownloadError,
@@ -391,9 +393,9 @@ class RssFeedStrategy:
                                 "episodes": episodes,
                                 "total_episodes": total_ep,
                             }
-                            for idx, exist in enumerate(season_entries):
+                            for season_pos, exist in enumerate(season_entries):
                                 if exist.get("season") == season:
-                                    season_entries[idx] = entry
+                                    season_entries[season_pos] = entry
                                     break
                             else:
                                 season_entries.append(entry)
@@ -464,7 +466,29 @@ class RssFeedStrategy:
             return
         if self.downloader is None:
             return
+        pending_rss_torrents = []
         updated_rss_torrents = []
+
+        def __mark_downloaded(download_item, mtype=MediaType.TV):
+            # 下载成功（已按真实种子清单判定覆盖所需集）→ 登记为“待转移”：
+            # 不删订阅、不写历史、不发通知；定稿由转移落盘确认，转移失败可回滚重下。
+            if not download_item:
+                return
+            if not download_item.rssid or download_item.rssid in pending_rss_torrents:
+                return
+            pending_rss_torrents.append(download_item.rssid)
+            if self.subscribe is None:
+                return
+            self.subscribe.update_rss_state(mtype, download_item.rssid, SubscribeState.COMPLETED.value)
+            if mtype != MediaType.TV:
+                return
+            # 同媒体其他用户的订阅联动置为待转移（共享媒体库，ADR-021 记账分离）
+            for sibling_id in getattr(download_item, "sibling_rssids", None) or []:
+                if sibling_id in pending_rss_torrents:
+                    continue
+                pending_rss_torrents.append(sibling_id)
+                log.info(f"[RssFeedStrategy] 联动登记待转移兄弟订阅 rssid={sibling_id}（同一媒体共享下载）")
+                self.subscribe.update_rss_state(MediaType.TV, sibling_id, SubscribeState.COMPLETED.value)
 
         def __update_tv_rss(download_item, left_media):
             if not download_item or not left_media:
@@ -582,12 +606,31 @@ class RssFeedStrategy:
                 for item in download_items:
                     if not item.rssid:
                         continue
+                    item_eps = item.get_episode_list() if hasattr(item, "get_episode_list") else []
+                    raw_name = f"{getattr(item, 'org_string', '') or ''} {getattr(item, 'rev_string', '') or ''}"
+                    whole_season_hint = bool(
+                        re.search(r"complete|全集|合集|\bFin\b|全\s*\d+\s*[集话話]", raw_name, re.IGNORECASE)
+                    )
+                    # 整季由“季号 / 集数范围或清单 / 全集标记”识别；三者皆无才算无法判定
+                    known_season_episode = (
+                        bool(item_eps)
+                        or getattr(item, "begin_season", None) is not None
+                        or bool(getattr(item, "total_episodes", 0))
+                        or whole_season_hint
+                    )
                     if item.over_edition:
                         __update_over_edition(item)
-                    else:
-                        # 订阅完成一律由转移落盘文件核定（subscribe/handlers.handle_media_episode_transferred）；
-                        # RSS 阶段只更新缺失，绝不在此删除订阅，避免按标题/预测误判完成（顾头不顾尾）。
+                    elif getattr(item, "type", None) == MediaType.MOVIE:
+                        # 电影：登记待转移，转移落盘确认后定稿
+                        __mark_downloaded(item, MediaType.MOVIE)
+                    elif not known_season_episode:
+                        # 季号与集号范围都无法识别：不据此判定订阅完成，避免误判，交给下一轮
+                        log.warn(f"[RssFeedStrategy]{getattr(item, 'org_string', '')} 未识别到季集，不判定订阅完成")
                         __update_tv_rss(item, rss_no_exists.get(item.tmdb_id) if rss_no_exists else None)
+                    elif not rss_no_exists or not rss_no_exists.get(item.tmdb_id):
+                        __mark_downloaded(item)
+                    else:
+                        __update_tv_rss(item, rss_no_exists.get(item.tmdb_id))
                 log.info(f"[RssFeedStrategy] 实际下载了 {len(download_items)} 个资源")
             else:
                 log.info("[RssFeedStrategy] 未下载到任何资源")

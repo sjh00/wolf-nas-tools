@@ -288,6 +288,13 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.TITLE == title).all()
 
+    def get_download_history_by_tmdb(self, tmdb_id: int | str | None) -> list[DOWNLOADHISTORY]:
+        """按 TMDB 查询下载历史（待转移超时判断用，避免标题不一致导致漏判）。"""
+        if not tmdb_id:
+            return []
+        with self.session() as db:
+            return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.TMDBID == str(tmdb_id)).all()
+
     def get_download_history_by_path(self, path: str) -> DOWNLOADHISTORY | None:
         with self.session() as db:
             return (

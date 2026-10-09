@@ -3,6 +3,7 @@
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.search_engine import SubscribeSearchEngine
@@ -311,8 +312,8 @@ class TestRssFeedStrategy:
         strategy._download_matched_torrents([media], {})
         coord.try_acquire.assert_called_once()
 
-    def test_rss_download_does_not_finish_subscription(self):
-        """整季包下载后不删除订阅：完成一律由转移落盘文件核定。"""
+    def test_rss_download_marks_pending_transfer_not_finish(self):
+        """下载覆盖完成后登记“待转移”（COMPLETED），不在此删除订阅、不写历史。"""
         strategy = self._make_strategy()
         media = MagicMock()
         media.type = MediaType.TV
@@ -334,7 +335,32 @@ class TestRssFeedStrategy:
 
         strategy._download_matched_torrents([media], {1: None})
 
-        cast(Any, strategy.subscribe).finish_rss_subscribe.assert_not_called()
+        subscribe = cast(Any, strategy.subscribe)
+        subscribe.finish_rss_subscribe.assert_not_called()
+        subscribe.update_rss_state.assert_called_once_with(MediaType.TV, 5, SubscribeState.COMPLETED.value)
+
+    def test_rss_movie_marks_pending_transfer(self):
+        """电影下载成功登记“待转移”（COMPLETED），由转移落盘确认后定稿。"""
+        strategy = self._make_strategy()
+        media = MagicMock()
+        media.type = MediaType.MOVIE
+        media.rssid = 7
+        media.over_edition = False
+        media.tmdb_id = 9
+        media.total_episodes = 0
+        media.begin_episode = None
+        media.get_episode_list.return_value = []
+        media.res_order = 1
+        media.site_order = 1
+        media.seeders = 1
+        downloader = cast(Any, strategy.downloader)
+        downloader.batch_download.return_value = ([media], {})
+
+        strategy._download_matched_torrents([media], {})
+
+        subscribe = cast(Any, strategy.subscribe)
+        subscribe.finish_rss_subscribe.assert_not_called()
+        subscribe.update_rss_state.assert_called_once_with(MediaType.MOVIE, 7, SubscribeState.COMPLETED.value)
 
     def test_get_default_rss_sites_no_system_config(self):
         strategy = self._make_strategy()

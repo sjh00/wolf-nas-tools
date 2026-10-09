@@ -4,25 +4,34 @@
 """
 
 import log
+from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.db.repositories.subscribe_repo_adapter import (
+    SubscribeMovieRepositoryAdapter,
     SubscribeTvEpisodeRepositoryAdapter,
     SubscribeTvRepositoryAdapter,
 )
 from app.domain.entities.rss import SubscribeState
+from app.domain.mediatypes import MediaType
 from app.events import Event, on_event
 from app.events.constants import (
     MEDIA_EPISODE_TRANSFERRED,
+    MEDIA_TRANSFER_FINISHED,
     RSS_AUTO_SUBSCRIBE_REQUESTED,
     SUBSCRIBE_ADD,
     SUBSCRIBE_FINISHED,
+    TRANSFER_FAIL,
 )
 from app.events.payloads import (
     MediaEpisodeTransferredPayload,
+    MediaTransferFinishedPayload,
     RssAutoSubscribeRequestedPayload,
     SubscribeAddPayload,
     SubscribeFinishedPayload,
+    TransferFailPayload,
 )
 from app.infrastructure.thread import ThreadExecutor
+from app.media import MediaInfo
+from app.media.parser import RegexParser
 from app.services.subscribe.management.service import SubscribeService
 from app.services.subscribe.strategies.queue_search import QueueSearchStrategy
 
@@ -80,9 +89,8 @@ def build_rss_auto_subscribe_handler(subscribe_service: SubscribeService):
     return handle_rss_auto_subscribe
 
 
-@on_event(MEDIA_EPISODE_TRANSFERRED)
-def handle_media_episode_transferred(event: Event) -> None:
-    """单集转移完成事件处理器 — 更新订阅进度"""
+def handle_media_episode_transferred(event: Event, finalize_fn=None) -> None:
+    """单集转移完成事件处理器 — 更新订阅进度；缺失清零时定稿（finalize_fn）。"""
     payload = event.payload
     if not isinstance(payload, MediaEpisodeTransferredPayload):
         payload = MediaEpisodeTransferredPayload(**payload)
@@ -109,31 +117,153 @@ def handle_media_episode_transferred(event: Event) -> None:
         current_missing = ep_repo.get(rssid)
         if current_missing is None:
             # 缺失列表未初始化：以订阅的 current_ep（首个待下载集）推导初始范围
+            total = int(payload.total_episodes or 0)
+            if total <= 0:
+                # 总集数未知时无法核定缺失，保持原状态，避免误判完成
+                log.info(f"[Subscribe]{payload.title} S{payload.season} 缺失未初始化且总集数未知，跳过更新")
+                return
             subs = tv_repo.get_all(rssid=rssid)
             start = int(subs[0].current_ep) if subs and subs[0].current_ep else 1
-            total = int(payload.total_episodes or 0)
-            current_missing = list(range(start, total + 1)) if total > 0 else []
+            current_missing = list(range(start, total + 1))
 
         lack_episodes = sorted(set(int(e) for e in current_missing) - downloaded)
 
         if lack_episodes:
             log.info(f"[Subscribe]更新电视剧 {payload.title} S{payload.season} 缺失集数为 {len(lack_episodes)}")
-            tv_repo.update_state(title=None, year=None, season=None, rssid=rssid, state=SubscribeState.RUNNING.value)
+            subs = tv_repo.get_all(rssid=rssid)
+            pending = bool(subs) and subs[0].state == SubscribeState.COMPLETED.value
+            if not pending:
+                # 仅对仍在轮询的订阅保持 RUNNING；待转移(COMPLETED)订阅在分批转移期间保持完成态，
+                # 否则会被 RSS 重新匹配导致重复下载；缺失清空后再定稿。
+                tv_repo.update_state(
+                    title=None, year=None, season=None, rssid=rssid, state=SubscribeState.RUNNING.value
+                )
             tv_repo.update_lack(title=None, year=None, season=None, rssid=rssid, lack_episodes=lack_episodes)
         else:
-            log.info(f"[Subscribe]电视剧 {payload.title} S{payload.season} 全部集数已下载完成")
-            # 完成态不参与后续轮询；不调用 update_lack([])，避免写入空串导致后续读取 int("") 抛 ValueError
-            tv_repo.update_state(title=None, year=None, season=None, rssid=rssid, state=SubscribeState.COMPLETED.value)
-            # 同媒体其他用户的订阅联动完成（共享媒体库；ADR-021 记账分离）。
-            # RSS 阶段不再删除订阅，该联动移交到转移落盘核定处。
-            subs = tv_repo.get_all(rssid=rssid)
-            if subs:
-                s = subs[0]
+            log.info(f"[Subscribe]电视剧 {payload.title} S{payload.season} 转移确认全部集数完成")
+            if finalize_fn:
+                # 转移落盘确认 → 定稿：写历史、删订阅、联动兄弟、发通知
+                finalize_fn(rssid, payload)
+            else:
+                # 无定稿回调（如单测直调）：仅标记完成，不删订阅（避免空串写回）
                 tv_repo.update_state(
-                    title=s.name, year=s.year, season=s.season, rssid=None, state=SubscribeState.COMPLETED.value
+                    title=None, year=None, season=None, rssid=rssid, state=SubscribeState.COMPLETED.value
                 )
     except Exception as e:
         log.error(f"[Event]更新订阅进度失败：{e!s}")
+
+
+def build_media_episode_transferred_handler(subscribe_service: SubscribeService):
+    """构造转移定稿处理器：转移落盘确认后按订阅行定稿（写历史、删订阅、联动兄弟）。"""
+
+    def _finalize(rssid, payload) -> None:
+        mtype = None
+        media_type = getattr(payload, "media_type", None)
+        if media_type:
+            try:
+                mtype = MediaType(media_type)
+            except ValueError:
+                mtype = None
+        subscribe_service.finalize_tv_by_rssid(rssid, mtype)
+
+    @on_event(MEDIA_EPISODE_TRANSFERRED)
+    def _handle(event: Event) -> None:
+        handle_media_episode_transferred(event, finalize_fn=_finalize)
+
+    return _handle
+
+
+def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
+    """构造电影定稿处理器：电影入库确认后按订阅行定稿。
+
+    以“媒体库已存在”为定稿依据，避免电影目录内附加文件(nfo/sample/字幕等)
+    先落盘即触发过早定稿；未入库则等待后续转移或由待转移清理兜底。
+    """
+
+    @on_event(MEDIA_TRANSFER_FINISHED)
+    def _handle(event: Event) -> None:
+        payload = event.payload
+        if not isinstance(payload, MediaTransferFinishedPayload):
+            payload = MediaTransferFinishedPayload(**payload)
+        info = payload.media_info or {}
+        if info.get("type") != MediaType.MOVIE.value:
+            return
+        tmdb = str(info.get("tmdb_id") or info.get("id") or info.get("orgid") or "")
+        if not tmdb:
+            return
+        media = MediaInfo(type=MediaType.MOVIE, tmdb_id=tmdb)
+        media.title = info.get("title") or ""
+        media.year = info.get("year") or ""
+        media.overview = info.get("overview") or ""
+        if not subscribe_service.media_exists(media):
+            return
+        seen: set = set()
+        for sub in SubscribeMovieRepositoryAdapter().get_all():
+            sid = getattr(sub, "id", None)
+            if not sid or sid in seen or str(getattr(sub, "tmdb_id", "")) != tmdb:
+                continue
+            seen.add(sid)
+            subscribe_service.finalize_movie_by_rssid(sid)
+
+    return _handle
+
+
+def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
+    """构造转移失败回滚处理器：重开对应订阅、回补失败集缺失并复位下载历史，允许重新下载。"""
+
+    @on_event(TRANSFER_FAIL)
+    def _handle(event: Event) -> None:
+        payload = event.payload
+        if not isinstance(payload, TransferFailPayload):
+            payload = TransferFailPayload(**payload)
+        path = payload.path
+        if not path:
+            return
+        try:
+            history = DownloadHistoryRepositoryAdapter().get_by_path(path)
+            if not history or not history.tmdb_id:
+                return
+            parsed = RegexParser().parse(str(history.season_episode or ""))
+            season = str(parsed.season) if parsed and parsed.season is not None else None
+            # 本次失败的集号：回补到订阅缺失，避免下载时已被移除的集不再重试
+            failed_eps: list[int] = []
+            if parsed and parsed.episode is not None:
+                end = parsed.end_episode or parsed.episode
+                failed_eps = list(range(int(parsed.episode), int(end) + 1))
+            reopened = 0
+            # 仅回滚该次下载归属用户的订阅，避免波及同媒体其他用户（ADR-021 记账分离）
+            owner = getattr(history, "user_id", None)
+            tv_repo = SubscribeTvRepositoryAdapter()
+            ep_repo = SubscribeTvEpisodeRepositoryAdapter()
+            for sub in tv_repo.get_all():
+                if str(sub.tmdb_id) != str(history.tmdb_id):
+                    continue
+                if season is not None and str(sub.season) != season:
+                    continue
+                if owner is not None and getattr(sub, "user_id", None) != owner:
+                    continue
+                subscribe_service.update_rss_state(MediaType.TV, sub.id, SubscribeState.RUNNING.value)
+                if failed_eps:
+                    current = ep_repo.get(sub.id) or []
+                    merged = sorted(set(int(e) for e in current) | set(failed_eps))
+                    if merged:
+                        tv_repo.update_lack(title=None, year=None, season=None, rssid=sub.id, lack_episodes=merged)
+                reopened += 1
+            # 电影订阅：重开以便重新匹配下载
+            for msub in SubscribeMovieRepositoryAdapter().get_all():
+                if str(getattr(msub, "tmdb_id", "")) != str(history.tmdb_id):
+                    continue
+                if owner is not None and getattr(msub, "user_id", None) != owner:
+                    continue
+                subscribe_service.update_rss_state(MediaType.MOVIE, msub.id, SubscribeState.RUNNING.value)
+                reopened += 1
+            # 复位下载历史状态，解除“已完成”过滤，使订阅可重新匹配下载
+            DownloadHistoryRepositoryAdapter().update_state(history.downloader, history.download_id, "downloading")
+            log.info(f"[Event]转移失败回滚：tmdb_id={history.tmdb_id} 重开订阅 {reopened} 个，复位下载历史")
+        except Exception as e:
+            log.error(f"[Event]转移失败回滚失败：{e!s}")
+
+    return _handle
 
 
 def build_subscribe_add_search_handler(queue_strategy: QueueSearchStrategy, thread_executor: ThreadExecutor):

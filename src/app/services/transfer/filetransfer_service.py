@@ -984,6 +984,7 @@ class FileTransferService:
                     season=media.get_season_seq(),
                     episodes=media.get_episode_list(),
                     total_episodes=media.total_episodes,
+                    media_type=media.type.value if media.type else None,
                 ),
             ),
         )

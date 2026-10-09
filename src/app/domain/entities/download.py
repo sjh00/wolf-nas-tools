@@ -120,6 +120,8 @@ class DownloadHistoryEntity:
     download_id: str
     save_path: str
     date: str
+    state: str = ""
+    user_id: int | None = None
 
     @property
     def is_movie(self) -> bool:
@@ -172,6 +174,8 @@ class DownloadHistoryEntity:
             download_id=orm_model.DOWNLOAD_ID or "",
             save_path=orm_model.SAVE_PATH or "",
             date=orm_model.DATE or "",
+            state=getattr(orm_model, "STATE", None) or "",
+            user_id=getattr(orm_model, "USER_ID", None),
         )
 
     def to_dict(self) -> dict[str, Any]:
