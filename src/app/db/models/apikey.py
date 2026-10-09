@@ -53,7 +53,6 @@ class APIKEY(Base):
             "use_count": self.USE_COUNT,
             "last_used_at": self.LAST_USED_AT.isoformat() if self.LAST_USED_AT is not None else None,
             "description": self.DESCRIPTION,
-            "raw_key": self.RAW_KEY,
         }
 
     def is_expired(self) -> bool:

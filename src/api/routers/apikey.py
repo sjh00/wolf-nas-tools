@@ -153,6 +153,8 @@ async def list_api_key_logs(
     service: APIKeyService = Depends(get_apikey_service),
 ):
     """获取指定 API Key 的使用记录"""
+    if not service.user_can_access_key(key_id, user):
+        raise NexusError("无权查看该 API Key 使用记录", errcode=ErrorCode.PERMISSION_DENIED, http_status=403)
     result = service.list_logs(api_key_id=key_id, page=page, page_size=page_size)
     return success(data=result)
 
@@ -164,7 +166,9 @@ async def list_all_logs(
     user: UserContext = Depends(get_current_user),
     service: APIKeyService = Depends(get_apikey_service),
 ):
-    """获取所有 API Key 的使用记录"""
+    """获取所有 API Key 的使用记录（仅超级管理员）"""
+    if not getattr(user, "is_superadmin", False):
+        raise NexusError("无权查看全部 API Key 使用记录", errcode=ErrorCode.PERMISSION_DENIED, http_status=403)
     result = service.list_logs(page=page, page_size=page_size)
     return success(data=result)
 
