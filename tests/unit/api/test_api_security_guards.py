@@ -113,3 +113,33 @@ class TestApiKeyOwnership:
         superadmin = MagicMock()
         superadmin.is_superadmin = True
         assert svc.user_can_access_key(1, superadmin) is True
+
+
+class TestMediaServerHostAllowlist:
+    def test_configured_media_server_host_is_allowed(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from api.routers import image as image_mod
+
+        monkeypatch.setattr(image_mod, "_ms_hosts_cache", {"ts": 0.0, "hosts": set()})
+        item = SimpleNamespace(CONFIG='{"host": "http://192.168.50.152:8097", "play_host": "192.168.50.152:8097"}')
+        adapter = MagicMock()
+        adapter.get_media_servers.return_value = [item]
+        monkeypatch.setattr(image_mod, "MediaServerRepositoryAdapter", lambda: adapter)
+
+        hosts = image_mod._allowed_media_server_hosts()
+        assert "192.168.50.152" in hosts
+
+    def test_hosts_cached_within_ttl(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from api.routers import image as image_mod
+
+        monkeypatch.setattr(image_mod, "_ms_hosts_cache", {"ts": 0.0, "hosts": set()})
+        adapter = MagicMock()
+        adapter.get_media_servers.return_value = [SimpleNamespace(CONFIG='{"host": "http://10.0.0.9:8096"}')]
+        monkeypatch.setattr(image_mod, "MediaServerRepositoryAdapter", lambda: adapter)
+
+        image_mod._allowed_media_server_hosts()
+        image_mod._allowed_media_server_hosts()
+        assert adapter.get_media_servers.call_count == 1
