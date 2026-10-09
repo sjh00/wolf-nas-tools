@@ -10,7 +10,13 @@ with warnings.catch_warnings():
     from google.genai.errors import ClientError
 
 import log
-from app.agent.providers.base import BaseEmbeddingProvider, BaseProvider, ProviderConfig, ReasoningConfig
+from app.agent.providers.base import (
+    BaseEmbeddingProvider,
+    BaseProvider,
+    LLMThrottle,
+    ProviderConfig,
+    ReasoningConfig,
+)
 
 # 推理强度 → thinkingBudget（token 预算；0 = 关闭思考）
 _THINKING_BUDGET = {"low": 1024, "high": 4096, "max": 16384}
@@ -63,7 +69,8 @@ class GeminiProvider(BaseProvider):
             config.thinking_config = types.ThinkingConfig(thinking_budget=budget)
 
         try:
-            resp = self._client.models.generate_content(
+            resp = LLMThrottle.call(
+                self._client.models.generate_content,
                 model=self._config.model,
                 contents=contents,
                 config=config,
@@ -74,7 +81,8 @@ class GeminiProvider(BaseProvider):
                 log.debug("[GeminiProvider]模型不支持 thinking_config，剥离后重试")
                 config.thinking_config = None
                 self._thinking_unsupported.add(self._config.model)
-                resp = self._client.models.generate_content(
+                resp = LLMThrottle.call(
+                    self._client.models.generate_content,
                     model=self._config.model,
                     contents=contents,
                     config=config,
@@ -110,7 +118,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         if not texts:
             return []
         contents: list[Any] = [types.Part.from_text(text=t) for t in texts]
-        resp = self._client.models.embed_content(model=self._model, contents=contents)
+        resp = LLMThrottle.call(self._client.models.embed_content, model=self._model, contents=contents)
         vectors = [list(map(float, e.values)) for e in resp.embeddings or [] if e.values]
         if vectors and self._dimension is None:
             self._dimension = len(vectors[0])

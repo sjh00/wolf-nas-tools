@@ -9,6 +9,7 @@ from app.agent.providers.base import (
     BaseEmbeddingProvider,
     BaseProvider,
     ChatToolResponse,
+    LLMThrottle,
     ProviderConfig,
     ReasoningConfig,
     ToolCall,
@@ -49,7 +50,8 @@ class OllamaProvider(BaseProvider):
         if system_prompt:
             msgs.append({"role": "system", "content": system_prompt})
         msgs.extend(messages)
-        resp = self._client.chat(
+        resp = LLMThrottle.call(
+            self._client.chat,
             model=self._config.model,
             messages=msgs,
             options=_build_options(temperature),
@@ -68,7 +70,8 @@ class OllamaProvider(BaseProvider):
         """Ollama 原生 function calling"""
         msgs, tool_specs = self._build_tool_request(messages, tools, system_prompt)
         try:
-            resp = self._client.chat(
+            resp = LLMThrottle.call(
+                self._client.chat,
                 model=self._config.model,
                 messages=msgs,
                 tools=tool_specs,
@@ -101,7 +104,8 @@ class OllamaProvider(BaseProvider):
         """Ollama 流式 function calling"""
         msgs, tool_specs = self._build_tool_request(messages, tools, system_prompt)
         try:
-            stream = self._client.chat(
+            stream = LLMThrottle.call(
+                self._client.chat,
                 model=self._config.model,
                 messages=msgs,
                 tools=tool_specs,
@@ -159,7 +163,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        resp = self._client.embed(model=self._model, input=texts)
+        resp = LLMThrottle.call(self._client.embed, model=self._model, input=texts)
         embeddings = resp.embeddings if hasattr(resp, "embeddings") else resp["embeddings"]
         vectors = [list(map(float, e)) for e in embeddings]
         if vectors and self._dimension is None:
