@@ -46,12 +46,8 @@ class TestNegativeLookupCache:
             assert lookup.lookup(parsed) is None
             first_call_count = mock_lookup.call_count
 
-            # 直接改写缓存 TTL 为 0 模拟过期
-            key = (
-                f"lookup:{parsed.title_cn or ''}|{parsed.title_en or ''}|{parsed.year or ''}"
-                f"|{parsed.season or ''}|{parsed.type.value if parsed.type else ''}|"
-            )
-            lookup._lookup_cache.set(key, False, ttl=0)
+            # 清空缓存模拟负缓存过期
+            lookup._lookup_cache.clear()
             assert lookup.lookup(parsed) is None
             assert mock_lookup.call_count > first_call_count
 

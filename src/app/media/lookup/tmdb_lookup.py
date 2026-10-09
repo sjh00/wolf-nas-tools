@@ -53,7 +53,8 @@ class TmdbLookup(BaseLookup):
 
         cache_key = (
             f"lookup:{parsed.title_cn or ''}|{parsed.title_en or ''}|{parsed.year or ''}"
-            f"|{parsed.season or ''}|{parsed.type.value if parsed.type else ''}|{(language or '').lower()}"
+            f"|{parsed.season or ''}|{parsed.episode or ''}|{parsed.type.value if parsed.type else ''}"
+            f"|{hint_type.value if hint_type else ''}|{int(bool(strict))}|{(language or '').lower()}"
         )
         cached = self._lookup_cache.get(cache_key)
         if cached is not None:
@@ -107,6 +108,12 @@ class TmdbLookup(BaseLookup):
                     log.warn(f"[Meta]{parsed.title_cn or parsed.title_en} 裁剪重试被限流: {err}")
                     result = None
             if not result:
+                # 请求失败（限流/网络/5xx）不得写入负缓存，否则 24h 内都会误判“未找到”
+                if getattr(self.search, "last_error", None):
+                    log.warn(f"[Meta]{parsed.title_cn or parsed.title_en} 查询请求失败，跳过负缓存")
+                    if language:
+                        self.client.set_language()
+                    return None
                 if language:
                     self.client.set_language()
                 # 未命中缓存 False 哨兵：None 会被 get 视为"未缓存"而无法命中

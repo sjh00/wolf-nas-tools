@@ -250,7 +250,7 @@ class SearchOrchestrator:
         for media_item in media_list:
             if media_item.tmdb_id:
                 season_episode = media_item.get_season_episode_string()
-                if self._download_repo.is_exists_by_tmdb(media_item.tmdb_id, season_episode):
+                if self._download_repo.is_completed_by_tmdb(media_item.tmdb_id, season_episode):
                     log.info(f"[Orchestrator]{media_item.title} {season_episode} 已下载，跳过")
                     continue
             filtered.append(media_item)

@@ -72,6 +72,7 @@ class TmdbSearch:
     def search_movie(self, name: str, year: Any = None) -> Any:
         if self.client.search is None:
             return None
+        self.last_error = None
         try:
             params = {"query": name}
             if year:
@@ -81,11 +82,14 @@ class TmdbSearch:
             if movies and blacklist:
                 movies = [m for m in movies if not (m.get("id") and str(m.get("id")) in blacklist)]
         except TMDBError as err:
+            self.last_error = str(err)
             log.error(f"[Meta]连接TMDB出错：{err!s}")
             return None
         except HttpRateLimitError:
+            self.last_error = "rate_limited"
             raise
         except Exception as err:
+            self.last_error = str(err)
             log.error(f"[Meta]搜索电影时异常：{err!s}")
             return None
         if not movies:
@@ -152,6 +156,7 @@ class TmdbSearch:
     def search_tv(self, name: str, year: Any = None, season_number: Any = None, episode: Any = None) -> Any:
         if self.client.search is None:
             return None
+        self.last_error = None
         try:
             params = {"query": name}
             if year:
@@ -161,11 +166,14 @@ class TmdbSearch:
             if tvs and blacklist:
                 tvs = [t for t in tvs if not (t.get("id") and str(t.get("id")) in blacklist)]
         except TMDBError as err:
+            self.last_error = str(err)
             log.error(f"[Meta]连接TMDB出错：{err!s}")
             return None
         except HttpRateLimitError:
+            self.last_error = "rate_limited"
             raise
         except Exception as err:
+            self.last_error = str(err)
             log.error(f"[Meta]搜索剧集时异常：{err!s}")
             return None
         if not tvs:
@@ -353,14 +361,18 @@ class TmdbSearch:
     def search_multi(self, name: str) -> Any:
         if self.client.search is None:
             return None
+        self.last_error = None
         try:
             multis: Any = self.client.search.multi({"query": name}) or []
         except TMDBError as err:
+            self.last_error = str(err)
             log.error(f"[Meta]连接TMDB出错：{err!s}")
             return None
         except HttpRateLimitError:
+            self.last_error = "rate_limited"
             raise
         except Exception as err:
+            self.last_error = str(err)
             log.error(f"[Meta]多媒体搜索时异常：{err!s}")
             return None
         if not multis:
