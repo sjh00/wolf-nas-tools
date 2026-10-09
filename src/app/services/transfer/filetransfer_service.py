@@ -68,6 +68,10 @@ def _get_mirror_queue() -> MemoryMessageQueue:
     return _mirror_queue
 
 
+# 并发转移分组等待上限（秒）；超时按失败处理，避免同池嵌套导致永久挂起
+_PARALLEL_WAIT_TIMEOUT = 1800
+
+
 class FileTransferService:
     """文件转移业务 Facade."""
 
@@ -300,7 +304,10 @@ class FileTransferService:
 
     def link_sync_file(self, src_path, in_file, target_dir, operation):
         """对文件做纯链接处理，不做识别重命名（监控模块调用）."""
-        new_file = in_file.replace(src_path, target_dir)
+        rel = os.path.relpath(in_file, src_path)
+        if rel.startswith(".."):
+            rel = os.path.basename(in_file)
+        new_file = os.path.join(target_dir, rel)
         new_file_list, msg = self.check_ignore(file_list=[new_file])
         if not new_file_list:
             return 0, msg
@@ -308,7 +315,7 @@ class FileTransferService:
             new_file = new_file_list[0]
         new_dir = os.path.dirname(new_file)
         if not os.path.exists(new_dir):
-            os.makedirs(new_dir)
+            os.makedirs(new_dir, exist_ok=True)
         try:
             self._engine._execute(in_file, new_file, operation)
             return 0, ""
@@ -685,11 +692,35 @@ class FileTransferService:
                 return func(item)
             except Exception as err:
                 ExceptionUtils.exception_traceback(err)
-                return None
+                # 返回失败结果而非 None：避免合并时被过滤后默认成功（导致失败被写黑名单、永不重试）
+                return self._failure_result(err)
 
         futures: list[Future] = [self._thread_executor.submit(_wrapper, item) for item in items]
-        wait(futures)
-        return [f.result() for f in futures]
+        # 加超时：同池嵌套提交时避免所有 worker 阻塞在 wait() 造成进程级死锁挂起
+        _done, not_done = wait(futures, timeout=_PARALLEL_WAIT_TIMEOUT)
+        if not_done:
+            log.error(f"[Rmt]转移并发任务超时，{len(not_done)} 个子任务未完成，按失败处理")
+        results = []
+        for future in futures:
+            if future in not_done:
+                results.append(self._failure_result(TimeoutError("transfer group timeout")))
+            else:
+                results.append(future.result())
+        return results
+
+    @staticmethod
+    def _failure_result(err: Exception) -> dict:
+        """构造与成功结果同构的失败结果字典."""
+        return {
+            "total_count": 0,
+            "failed_count": 1,
+            "alert_count": 1,
+            "alert_messages": [str(err)],
+            "message_medias": {},
+            "success_flag": False,
+            "error_message": str(err),
+            "exist_filenum": 0,
+        }
 
     def _transfer_files_loop(
         self,
@@ -841,7 +872,7 @@ class FileTransferService:
                     out_path=out_path or "",
                     dest=dist_path,
                     media_info=media_dto,
-                    dst_backend=dst_backend.id if hasattr(dst_backend, "id") else (dst_backend or "local"),
+                    dst_backend=getattr(resolved_backend, "id", None) or "local",
                 )
 
                 # 转移成功：若该文件曾进入未识别列表，标记为已识别（不再依赖手动指定季集标志）
@@ -1009,18 +1040,22 @@ class FileTransferService:
     @staticmethod
     def _episode_in_history(history, episode) -> bool:
         """判断某集是否已存在于转移历史（支持 S01E01 与 S01E01-E05 格式）."""
+        try:
+            target = int(episode)
+        except (TypeError, ValueError):
+            return False
         for h in history or []:
-            se = getattr(h, "season_episode", None) or ""
-            try:
-                ep_part = str(se).split("E")[-1].strip()
-                if "-" in ep_part:
-                    a, b = ep_part.split("-")
-                    if int(a) <= int(episode) <= int(b):
-                        return True
-                elif ep_part.isdigit() and int(ep_part) == int(episode):
-                    return True
-            except Exception:
+            se = str(getattr(h, "season_episode", None) or "")
+            match = re.search(r"E(\d+)(?:\s*-\s*E?(\d+))?", se)
+            if not match:
                 continue
+            try:
+                begin = int(match.group(1))
+                end = int(match.group(2)) if match.group(2) else begin
+            except (TypeError, ValueError):
+                continue
+            if begin <= target <= end:
+                return True
         return False
 
     def _do_transfer_file(
@@ -1108,7 +1143,7 @@ class FileTransferService:
                     "识别失败，无法从文件名中识别出季集信息",
                 )
             elif not dst_backend:
-                os.makedirs(ret_dir_path)
+                os.makedirs(ret_dir_path, exist_ok=True)
 
         if bluray_disk_dir:
             if not ret_dir_path:

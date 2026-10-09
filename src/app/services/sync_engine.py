@@ -30,6 +30,9 @@ from app.storage.factory import StorageBackendFactory
 from app.utils import PathUtils
 
 _synced_lock = threading.Lock()
+
+# 目录同步并发任务等待上限（秒），超时按未完成处理避免永久挂起
+_SYNC_WAIT_TIMEOUT = 1800
 _observer_lock = threading.Lock()
 
 
@@ -251,13 +254,26 @@ class SyncEngine:
                 return cfg
         return None
 
+    def _sync_target_exists(self, dst: str, dst_backend: StorageBackend | None) -> bool:
+        """同步目标文件是否真实存在（用于识别已删除的目标，触发重新链接）."""
+        try:
+            if dst_backend is not None:
+                return bool(dst_backend.exists(dst))
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]检查目标存在性失败，回退本地判断: {e}")
+        return os.path.exists(dst)
+
     def _do_link(self, event_path: str, cfg: SyncPathConfig) -> None:
-        if self._history_repo.is_sync_in_history(event_path, cfg.dest):
-            return
         rel = os.path.relpath(event_path, cfg.source)
         dst = os.path.join(cfg.dest, rel)
         try:
             dst_backend = self._resolve_backend(cfg.dst_backend_id) if cfg.dst_backend_id != "local" else None
+            if self._history_repo.is_sync_in_history(event_path, cfg.dest):
+                if self._sync_target_exists(dst, dst_backend):
+                    return
+                # 目标文件已被删除（直接 rm / 前端文件管理）：清理陈旧历史并重新链接
+                log.info(f"[Sync]{event_path} 目标已不存在，清理历史并重新链接")
+                self._history_repo.delete_sync_history(event_path, cfg.dest)
             self._transfer._execute(event_path, dst, cfg.operation, dst_backend)
             self._history_repo.insert_sync_history(event_path, cfg.source, cfg.dest)
             self._transfer._blacklist.insert(event_path)
@@ -343,8 +359,13 @@ class SyncEngine:
             return
 
         def _link_one(path: str) -> None:
+            rel = os.path.relpath(path, cfg.source)
+            dst = os.path.join(cfg.dest, rel)
             if self._history_repo.is_sync_in_history(path, cfg.dest):
-                return
+                if self._sync_target_exists(dst, dst_backend):
+                    return
+                log.info(f"[Sync]{path} 目标已不存在，清理历史并重新链接")
+                self._history_repo.delete_sync_history(path, cfg.dest)
             try:
                 self._do_link_with_backend(path, cfg, src_backend, dst_backend)
             except (ServiceError, RepositoryError, DomainError):
@@ -394,7 +415,10 @@ class SyncEngine:
         futures = []
         for item in items:
             futures.append(self._thread_executor.submit(func, item))
-        wait(futures)
+        # 加超时：避免同池嵌套提交时 worker 全部阻塞在 wait() 造成进程级挂起
+        _done, not_done = wait(futures, timeout=_SYNC_WAIT_TIMEOUT)
+        if not_done:
+            log.error(f"[Sync]并发任务超时，{len(not_done)} 个未完成")
 
     def _do_link_with_backend(
         self, event_path: str, cfg: SyncPathConfig, src_backend: StorageBackend, dst_backend: StorageBackend

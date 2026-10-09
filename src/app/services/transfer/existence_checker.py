@@ -88,9 +88,15 @@ class MediaExistenceChecker:
                     break
         else:
             dir_name, season_name, file_name = self._path_resolver.get_tv_dest_path(media, self._media)
-            if (media.type == MediaType.TV and self._path_resolver.tv_category_flag) or (
-                media.type == MediaType.ANIME and self._path_resolver.anime_category_flag
-            ):
+            # 与 TransferPathResolver.get_dest_path_by_info 保持一致：动漫专用目录不加分类子目录
+            add_category = False
+            if media.type == MediaType.TV:
+                add_category = bool(self._path_resolver.tv_category_flag)
+            elif media.type == MediaType.ANIME:
+                anime_paths = getattr(self._path_resolver, "_anime_path", []) or []
+                is_dedicated_anime = any(PathUtils.is_path_in_path(p, media_dest) for p in anime_paths)
+                add_category = (not is_dedicated_anime) and bool(self._path_resolver.tv_category_flag)
+            if add_category:
                 media_path = os.path.join(media_dest, media.category, dir_name)
             else:
                 media_path = os.path.join(media_dest, dir_name)

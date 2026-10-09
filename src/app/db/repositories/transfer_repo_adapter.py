@@ -61,6 +61,10 @@ class TransferHistoryRepositoryAdapter:
         self._repo.insert_sync_history(path, src, dest)
 
     # 兼容旧Repository方法名
+    def delete_sync_history(self, path: str, dest: str) -> None:
+        self._repo.delete_sync_history(path, dest)
+
+    # 兼容旧Repository方法名
     def get_transfer_info_by(
         self, tmdbid: int | None, season: str | None = None, season_episode: str | None = None
     ) -> list[TransferHistoryEntity] | None:
