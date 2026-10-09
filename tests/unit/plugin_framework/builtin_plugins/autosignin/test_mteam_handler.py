@@ -2,7 +2,7 @@
 
 import json
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.plugin_framework.builtin_plugins.autosignin.backend.handlers.mteam import MTeam
 from app.plugin_framework.context import PluginContext
@@ -74,3 +74,77 @@ def test_response_401_auth_expired_returns_clear_message():
     result = handler._check_response(res, "M-Team")
     assert result.ok is False
     assert "登录态已过期" in result.msg
+
+
+def test_response_revoked_credential_returns_clear_message():
+    handler = _handler()
+    res = _FakeResponse('{"code":"1","message":"系统检测到疑似登录凭证泄露，已吊销该会话","data":null}')
+    result = handler._check_response(res, "M-Team")
+    assert result.ok is False
+    assert "吊销" in result.msg
+
+
+def _signin_ctx():
+    from app.plugin_framework.builtin_plugins.autosignin.backend.handlers.base import SiteSigninContext
+
+    return SiteSigninContext(
+        site="M-Team",
+        site_id="mteam",
+        site_url="https://kp.m-team.cc",
+        cookie=None,
+        api_key=None,
+        bearer_token=None,
+        ua="BROWSER-UA",
+        proxy_url=None,
+        headers={},
+    )
+
+
+def _run_signin(local_storage, response_text='{"code":"1","message":"FAIL","data":null}'):
+    from types import SimpleNamespace
+
+    from app.plugin_framework.builtin_plugins.autosignin.backend.handlers.base import SigninResult
+
+    handler = MTeam(plugin_ctx=MagicMock())
+    handler._plugin_ctx.site_engine.get_by_id.return_value = SimpleNamespace(
+        domain="kp.m-team.cc", api=SimpleNamespace(base_url="https://api.m-team.cc")
+    )
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.__exit__.return_value = False
+    client.post.return_value = _FakeResponse(response_text)
+    with (
+        patch("app.plugin_framework.builtin_plugins.autosignin.backend.handlers.mteam.CookiecloudAdapter") as cc,
+        patch(
+            "app.plugin_framework.builtin_plugins.autosignin.backend.handlers.mteam.HttpClient",
+            return_value=client,
+        ),
+        patch("app.plugin_framework.builtin_plugins.autosignin.backend.handlers.mteam.time.sleep"),
+        patch.object(handler, "_fetch_secret", return_value=None),
+    ):
+        cc.return_value.get_local_storage.return_value = local_storage
+        result = handler.signin(_signin_ctx())
+    assert isinstance(result, SigninResult)
+    return result, client
+
+
+def test_signin_headers_aligned_with_browser():
+    result, client = _run_signin({"auth": "JWT", "did": "DID", "visitorId": "VID", "webversion": "2000"})
+    assert result.ok is True
+    headers = client.post.call_args.kwargs["headers"]
+    assert headers["referer"] == "https://kp.m-team.cc/index"
+    assert headers["webversion"] == "2000"
+    assert headers["did"] == "DID"
+    assert headers["visitorid"] == "VID"
+
+
+def test_signin_webversion_defaults_when_missing():
+    _result, client = _run_signin({"auth": "JWT", "did": "DID", "visitorId": "VID"})
+    assert client.post.call_args.kwargs["headers"]["webversion"] == MTeam._DEFAULT_WEBVERSION
+
+
+def test_signin_missing_fingerprint_fails_without_request():
+    result, client = _run_signin({"auth": "JWT", "visitorId": "VID"})
+    assert result.ok is False
+    assert "did" in result.msg
+    client.post.assert_not_called()
