@@ -134,6 +134,9 @@ class DownloadMonitor:
         all_tasks = client.get_transfer_task(tag=tag, match_path=match_path)
         current_ids = {str(task.get("id")) for task in all_tasks if task.get("id")}
         new_ids = current_ids - previous_ids
+        # 已从下载器消失的任务，回收其 processed 标记，允许该 id 重新下载时再次触发
+        for removed_id in previous_ids - current_ids:
+            self._processed_ids.discard(self._make_id(did, removed_id))
         self._last_snapshot[did] = current_ids
 
         if not new_ids:

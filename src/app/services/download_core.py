@@ -57,6 +57,9 @@ _DOWNLOAD_FAIL_TTL = 600
 # 站点明确拒绝（如限额/不可重试）后的短路时长（秒），避免持续消耗站点配额
 _DOWNLOAD_UNRETRYABLE_TTL = 6 * 3600
 
+# 链接单飞锁数量上限，超过后清理未占用的锁避免字典无限增长
+_LINK_LOCKS_MAX = 1024
+
 
 class DownloadCore:
     """
@@ -125,6 +128,10 @@ class DownloadCore:
         with self._link_locks_guard:
             lock = self._link_locks.get(key)
             if lock is None:
+                # 上限保护：超过阈值时清理未被占用的锁，避免长期运行字典无限增长
+                if len(self._link_locks) >= _LINK_LOCKS_MAX:
+                    for k in [k for k, v in self._link_locks.items() if not v.locked()]:
+                        self._link_locks.pop(k, None)
                 lock = threading.Lock()
                 self._link_locks[key] = lock
             return lock
