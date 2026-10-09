@@ -257,6 +257,8 @@ class EpisodeStrategy:
         set_files_status_callback,
         start_torrents_callback,
         return_items: list,
+        get_torrent_episodes_by_tid_callback=None,
+        remove_torrents_callback=None,
     ) -> tuple[list, dict]:
         """
         从整季包中选取需要的集数下载（仅支持QB/TR）
@@ -264,6 +266,14 @@ class EpisodeStrategy:
         """
         if not need_tvs:
             return return_items, need_tvs
+
+        def _rollback(download_id, downloader_id):
+            """原子回滚：删除已暂停加入但未成功启动的任务"""
+            if remove_torrents_callback and download_id:
+                try:
+                    remove_torrents_callback(download_id, downloader_id)
+                except Exception as e:  # noqa: BLE001
+                    log.warn(f"[Downloader]回滚删除任务失败：{e}")
 
         need_tv_list = list(need_tvs)
         for need_tmdbid in need_tv_list:
@@ -299,31 +309,70 @@ class EpisodeStrategy:
 
                     if not item.enclosure:
                         item.enclosure = get_download_url_callback(item.page_url)
-                    # 检查种子看是否有需要的集
+                    is_magnet = (item.enclosure or "").startswith("magnet:")
+
+                    if is_magnet:
+                        # 磁力原子化：暂停加入 → 读取文件清单筛选取需 → 开始；任一步失败即回滚删除任务
+                        downloader_id, download_id, _ = download_callback(item, torrent_file=None, is_paused=True)
+                        if not download_id:
+                            continue
+                        try:
+                            torrent_episodes = (
+                                get_torrent_episodes_by_tid_callback(download_id, downloader_id, item.page_url)
+                                if get_torrent_episodes_by_tid_callback
+                                else []
+                            )
+                            if torrent_episodes:
+                                selected_episodes = set(torrent_episodes).intersection(set(need_episodes))
+                                if not selected_episodes:
+                                    log.info(f"[Downloader]{item.org_string} 磁力包内没有需要的集，回滚")
+                                    _rollback(download_id, downloader_id)
+                                    continue
+                                need_episodes = EpisodeStrategy._update_episodes(
+                                    need_tvs, need_tmdbid, need_episodes, list(selected_episodes), need_season
+                                )
+                                log.info(f"[Downloader]从 {item.org_string} 中选取集：{selected_episodes}")
+                                set_files_status_callback(
+                                    tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
+                                )
+                            else:
+                                # 无法解析文件清单：整包下载，视为满足所需集数
+                                need_episodes = EpisodeStrategy._update_episodes(
+                                    need_tvs, need_tmdbid, need_episodes, list(need_episodes), need_season
+                                )
+                            log.info(f"[Downloader]{item.org_string} 开始下载 ")
+                            start_torrents_callback(ids=download_id, downloader_id=downloader_id)
+                            if item not in return_items:
+                                return_items.append(item)
+                        except Exception as e:  # noqa: BLE001
+                            log.error(f"[Downloader]{item.org_string} 磁力整季包处理失败，回滚：{e}")
+                            _rollback(download_id, downloader_id)
+                        continue
+
+                    # 非磁力：解析种子集数 → 暂停加入 → 设置需集 → 开始（失败回滚）
                     torrent_episodes, torrent_path = get_torrent_episodes_callback(item.enclosure, item.page_url)
                     selected_episodes = set(torrent_episodes).intersection(set(need_episodes))
                     if not selected_episodes:
                         log.info(f"[Downloader]{item.org_string} 没有需要的集，跳过...")
                         continue
-                    # 添加下载并暂停
                     downloader_id, download_id, _ = download_callback(item, torrent_file=torrent_path, is_paused=True)
                     if not download_id:
                         continue
-                    # 更新仍需集数
-                    need_episodes = EpisodeStrategy._update_episodes(
-                        need_tvs, need_tmdbid, need_episodes, list(selected_episodes), need_season
-                    )
-                    # 设置任务只下载想要的文件
-                    log.info(f"[Downloader]从 {item.org_string} 中选取集：{selected_episodes}")
-                    set_files_status_callback(
-                        tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
-                    )
-                    # 重新开始任务
-                    log.info(f"[Downloader]{item.org_string} 开始下载 ")
-                    start_torrents_callback(ids=download_id, downloader_id=downloader_id)
-                    # 记录下载项
-                    if item not in return_items:
-                        return_items.append(item)
+                    try:
+                        need_episodes = EpisodeStrategy._update_episodes(
+                            need_tvs, need_tmdbid, need_episodes, list(selected_episodes), need_season
+                        )
+                        log.info(f"[Downloader]从 {item.org_string} 中选取集：{selected_episodes}")
+                        set_files_status_callback(
+                            tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
+                        )
+                        log.info(f"[Downloader]{item.org_string} 开始下载 ")
+                        start_torrents_callback(ids=download_id, downloader_id=downloader_id)
+                        if item not in return_items:
+                            return_items.append(item)
+                    except Exception as e:  # noqa: BLE001
+                        log.error(f"[Downloader]{item.org_string} 整季包处理失败，回滚：{e}")
+                        _rollback(download_id, downloader_id)
                 index += 1
         return return_items, need_tvs
 
