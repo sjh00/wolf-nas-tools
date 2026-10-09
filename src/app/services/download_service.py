@@ -360,11 +360,15 @@ class DownloadService:
             if not _client:
                 continue
             try:
-                progress_list = _client.get_downloading_progress(ids=ids) or []
+                progress_list = _client.get_downloading_progress(ids=ids)
             except (DomainError, ServiceError):
                 raise
             except Exception:
-                progress_list = []
+                progress_list = None
+            if progress_list is None:
+                # 查询失败：跳过本轮状态回写，绝不能在错误时把任务标记为完成
+                log.warn(f"[DownloadService]下载器 {did} 进度查询失败，跳过本轮状态更新")
+                continue
             progress_map = {p.get("id"): p for p in progress_list if p.get("id")}
 
             for task in tasks:

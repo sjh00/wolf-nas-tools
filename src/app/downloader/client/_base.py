@@ -294,9 +294,14 @@ class _IDownloadClient(metaclass=ABCMeta):
 
     def get_downloading_progress(
         self, ids: list[str] | str | None = None, tag: str | list[str] | None = None
-    ) -> list[dict]:
-        """获取下载进度。子类可覆盖 _format_progress 或 _format_speed 来自定义。"""
-        torrents = self.get_downloading_torrents(ids=ids, tag=tag) or []
+    ) -> list[dict] | None:
+        """获取下载进度。子类可覆盖 _format_progress 或 _format_speed 来自定义。
+
+        查询失败时返回 None（区别于“无任务”的空列表），避免调用方把错误误判为已完成。
+        """
+        torrents = self.get_downloading_torrents(ids=ids, tag=tag)
+        if torrents is None:
+            return None
         return [self._format_progress(t) for t in torrents]
 
     def _format_progress(self, torrent: Torrent) -> dict:
