@@ -143,3 +143,24 @@ class TestMediaServerHostAllowlist:
         image_mod._allowed_media_server_hosts()
         image_mod._allowed_media_server_hosts()
         assert adapter.get_media_servers.call_count == 1
+
+    def test_library_host_alias_matched_by_resolved_ip(self, monkeypatch):
+        import time as _time
+
+        from api.routers import image as image_mod
+
+        monkeypatch.setattr(
+            image_mod,
+            "_ms_hosts_cache",
+            {"ts": _time.time(), "hosts": {"emby.lan"}, "ips": {"192.168.50.152"}},
+        )
+
+        def _fake_getaddrinfo(host, port):
+            ip = "192.168.50.152" if host == "192.168.50.152" else "10.9.9.9"
+            return [(2, 1, 6, "", (ip, 0))]
+
+        monkeypatch.setattr(image_mod.socket, "getaddrinfo", _fake_getaddrinfo)
+
+        assert image_mod._is_allowed_library_host("emby.lan") is True
+        assert image_mod._is_allowed_library_host("192.168.50.152") is True  # 别名：主机名↔IP
+        assert image_mod._is_allowed_library_host("10.1.1.1") is False

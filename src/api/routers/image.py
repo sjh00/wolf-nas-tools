@@ -36,7 +36,7 @@ router = APIRouter()
 
 # 已配置媒体服务器主机缓存（合法内网直连放行；60s 刷新，避免每张图都查库）
 _MS_HOSTS_TTL = 60.0
-_ms_hosts_cache: dict = {"ts": 0.0, "hosts": set()}
+_ms_hosts_cache: dict = {"ts": 0.0, "hosts": set(), "ips": set()}
 
 
 def _allowed_media_server_hosts() -> set[str]:
@@ -61,9 +61,32 @@ def _allowed_media_server_hosts() -> set[str]:
                         hosts.add(host)
     except Exception as e:  # noqa: BLE001
         log.debug(f"[Img]读取媒体服务器主机失败：{e}")
+    # 解析出对应 IP：覆盖「配置写域名、图片用 IP（或反之）」的别名场景
+    ips: set[str] = set()
+    for host in hosts:
+        try:
+            ips.update(str(info[4][0]) for info in socket.getaddrinfo(host, None))
+        except OSError:
+            continue
     _ms_hosts_cache["ts"] = now
     _ms_hosts_cache["hosts"] = hosts
+    _ms_hosts_cache["ips"] = ips
     return hosts
+
+
+def _is_allowed_library_host(host: str) -> bool:
+    """图片主机是否为已配置媒体服务器（主机名直接命中，或解析 IP 命中别名）。"""
+    if not host:
+        return False
+    allowed_hosts = _allowed_media_server_hosts()
+    if host in allowed_hosts:
+        return True
+    _allowed_media_server_hosts()  # 确保 ips 已计算
+    try:
+        resolved = {str(info[4][0]) for info in socket.getaddrinfo(host, None)}
+    except OSError:
+        return False
+    return bool(resolved & _ms_hosts_cache["ips"])
 
 
 def _is_blocked_ip(ip: str) -> bool:
@@ -196,7 +219,7 @@ async def proxy_library_image(request: Request, img_url: str):
         return await _serve_image(cache_path, decoded_url, downloader=lambda u: ms.download_image(u))
     # 已配置媒体服务器的内网地址为合法来源，放行；其余外部地址仍做 SSRF 校验
     decoded_host = urllib.parse.urlparse(decoded_url).hostname or ""
-    if decoded_host and decoded_host in _allowed_media_server_hosts():
+    if _is_allowed_library_host(decoded_host):
         return await _serve_image(cache_path, decoded_url)
     _guard_image_url(decoded_url)
     return await _serve_image(cache_path, decoded_url)
