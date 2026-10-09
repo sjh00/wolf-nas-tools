@@ -33,6 +33,12 @@ ENV_VAR_MAP = {
     "password": "DATABASE__PASSWORD",
     "database": "DATABASE__DATABASE",
     "sqlite_path": "DATABASE__SQLITE_PATH",
+    "pool_size": "DATABASE__POOL_SIZE",
+    "max_overflow": "DATABASE__MAX_OVERFLOW",
+    "pool_timeout": "DATABASE__POOL_TIMEOUT",
+    "scheduler_pool_size": "DATABASE__SCHEDULER_POOL_SIZE",
+    "scheduler_max_overflow": "DATABASE__SCHEDULER_MAX_OVERFLOW",
+    "scheduler_pool_timeout": "DATABASE__SCHEDULER_POOL_TIMEOUT",
 }
 
 
@@ -43,6 +49,15 @@ class DatabaseFactory:
     SQLITE = "sqlite"
     MYSQL = "mysql"
     POSTGRESQL = "postgresql"
+
+    # 连接池默认值（MySQL/PostgreSQL）：API 与调度任务叠加时避免池耗尽
+    DEFAULT_POOL_SIZE = 20
+    DEFAULT_MAX_OVERFLOW = 20
+    DEFAULT_POOL_TIMEOUT = 15
+    # 调度任务独立连接池（比 API 小，隔离同时不使总连接数翻倍）
+    DEFAULT_SCHEDULER_POOL_SIZE = 10
+    DEFAULT_SCHEDULER_MAX_OVERFLOW = 10
+    DEFAULT_SCHEDULER_POOL_TIMEOUT = 15
 
     @staticmethod
     def get_database_url(
@@ -214,9 +229,15 @@ class DatabaseFactory:
         else:
             # MySQL/PostgreSQL 连接池配置
             engine_kwargs["poolclass"] = QueuePool
-            engine_kwargs["pool_size"] = kwargs.get("pool_size", 10)
-            engine_kwargs["max_overflow"] = kwargs.get("max_overflow", 10)
-            engine_kwargs["pool_timeout"] = kwargs.get("pool_timeout", 60)
+            engine_kwargs["pool_size"] = kwargs.get("pool_size") or DatabaseFactory._get_int_config(
+                "pool_size", DatabaseFactory.DEFAULT_POOL_SIZE
+            )
+            engine_kwargs["max_overflow"] = kwargs.get("max_overflow") or DatabaseFactory._get_int_config(
+                "max_overflow", DatabaseFactory.DEFAULT_MAX_OVERFLOW
+            )
+            engine_kwargs["pool_timeout"] = kwargs.get("pool_timeout") or DatabaseFactory._get_int_config(
+                "pool_timeout", DatabaseFactory.DEFAULT_POOL_TIMEOUT
+            )
             engine_kwargs["pool_recycle"] = kwargs.get("pool_recycle", 1800)
             engine_kwargs["pool_pre_ping"] = True
 
@@ -323,6 +344,25 @@ class DatabaseFactory:
             db_config = config.get("database", {})
             return db_config.get(key, default)
         except (AttributeError, KeyError, TypeError):
+            return default
+
+    @staticmethod
+    def _get_int_config(key: str, default: int) -> int:
+        """从环境变量或配置读取整数配置（环境变量优先）"""
+        env_var = ENV_VAR_MAP.get(key)
+        if env_var:
+            raw = os.environ.get(env_var)
+            if raw:
+                try:
+                    return int(raw)
+                except ValueError:
+                    return default
+        try:
+            config = settings.get()
+            db_config = config.get("database", {})
+            value = db_config.get(key)
+            return int(value) if value is not None else default
+        except (AttributeError, KeyError, TypeError, ValueError):
             return default
 
     @staticmethod
