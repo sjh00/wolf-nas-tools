@@ -410,7 +410,12 @@ def get_plugin_asset(
     real_plugin_path = os.path.realpath(plugin_path)
     real_target = os.path.realpath(target)
 
-    if not real_target.startswith(real_plugin_path):
+    # 路径必须严格位于本插件目录内：用 commonpath 而非字符串前缀，
+    # 防止 /plugins/foo 前缀匹配到 /plugins/foobar，或 ../ 逃逸
+    try:
+        if os.path.commonpath([real_plugin_path, real_target]) != real_plugin_path:
+            return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
+    except ValueError:
         return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
 
     if not os.path.exists(target) or not os.path.isfile(target):

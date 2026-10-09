@@ -279,7 +279,7 @@ def _check_site_grants(app_context, user: UserContext, kwargs: dict) -> list[str
 @router.post("/add", response_model=CommonResponse, summary="添加 RSS 订阅")
 def add_rss_media(
     req: AddRssMediaRequest,
-    user: UserContext = Depends(require_any_permission("subscription:manage", "subscription:view")),
+    user: UserContext = Depends(require_permission("subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
     app_context=Depends(get_app_context),
 ):
@@ -395,7 +395,7 @@ def refresh_rss(
 @router.post("/remove", response_model=CommonResponse, summary="移除 RSS 订阅")
 def remove_rss_media(
     req: RemoveRssMediaRequest,
-    user: UserContext = Depends(require_any_permission("subscription:manage", "subscription:view")),
+    user: UserContext = Depends(require_permission("subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
     tmdbid = req.tmdbid
@@ -521,7 +521,7 @@ def webcal_ical(
     user: UserContext = Depends(get_current_user),
     svc: SubscribeCalendarService = Depends(get_subscribe_calendar_service),
 ):
-    ics = svc.generate_ics()
+    ics = svc.generate_ics(user=user)
     return Response(
         content=ics,
         media_type="text/calendar; charset=utf-8",

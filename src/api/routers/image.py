@@ -5,7 +5,9 @@ FastAPI 图片代理路由
 """
 
 import asyncio
+import ipaddress
 import os
+import socket
 import time
 import urllib.parse
 from pathlib import Path
@@ -29,6 +31,37 @@ from app.infrastructure.image_proxy import (
 )
 
 router = APIRouter()
+
+
+def _is_blocked_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return bool(
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _guard_image_url(url: str) -> None:
+    """SSRF 防护：仅允许 http(s)，且目标主机不得解析到内网/保留地址。"""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise NexusError("非法图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+    host = (parsed.hostname or "").strip().strip("[]")
+    if not host or host.lower() == "localhost":
+        raise NexusError("不允许访问的图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise NexusError("图片地址无法解析", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400) from e
+    if not infos or any(_is_blocked_ip(str(info[4][0])) for info in infos):
+        raise NexusError("不允许访问的图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
 
 
 async def _serve_image(
@@ -98,6 +131,7 @@ async def proxy_douban_image(img_path: str):
         image_url = decoded_path
     else:
         image_url = f"https://{SOURCE_DOMAINS['douban']}/{decoded_path}"
+    _guard_image_url(image_url)
     return await _serve_image(cache_path, image_url, referer="https://movie.douban.com")
 
 
@@ -110,6 +144,7 @@ async def proxy_bgm_image(img_path: str):
         image_url = decoded_path
     else:
         image_url = f"https://{SOURCE_DOMAINS['bgm']}/{decoded_path}"
+    _guard_image_url(image_url)
     return await _serve_image(cache_path, image_url)
 
 
@@ -126,6 +161,7 @@ async def proxy_library_image(request: Request, img_url: str):
     if "/v/api/v1/sys/img/" in decoded_url:
         ms = request.app.state.context.media_server
         return await _serve_image(cache_path, decoded_url, downloader=lambda u: ms.download_image(u))
+    _guard_image_url(decoded_url)
     return await _serve_image(cache_path, decoded_url)
 
 
@@ -163,6 +199,7 @@ def proxy_image_redirect(request: Request, url: str | None = None):
 async def proxy_favicon_external(encoded_url: str):
     """代理外部 favicon URL."""
     favicon_url = urllib.parse.unquote(encoded_url)
+    _guard_image_url(favicon_url)
     cache_path = get_cache_path("favicon", urllib.parse.quote(favicon_url, safe=""))
     return await _serve_image(cache_path, favicon_url, referer=favicon_url, media_type="image/x-icon")
 
@@ -171,6 +208,7 @@ async def proxy_favicon_external(encoded_url: str):
 async def proxy_favicon(domain: str):
     """代理站点 favicon.ico，下载到本地缓存并返回."""
     favicon_url = f"https://{domain}/favicon.ico"
+    _guard_image_url(favicon_url)
     cache_path = get_cache_path("favicon", domain)
     return await _serve_image(cache_path, favicon_url, referer=f"https://{domain}", media_type="image/x-icon")
 

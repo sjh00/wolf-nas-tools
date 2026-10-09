@@ -571,7 +571,7 @@ def pt_info(
 @router.post("/tasks/remove", response_model=CommonResponse, summary="删除下载任务")
 def pt_remove(
     req: PtIdRequest,
-    user: str = Depends(require_any_permission("download:view", "download:manage")),
+    user: str = Depends(require_permission("download:manage")),
     svc: Downloader = Depends(get_downloader_service),
 ):
     tid = req.id
@@ -629,7 +629,7 @@ def pt_batch_stop(
 @router.post("/tasks/batch/remove", response_model=CommonResponse, summary="批量删除下载任务")
 def pt_batch_remove(
     req: BatchIdsRequest,
-    _user: str = Depends(require_any_permission("download:view", "download:manage")),
+    _user: str = Depends(require_permission("download:manage")),
     svc: Downloader = Depends(get_downloader_service),
 ):
     if req.ids:

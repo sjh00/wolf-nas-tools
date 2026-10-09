@@ -6,6 +6,7 @@ System Router — FastAPI 迁移
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -378,7 +379,7 @@ async def backup_upload(
 ):
     """上传备份文件"""
     try:
-        file_path = Path(temp_manager.get_temp_path()) / (file.filename or "")
+        file_path = Path(temp_manager.get_temp_path()) / Path(file.filename or "").name
         contents = await file.read()
         with open(file_path, "wb") as f:
             f.write(contents)
@@ -659,12 +660,40 @@ def _flatten_config(cfg: dict, prefix: str = "") -> dict:
     return result
 
 
+_MASK = "******"
+_SENSITIVE_KEY_RE = re.compile(
+    r"(password|passwd|secret|token|key$|apikey|cookie|jwt|private[_-]?key|access[_-]?key|bearer|credential)",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_key(key: str | None) -> bool:
+    return bool(_SENSITIVE_KEY_RE.search(key or ""))
+
+
+def _mask_sensitive(flat: dict) -> dict:
+    """对敏感配置值打码，避免只读角色读取密钥；写入时忽略打码值。"""
+    for key in list(flat.keys()):
+        if _is_sensitive_key(key) and flat[key] not in (None, "", [], {}):
+            flat[key] = _MASK
+    return flat
+
+
+def _strip_masked(value):
+    """递归移除等于打码值的字段，避免把 '******' 写回配置。"""
+    if isinstance(value, dict):
+        return {k: _strip_masked(v) for k, v in value.items() if v != _MASK}
+    return value
+
+
 @router.post("/config", response_model=CommonResponse, summary="设置系统配置")
 def set_system_config(
     req: SystemConfigRequest,
     current_user: UserContext = Depends(require_permission("setting:update")),
     svc=Depends(get_system_config_service),
 ):
+    if _is_sensitive_key(req.key) and req.value == _MASK:
+        return success()  # 打码占位值不写回
     if svc.set_config(req.key, req.value):
         return success()
     return fail()
@@ -683,7 +712,7 @@ def get_all_config(
     http_proxy = proxies.get("http") if isinstance(proxies, dict) else None
     if http_proxy:
         flat["app.proxies"] = http_proxy.removeprefix("http://")
-    return success(data=flat)
+    return success(data=_mask_sensitive(flat))
 
 
 @router.post("/config/scraper", response_model=CommonResponse, summary="获取刮削配置")
@@ -734,7 +763,7 @@ def update_config(
     svc=Depends(get_config_update_service),
     reloader: ConfigReloader = Depends(get_config_reloader),
 ):
-    result = svc.update_config(req.data)
+    result = svc.update_config(_strip_masked(req.data))
     if result.success and not result.test_mode:
         reloader.reload()
     if result.success:
