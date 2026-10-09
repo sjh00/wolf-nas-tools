@@ -110,21 +110,22 @@ class SeasonPackStrategy:
                     item.enclosure = get_download_url_callback(item.page_url)
                 if set(item_season).issubset(set(need_season)):
                     if len(item_season) == 1:
-                        # 只有一季的可能是命名错误，需要打开种子鉴别
+                        # 只有一季的可能是命名错误，需打开种子核对实际集号覆盖，
+                        # 避免“标题 S01、内容仅单集”被当作整季而误判完成
                         total_eps = SeasonPackStrategy._get_season_episodes(need_tvs, need_tmdbid, item_season[0])
+                        need_eps = SeasonPackStrategy._get_season_episode_set(need_tvs, need_tmdbid, item_season[0])
                         torrent_episodes, torrent_path = get_torrent_episodes_callback(item.enclosure, item.page_url)
-                        # 如果种子实际集数大于等于总集数（或种子无集数信息但total_eps为0），则下载
-                        if torrent_episodes and len(torrent_episodes) >= total_eps:
-                            _, download_id, _ = download_callback(item, torrent_file=torrent_path)
-                        elif not torrent_episodes and total_eps == 0:
-                            # 无法判断集数时保守跳过
-                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过")
+                        covered = set(torrent_episodes or [])
+                        if not covered:
+                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过（无法确认覆盖）")
                             continue
-                        elif not torrent_episodes:
-                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，解析文件数为 0")
+                        # 需有正向证据才当作整季：集数达到该季总集数，或与已知缺失集有交集
+                        episode_count_ok = bool(total_eps) and len(covered) >= total_eps
+                        episode_overlap_ok = bool(need_eps) and bool(covered & need_eps)
+                        if not (episode_count_ok or episode_overlap_ok):
+                            log.info(f"[Downloader]种子 {item.org_string} 无法确认覆盖该季（总集数={total_eps}），跳过")
                             continue
-                        else:
-                            continue
+                        _, download_id, _ = download_callback(item, torrent_file=torrent_path)
                     else:
                         _, download_id, _ = download_callback(item)
                     if download_id:
@@ -167,6 +168,14 @@ class SeasonPackStrategy:
             if season == nt.get("season"):
                 return nt.get("total_episodes") or 0
         return 0
+
+    @staticmethod
+    def _get_season_episode_set(need_tvs, tmdbid, season) -> set:
+        """获取指定季所需的缺失集号集合"""
+        for nt in need_tvs.get(tmdbid) or []:
+            if season == nt.get("season"):
+                return set(nt.get("episodes") or [])
+        return set()
 
 
 class EpisodeStrategy:
@@ -336,9 +345,11 @@ class EpisodeStrategy:
                                     tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
                                 )
                             else:
-                                # 无法解析文件清单：整包下载，视为满足所需集数
-                                need_episodes = EpisodeStrategy._update_episodes(
-                                    need_tvs, need_tmdbid, need_episodes, list(need_episodes), need_season
+                                # 无法解析文件清单：仍按整包下载，但不清空缺失（避免单集包当整季完成）；
+                                # 实际覆盖由转移后按落盘文件核定（subscribe/handlers）。
+                                log.warn(
+                                    f"[Downloader]{item.org_string} 磁力未解析出文件清单，"
+                                    f"按整包下载，保留缺失待转移后核定"
                                 )
                             log.info(f"[Downloader]{item.org_string} 开始下载 ")
                             start_torrents_callback(ids=download_id, downloader_id=downloader_id)
