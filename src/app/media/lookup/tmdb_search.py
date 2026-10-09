@@ -316,11 +316,14 @@ class TmdbSearch:
             if tvs and blacklist:
                 tvs = [t for t in tvs if not (t.get("id") and str(t.get("id")) in blacklist)]
         except TMDBError as err:
+            self.last_error = str(err)
             log.error(f"[Meta]连接TMDB出错：{err!s}")
             return None
         except HttpRateLimitError:
+            self.last_error = "rate_limited"
             raise
         except Exception as err:
+            self.last_error = str(err)
             log.error(f"[Meta]按季搜索剧集时异常：{err!s}")
             return None
         if not tvs:
@@ -352,10 +355,14 @@ class TmdbSearch:
                     log.error(f"[Meta]获取剧集详情出错: {err}")
         for tv in candidates:
             res = results.get(tv.get("id"))
-            if res:
-                _, (info, names) = res
-                if compare_tmdb_names(name, names) and _season_match(info, media_year) and _episode_valid(info):
-                    return info
+            if not res or not isinstance(res, tuple) or len(res) != 2:
+                continue
+            detail = res[1]
+            if not isinstance(detail, tuple) or len(detail) != 2:
+                continue
+            info, names = detail
+            if compare_tmdb_names(name, names) and _season_match(info, media_year) and _episode_valid(info):
+                return info
         return {}
 
     def search_multi(self, name: str) -> Any:
