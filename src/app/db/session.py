@@ -11,8 +11,10 @@ Session 管理器
 import os
 import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 import log
 from app.core.root_path import get_project_root
@@ -25,6 +27,9 @@ from app.db.engine import (
 )
 from app.db.models import Base
 from app.db.sql_adapter import get_sql_adapter
+
+# 显式事务上下文：transaction_scope() 内所有仓储的 session 复用它，保证真正的原子性
+_tx_session: ContextVar[Session | None] = ContextVar("db_tx_session", default=None)
 
 
 class SessionManager:
@@ -59,15 +64,32 @@ class SessionManager:
 
     @property
     def session(self):
-        """创建一个新的 Session。调用方必须负责 close。"""
+        """创建一个新的 Session。调用方必须负责 close。
+
+        处于 transaction_scope() 内时返回共享 Session（由外层统一提交/关闭）。
+        """
+        shared = _tx_session.get()
+        if shared is not None:
+            return shared
         return self._resolve_factory()()
+
+    def current_tx_session(self):
+        """当前上下文共享的事务 Session（无则 None）"""
+        return _tx_session.get()
 
     @contextmanager
     def session_scope(self):
         """
         事务范围的 session 上下文管理器。
         自动 commit/rollback/close，确保连接及时归还连接池。
+
+        处于 transaction_scope() 内时复用共享 Session 且不提交/关闭（由外层统一处理），
+        从而让多个仓储操作真正处于同一事务。
         """
+        shared = _tx_session.get()
+        if shared is not None:
+            yield shared
+            return
         sess = self._resolve_factory()()
         try:
             yield sess
@@ -82,10 +104,20 @@ class SessionManager:
     def transaction_scope(self):
         """
         显式事务上下文管理器。
-        供 Service 层组合多个 Repository 操作，保证原子性。
+        供 Service 层组合多个 Repository 操作，保证原子性：
+        期间仓储的 session/session_scope 均复用本 Session，仅在退出时统一提交。
         """
-        with self.session_scope() as session:
-            yield session
+        sess = self._resolve_factory()()
+        token = _tx_session.set(sess)
+        try:
+            yield sess
+            sess.commit()
+        except Exception:
+            sess.rollback()
+            raise
+        finally:
+            _tx_session.reset(token)
+            sess.close()
 
     def remove(self):
         """

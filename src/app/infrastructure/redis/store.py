@@ -1,5 +1,6 @@
 """Redis 存储 — 连接管理与键值/哈希/列表/有序集合/Stream 操作."""
 
+import contextlib
 import threading
 import time
 from typing import Any
@@ -23,6 +24,15 @@ class RedisStore:
         self._last_ok = 0.0
         self._lock = threading.RLock()
 
+    def _close_client(self) -> None:
+        """关闭并释放当前客户端，避免重连时泄漏旧连接池。"""
+        client = self._client
+        self._client = None
+        self._available = False
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+
     def _ensure_connection(self) -> StrictRedis | None:
         with self._lock:
             now = time.time()
@@ -35,8 +45,7 @@ class RedisStore:
                     self._last_ok = now
                     return self._client
                 except RedisError:
-                    self._available = False
-                    self._client = None
+                    self._close_client()
 
             if self._client is None:
                 try:
@@ -54,8 +63,7 @@ class RedisStore:
                     log.debug("RedisStore 连接成功")
                     return self._client
                 except RedisError as e:
-                    self._client = None
-                    self._available = False
+                    self._close_client()
                     log.debug(f"RedisStore 连接失败: {e}")
                     return None
 

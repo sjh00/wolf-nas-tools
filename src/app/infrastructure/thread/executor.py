@@ -13,6 +13,7 @@
     executor.shutdown(wait=True, timeout=30)
 """
 
+import contextvars
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -96,7 +97,9 @@ class ThreadExecutor:
 
         with self._lock:
             self._submitted += 1
-        return self.pool.submit(_wrapper, *args, **kwargs)
+        # 复制当前 contextvars（如调度任务的 DB 连接池覆盖），确保子线程继承
+        ctx = contextvars.copy_context()
+        return self.pool.submit(ctx.run, _wrapper, *args, **kwargs)
 
     def map(self, func: Callable, iterable: Iterator, timeout: float | None = None) -> Iterator:
         """并行执行 func 对 iterable 中每个元素，返回结果迭代器.

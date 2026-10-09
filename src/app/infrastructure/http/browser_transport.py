@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx2
+from starlette.concurrency import run_in_threadpool
 
 import log
 from app.infrastructure.chrome.limits import browser_slot
@@ -232,4 +233,5 @@ class AsyncChromeTransport(_BaseChromeTransport, httpx2.AsyncBaseTransport):
         _BaseChromeTransport.__init__(self, browser, limits)
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
-        return self._handle(request)
+        # 底层为同步阻塞实现（含阻塞信号量与同步 httpx 请求），放线程池避免阻塞事件循环
+        return await run_in_threadpool(self._handle, request)
