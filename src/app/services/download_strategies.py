@@ -113,21 +113,45 @@ class SeasonPackStrategy:
                         # 只有一季的可能是命名错误，需打开种子核对实际集号覆盖，
                         # 避免“标题 S01、内容仅单集”被当作整季而误判完成
                         total_eps = SeasonPackStrategy._get_season_episodes(need_tvs, need_tmdbid, item_season[0])
-                        need_eps = SeasonPackStrategy._get_season_episode_set(need_tvs, need_tmdbid, item_season[0])
                         torrent_episodes, torrent_path = get_torrent_episodes_callback(item.enclosure, item.page_url)
                         covered = set(torrent_episodes or [])
                         if not covered:
                             log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过（无法确认覆盖）")
                             continue
-                        # 需有正向证据才当作整季：集数达到该季总集数，或与已知缺失集有交集
-                        episode_count_ok = bool(total_eps) and len(covered) >= total_eps
-                        episode_overlap_ok = bool(need_eps) and bool(covered & need_eps)
-                        if not (episode_count_ok or episode_overlap_ok):
-                            log.info(f"[Downloader]种子 {item.org_string} 无法确认覆盖该季（总集数={total_eps}），跳过")
+                        # 总集数已知：覆盖需达到该季总集数；未知：至少需多集，
+                        # 以排除“标题 S01、内容仅单集”的误标，同时避免总集数未知时永远不下载
+                        coverage_ok = len(covered) >= total_eps if total_eps else len(covered) >= 2
+                        if not coverage_ok:
+                            log.info(
+                                f"[Downloader]种子 {item.org_string} 无法确认覆盖该季"
+                                f"（实际 {len(covered)} 集，总集数={total_eps}），跳过"
+                            )
                             continue
                         _, download_id, _ = download_callback(item, torrent_file=torrent_path)
                     else:
-                        _, download_id, _ = download_callback(item)
+                        # 多季包：非磁力需核对实际集数覆盖，避免标题含多季但内容不全时误判完成；
+                        # 磁力无法预解析文件清单，保持原整包下载路径
+                        if (item.enclosure or "").startswith("magnet:"):
+                            _, download_id, _ = download_callback(item)
+                        else:
+                            req_eps = sum(
+                                SeasonPackStrategy._get_season_episodes(need_tvs, need_tmdbid, s) for s in item_season
+                            )
+                            torrent_episodes, torrent_path = get_torrent_episodes_callback(
+                                item.enclosure, item.page_url
+                            )
+                            covered = set(torrent_episodes or [])
+                            if not covered:
+                                log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过（无法确认覆盖）")
+                                continue
+                            coverage_ok = len(covered) >= req_eps if req_eps else len(covered) >= 2
+                            if not coverage_ok:
+                                log.info(
+                                    f"[Downloader]种子 {item.org_string} 无法确认覆盖整包"
+                                    f"（实际 {len(covered)} 集，需求 {req_eps} 集），跳过"
+                                )
+                                continue
+                            _, download_id, _ = download_callback(item, torrent_file=torrent_path)
                     if download_id:
                         if item not in return_items:
                             return_items.append(item)
@@ -168,14 +192,6 @@ class SeasonPackStrategy:
             if season == nt.get("season"):
                 return nt.get("total_episodes") or 0
         return 0
-
-    @staticmethod
-    def _get_season_episode_set(need_tvs, tmdbid, season) -> set:
-        """获取指定季所需的缺失集号集合"""
-        for nt in need_tvs.get(tmdbid) or []:
-            if season == nt.get("season"):
-                return set(nt.get("episodes") or [])
-        return set()
 
 
 class EpisodeStrategy:
@@ -219,7 +235,7 @@ class EpisodeStrategy:
             for tv in list(need_tv):
                 need_season = tv.get("season") or 1
                 need_episodes = tv.get("episodes")
-                total_episodes = tv.get("total_episodes")
+                total_episodes = tv.get("total_episodes") or 0
                 # 缺失整季的转化为缺失集
                 if not need_episodes:
                     need_episodes = list(range(1, total_episodes + 1))
