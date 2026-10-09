@@ -25,6 +25,7 @@ class _Row:
 def engine(tmp_path):
     transfer_engine = MagicMock()
     transfer_engine._blacklist = MagicMock()
+    transfer_engine._blacklist.is_exists.return_value = False
     pipeline = MagicMock()
     sync_repo = MagicMock()
     sync_repo.get_config_sync_paths.return_value = []
@@ -149,6 +150,25 @@ class TestSyncEngine:
         f.write_text("x")
         eng.on_file_event(str(f))
         eng._pipeline.process.assert_called_once()
+
+    def test_do_transfer_skips_blacklisted(self, engine, tmp_path):
+        """已转移过（黑名单命中）的路径应跳过，避免每个扫描周期重复处理."""
+        eng, _, _ = engine
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(tmp_path / "src")
+        cfg.dest = str(tmp_path / "dst")
+        eng._transfer._blacklist.is_exists.return_value = True
+        eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
+        eng._pipeline.process.assert_not_called()
+
+    def test_do_transfer_skips_synced_history(self, engine, tmp_path):
+        """同步历史命中时也应跳过."""
+        eng, _, _ = engine
+        cfg = SyncPathConfig(_Row())
+        cfg.dest = str(tmp_path / "dst")
+        eng._history_repo.is_sync_in_history.return_value = True
+        eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
+        eng._pipeline.process.assert_not_called()
 
     def test_transfer_sync_parallel(self, engine, tmp_path):
         """transfer_sync 应使用线程池并发处理多个文件."""
