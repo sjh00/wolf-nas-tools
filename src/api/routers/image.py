@@ -20,6 +20,7 @@ from app.core.constants import TMDB_IMAGE_DOMAIN
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import DomainError, NexusError, ServiceError
 from app.core.settings import settings
+from app.db.repositories.config_repo_adapter import MediaServerRepositoryAdapter
 from app.infrastructure.image_proxy import (
     MAX_CACHE_DAYS,
     SIZE_DIMENSIONS,
@@ -29,8 +30,40 @@ from app.infrastructure.image_proxy import (
     get_cache_path,
     resize_image,
 )
+from app.utils.json_utils import JsonUtils
 
 router = APIRouter()
+
+# 已配置媒体服务器主机缓存（合法内网直连放行；60s 刷新，避免每张图都查库）
+_MS_HOSTS_TTL = 60.0
+_ms_hosts_cache: dict = {"ts": 0.0, "hosts": set()}
+
+
+def _allowed_media_server_hosts() -> set[str]:
+    """已配置媒体服务器（Emby/Jellyfin/Plex/FnOS）的主机名/IP 集合。"""
+    now = time.time()
+    if now - _ms_hosts_cache["ts"] < _MS_HOSTS_TTL:
+        return _ms_hosts_cache["hosts"]
+    hosts: set[str] = set()
+    try:
+        for item in MediaServerRepositoryAdapter().get_media_servers() or []:
+            try:
+                cfg = JsonUtils.loads(str(item.CONFIG)) if str(item.CONFIG or "") else {}
+            except Exception:
+                cfg = {}
+            if not isinstance(cfg, dict):
+                continue
+            for key in ("host", "play_host"):
+                value = cfg.get(key)
+                if isinstance(value, str) and value:
+                    host = urllib.parse.urlparse(value if "://" in value else f"//{value}").hostname
+                    if host:
+                        hosts.add(host)
+    except Exception as e:  # noqa: BLE001
+        log.debug(f"[Img]读取媒体服务器主机失败：{e}")
+    _ms_hosts_cache["ts"] = now
+    _ms_hosts_cache["hosts"] = hosts
+    return hosts
 
 
 def _is_blocked_ip(ip: str) -> bool:
@@ -161,6 +194,10 @@ async def proxy_library_image(request: Request, img_url: str):
     if "/v/api/v1/sys/img/" in decoded_url:
         ms = request.app.state.context.media_server
         return await _serve_image(cache_path, decoded_url, downloader=lambda u: ms.download_image(u))
+    # 已配置媒体服务器的内网地址为合法来源，放行；其余外部地址仍做 SSRF 校验
+    decoded_host = urllib.parse.urlparse(decoded_url).hostname or ""
+    if decoded_host and decoded_host in _allowed_media_server_hosts():
+        return await _serve_image(cache_path, decoded_url)
     _guard_image_url(decoded_url)
     return await _serve_image(cache_path, decoded_url)
 
