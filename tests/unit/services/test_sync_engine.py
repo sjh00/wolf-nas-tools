@@ -22,6 +22,17 @@ class _Row:
     ENABLED = 1
 
 
+def _history_rec(dest_path: str, dest_filename: str, source_path: str = "", source_filename: str = "", date: str = ""):
+    """构造转移历史记录 stub（仅需目录目标存在性判定用到的字段）."""
+    return SimpleNamespace(
+        dest_path=dest_path,
+        dest_filename=dest_filename,
+        source_path=source_path,
+        source_filename=source_filename,
+        date=date,
+    )
+
+
 @pytest.fixture
 def engine(tmp_path):
     transfer_engine = MagicMock()
@@ -202,9 +213,7 @@ class TestSyncEngine:
         eng._transfer._blacklist.is_exists.return_value = True
         eng._pipeline.process.return_value = (True, "ok")
         # 目录内文件曾生成于 /lib（转移历史），但目标已被删除
-        eng._history_repo.get_by_source_dir.return_value = [
-            SimpleNamespace(dest_path=str(tmp_path / "lib" / "Movie"), dest_filename="E01.mkv")
-        ]
+        eng._history_repo.get_by_source_dir.return_value = [_history_rec(str(tmp_path / "lib" / "Movie"), "E01.mkv")]
 
         eng._do_transfer(str(movie_dir), cfg)
 
@@ -225,8 +234,54 @@ class TestSyncEngine:
         cfg.source = str(src)
         cfg.dest = str(tmp_path / "lib")
         eng._transfer._blacklist.is_exists.return_value = True
+        eng._history_repo.get_by_source_dir.return_value = [_history_rec(str(dest_dir), "E01.mkv")]
+
+        eng._do_transfer(str(movie_dir), cfg)
+
+        eng._pipeline.process.assert_not_called()
+
+    def test_do_transfer_relinks_dir_when_any_target_missing(self, engine, tmp_path):
+        """目录内任一文件的目标被删除即应重新同步（部分删除场景）."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        movie_dir = src / "Show" / "S01"
+        movie_dir.mkdir(parents=True)
+        for name in ("E01.mkv", "E02.mkv"):
+            (movie_dir / name).write_text("x", encoding="utf-8")
+        dest_dir = tmp_path / "lib" / "Show" / "S01"
+        dest_dir.mkdir(parents=True)
+        (dest_dir / "E01.mkv").write_text("y", encoding="utf-8")  # E02 的目标缺失
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "lib")
+        eng._transfer._blacklist.is_exists.return_value = True
+        eng._pipeline.process.return_value = (True, "ok")
         eng._history_repo.get_by_source_dir.return_value = [
-            SimpleNamespace(dest_path=str(dest_dir), dest_filename="E01.mkv")
+            _history_rec(str(dest_dir), "E01.mkv", str(movie_dir), "E01.mkv", "2024-01-01 10:00:00"),
+            _history_rec(str(dest_dir), "E02.mkv", str(movie_dir), "E02.mkv", "2024-01-01 10:00:00"),
+        ]
+
+        eng._do_transfer(str(movie_dir), cfg)
+
+        eng._pipeline.process.assert_called_once()
+
+    def test_do_transfer_uses_latest_history_for_same_source(self, engine, tmp_path):
+        """同一源文件有多条历史时以最近一次为准，旧目标缺失不误判为需重建."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        movie_dir = src / "Movie.2020"
+        movie_dir.mkdir(parents=True)
+        (movie_dir / "E01.mkv").write_text("x", encoding="utf-8")
+        dest_dir = tmp_path / "lib" / "Movie"
+        dest_dir.mkdir(parents=True)
+        (dest_dir / "E01.mkv").write_text("y", encoding="utf-8")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "lib")
+        eng._transfer._blacklist.is_exists.return_value = True
+        eng._history_repo.get_by_source_dir.return_value = [
+            _history_rec(str(dest_dir), "E01.mkv", str(movie_dir), "E01.mkv", "2024-01-02 10:00:00"),
+            _history_rec(str(tmp_path / "old" / "Movie"), "E01.mkv", str(movie_dir), "E01.mkv", "2024-01-01 10:00:00"),
         ]
 
         eng._do_transfer(str(movie_dir), cfg)
@@ -246,9 +301,7 @@ class TestSyncEngine:
         cfg.dest = str(tmp_path / "lib")
         eng._transfer._blacklist.is_exists.side_effect = lambda p: p == str(file_path)
         eng._pipeline.process.return_value = (True, "ok")
-        eng._history_repo.get_by_source_dir.return_value = [
-            SimpleNamespace(dest_path=str(tmp_path / "lib" / "Movie"), dest_filename="E01.mkv")
-        ]
+        eng._history_repo.get_by_source_dir.return_value = [_history_rec(str(tmp_path / "lib" / "Movie"), "E01.mkv")]
 
         eng._do_transfer(str(movie_dir), cfg)
 

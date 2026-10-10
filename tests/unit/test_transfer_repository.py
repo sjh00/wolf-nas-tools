@@ -87,6 +87,18 @@ class TestGetTransferHistoryBySourceDir:
         assert len(repo.get_transfer_history_by_source_dir("/src/./Movie")) == 1
         assert repo.get_transfer_history_by_source_dir("") == []
 
+    def test_includes_subdir_rows_only(self, repo):
+        _insert_at(repo, "/src/tv/Show/S01", "E01.mkv", "/lib/Show/S01", "E01.mkv")
+        _insert_at(repo, "/src/tv/Show2/S01", "E01.mkv", "/lib/Show2/S01", "E01.mkv")
+        _insert_at(repo, "/src/tvother", "x.mkv", "/lib/x", "x.mkv")
+        rows = repo.get_transfer_history_by_source_dir("/src/tv")
+        assert {r.SOURCE_PATH for r in rows} == {"/src/tv/Show/S01", "/src/tv/Show2/S01"}
+
+    def test_exact_dir_and_subdir(self, repo):
+        _insert_at(repo, "/src/tv", "E01.mkv", "/lib/tv", "E01.mkv")
+        _insert_at(repo, "/src/tv/S01", "E02.mkv", "/lib/tv/S01", "E02.mkv")
+        assert len(repo.get_transfer_history_by_source_dir("/src/tv")) == 2
+
 
 class TestGetTransferSeriesStatistics:
     def test_distinct_series_per_day(self, repo):
