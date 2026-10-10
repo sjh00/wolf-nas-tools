@@ -1,4 +1,5 @@
 import threading
+import time
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -6,7 +7,6 @@ import log
 from app.core.settings import settings
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
-from app.infrastructure.thread import ThreadExecutor
 from app.message.client._base import _IMessageClient
 from app.message.schema import ConfigField, MessageConfigSchema
 from app.utils import ExceptionUtils, StringUtils
@@ -59,6 +59,9 @@ class SynologyChat(_IMessageClient):
         ],
     )
     _setup_done = set()
+    # 机器人可见用户缓存与 autoblock 冷却，避免每次发送都调用 user_list
+    _USERS_CACHE_TTL = 300
+    _AUTOBLOCK_COOLDOWN = 300
 
     def __init__(self, config, apikey_service, message=None):
         self._config = settings
@@ -70,7 +73,10 @@ class SynologyChat(_IMessageClient):
         )
         self._apikey_service = apikey_service
         self._polling_stop = threading.Event()
-        self._polling_future = None
+        self._users_cache: list[int] = []
+        self._users_cache_ts = 0.0
+        self._autoblock_until = 0.0
+        self._last_users_error = ""
         super().__init__(config, apikey_service, message=message)
 
     def read_config(self):
@@ -81,54 +87,13 @@ class SynologyChat(_IMessageClient):
         self._token = cfg.get("token")
 
     def setup(self):
-        if self._webhook_url:
-            if self._polling_future and not self._polling_future.done():
-                return
-            app_cfg = settings.get("app") or {}
-            if isinstance(app_cfg, dict):
-                web_port = app_cfg.get("web_port", 3000)
-            else:
-                web_port = getattr(app_cfg, "web_port", 3000)
-            _api_key = self._apikey_service.get_or_create_system_key("MessageWebhook")
-            ds_url = (
-                f"http://127.0.0.1:{web_port}/api/plugin-framework/webhooks/msg_synologychat/callback?apikey={_api_key}"
-            )
-            self._polling_stop.clear()
-            self._polling_future = ThreadExecutor(name="synology_poll").submit(self._start_polling, ds_url)
-
-    def _start_polling(self, ds_url):
-        log.info("SynologyChat消息接收服务启动")
-        while not self._polling_stop.wait(2):
-            try:
-                if not self._webhook_url:
-                    break
-                res = self._req.get(url=self._webhook_url)
-                data = res.json()
-                if data and "post_id" in data:
-                    log.debug(f"[SynologyChat]接收到消息: {data}")
-                    ThreadExecutor(name="synology_msg").submit(self._process_message, data, ds_url)
-            except Exception as e:
-                ExceptionUtils.exception_traceback(e)
-                log.error(f"[SynologyChat]消息接收错误: {e}")
-                if self._polling_stop.wait(5):
-                    break
+        # Synology 传入 Webhook 仅用于“发送”，不支持轮询取消息；高频 GET 会触发 autoblock(105)。
+        # 接收消息请把 Synology 的「传出URL」指向本插件的公开回调，此处不再启动轮询。
+        log.info("SynologyChat 就绪（接收消息请配置传出URL回调，禁用传入URL轮询以规避 autoblock）")
 
     def stop_service(self):
-        """停止消息轮询服务"""
+        """停止服务（不再轮询传入URL）"""
         self._polling_stop.set()
-        if self._polling_future:
-            try:
-                self._polling_future.result(timeout=3)
-            except Exception as e:  # noqa: BLE001
-                log.warn(f"SynologyChat 轮询停止失败: {e}")
-            self._polling_future = None
-            log.info("SynologyChat消息接收服务已停止")
-
-    def _process_message(self, data, ds_url):
-        try:
-            self._req.post(url=ds_url, json=data, timeout=10)
-        except Exception as e:
-            ExceptionUtils.exception_traceback(e)
 
     def check_token(self, token):
         return token == self._token
@@ -160,7 +125,7 @@ class SynologyChat(_IMessageClient):
             else:
                 user_ids = self.__get_bot_users()
                 if not user_ids:
-                    return False, "机器人没有对任何用户可见"
+                    return False, self._last_users_error or "机器人没有对任何用户可见"
             error_flag = True
             error_msg = ""
             for uid in user_ids:
@@ -200,6 +165,8 @@ class SynologyChat(_IMessageClient):
                 user_ids = [int(user_id)]
             else:
                 user_ids = self.__get_bot_users()
+                if not user_ids:
+                    return False, self._last_users_error or "机器人没有对任何用户可见"
             error_flag = True
             error_msg = ""
             for uid in user_ids:
@@ -215,12 +182,21 @@ class SynologyChat(_IMessageClient):
     def __get_bot_users(self):
         if not self._webhook_url:
             return []
+        now = time.time()
+        # autoblock 冷却期内直接复用缓存，避免继续请求加重封禁
+        if now < self._autoblock_until:
+            self._last_users_error = "Synology Chat 触发 autoblock(105)，请稍后再试"
+            return self._users_cache
+        # 命中缓存直接返回，减少 user_list 调用频率
+        if self._users_cache and (now - self._users_cache_ts) < self._USERS_CACHE_TTL:
+            return self._users_cache
         try:
             # 基于 webhook URL 本身构造 user_list 地址，保留路径前缀（兼容反向代理子路径），
             # 并优先使用 URL 内的 token（与机器人一致），避免单独配置的 token 不一致导致拿不到用户
             parsed = urlsplit(self._webhook_url)
             token = (parse_qs(parsed.query).get("token") or [None])[0] or self._token
             if not token:
+                self._last_users_error = "Synology Chat 缺少 token"
                 log.warn("[SynologyChat]缺少 token，无法获取机器人可见用户")
                 return []
             base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
@@ -228,17 +204,36 @@ class SynologyChat(_IMessageClient):
             ret = self._req.get(url=req_url)
             body = ret.json()
             if not body or body.get("success") is False:
-                log.warn(f"[SynologyChat]获取机器人可见用户失败: {body}")
+                error = body.get("error") or {} if isinstance(body, dict) else {}
+                code = str(error.get("code") or "")
+                detail = str(error.get("errors") or "")
+                if code == "105" or "autoblock" in detail:
+                    # 105 = autoblock：调用过于频繁被临时封禁；长冷却并提示根因
+                    self._autoblock_until = now + self._AUTOBLOCK_COOLDOWN
+                    self._last_users_error = (
+                        "Synology Chat 接口返回 autoblock(105)：调用过于频繁被临时封禁。"
+                        "请等待几分钟后重试；如启用轮询请降低频率，建议改用传出URL回调接收消息"
+                    )
+                    log.warn(f"[SynologyChat]触发 autoblock(105)，冷却 {self._AUTOBLOCK_COOLDOWN}s: {body}")
+                else:
+                    self._last_users_error = f"Synology Chat 获取可见用户失败: {body}"
+                    log.warn(f"[SynologyChat]获取机器人可见用户失败: {body}")
                 return []
             users = (body.get("data") or {}).get("users") or []
             user_ids = [user.get("user_id") for user in users if user.get("user_id")]
             if not user_ids:
+                self._last_users_error = "机器人没有对任何用户可见"
                 log.warn(
                     f"[SynologyChat]机器人当前没有对任何用户可见，请在 Synology Chat 中将该机器人添加/分享给用户；"
                     f"接口返回: {body}"
                 )
+                return []
+            self._last_users_error = ""
+            self._users_cache = user_ids
+            self._users_cache_ts = now
             return user_ids
         except Exception as e:
+            self._last_users_error = f"Synology Chat 获取可见用户异常: {e}"
             log.error(f"[SynologyChat]获取机器人可见用户异常: {e}")
             return []
 

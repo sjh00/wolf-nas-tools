@@ -17,6 +17,10 @@ def _client(webhook_url, token, body):
     client._domain = None
     client._req = MagicMock()
     client._req.get.return_value.json.return_value = body
+    client._users_cache = []
+    client._users_cache_ts = 0.0
+    client._autoblock_until = 0.0
+    client._last_users_error = ""
     return client
 
 
@@ -38,3 +42,27 @@ def test_user_list_returns_empty_when_no_visible_users():
     client = _client(url, "T", {"success": True, "data": {"users": []}})
 
     assert getattr(client, "_SynologyChat__get_bot_users")() == []
+
+
+def test_user_list_autoblock_sets_cooldown_and_skips_next_call():
+    url = "http://nas:8888/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=T"
+    client = _client(url, "T", {"success": False, "error": {"code": 105, "errors": "autoblock"}})
+    getter = getattr(client, "_SynologyChat__get_bot_users")
+
+    assert getter() == []
+    assert client._autoblock_until > 0
+    assert "autoblock" in client._last_users_error
+    # 冷却期内不再发起请求
+    assert cast(Any, client._req).get.call_count == 1
+    getter()
+    assert cast(Any, client._req).get.call_count == 1
+
+
+def test_user_list_caches_successful_result():
+    url = "http://nas:8888/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=T"
+    client = _client(url, "T", {"success": True, "data": {"users": [{"user_id": 3}]}})
+    getter = getattr(client, "_SynologyChat__get_bot_users")
+
+    assert getter() == [3]
+    assert getter() == [3]
+    assert cast(Any, client._req).get.call_count == 1
