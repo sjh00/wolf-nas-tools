@@ -249,6 +249,18 @@ class TransferRepository(BaseRepository):
                 .first()
             )
 
+    def get_transfer_history_by_source_dir(self, source_dir: str) -> list[TRANSFERHISTORY]:
+        """据源目录取该目录下所有转移记录（用于校验目录目标是否仍存在）."""
+        if not source_dir:
+            return []
+        with self.session() as db:
+            return (
+                db.query(TRANSFERHISTORY)
+                .filter(TRANSFERHISTORY.SOURCE_PATH == os.path.normpath(source_dir))
+                .order_by(TRANSFERHISTORY.DATE.desc())
+                .all()
+            )
+
     def delete_transfer_log_by_id(self, logid: int) -> None:
         """
         根据logid删除记录

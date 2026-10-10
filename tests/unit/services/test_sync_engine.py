@@ -1,5 +1,6 @@
 """SyncEngine 单元测试."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -187,6 +188,80 @@ class TestSyncEngine:
             eng._do_transfer(str(src / "movie.mkv"), cfg)
         eng._transfer._blacklist.delete.assert_called_once()
         eng._pipeline.process.assert_called_once()
+
+    def test_do_transfer_relinks_dir_when_target_missing(self, engine, tmp_path):
+        """回归 #196：目录来源命中黑名单但目标已被删除时，应清理并重新同步（重新硬链接）."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        movie_dir = src / "Movie.2020"
+        movie_dir.mkdir(parents=True)
+        (movie_dir / "E01.mkv").write_text("x", encoding="utf-8")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "lib")
+        eng._transfer._blacklist.is_exists.return_value = True
+        eng._pipeline.process.return_value = (True, "ok")
+        # 目录内文件曾生成于 /lib（转移历史），但目标已被删除
+        eng._history_repo.get_by_source_dir.return_value = [
+            SimpleNamespace(dest_path=str(tmp_path / "lib" / "Movie"), dest_filename="E01.mkv")
+        ]
+
+        eng._do_transfer(str(movie_dir), cfg)
+
+        eng._pipeline.process.assert_called_once()
+        eng._transfer._blacklist.delete.assert_any_call(str(movie_dir))
+
+    def test_do_transfer_skips_dir_when_target_present(self, engine, tmp_path):
+        """目录来源命中黑名单且目标仍存在时跳过，避免每个扫描周期重复处理."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        movie_dir = src / "Movie.2020"
+        movie_dir.mkdir(parents=True)
+        (movie_dir / "E01.mkv").write_text("x", encoding="utf-8")
+        dest_dir = tmp_path / "lib" / "Movie"
+        dest_dir.mkdir(parents=True)
+        (dest_dir / "E01.mkv").write_text("y", encoding="utf-8")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "lib")
+        eng._transfer._blacklist.is_exists.return_value = True
+        eng._history_repo.get_by_source_dir.return_value = [
+            SimpleNamespace(dest_path=str(dest_dir), dest_filename="E01.mkv")
+        ]
+
+        eng._do_transfer(str(movie_dir), cfg)
+
+        eng._pipeline.process.assert_not_called()
+
+    def test_do_transfer_relinks_dir_without_dir_blacklist(self, engine, tmp_path):
+        """目录未入黑名单但内部文件已入黑名单、目标被删除时，也应清理文件黑名单并重新同步."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        movie_dir = src / "Movie.2020"
+        movie_dir.mkdir(parents=True)
+        file_path = movie_dir / "E01.mkv"
+        file_path.write_text("x", encoding="utf-8")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "lib")
+        eng._transfer._blacklist.is_exists.side_effect = lambda p: p == str(file_path)
+        eng._pipeline.process.return_value = (True, "ok")
+        eng._history_repo.get_by_source_dir.return_value = [
+            SimpleNamespace(dest_path=str(tmp_path / "lib" / "Movie"), dest_filename="E01.mkv")
+        ]
+
+        eng._do_transfer(str(movie_dir), cfg)
+
+        eng._pipeline.process.assert_called_once()
+        eng._transfer._blacklist.delete.assert_any_call(str(file_path))
+
+    def test_directory_destination_exists_without_history(self, engine, tmp_path):
+        """目录无转移历史时无法判定，按目标存在处理，避免误判为需重建."""
+        eng, _, _ = engine
+        cfg = SyncPathConfig(_Row())
+        cfg.dest = str(tmp_path / "lib")
+        eng._history_repo.get_by_source_dir.return_value = []
+        assert eng._directory_destination_exists(str(tmp_path / "src"), cfg) is True
 
     def test_do_link_relinks_when_history_hit_but_target_missing(self, engine, tmp_path):
         """回归 #193：目标媒体文件被删除后，命中历史也应清理并重新硬链接."""
