@@ -301,7 +301,12 @@ class SyncEngine:
         return self._sync_target_exists(os.path.join(dest_path, dest_filename), dst_backend)
 
     def _directory_destination_exists(self, source_dir: str, cfg: SyncPathConfig) -> bool:
-        """据转移历史校验目录来源的目标是否仍存在：全部目标缺失才视为不存在."""
+        """据转移历史逐源文件校验目录来源的目标是否仍存在（任一目标缺失即返回 False）.
+
+        目录同步批量传入的可能是种子目录（文件直接在其中），也可能是分类目录
+        （媒体文件在更深层），因此按目录及其子目录下的全部历史记录，逐个源文件取
+        最近一次转移核对目标：全部仍在才视为已同步，避免删除目标后不再重建。
+        """
         try:
             records = self._history_repo.get_by_source_dir(source_dir)
         except Exception as e:  # noqa: BLE001
@@ -310,8 +315,14 @@ class SyncEngine:
         valid = [r for r in records if getattr(r, "dest_path", "") and getattr(r, "dest_filename", "")]
         if not valid:
             return True
+        latest: dict[str, Any] = {}
+        for rec in valid:
+            key = os.path.join(str(getattr(rec, "source_path", "")), str(getattr(rec, "source_filename", "")))
+            prev = latest.get(key)
+            if prev is None or str(getattr(rec, "date", "")) >= str(getattr(prev, "date", "")):
+                latest[key] = rec
         dst_backend = self._resolve_dst_backend(cfg)
-        return any(self._history_dest_exists(r, dst_backend) for r in valid)
+        return all(self._history_dest_exists(rec, dst_backend) for rec in latest.values())
 
     def _destination_exists_for_source(self, source_path: str, cfg: SyncPathConfig) -> bool:
         """据转移历史校验该源（文件/目录）的目标是否仍实际存在（目标被删则返回 False）。"""
