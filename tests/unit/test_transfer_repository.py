@@ -15,7 +15,7 @@ def repo():
     Base.metadata.create_all(engine)
     manager = SessionManager()
     manager._engine = engine
-    manager._factory = sessionmaker(bind=engine)
+    manager._factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     TransferRepository._session_manager = manager
     yield TransferRepository()
     engine.dispose()
@@ -42,6 +42,50 @@ def _insert(repo: TransferRepository, mtype: str, tmdbid: int, date: str) -> Non
             )
         )
         db.commit()
+
+
+def _insert_at(
+    repo: TransferRepository,
+    source_path: str,
+    source_filename: str,
+    dest_path: str,
+    dest_filename: str,
+    date: str = "2024-01-01 10:00:00",
+) -> None:
+    with repo.session() as db:
+        db.add(
+            TRANSFERHISTORY(
+                MODE="link",
+                TYPE="tv",
+                CATEGORY="",
+                TMDBID=1,
+                TITLE="title",
+                YEAR="2024",
+                SEASON_EPISODE="S01E01",
+                SOURCE="",
+                SOURCE_PATH=source_path,
+                SOURCE_FILENAME=source_filename,
+                DEST="",
+                DEST_PATH=dest_path,
+                DEST_FILENAME=dest_filename,
+                DATE=date,
+            )
+        )
+        db.commit()
+
+
+class TestGetTransferHistoryBySourceDir:
+    def test_returns_dir_rows_sorted_desc(self, repo):
+        _insert_at(repo, "/src/Movie", "E01.mkv", "/lib/Movie", "E01.mkv", "2024-01-01 10:00:00")
+        _insert_at(repo, "/src/Movie", "E02.mkv", "/lib/Movie", "E02.mkv", "2024-01-02 10:00:00")
+        _insert_at(repo, "/src/Other", "x.mkv", "/lib/Other", "x.mkv")
+        rows = repo.get_transfer_history_by_source_dir("/src/Movie")
+        assert [r.SOURCE_FILENAME for r in rows] == ["E02.mkv", "E01.mkv"]
+
+    def test_normpath_and_empty(self, repo):
+        _insert_at(repo, "/src/Movie", "E01.mkv", "/lib/Movie", "E01.mkv")
+        assert len(repo.get_transfer_history_by_source_dir("/src/./Movie")) == 1
+        assert repo.get_transfer_history_by_source_dir("") == []
 
 
 class TestGetTransferSeriesStatistics:
