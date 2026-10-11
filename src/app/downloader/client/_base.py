@@ -1,3 +1,4 @@
+import inspect
 import os.path
 import re
 from abc import ABCMeta, abstractmethod
@@ -7,9 +8,31 @@ import log
 from app.downloader.strategy import RemoveStrategy
 from app.schemas.download import Torrent, TorrentStatus
 from app.utils import PathUtils, StringUtils
+from app.utils.concurrency_utils import ConcurrencyUtils
 
 
-class _IDownloadClient(metaclass=ABCMeta):
+class _DownloadClientMeta(ABCMeta):
+    """下载器客户端元类：串行化每个实例的公开 API 调用（见 ConcurrencyUtils）。
+
+    背景：下载器客户端（如 qBittorrent 的 qbittorrentapi.Client、Transmission 的
+    transmission-rpc）内部持有登录会话（Cookie/Token），**不是线程安全**的。
+    多个刷流/停种/删种/监控任务并发调用同一实例会让会话被并发重建/覆盖，
+    导致“登录成功却 403”、任务卡死。此处统一为每个实例的公开方法套用
+    `ConcurrencyUtils.synchronized`（每实例可重入锁），保证同一时刻单线程访问该实例。
+    """
+
+    def __new__(mcls, cls_name, bases, namespace, **kwargs):
+        for attr, value in list(namespace.items()):
+            if attr.startswith("_") or not inspect.isfunction(value):
+                continue
+            # 抽象方法由子类实现（子类那份会被包装），此处跳过
+            if getattr(value, "__isabstractmethod__", False):
+                continue
+            namespace[attr] = ConcurrencyUtils.synchronized(value)
+        return super().__new__(mcls, cls_name, bases, namespace, **kwargs)
+
+
+class _IDownloadClient(metaclass=_DownloadClientMeta):
     client_id = ""
     client_type = ""
     client_name = ""

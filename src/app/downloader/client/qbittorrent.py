@@ -1021,16 +1021,24 @@ class Qbittorrent(_IDownloadClient):
             return ""
         return "|".join(errors)
 
+    # 403 重登冷却（秒）：避免并发/连续 403 触发重登风暴（qB 会对频繁登录封 IP）
+    _REAUTH_COOLDOWN = 10.0
+
     def _reauth_if_forbidden(self, err: Exception) -> bool:
         """qB 返回 403 多为会话失效（或登录失败被临时封禁）：尝试重新登录一次。
 
         返回 True 表示已重新登录成功，调用方可重试原请求。
+        调用方（公开方法）已持有每实例锁，故此处天然串行；再加冷却，避免 403 刷屏时反复重登。
         """
         if not isinstance(err, qbittorrentapi.Forbidden403Error) or not self.qbc:
             return False
+        now = time.monotonic()
+        if now - getattr(self, "_last_reauth_at", 0.0) < self._REAUTH_COOLDOWN:
+            return False
+        self._last_reauth_at = now
         try:
             self.qbc.auth_log_in()
-            log.warn(f"[{self.client_name}]{self.name} 会话失效，已重新登录 qBittorrent")
+            self._log_conn_error(f"[{self.client_name}]{self.name} 会话失效，已重新登录 qBittorrent")
             return True
         except Exception as relogin_err:  # noqa: BLE001
             self._log_conn_error(
