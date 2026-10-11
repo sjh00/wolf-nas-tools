@@ -207,3 +207,68 @@ class TestDescTruncation:
         assert _trim_desc(None) == ""
         assert _trim_desc("abc") == "abc"
         assert len(_trim_desc("x" * 300)) == 200
+
+
+class TestSubscribeHistoryNullFields:
+    """回归：电影等无季/集信息时 SUBSCRIBE_HISTORY.SEASON/TOTAL/START(NOT NULL) 不得写入 NULL。"""
+
+    def _setup(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db.models.base import Base
+        from app.db.session import SessionManager
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        mgr = SessionManager()
+        mgr._engine = engine
+        mgr._factory = sessionmaker(bind=engine, expire_on_commit=False)
+        SubscribeRepository._session_manager = mgr
+        return mgr
+
+    def test_insert_movie_history_none_season(self):
+        from app.db.models.subscribe import SubscribeHistory
+
+        mgr = self._setup()
+        repo = SubscribeRepository()
+        repo.insert_rss_history(
+            rssid=1,
+            rtype="movie",
+            name="欢迎来龙餐馆",
+            year="2026",
+            tmdbid="1391021",
+            image="",
+            desc="",
+            season=None,
+            total=None,
+            start=None,
+        )
+        with mgr.session_scope() as db:
+            row = db.query(SubscribeHistory).first()
+            assert row is not None
+            assert row.SEASON == ""
+            assert row.TOTAL == 0
+            assert row.START == 0
+
+    def test_upsert_movie_history_none_season(self):
+        from app.db.models.subscribe import SubscribeHistory
+
+        mgr = self._setup()
+        repo = SubscribeRepository()
+        repo.upsert_rss_history(
+            rssid=2,
+            rtype="movie",
+            name="年会不能停！2",
+            year="2026",
+            tmdbid="1541125",
+            image="",
+            desc="",
+            season=None,
+            total=None,
+            start=None,
+        )
+        with mgr.session_scope() as db:
+            row = db.query(SubscribeHistory).first()
+            assert row is not None
+            assert row.SEASON == ""
