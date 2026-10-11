@@ -12,9 +12,15 @@ def get_category(categorys, tmdb_info):
         return ""
     if not categorys:
         return ""
+    # 空规则分类视为“兜底”，但**不立即返回**：先按顺序匹配所有带规则的分类，
+    # 全部未命中时再落到第一个空规则分类。避免“兜底/默认分类排在前面时吞掉后续精确分类”
+    # （如空规则的「华语电影」排在「外语电影」之前，导致外语片被归入华语目录）。
+    fallback = ""
     for key, item in categorys.items():
         if not item:
-            return key
+            if not fallback:
+                fallback = key
+            continue
         match_flag = True
         for attr, value in item.items():
             if not value:
@@ -40,4 +46,4 @@ def get_category(categorys, tmdb_info):
                 match_flag = False
         if match_flag:
             return key
-    return ""
+    return fallback

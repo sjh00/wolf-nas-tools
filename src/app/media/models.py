@@ -470,7 +470,10 @@ class MediaInfo(BaseModel):
         for ent in entities:
             mt = ent.media_type
             if mt in rule_map:
-                rule_map[mt][ent.name] = ent.rules if not ent.is_default else {}
+                effective = ent.rules if not ent.is_default else {}
+                if not effective:
+                    log.debug(f"[MediaInfo]分类『{ent.name}』({mt}) 无有效规则，将作为兜底")
+                rule_map[mt][ent.name] = effective
 
         media_type = info.get("media_type")
         if media_type is not None and not isinstance(media_type, MediaType):
@@ -545,6 +548,10 @@ class MediaInfo(BaseModel):
             if self.release_date:
                 self.year = self.release_date[0:4]
             self.category = get_category(rule_map.get("movie"), info)
+            log.debug(
+                f"[MediaInfo]电影分类匹配: title={self.title!r} lang={info.get('original_language')} "
+                f"origin={info.get('origin_country')} genre={info.get('genre_ids')} -> {self.category!r}"
+            )
             self.poster_path = ImageProxy.get_tmdbimage_url(info.get("poster_path")) if info.get("poster_path") else ""
             self.backdrop_path = (
                 ImageProxy.get_tmdbimage_url(info.get("backdrop_path")) if info.get("backdrop_path") else ""
@@ -578,6 +585,10 @@ class MediaInfo(BaseModel):
                 self.year = self.release_date[0:4]
             if self.type == MediaType.MOVIE:
                 self.category = get_category(rule_map.get("movie"), info)
+                log.debug(
+                    f"[MediaInfo]电影分类匹配: title={self.title!r} lang={info.get('original_language')} "
+                    f"origin={info.get('origin_country')} genre={info.get('genre_ids')} -> {self.category!r}"
+                )
             elif self.type == MediaType.TV:
                 self.category = get_category(rule_map.get("tv"), info)
             else:
