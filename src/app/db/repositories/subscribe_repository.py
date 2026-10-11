@@ -1037,6 +1037,10 @@ class SubscribeRepository(BaseRepository):
         """
         登记RSS历史（user_id 为归属用户）
         """
+        # SEASON/TOTAL/START 为 NOT NULL：电影等无季/集信息时兜底为空串/0，避免约束失败
+        season = season or ""
+        total = "0" if total is None else str(total)
+        start = "0" if start is None else str(start)
         with self.session() as db:
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
                 return
@@ -1076,6 +1080,10 @@ class SubscribeRepository(BaseRepository):
         """
         登记或更新RSS历史：按媒体维度去重，同一 TMDB ID + 季的记录只保留一条
         """
+        # SEASON/TOTAL/START 为 NOT NULL：电影等无季/集信息时兜底为空串/0，避免约束失败
+        season = season or ""
+        total = "0" if total is None else str(total)
+        start = "0" if start is None else str(start)
         with self.session() as db:
             # 防御：同一 rssid 已完成过则跳过
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
