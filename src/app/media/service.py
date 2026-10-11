@@ -429,9 +429,9 @@ class MediaService:
                     full_info.get("original_title") or full_info.get("original_name") or info.original_title
                 )
                 info.year = (
-                    full_info.get("release_date", "")[:4]
+                    (full_info.get("release_date") or "")[:4]
                     if full_info.get("release_date")
-                    else full_info.get("first_air_date", "")[:4]
+                    else (full_info.get("first_air_date") or "")[:4]
                 ) or info.year
                 info.overview = full_info.get("overview") or info.overview
                 info.vote_average = round(float(full_info.get("vote_average", 0)), 1) or info.vote_average

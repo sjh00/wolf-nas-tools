@@ -116,7 +116,7 @@ class TmdbSearch:
         return self._fuzzy_match_movie(name, year, movies)
 
     def _fuzzy_match_movie(self, name, year, movies):
-        candidates = [m for m in movies[:5] if not year or m.get("release_date", "")[:4] == str(year)]
+        candidates = [m for m in movies[:5] if not year or (m.get("release_date") or "")[:4] == str(year)]
         if not candidates:
             return {}
         results = {}
@@ -193,7 +193,7 @@ class TmdbSearch:
         # 第一轮：收集所有精确匹配项，优先返回 anime（genre_ids 含 16）
         exact_matches = []
         for tv in tvs:
-            year_matched = not year or (tv.get("first_air_date") and tv.get("first_air_date", "")[:4] == str(year))
+            year_matched = not year or (tv.get("first_air_date") and (tv.get("first_air_date") or "")[:4] == str(year))
             if not year_matched:
                 continue
             original = tv.get("original_name")
@@ -225,7 +225,7 @@ class TmdbSearch:
         return self._fuzzy_match_tv(name, year, tvs, season_number, episode)
 
     def _fuzzy_match_tv(self, name, year, tvs, season_number=None, episode=None):
-        candidates = [t for t in tvs[:5] if not year or t.get("first_air_date", "")[:4] == str(year)]
+        candidates = [t for t in tvs[:5] if not year or (t.get("first_air_date") or "")[:4] == str(year)]
         if not candidates:
             return {}
         results = {}
@@ -294,7 +294,7 @@ class TmdbSearch:
             try:
                 seasons = tv_info.get("seasons") or []
                 return any(
-                    s.get("air_date", "")[:4] == str(season_year) and s.get("season_number") == int(season_number)
+                    (s.get("air_date") or "")[:4] == str(season_year) and s.get("season_number") == int(season_number)
                     for s in seasons
                 )
             except Exception as e:
@@ -329,9 +329,9 @@ class TmdbSearch:
         if not tvs:
             return {}
         for tv in tvs:
-            if (
-                compare_tmdb_names(name, tv.get("name")) or compare_tmdb_names(name, tv.get("original_name"))
-            ) and tv.get("first_air_date", "")[:4] == str(media_year):
+            if (compare_tmdb_names(name, tv.get("name")) or compare_tmdb_names(name, tv.get("original_name"))) and (
+                tv.get("first_air_date") or ""
+            )[:4] == str(media_year):
                 detail = self._get_detail(tv.get("id"), MediaType.TV)
                 # 名称+首播年命中但无目标季（如同名真人剧），跳过避免抢占动漫条目
                 if season_number and not self._detail_has_season(detail, season_number):

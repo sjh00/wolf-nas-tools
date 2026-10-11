@@ -451,7 +451,7 @@ class FnOS(_IMediaClient):
                     "type": normalized_type,
                     "title": item.get("title"),
                     "originalTitle": item.get("title"),
-                    "year": item.get("air_date", "")[:4],
+                    "year": (item.get("air_date") or "")[:4],
                     "tmdbid": "",
                     "imdbid": item.get("imdb_id"),
                     "tvdbid": "",
