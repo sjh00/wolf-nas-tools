@@ -1,5 +1,12 @@
 # 版本历史
 
+## v4.25.1 (2026-10-11)
+
+### 修复
+
+- 订阅：电影完成写入订阅历史时，`SEASON`/`TOTAL`/`START`（NOT NULL）兜底为空串/0，修复 `NOT NULL constraint failed: SUBSCRIBE_HISTORY.SEASON` 导致的电影订阅处理失败
+- TMDB：错误响应缺少 `status_message` 或 `results` 非列表时不再下标报错（返回空结果或明确错误信息）
+
 ## v4.25.0 (2026-10-10)
 
 ### 新增
