@@ -63,6 +63,19 @@ def _claim_page_fetch_slot(site_id: str, interval: float) -> float:
         return start - now
 
 
+_page_fetch_warn_state: dict[str, float] = {}
+
+
+def _warn_page_fetch(site_id: str, msg: str) -> None:
+    """页面抓取失败（空/非 2xx/异常）告警：同站点 60s 内仅一次，暴露真实原因便于定位。"""
+    now = time.monotonic()
+    with _page_pace_lock:
+        if now - _page_fetch_warn_state.get(site_id, 0.0) < 60.0:
+            return
+        _page_fetch_warn_state[site_id] = now
+    log.warn(f"[SiteEngine]{msg}")
+
+
 def _page_fetch_interval(site_id: str) -> float:
     """当前站点是否处于退避窗口；是则返回建议间隔"""
     with _page_pace_lock:
@@ -872,13 +885,15 @@ class SiteEngine:
                 res = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
                 final = str(res.url) if getattr(res, "url", None) else url
                 if not res.is_success:
-                    log.debug(f"[SiteEngine]页面抓取非 2xx: HTTP {res.status_code} url={str(url)[:80]}")
+                    _warn_page_fetch(site_id, f"页面抓取非 2xx: HTTP {res.status_code} url={str(url)[:120]}")
                     return None, final
                 return res.text, final
             except Exception as e:
                 # 鉴权失败被重定向到登录页时，CF 挑战/403 会抛异常且消息含 login URL，
                 # 把异常中的最终地址透传，供自检调用方识别（正常路径不受影响）
                 err_msg = str(e)
+                if "login" not in err_msg.lower():
+                    _warn_page_fetch(site_id, f"页面抓取异常: {err_msg[:160]} url={str(url)[:120]}")
                 return None, (err_msg if "login" in err_msg.lower() else url)
             finally:
                 if client is not None and with_browser is not None:
