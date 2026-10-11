@@ -4,7 +4,7 @@ from app.infrastructure.external.tmdbv3api.exceptions import TMDbError
 class AsObj:
     def __init__(self, **entries):
         if "success" in entries and entries["success"] is False:
-            raise TMDbError(entries["status_message"])
+            raise TMDbError(entries.get("status_message") or "TMDB 请求失败")
         for key, value in entries.items():
             if isinstance(value, list):
                 value = [AsObj(**item) if isinstance(item, dict) else item for item in value]

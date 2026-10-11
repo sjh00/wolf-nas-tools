@@ -97,11 +97,15 @@ class TMDb:
         if not isinstance(result, dict):
             return []
         if "success" in result and result["success"] is False:
-            raise TMDbError(result["status_message"])
+            raise TMDbError(result.get("status_message") or "TMDB 请求失败")
         if all_details is True or key is None:
             return AsObj(**result)
         else:
-            return [AsObj(**res) for res in result[key]]
+            # 错误体可能缺少 key 或 key 非列表，避免下标/迭代报错
+            values = result.get(key)
+            if not isinstance(values, list):
+                return []
+            return [AsObj(**res) for res in values if isinstance(res, dict)]
 
     def _call(self, action, append_to_response, method="GET", data=None):
         if self.api_key is None or self.api_key == "":
