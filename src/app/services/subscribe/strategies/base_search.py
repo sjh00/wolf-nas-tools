@@ -447,24 +447,33 @@ class BaseSearchStrategy:
                             self._tv_repo.update_state(
                                 title=None, year=None, season=None, rssid=rid, state=SubscribeState.RUNNING.value
                             )
-                    elif not no_exists or not no_exists.get(media_info.tmdb_id):
-                        if self._service:
-                            self._service.finish_rss_subscribe(rssid=rid, media=media_info)
-                    elif search_result:
+                    else:
+                        # 完成判定只认「正向证据」：媒体库确认整季已存在（exist_flag=True）。
+                        # 不可用 library_no_exists 为空来判定完成——当 TMDB 集数未知 / 媒体库目录尚不存在 /
+                        # 无转移历史时，check_exists_medias 会返回 (False, {}, ...)，那是“无法确认”而非“已完成”。
                         exist_flag, library_no_exists, _ = self._downloader.check_exists_medias(
                             meta_info=media_info, total_ep={season: total_ep}
                         )
-                        if not library_no_exists or not library_no_exists.get(media_info.tmdb_id):
+                        if exist_flag:
                             if self._service:
                                 self._service.finish_rss_subscribe(rssid=rid, media=media_info)
-                        elif self._service:
-                            self._service.update_subscribe_tv_lack(
-                                rssid=rid, media_info=media_info, seasoninfo=library_no_exists.get(media_info.tmdb_id)
+                        elif library_no_exists and library_no_exists.get(media_info.tmdb_id):
+                            if self._service:
+                                self._service.update_subscribe_tv_lack(
+                                    rssid=rid,
+                                    media_info=media_info,
+                                    seasoninfo=library_no_exists.get(media_info.tmdb_id),
+                                )
+                        elif no_exists and no_exists.get(media_info.tmdb_id):
+                            if self._service:
+                                self._service.update_subscribe_tv_lack(
+                                    rssid=rid, media_info=media_info, seasoninfo=no_exists.get(media_info.tmdb_id)
+                                )
+                        else:
+                            log.info(f"[Subscribe]{media_info.get_title_string()} 订阅完成情况无法确认，保持运行")
+                            self._tv_repo.update_state(
+                                title=None, year=None, season=None, rssid=rid, state=SubscribeState.RUNNING.value
                             )
-                    elif no_exists and self._service:
-                        self._service.update_subscribe_tv_lack(
-                            rssid=rid, media_info=media_info, seasoninfo=no_exists.get(media_info.tmdb_id)
-                        )
             except (MediaError, DownloadError, IndexerError, RepositoryError, ServiceError, NetworkError):
                 log.error(f"[Subscribe]{MediaType.TV.display_name} {name_val} 订阅搜索失败：{traceback.format_exc()}")
                 self._tv_repo.update_state(
