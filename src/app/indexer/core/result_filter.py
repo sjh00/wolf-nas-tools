@@ -10,6 +10,7 @@
 
 import difflib
 import re
+import time
 
 import log
 from app.core.settings import settings
@@ -60,6 +61,17 @@ class ResultFilter:
         self._group_repo = filter_group_repo or FilterGroupRepositoryAdapter()
         self._rule_repo = filter_rule_repo or FilterRuleRepositoryAdapter()
         self._rule_cache = {}
+        # 规则缓存时间戳/TTL：兜底应对“绕过应用直接改库”的场景，避免必须重启才能生效
+        self._rule_cache_ts = 0.0
+        try:
+            self._rule_cache_ttl = float((settings.get("filter") or {}).get("rule_cache_ttl", 30) or 0)
+        except (TypeError, ValueError):
+            self._rule_cache_ttl = 30.0
+
+    def clear_cache(self):
+        """清空规则缓存（规则/分组变更后由 FilterService 通知调用）。"""
+        self._rule_cache.clear()
+        self._rule_cache_ts = 0.0
 
     def _get_rules(self, rulegroup_id=None):
         """
@@ -68,7 +80,8 @@ class ResultFilter:
         :return: (rulegroup_info: dict, filters: list)
         """
         cache_key = rulegroup_id if rulegroup_id is not None else "__default__"
-        if cache_key in self._rule_cache:
+        cache_fresh = self._rule_cache_ttl <= 0 or (time.monotonic() - self._rule_cache_ts) < self._rule_cache_ttl
+        if cache_key in self._rule_cache and cache_fresh:
             return self._rule_cache[cache_key]
 
         if rulegroup_id:
@@ -102,6 +115,7 @@ class ResultFilter:
                 )
 
         self._rule_cache[cache_key] = (rulegroup_info, filters)
+        self._rule_cache_ts = time.monotonic()
         log.info(
             f"[ResultFilter]加载规则组: {rulegroup_info.get('name')} "
             f"(ID={rulegroup_info.get('id')}), 规则数: {len(filters)}"

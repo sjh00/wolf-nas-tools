@@ -212,6 +212,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     )
 
     search_pipeline = SearchPipeline(media_service=media_service)
+    # 过滤规则变更时清理搜索流水线的规则缓存，避免改库后必须重启才生效
+    filter_service.add_change_listener(search_pipeline.result_filter.clear_cache)
 
     indexer = Indexer(
         search_pipeline=search_pipeline,
