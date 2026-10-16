@@ -1,5 +1,11 @@
 # 版本历史
 
+## v4.25.5 (2026-10-16)
+
+### 修复
+
+- 过滤规则：`ResultFilter` 的规则缓存过去无失效机制（`SearchPipeline` 为 DI 单例），导致修改 `CONFIG_FILTER_RULES`/规则组后**必须重启才生效**。现改为：① `FilterService` 规则变更时通知 `ResultFilter.clear_cache()` 即时失效；② 缓存增加 TTL 兜底（`filter.rule_cache_ttl`，默认 30s），应对直接改库（绕过应用）的场景，无需重启
+
 ## v4.25.4 (2026-10-16)
 
 ### 修复
