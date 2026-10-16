@@ -1,5 +1,6 @@
 import bisect
 import datetime
+import difflib
 import hashlib
 import random
 import re
@@ -293,6 +294,34 @@ class StringUtils:
         if not name:
             return None
         return re.sub(r"[*?\\/\"<>~|]", "", name, flags=re.IGNORECASE).replace(":", "：")
+
+    # 发布名噪声（识别标题时应剔除）：月份、无修/未删减、新番、合集、简繁等
+    _RELEASE_NOISE_BRACKET = re.compile(
+        r"[【\[（(]\s*(?:\d{1,2}\s*月|(?:完全)?无修(?:正)?版?|未删减|新番|合集|全集|简繁|繁简|简[／/]繁|繁[／/]简)"
+        r"\s*[】\]）)]",
+        re.IGNORECASE,
+    )
+    _RELEASE_NOISE_UNCENSORED = re.compile(r"[（(]\s*UNCENSORED\s*[）)]", re.IGNORECASE)
+
+    @staticmethod
+    def strip_release_noise(name):
+        """剔除发布名中的噪声标记（如【10月】/【完全无修版】/(UNCENSORED)），供媒体识别使用。"""
+        if not name:
+            return name
+        text = StringUtils._RELEASE_NOISE_BRACKET.sub(" ", name)
+        text = StringUtils._RELEASE_NOISE_UNCENSORED.sub(" ", text)
+        return re.sub(r"\s{2,}", " ", text).strip()
+
+    @staticmethod
+    def similarity(a, b) -> float:
+        """名称相似度（忽略标点、【】等特殊字符后，difflib 比值 0~1）。"""
+        if not a or not b:
+            return 0.0
+        an = StringUtils.handler_special_chars(str(a))
+        bn = StringUtils.handler_special_chars(str(b))
+        if not an or not bn:
+            return 0.0
+        return difflib.SequenceMatcher(None, str(an).lower(), str(bn).lower()).ratio()
 
     @staticmethod
     def get_keyword_from_string(content):

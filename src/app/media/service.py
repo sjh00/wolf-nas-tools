@@ -870,6 +870,7 @@ class MediaService:
                     if not _path_isdir(file_path) and PathUtils.get_bluray_dir(file_path):
                         continue
                     file_name, _ = self._apply_words(file_name)
+                    file_name = StringUtils.strip_release_noise(file_name)
                     parsed = self._parser.parse(file_name)
                     parsed = self._post_process(parsed, file_name)
                     self._fill_episode_from_parent_paths(file_path, parsed)
@@ -936,6 +937,7 @@ class MediaService:
                 if not _path_isdir(file_path) and PathUtils.get_bluray_dir(file_path):
                     continue
                 file_name, _ = self._apply_words(file_name)
+                file_name = StringUtils.strip_release_noise(file_name)
                 parent_name = os.path.basename(os.path.dirname(file_path))
                 parent_parent_name = os.path.basename(PathUtils.get_parent_paths(file_path, 2))
                 items.append(
