@@ -55,3 +55,28 @@ def test_ambiguous_records_return_none(tmp_path):
     svc, file_path = _service(records, tmp_path)
     tmdb_info, media_type, _s, _e = svc._lookup_download_record(file_path)
     assert tmdb_info is None and media_type is None
+
+
+def test_same_tmdb_multiple_records_not_ambiguous(tmp_path):
+    """同一部剧的多条记录（同名同 TMDB）分列前二，不应判为歧义。"""
+    records = [
+        SimpleNamespace(
+            TMDBID=335790,
+            TYPE="anime",
+            SE="S01 E01",
+            TORRENT="[完全无修版] 与暗黑召唤师秘密恋爱中 - 01 [简／繁] (1080p)",
+            TITLE="黑暗召唤师在地下恋爱中",
+        ),
+        SimpleNamespace(
+            TMDBID=335790,
+            TYPE="anime",
+            SE="S01 E02",
+            TORRENT="[完全无修版] 与暗黑召唤师秘密恋爱中 - 02 [简／繁] (1080p)",
+            TITLE="黑暗召唤师在地下恋爱中",
+        ),
+        SimpleNamespace(TMDBID=295071, TYPE="anime", SE="S01 E11", TORRENT="[ANi] 再见菈菈 - 11", TITLE="再见菈菈"),
+    ]
+    svc, file_path = _service(records, tmp_path)
+    tmdb_info, media_type, _s, _e = svc._lookup_download_record(file_path)
+    assert tmdb_info is not None
+    assert media_type == MediaType.ANIME
