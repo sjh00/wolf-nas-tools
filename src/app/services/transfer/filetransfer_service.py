@@ -558,11 +558,29 @@ class FileTransferService:
             log.debug(f"[Rmt]后端目录递归列举失败: {e}")
         return files
 
+    def _pick_record_by_filename(self, in_path, records):
+        """聚合目录命中多条下载记录时，按文件名与记录的 TORRENT/TITLE 相似度消歧，唯一最佳才采用。"""
+        file_name = os.path.basename(in_path)
+        scored = []
+        for rec in records or []:
+            torrent = getattr(rec, "TORRENT", None) or getattr(rec, "torrent", "") or ""
+            title = getattr(rec, "TITLE", None) or getattr(rec, "title", "") or ""
+            score = max(StringUtils.similarity(file_name, torrent), StringUtils.similarity(file_name, title))
+            scored.append((score, rec))
+        if not scored:
+            return None
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if scored[0][0] < 0.35:
+            return None
+        if len(scored) > 1 and (scored[0][0] - scored[1][0]) < 0.05:
+            return None
+        return scored[0][1]
+
     def _lookup_download_record(self, in_path):
         download_info = self._history.download_repo.get_download_history_by_path(in_path)
         if download_info and os.path.isdir(in_path):
             # 目录路径命中多条下载记录（聚合目录）：若都指向同一部剧则用其 tmdb 提示，
-            # 否则不可靠，跳过避免错误套用
+            # 否则按文件名消歧，仍无法唯一确定才跳过，避免错误套用
             count = self._history.download_repo.count_download_history_by_path(in_path)
             if count and count > 1:
                 records = self._history.download_repo.get_download_history_list_by_path(in_path) or []
@@ -570,16 +588,28 @@ class FileTransferService:
                 if records and len(tmdb_ids) == 1:
                     download_info = records[0]
                 else:
-                    log.debug(f"[Rmt]{in_path} 命中 {count} 条下载记录，聚合目录多部剧，跳过")
-                    return None, None, None, None
+                    download_info = self._pick_record_by_filename(in_path, records)
+                    if download_info is None:
+                        log.debug(f"[Rmt]{in_path} 命中 {count} 条下载记录，聚合目录且无法按文件名消歧，跳过")
+                        return None, None, None, None
         if not download_info and os.path.isfile(in_path):
             parent = os.path.dirname(in_path)
-            # 文件回退父目录时，父目录若是聚合目录（多条下载记录）同样不可靠，跳过
+            # 文件回退父目录时，父目录若是聚合目录（多条下载记录），按文件名消歧；无法唯一确定才跳过
             parent_count = self._history.download_repo.count_download_history_by_path(parent)
             if parent_count and parent_count > 1:
-                log.debug(f"[Rmt]{in_path} 父目录 {parent} 命中 {parent_count} 条下载记录，聚合，跳过")
-                return None, None, None, None
-            download_info = self._history.download_repo.get_download_history_by_path(parent)
+                records = self._history.download_repo.get_download_history_list_by_path(parent) or []
+                tmdb_ids = {str(r.TMDBID) for r in records if getattr(r, "TMDBID", None)}
+                if records and len(tmdb_ids) == 1:
+                    download_info = records[0]
+                else:
+                    download_info = self._pick_record_by_filename(in_path, records)
+                    if download_info is None:
+                        log.debug(
+                            f"[Rmt]{in_path} 父目录 {parent} 命中 {parent_count} 条下载记录，无法按文件名消歧，跳过"
+                        )
+                        return None, None, None, None
+            else:
+                download_info = self._history.download_repo.get_download_history_by_path(parent)
         if download_info and str(download_info.TMDBID or ""):
             log.info(f"[Rmt]{in_path} 找到下载记录，TMDBID：{download_info.TMDBID}")
             parsed_type = MediaType.from_string(download_info.TYPE)
