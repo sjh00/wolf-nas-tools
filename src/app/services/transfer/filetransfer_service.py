@@ -570,11 +570,19 @@ class FileTransferService:
         if not scored:
             return None
         scored.sort(key=lambda item: item[0], reverse=True)
-        if scored[0][0] < 0.35:
+        best_score, best_rec = scored[0]
+        if best_score < 0.35:
             return None
-        if len(scored) > 1 and (scored[0][0] - scored[1][0]) < 0.05:
+        # 歧义只在“不同 TMDBID”之间比较：同一部剧的多条记录（如同一剧的 E01/E02）不算歧义
+        best_tmdb = str(getattr(best_rec, "TMDBID", "") or "")
+        second_distinct = 0.0
+        for score, rec in scored[1:]:
+            if str(getattr(rec, "TMDBID", "") or "") != best_tmdb:
+                second_distinct = score
+                break
+        if second_distinct and (best_score - second_distinct) < 0.05:
             return None
-        return scored[0][1]
+        return best_rec
 
     def _lookup_download_record(self, in_path):
         download_info = self._history.download_repo.get_download_history_by_path(in_path)
