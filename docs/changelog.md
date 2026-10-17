@@ -1,5 +1,13 @@
 # 版本历史
 
+## v4.26.1 (2026-10-17)
+
+### 修复
+
+- 站点配置在线更新后不生效/新站点不出现：
+  - `SiteEngine` 优先加载“在线更新的用户配置目录”（`config_path/sites`，需存在版本标记且非 `builtin` 副本），`NEXUS_SITES_DIR` 仍最优先；此前只读内置目录，导致 `/data/sites` 的新站点被忽略
+  - 新增 `SiteEngine.reload()`；`POST /api/system/site-config/update` 成功后自动重载引擎并刷新 `SiteCache`，**无需重启**即可在「添加站点」定义列表看到新站点
+
 ## v4.26.0 (2026-10-17)
 
 ### 新增
