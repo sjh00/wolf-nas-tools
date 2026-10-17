@@ -22,6 +22,7 @@ from lxml import etree
 
 import log
 from app.core.root_path import get_project_root
+from app.core.settings import settings
 from app.infrastructure.chrome.challenge import is_challenge
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient
@@ -295,10 +296,27 @@ class SiteEngine:
 
     @classmethod
     def _resolve_definitions_dir(cls) -> str:
-        """优先使用环境变量 NEXUS_SITES_DIR，不存在则回退到内置目录"""
+        """优先使用环境变量 NEXUS_SITES_DIR，其次在线更新目录，最后回退到内置目录。"""
         env_dir = os.environ.get("NEXUS_SITES_DIR")
         if env_dir and os.path.isdir(env_dir):
             return env_dir
+        try:
+            user_sites = os.path.join(settings.config_path, "sites")
+            version = ""
+            version_file = os.path.join(user_sites, "version")
+            if os.path.isfile(version_file):
+                with open(version_file, encoding="utf-8") as f:
+                    version = f.read().strip()
+            has_defs = any(
+                os.path.isdir(os.path.join(user_sites, sub))
+                and any(name.endswith(".json") for name in os.listdir(os.path.join(user_sites, sub)))
+                for sub in ("api", "html")
+            )
+            # 仅在存在“在线更新版本标记”（非 builtin 副本）时优先用户目录，避免读到过期内置副本
+            if has_defs and version and version != "builtin":
+                return user_sites
+        except Exception:  # noqa: BLE001
+            log.debug("[SiteEngine]解析用户站点配置目录失败，回退内置目录")
         return cls._BUILTIN_DEFINITIONS_DIR
 
     def __init__(self, definitions_dir: str | None = None):
@@ -333,6 +351,18 @@ class SiteEngine:
                 log.debug(f"[SiteEngine]加载站点定义: {site_def.name} ({site_def.id})")
             except Exception:
                 log.warn(f"[SiteEngine]加载站点定义失败: {fname}\n{traceback.format_exc()}")
+
+    def reload(self) -> None:
+        """重新加载站点定义（在线配置更新后热生效，无需重启）。"""
+        self._sites.clear()
+        self._domain_index.clear()
+        self._auth_cache.clear()
+        if self._definitions_dir and os.path.isdir(self._definitions_dir):
+            for subdir in ("api", "html"):
+                subpath = os.path.join(self._definitions_dir, subdir)
+                if os.path.isdir(subpath):
+                    self._load(subpath)
+        log.info(f"[SiteEngine]站点定义已重载，共 {len(self._sites)} 个（{self._definitions_dir}）")
 
     def _index_site(self, site_def: SiteDefinition) -> None:
         """将站点定义加入 domain 索引."""
