@@ -1,5 +1,11 @@
 # 版本历史
 
+## v4.26.0 (2026-10-17)
+
+### 新增
+
+- 站点：新增三个 NexusPHP 站点配置——慕雪阁（`pt.muxuege.org`）、星湾（`xingwan.cc`）、PT分享站（`pt.itzmx.com`），采用标准 `torrents.php?search=` 搜索与 `table.torrents` 列表解析
+
 ## v4.25.6 (2026-10-16)
 
 ### 修复
