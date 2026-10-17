@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import log
 from api.deps import (
+    get_app_context,
     get_backup_restore_service,
     get_config_reloader,
     get_config_service,
@@ -1088,6 +1089,7 @@ def get_site_config_version():
 def update_site_config(
     user: UserContext = Depends(get_current_user),
     payload: EmptyRequest | None = None,
+    app_context=Depends(get_app_context),
 ):
     """手动触发站点配置更新"""
     if "setting:update" not in user.permissions:
@@ -1097,6 +1099,12 @@ def update_site_config(
         force = bool(payload and payload.data and payload.data.get("force"))
         result = SiteConfigUpdater().update(force=force)
         if result["success"]:
+            # 热重载：在线配置写入用户目录后立即生效，无需重启
+            try:
+                app_context.site_engine.reload()
+                app_context.site_cache.refresh()
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[System]站点配置更新后重载失败: {e!s}")
             return success(result)
         return fail(msg=result.get("message", ""))
     except (ServiceError, DomainError) as e:
