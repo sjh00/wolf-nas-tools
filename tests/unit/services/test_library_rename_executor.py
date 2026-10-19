@@ -72,6 +72,7 @@ def rename_executor(monkeypatch, tmp_path):
     old_video = old_dir / "Old Movie (2020).mkv"
     old_video.write_bytes(b"video")
     (old_dir / "Old Movie (2020).zh.srt").write_text("sub", encoding="utf-8")
+    (old_dir / "Old Movie (2020).sup").write_bytes(b"sup")
     (old_dir / "Old Movie (2020).nfo").write_text("<movie/>", encoding="utf-8")
     (old_dir / "poster.jpg").write_bytes(b"poster")
     new_dir = root / "New Movie (2020)"
@@ -117,6 +118,7 @@ def test_execute_moves_video_and_aux_then_shared_assets(rename_executor):
     assert not old_video.exists()
     assert new_video.exists()
     assert (new_dir / "New Movie (2020).zh.srt").exists()
+    assert (new_dir / "New Movie (2020).sup").exists()
     assert (new_dir / "New Movie (2020).nfo").exists()
     assert repo.items[1]["STATUS"] == "done"
     assert repo.history_updates
@@ -139,6 +141,7 @@ def test_rollback_restores_video_aux_and_shared_assets(rename_executor):
     assert executor._rollback_item(repo.items[1])
     assert old_video.exists()
     assert (old_dir / "Old Movie (2020).zh.srt").exists()
+    assert (old_dir / "Old Movie (2020).sup").exists()
     assert (old_dir / "Old Movie (2020).nfo").exists()
     assert (old_dir / "poster.jpg").exists()
     assert repo.items[1]["STATUS"] == "rolled_back"
