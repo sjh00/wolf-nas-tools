@@ -35,9 +35,11 @@ def client():
 class TestApiRegistry:
     def test_register_and_get(self):
         handler = lambda params: {"ok": True}  # noqa: E731
-        api_registry.register_api("testplugin", "status", handler)
+        api_registry.register_api("testplugin", "status", handler, methods=("GET",))
         assert api_registry.get_api_handler("testplugin", "status") is handler
         assert api_registry.get_api_handler("testplugin", "/status/") is handler
+        assert api_registry.get_api_handler("testplugin", "status", "GET") is handler
+        assert api_registry.get_api_handler("testplugin", "status", "POST") is None
 
     def test_unregister_plugin_apis(self):
         api_registry.register_api("testplugin", "a", lambda p: None)
@@ -57,7 +59,7 @@ class TestPluginApiDispatch:
             seen.update(params)
             return {"success": True, "data": {"echo": params.get("x")}}
 
-        api_registry.register_api("testplugin", "echo", handler)
+        api_registry.register_api("testplugin", "echo", handler, methods=("GET",))
         resp = client.get("/api/plugin-framework/plugins/testplugin/api/echo?x=1")
         assert resp.status_code == 200
         body = resp.json()
@@ -88,9 +90,15 @@ class TestPluginApiDispatch:
         assert body["message"] == "绑定失败"
 
     def test_plain_result_wrapped(self, client):
-        api_registry.register_api("testplugin", "list", lambda p: [1, 2, 3])
+        api_registry.register_api("testplugin", "list", lambda p: [1, 2, 3], methods=("GET",))
         resp = client.get("/api/plugin-framework/plugins/testplugin/api/list")
         assert resp.json()["data"] == [1, 2, 3]
+
+    def test_get_not_allowed_for_post_only_handler(self, client):
+        api_registry.register_api("testplugin", "write", lambda p: {"success": True})
+        resp = client.get("/api/plugin-framework/plugins/testplugin/api/write")
+        assert resp.status_code == 200
+        assert resp.json()["code"] != 0
 
     def test_unknown_path_fails(self, client):
         resp = client.get("/api/plugin-framework/plugins/testplugin/api/not-exist")
@@ -101,7 +109,7 @@ class TestPluginApiDispatch:
         def boom(params):
             raise RuntimeError("炸了")
 
-        api_registry.register_api("testplugin", "boom", boom)
+        api_registry.register_api("testplugin", "boom", boom, methods=("GET",))
         resp = client.get("/api/plugin-framework/plugins/testplugin/api/boom")
         assert resp.status_code == 200
         body = resp.json()

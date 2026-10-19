@@ -420,6 +420,7 @@ class PluginFrameworkService:
                 # manifest 完全相同，无需重复安装
                 if os.path.exists(target_dir):
                     shutil.rmtree(target_dir)
+                self._plugin_registry.update_manifest_cache(manifest, installed=True)
                 log.info(f"[PluginFrameworkService] 插件 {manifest.id} 已存在且 manifest 一致，跳过安装")
                 return manifest
 
@@ -467,6 +468,7 @@ class PluginFrameworkService:
                 raise PluginError("插件清单写入数据库失败", errcode=ErrorCode.DATABASE_ERROR, http_status=500)
             log.info(f"[PluginFrameworkService] 插件安装成功: {manifest.id}@{manifest.version}")
 
+        self._plugin_registry.update_manifest_cache(manifest, installed=True)
         self._get_hook_system().emit("plugin.install", {"plugin_id": manifest.id})
         return manifest
 
@@ -522,6 +524,7 @@ class PluginFrameworkService:
 
         self._repo.delete_manifest(plugin_id)
         self._repo.delete_config(plugin_id)
+        self._plugin_registry.remove_plugin_cache(plugin_id)
 
         self._get_hook_system().emit("plugin.uninstall", {"plugin_id": plugin_id})
         log.info(f"[PluginFrameworkService] 插件卸载成功: {plugin_id}")
@@ -629,6 +632,10 @@ class PluginFrameworkService:
         if state:
             state.enabled = True
             state.installed = True
+        else:
+            manifest = self.get_manifest(plugin_id)
+            if manifest:
+                self._plugin_registry.update_manifest_cache(manifest, enabled=True, installed=True)
 
     def disable(self, plugin_id: str) -> None:
         """禁用插件"""

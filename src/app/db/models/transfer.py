@@ -23,6 +23,7 @@ class TRANSFERHISTORY(Base):
     __table_args__ = (
         Index("INDX_TRANSFER_HISTORY_SOURCE", "SOURCE_PATH", "SOURCE_FILENAME"),
         Index("INDX_TRANSFER_HISTORY_TMDBID", "TMDBID"),
+        Index("INDX_TRANSFER_HISTORY_DEST", "DEST_PATH", "DEST_FILENAME"),
     )
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
