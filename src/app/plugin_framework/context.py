@@ -244,11 +244,17 @@ class PluginContext:
         """注销该插件的所有消息命令"""
         self._message.clear_plugin_commands(self._plugin_id)
 
-    def register_api(self, path: str, handler: Callable[[dict], object]) -> None:
+    def register_api(
+        self,
+        path: str,
+        handler: Callable[[dict], object],
+        methods: tuple[str, ...] | None = None,
+    ) -> None:
         """注册插件自定义 API，由通用调度路由分发：
         GET/POST /api/plugin-framework/plugins/{plugin_id}/api/{path}
+        默认仅 POST；只读接口显式传 methods=("GET",)。
         """
-        api_registry.register_api(self._plugin_id, path, handler)
+        api_registry.register_api(self._plugin_id, path, handler, methods)
 
     def unregister_all_apis(self) -> None:
         """注销该插件的所有自定义 API"""

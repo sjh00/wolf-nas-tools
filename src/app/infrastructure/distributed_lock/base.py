@@ -16,6 +16,7 @@ class DistributedLock(ABC):
         self._ttl_seconds = ttl_seconds
         self._token = f"{os.environ.get('SERVER_INSTANCE', 'default')}:{uuid.uuid4().hex}"
         self._owned = False
+        self._last_error: Exception | None = None
 
     @property
     def lock_key(self) -> str:
@@ -24,6 +25,11 @@ class DistributedLock(ABC):
     @property
     def owned(self) -> bool:
         return self._owned
+
+    @property
+    def last_error(self) -> Exception | None:
+        """最近一次 acquire 失败是否由锁后端异常导致（而非锁被占用）."""
+        return self._last_error
 
     @abstractmethod
     def acquire(self) -> bool:

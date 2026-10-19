@@ -24,6 +24,7 @@ from api.routers import (
     filter,
     image,
     kb,
+    library_rename,
     media,
     message_webhook,
     plugin_framework,
@@ -61,6 +62,13 @@ from app.services.system.lifecycle import SystemLifecycleService
 def _startup(app: FastAPI) -> None:
     """后台线程执行全部初始化，避免阻塞 lifespan 接受连接."""
     try:
+        log.info("[FastAPI]初始化数据库表结构...")
+        init_db()
+    except Exception as e:
+        log.error(f"[FastAPI]数据库初始化失败: {e}")
+        return
+
+    try:
         app_context = build_app_context()
         app.state.context = app_context
     except Exception as e:
@@ -68,11 +76,11 @@ def _startup(app: FastAPI) -> None:
         return
 
     try:
-        log.info("[FastAPI]初始化数据库表结构...")
-        init_db()
+        recovered = app_context.library_rename_service.recover_interrupted_jobs()
+        if recovered:
+            log.info(f"[FastAPI]已标记 {recovered} 个中断的媒体库重命名任务")
     except Exception as e:
-        log.error(f"[FastAPI]数据库初始化失败: {e}")
-        return
+        log.error(f"[FastAPI]恢复媒体库重命名任务失败: {e}")
 
     try:
         log.info("[FastAPI]启动后台服务...")
@@ -222,6 +230,7 @@ app.include_router(plugin_market.router, prefix="/api/plugin/market", tags=["plu
 app.include_router(rss_automation.router, prefix="/api/rss-automation", tags=["rss-automation"])
 app.include_router(words.router, prefix="/api/words", tags=["words"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
+app.include_router(library_rename.router, prefix="/api/media", tags=["media-library-rename"])
 app.include_router(rbac.router, prefix="/api/rbac", tags=["rbac"])
 app.include_router(browser_fingerprint.router, prefix="/api", tags=["browser-fingerprint"])
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])

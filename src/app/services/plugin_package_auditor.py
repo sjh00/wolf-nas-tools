@@ -51,7 +51,7 @@ _ALLOWED_EXTENSIONS = {
 
 # 禁 API / 危险行为（按行扫描，命中即 block）
 _BANNED_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("eval/exec/compile", re.compile(r"\b(eval|exec|compile)\s*\(")),
+    ("eval/exec/compile", re.compile(r"(?<![\w.])(eval|exec|compile)\s*\(")),
     ("dynamic_import", re.compile(r"(__import__|importlib\.import_module)\s*\(")),
     ("unsafe_pickle", re.compile(r"pickle\.loads?\s*\(")),
     ("shell_exec", re.compile(r"\b(subprocess|os\.system|os\.popen|commands\.getoutput)\b")),

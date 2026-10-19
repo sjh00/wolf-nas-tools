@@ -301,6 +301,34 @@ class PluginRegistry:
             except Exception as e:
                 log.error(f"[PluginRegistry] 扫描内置插件 {entry} 失败: {e}")
 
+    def update_manifest_cache(
+        self,
+        manifest: PluginManifest,
+        *,
+        enabled: bool | None = None,
+        installed: bool = True,
+    ) -> None:
+        """安装/启用后同步内存缓存，避免运行中安装的插件必须重启才能加载."""
+        self._manifest_cache[manifest.id] = manifest
+        state = self._state_cache.get(manifest.id)
+        if state:
+            state.manifest = manifest
+            state.installed = installed
+            if enabled is not None:
+                state.enabled = enabled
+            return
+        self._state_cache[manifest.id] = PluginState(
+            id=manifest.id,
+            enabled=bool(enabled),
+            installed=installed,
+            manifest=manifest,
+        )
+
+    def remove_plugin_cache(self, plugin_id: str) -> None:
+        """卸载后移除内存缓存，避免已卸载插件仍能被加载."""
+        self._manifest_cache.pop(plugin_id, None)
+        self._state_cache.pop(plugin_id, None)
+
     def get_plugin_path(self, plugin_id: str) -> str | None:
         """获取插件目录路径"""
         state = self._state_cache.get(plugin_id)

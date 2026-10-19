@@ -60,6 +60,13 @@ from app.db.models.indexer import (
     INDEXERSTATISTICS,
 )
 
+# 媒体库重命名模型
+from app.db.models.library_rename import (
+    LIBRARYMEDIAMETADATA,
+    LIBRARYRENAMEITEM,
+    LIBRARYRENAMEJOB,
+)
+
 # 媒体同步模型
 from app.db.models.media_sync import (
     MEDIASYNCITEMS,
@@ -216,6 +223,10 @@ __all__ = [
     "PLUGINCONFIG",
     "PLUGINLOGS",
     "PLUGINHOOKS",
+    # 媒体库重命名
+    "LIBRARYRENAMEJOB",
+    "LIBRARYRENAMEITEM",
+    "LIBRARYMEDIAMETADATA",
     # 媒体同步
     "MEDIASYNCITEMS",
     "MEDIASYNCSTATISTIC",
