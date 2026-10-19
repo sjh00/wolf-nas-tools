@@ -21,7 +21,7 @@ from app.storage.backends.base import StorageBackend
 from app.utils import PathUtils
 from app.utils.json_utils import JsonUtils
 
-_SUBTITLE_EXTS = set(RMT_SUBEXT) | {".vtt"}
+_SUBTITLE_EXTS = set(RMT_SUBEXT) | {".vtt", ".sup", ".sub", ".idx"}
 _AUDIO_EXTS = set(RMT_AUDIO_TRACK_EXT)
 _MEDIA_EXTS = set(RMT_MEDIAEXT)
 _SHARED_NFO = {"movie.nfo", "tvshow.nfo", "season.nfo"}
