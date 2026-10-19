@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import log
 from api.deps import get_hook_system, get_plugin_framework_service, require_any_permission, require_permission
@@ -229,18 +230,28 @@ def run_plugin(
         return fail(msg=f"运行失败: {e!s}")
 
 
-def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict):
-    """分发插件自定义 API 请求"""
-    handler = api_registry.get_api_handler(plugin_id, api_path)
+def _plugin_api_response(result):
+    """把插件 handler 返回值转换为统一响应."""
+    if isinstance(result, dict) and "success" in result:
+        if result.get("success"):
+            return success(data=result.get("data"), message=result.get("message") or "success")
+        return fail(msg=result.get("message") or "插件接口调用失败")
+    return success(data=result)
+
+
+async def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict, method: str):
+    """在线程池中执行同步 handler；async handler 直接 await."""
+    handler = api_registry.get_api_handler(plugin_id, api_path, method)
     if not handler:
         return fail(msg=f"插件接口不存在: {api_path}")
     try:
-        result = handler(params)
-        if isinstance(result, dict) and "success" in result:
-            if result.get("success"):
-                return success(data=result.get("data"), message=result.get("message") or "success")
-            return fail(msg=result.get("message") or "插件接口调用失败")
-        return success(data=result)
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(params)
+        else:
+            result = await run_in_threadpool(handler, params)
+            if inspect.isawaitable(result):
+                result = await result
+        return _plugin_api_response(result)
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
@@ -249,14 +260,17 @@ def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict):
         return fail(msg=f"插件接口异常: {e!s}")
 
 
+_MAX_PLUGIN_API_BODY = 8 * 1024 * 1024
+
+
 @router.get("/plugins/{plugin_id}/api/{api_path:path}", response_model=CommonResponse, summary="插件自定义接口GET")
-def plugin_api_get(
+async def plugin_api_get(
     plugin_id: str,
     api_path: str,
     request: Request,
     user: str = Depends(require_permission("plugin:view")),
 ):
-    return _dispatch_plugin_api(plugin_id, api_path, dict(request.query_params))
+    return await _dispatch_plugin_api(plugin_id, api_path, dict(request.query_params), "GET")
 
 
 @router.post("/plugins/{plugin_id}/api/{api_path:path}", response_model=CommonResponse, summary="插件自定义接口POST")
@@ -268,12 +282,19 @@ async def plugin_api_post(
 ):
     params: dict = dict(request.query_params)
     try:
+        content_length = request.headers.get("content-length")
+        try:
+            too_large = bool(content_length) and int(content_length) > _MAX_PLUGIN_API_BODY
+        except ValueError:
+            too_large = False
+        if too_large:
+            return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="请求体过大")
         body = await request.json()
         if isinstance(body, dict):
             params.update(body)
     except Exception as e:
         log.debug(f"[PluginAPI] 请求体非 JSON，忽略: {e}")
-    return _dispatch_plugin_api(plugin_id, api_path, params)
+    return await _dispatch_plugin_api(plugin_id, api_path, params, "POST")
 
 
 @router.get("/plugins/{plugin_id}/logs", response_model=CommonResponse, summary="获取插件日志")
