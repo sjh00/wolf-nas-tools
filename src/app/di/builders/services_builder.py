@@ -18,6 +18,7 @@ from app.db.repositories.download_repo_adapter import (
     DownloadSettingRepositoryAdapter,
     IndexerStatisticsRepositoryAdapter,
 )
+from app.db.repositories.library_rename_repo_adapter import LibraryRenameRepositoryAdapter
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
 from app.db.repositories.plugin_market_repository import PluginMarketRepository
 from app.db.repositories.rbac_repo_adapter import RBACMenuRepositoryAdapter, RBACRoleRepositoryAdapter
@@ -101,6 +102,7 @@ from app.services.transfer.existence_checker import MediaExistenceChecker
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.handlers import register_download_completed_handler
 from app.services.transfer.history_manager import TransferHistoryManager
+from app.services.transfer.library_rename_service import LibraryRenameService
 from app.services.transfer.path_resolver import TransferPathResolver
 from app.services.transfer_coordinator import TransferCoordinator
 from app.services.transfer_engine import TransferEngine
@@ -517,6 +519,16 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         sync_service=sync_service,
         poster_resolver=_history_poster_resolver,
     )
+    library_rename_service = LibraryRenameService(
+        rename_repo=LibraryRenameRepositoryAdapter(),
+        storage_repo=StorageBackendRepositoryAdapter(),
+        media_config_service=media_config_service,
+        media_service=media_service,
+        media_server=media_server,
+        download_repo=DownloadHistoryRepositoryAdapter(),
+        thread_executor=thread_executor,
+        transfer_history_service=transfer_history_service,
+    )
 
     # 回填 PluginSandbox 的服务依赖（供动态加载插件使用）
     if infra.plugin_sandbox._searcher is None:
@@ -585,6 +597,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         storage_backend_service=storage_backend_service,
         search_result_service=search_result_service,
         transfer_history_service=transfer_history_service,
+        library_rename_service=library_rename_service,
         subscribe_calendar_service=subscribe_calendar_service,
         subscribe_history_service=subscribe_history_service,
         words_service=words_service,
