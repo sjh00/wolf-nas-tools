@@ -17,17 +17,24 @@ PluginApiHandler = Callable[[dict], object]
 _KIND_API = "api"
 _KIND_WEBHOOK = "webhook"
 
-_handlers: dict[tuple[str, str, str], PluginApiHandler] = {}
+_handlers: dict[tuple[str, str, str], tuple[PluginApiHandler, frozenset[str]]] = {}
 _lock = threading.Lock()
 
 
-def _register(kind: str, plugin_id: str, path: str, handler: PluginApiHandler) -> None:
-    """按 (kind, plugin_id, path) 注册处理器"""
+def _register(
+    kind: str,
+    plugin_id: str,
+    path: str,
+    handler: PluginApiHandler,
+    methods: tuple[str, ...] | None = None,
+) -> None:
+    """按 (kind, plugin_id, path) 注册处理器."""
     normalized = path.strip("/")
     if not plugin_id or not normalized:
         return
+    allowed = frozenset(method.upper() for method in (methods or ("POST",)))
     with _lock:
-        _handlers[(kind, plugin_id, normalized)] = handler
+        _handlers[(kind, plugin_id, normalized)] = (handler, allowed)
 
 
 def _unregister(kind: str, plugin_id: str) -> None:
@@ -37,9 +44,14 @@ def _unregister(kind: str, plugin_id: str) -> None:
             _handlers.pop(key, None)
 
 
-def register_api(plugin_id: str, path: str, handler: PluginApiHandler) -> None:
-    """注册插件 API 处理器"""
-    _register(_KIND_API, plugin_id, path, handler)
+def register_api(
+    plugin_id: str,
+    path: str,
+    handler: PluginApiHandler,
+    methods: tuple[str, ...] | None = None,
+) -> None:
+    """注册插件 API 处理器（默认仅 POST，读接口需显式声明 GET）."""
+    _register(_KIND_API, plugin_id, path, handler, methods)
 
 
 def unregister_plugin_apis(plugin_id: str) -> None:
@@ -47,21 +59,32 @@ def unregister_plugin_apis(plugin_id: str) -> None:
     _unregister(_KIND_API, plugin_id)
 
 
-def get_api_handler(plugin_id: str, path: str) -> PluginApiHandler | None:
-    """获取插件 API 处理器"""
+def get_api_handler(
+    plugin_id: str,
+    path: str,
+    method: str | None = None,
+) -> PluginApiHandler | None:
+    """获取插件 API 处理器；传 method 时校验注册方法."""
     with _lock:
-        return _handlers.get((_KIND_API, plugin_id, path.strip("/")))
+        entry = _handlers.get((_KIND_API, plugin_id, path.strip("/")))
+    if not entry:
+        return None
+    handler, allowed = entry
+    if method is not None and method.upper() not in allowed:
+        return None
+    return handler
 
 
 def register_public_webhook(plugin_id: str, path: str, handler: PluginApiHandler) -> None:
     """注册插件公开回调（免鉴权），供外部平台 webhook 回调"""
-    _register(_KIND_WEBHOOK, plugin_id, path, handler)
+    _register(_KIND_WEBHOOK, plugin_id, path, handler, ("GET", "POST"))
 
 
 def get_webhook_handler(plugin_id: str, path: str) -> PluginApiHandler | None:
     """获取插件公开回调处理器"""
     with _lock:
-        return _handlers.get((_KIND_WEBHOOK, plugin_id, path.strip("/")))
+        entry = _handlers.get((_KIND_WEBHOOK, plugin_id, path.strip("/")))
+    return entry[0] if entry else None
 
 
 def unregister_plugin_all(plugin_id: str) -> None:
