@@ -260,3 +260,20 @@ class TestSignerLoginDispatch:
         assert history["2026-09-15"]["retry"] == []
         ctx._message.send_site_signin_message.assert_called_once()
         assert "[蝶粉]登录态已刷新" in ctx._message.send_site_signin_message.call_args.args[0]
+
+
+class TestTurnstileFailureReason:
+    def test_load_failure(self):
+        reason = BrowserSigninHandler._turnstile_failure_reason(
+            "<div>验证程序长时间未加载完成，请将 challenges.cloudflare.com 加入代理规则后重试。</div>"
+        )
+        assert "资源加载失败" in reason
+        assert "challenges.cloudflare.com" in reason
+
+    def test_expired(self):
+        reason = BrowserSigninHandler._turnstile_failure_reason("<div>验证已过期，请刷新重试</div>")
+        assert "已过期" in reason
+
+    def test_generic_pending(self):
+        reason = BrowserSigninHandler._turnstile_failure_reason("<div class='cf-turnstile'></div>")
+        assert "未通过" in reason
