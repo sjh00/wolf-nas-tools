@@ -68,6 +68,17 @@ class TestAuditor:
         assert not report.passed
         assert any(f.rule == "eval/exec/compile" for f in report.findings)
 
+    def test_re_compile_is_not_builtin_compile(self):
+        z = _zip_bytes({"backend/x.py": "import re\nPATTERN = re.compile(r'x')\n"})
+        report = PluginPackageAuditor().audit_bytes(z)
+        assert report.passed
+
+    def test_builtin_compile_still_blocks(self):
+        z = _zip_bytes({"backend/x.py": "code = compile('1+1', '<x>', 'eval')\n"})
+        report = PluginPackageAuditor().audit_bytes(z)
+        assert not report.passed
+        assert any(f.rule == "eval/exec/compile" for f in report.findings)
+
     def test_secret_leak_blocks(self):
         z = _zip_bytes({"backend/x.py": "api_key = 'sk-1234567890abcdefghijklmnopqrst'\n"})
         report = PluginPackageAuditor().audit_bytes(z)

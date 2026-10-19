@@ -29,7 +29,7 @@ class FfmpegProcessor:
             return False
 
     @staticmethod
-    def extract_wav_from_video(video_path, audio_path, audio_index=None):
+    def extract_wav_from_video(video_path, audio_path, audio_index=None, duration=None):
         """
         使用ffmpeg从视频文件中提取16000hz, 16-bit的wav格式音频
         """
@@ -44,6 +44,7 @@ class FfmpegProcessor:
                 "-loglevel",
                 "warning",
                 "-y",
+                *(["-t", str(duration)] if duration else []),
                 "-i",
                 video_path,
                 "-map",
@@ -63,6 +64,7 @@ class FfmpegProcessor:
                 "-loglevel",
                 "warning",
                 "-y",
+                *(["-t", str(duration)] if duration else []),
                 "-i",
                 video_path,
                 "-acodec",
@@ -93,6 +95,31 @@ class FfmpegProcessor:
         except Exception as e:
             log.warn(f"[FfmpegProcessor]获取视频元数据失败: {e}")
         return None
+
+    @staticmethod
+    def extract_frame(video_path, image_path, timestamp, crop=True):
+        """按时间点截取一帧（可选裁掉上方 30%），用于硬字幕检测."""
+        if not video_path or not image_path:
+            return False
+        command = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(timestamp),
+            "-i",
+            video_path,
+            "-frames:v",
+            "1",
+            "-y",
+        ]
+        if crop:
+            command.extend(["-vf", "crop=iw:ih*0.3:0:ih*0.7"])
+        command.append(image_path)
+        try:
+            return subprocess.run(command, capture_output=True, timeout=60).returncode == 0  # nosec B603
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     @staticmethod
     def extract_subtitle_from_video(video_path, subtitle_path, subtitle_index=None):

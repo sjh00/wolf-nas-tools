@@ -142,8 +142,15 @@ class PluginMarketService:
             ):
                 raise ValueError(f"市场源指向内部网络，已拒绝: {url}")
 
+    @staticmethod
+    def _fresh_url(url: str) -> str:
+        """GitHub raw 默认缓存 5 分钟，同步时加时间戳确保立即拿到新目录."""
+        if "raw.githubusercontent.com" in url:
+            return f"{url}{'&' if '?' in url else '?'}t={int(time.time())}"
+        return url
+
     def _default_http_get(self, url: str) -> str:
-        resp = httpx.get(url, timeout=30, follow_redirects=False)
+        resp = httpx.get(self._fresh_url(url), timeout=30, follow_redirects=False)
         resp.raise_for_status()
         return resp.text
 
@@ -369,7 +376,7 @@ class PluginMarketService:
     # ------------------------------------------------------------ 包审计（安装门禁）
 
     def _default_http_get_bytes(self, url: str) -> bytes:
-        resp = httpx.get(url, timeout=60, follow_redirects=False)
+        resp = httpx.get(self._fresh_url(url), timeout=60, follow_redirects=False)
         resp.raise_for_status()
         return resp.content
 

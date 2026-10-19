@@ -35,7 +35,7 @@ ENV UV_INDEX_URL=${UV_INDEX_URL}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     nginx curl bash sudo tzdata wget xz-utils netcat-openbsd \
-    libxml2 libxslt1.1 libffi8 libssl3 libpq5 \
+    libxml2 libxslt1.1 libffi8 libssl3 libpq5 ffmpeg unar \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
 ARG S6_OVERLAY_VERSION=3.2.3.0
