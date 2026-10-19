@@ -462,6 +462,11 @@ def get_transfer_history_service(app_context: AppContext = Depends(get_app_conte
     return app_context.transfer_history_service
 
 
+def get_library_rename_service(app_context: AppContext = Depends(get_app_context)):
+    """获取媒体库批量重命名服务实例"""
+    return app_context.library_rename_service
+
+
 def get_config_reloader(app_context: AppContext = Depends(get_app_context)):
     """获取配置重载器实例"""
     return ConfigReloader(context=app_context)

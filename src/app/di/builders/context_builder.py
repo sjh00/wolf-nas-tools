@@ -90,6 +90,7 @@ def build_app_context() -> AppContext:
         storage_backend_service=services.storage_backend_service,
         search_result_service=services.search_result_service,
         transfer_history_service=services.transfer_history_service,
+        library_rename_service=services.library_rename_service,
         subscribe_calendar_service=services.subscribe_calendar_service,
         subscribe_history_service=services.subscribe_history_service,
         words_service=services.words_service,
