@@ -140,3 +140,5 @@ class AppContext:
     site_grant_service: Any = None
     # 渠道身份绑定服务
     channel_binding_service: Any = None
+    # 媒体库批量重命名服务（默认 None 兼容最小构造）
+    library_rename_service: Any = None

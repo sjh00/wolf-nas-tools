@@ -176,6 +176,10 @@ class TransferHistoryService:
             self._sync_service.re_identify_items(flag="unidentification", ids=item_ids)
         return len(item_ids)
 
+    def invalidate_cache(self) -> None:
+        """失效历史/统计缓存（批量改名后调用）."""
+        self._cache.clear()
+
     def clear_history(self):
         """清空识别记录"""
         self._filetransfer.delete_transfer()

@@ -123,6 +123,7 @@ class ServiceObjects:
     storage_backend_service: Any
     search_result_service: Any
     transfer_history_service: Any
+    library_rename_service: Any
     subscribe_calendar_service: Any
     subscribe_history_service: Any
     words_service: Any
