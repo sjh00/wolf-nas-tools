@@ -21,6 +21,7 @@ from app.db.repositories.transfer_repo_adapter import TransferHistoryRepositoryA
 from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
+from app.services.transfer.library_rename_backend import target_dir_lock_key
 from app.services.transfer_engine import TransferEngine
 from app.services.transfer_pipeline import TransferPipeline
 from app.storage.backends.base import StorageBackend, StorageConfig, StorageType
@@ -499,6 +500,12 @@ class SyncEngine:
     ) -> None:
         rel = os.path.relpath(event_path, cfg.source)
         dst = os.path.join(cfg.dest, rel)
+        target_lock = get_lock_manager().create_lock(
+            target_dir_lock_key(cfg.dst_backend_id, os.path.dirname(dst)), ttl_seconds=1800
+        )
+        if not target_lock.acquire():
+            log.warn(f"[Sync]{dst} 目标目录正在被其他任务修改，跳过")
+            return
         try:
             dst_backend_to_use = dst_backend if cfg.dst_backend_id != "local" else None
             self._transfer._execute(event_path, dst, cfg.operation, dst_backend_to_use)
@@ -509,6 +516,8 @@ class SyncEngine:
             raise
         except Exception as e:
             log.error(f"[Sync]{event_path} 同步失败：{e}")
+        finally:
+            target_lock.release()
 
     def transfer_mon_files(self) -> None:
         self.transfer_sync()

@@ -35,8 +35,10 @@ class RedisDistributedLock(DistributedLock):
 
     def acquire(self) -> bool:
         """尝试获取 Redis 分布式锁."""
+        self._last_error = None
         client = self._redis._ensure_connection()
         if client is None:
+            self._last_error = RuntimeError("Redis unavailable")
             log.warn(f"[RedisLock]Redis 不可用，无法获取锁: {self._lock_key}")
             return False
 
@@ -51,6 +53,7 @@ class RedisDistributedLock(DistributedLock):
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
+            self._last_error = e
             log.error(f"[RedisLock]获取锁异常: {self._lock_key}, {e}")
             return False
 

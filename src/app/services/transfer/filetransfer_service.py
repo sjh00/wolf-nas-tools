@@ -46,6 +46,7 @@ from app.services.scrape_queue_service import ScrapeQueueService
 from app.services.transfer.cleanup_service import TransferCleanupService
 from app.services.transfer.existence_checker import MediaExistenceChecker
 from app.services.transfer.history_manager import TransferHistoryManager
+from app.services.transfer.library_rename_backend import target_dir_lock_key
 from app.services.transfer.path_resolver import TransferPathResolver
 from app.services.transfer_engine import TransferEngine
 from app.utils import ExceptionUtils, PathUtils, StringUtils
@@ -1113,6 +1114,30 @@ class FileTransferService:
                 return True
         return False
 
+    def _with_library_target_lock(
+        self,
+        backend_id: Any,
+        target_dir: str | None,
+        action: Callable[[], None],
+    ) -> bool:
+        """与批量重命名共享目标目录锁；竞争时跳过本次写入."""
+        if not target_dir:
+            action()
+            return True
+        lock = get_lock_manager().create_lock(target_dir_lock_key(backend_id, target_dir), ttl_seconds=1800)
+        if not lock.acquire():
+            if lock.last_error is not None:
+                log.warn(f"[Rmt]目标锁后端不可用，继续执行：{target_dir} ({lock.last_error})")
+                action()
+                return True
+            log.warn(f"[Rmt]目标目录正在被其他任务修改，跳过：{target_dir}")
+            return False
+        try:
+            action()
+            return True
+        finally:
+            lock.release()
+
     def _do_transfer_file(
         self,
         file_item,
@@ -1174,15 +1199,21 @@ class FileTransferService:
                     base, _ = os.path.splitext(ret_file_path)
                     new_file = f"{base}{file_ext}"
                     log.info(f"[Rmt]文件 {old} 已存在，覆盖为 {new_file} ...")
-                    self._engine.transfer(
-                        file_item,
-                        new_file,
-                        operation,
-                        over_flag=True,
-                        old_file=old,
-                        src_backend=src_backend,
-                        dst_backend=dst_backend,
+                    acquired = self._with_library_target_lock(
+                        getattr(dst_backend, "id", None) or "local",
+                        ret_dir_path,
+                        lambda: self._engine.transfer(
+                            file_item,
+                            new_file,
+                            operation,
+                            over_flag=True,
+                            old_file=old,
+                            src_backend=src_backend,
+                            dst_backend=dst_backend,
+                        ),
                     )
+                    if not acquired:
+                        return 0, 0, alert_messages, 1, new_file, ret_file_path, ret_dir_path
                     self._replicate_to_enabled_backends(media, new_file, dst_backend)
                     return 0, 0, alert_messages, exist_filenum, new_file, ret_file_path, ret_dir_path
                 else:
@@ -1213,9 +1244,15 @@ class FileTransferService:
                     alert_messages,
                     "识别失败，无法获取蓝光目录路径",
                 )
-            self._engine.transfer_bluray_dir(
-                file_item, ret_dir_path, operation, src_backend=src_backend, dst_backend=dst_backend
+            acquired = self._with_library_target_lock(
+                getattr(dst_backend, "id", None) or "local",
+                ret_dir_path,
+                lambda: self._engine.transfer_bluray_dir(
+                    file_item, ret_dir_path, operation, src_backend=src_backend, dst_backend=dst_backend
+                ),
             )
+            if not acquired:
+                return 0, 0, alert_messages, 1, new_file, ret_file_path, ret_dir_path
         elif not ret_file_path:
             return self._record_fail(
                 file_item,
@@ -1229,9 +1266,20 @@ class FileTransferService:
         else:
             ret_file_path = f"{ret_file_path}{file_ext}"
             new_file = ret_file_path
-            self._engine.transfer(
-                file_item, ret_file_path, operation, over_flag=False, src_backend=src_backend, dst_backend=dst_backend
+            acquired = self._with_library_target_lock(
+                getattr(dst_backend, "id", None) or "local",
+                ret_dir_path,
+                lambda: self._engine.transfer(
+                    file_item,
+                    ret_file_path,
+                    operation,
+                    over_flag=False,
+                    src_backend=src_backend,
+                    dst_backend=dst_backend,
+                ),
             )
+            if not acquired:
+                return 0, 0, alert_messages, 1, new_file, ret_file_path, ret_dir_path
         # 多后端镜像：复制到其他已启用且缺失该文件的后端
         self._replicate_to_enabled_backends(media, new_file, dst_backend)
         return 0, 0, alert_messages, exist_filenum, new_file, ret_file_path, ret_dir_path
