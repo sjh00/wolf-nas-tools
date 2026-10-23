@@ -43,6 +43,8 @@ def make_web_search_fn(orchestrator: SearchOrchestrator, system_config: Any):
             match_media.type = media_type or MediaType.MOVIE
             match_media.anchor_provider = str(filter_args.get("metadata_source") or profile)
             match_media.anchor_external_id = str(filter_args.get("anchor_external_id") or content)
+            if not match_media.get_name():
+                match_media.en_name = content
         if filter_args.get("site") == []:
             # 前端未选择站点时传空数组：归一为 None（全部可见站点）
             filter_args["site"] = None

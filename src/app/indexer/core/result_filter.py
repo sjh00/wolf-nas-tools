@@ -455,6 +455,27 @@ class ResultFilter:
                             mi.cn_name = _strip_cn_tag_prefix(cleaned or phrase)
                             log.info(f"[ResultFilter]{torrent_name} 从 description 提取中文名: {mi.cn_name}")
                             break
+            # 非默认内容画像可能只有番号/内容 ID（没有中英文标题）；用搜索目标锚点做通用兜底，
+            # 不在这层写死任何 provider 或内容类型。
+            if not mi.get_name() and match_media:
+                name_candidates = [
+                    getattr(match_media, "title", None),
+                    getattr(match_media, "cn_name", None),
+                    getattr(match_media, "en_name", None),
+                    getattr(match_media, "anchor_external_id", None),
+                ]
+                for candidate in name_candidates:
+                    candidate_text = str(candidate or "").strip()
+                    if len(_norm(candidate_text)) >= 3 and _norm(candidate_text) in _norm(torrent_name):
+                        fallback_name = str(getattr(match_media, "title", None) or candidate_text)
+                        if StringUtils.is_all_chinese(fallback_name):
+                            mi.cn_name = fallback_name
+                        else:
+                            mi.en_name = fallback_name
+                        mi.title = fallback_name
+                        mi.org_string = torrent_name
+                        break
+
             if not mi.get_name():
                 log.info(
                     f"[ResultFilter]{torrent_name} 无法识别到名称 "
