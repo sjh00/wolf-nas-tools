@@ -122,7 +122,7 @@ class TransferRepository(BaseRepository):
                     MODE=mode_value,
                     TYPE=media_info.type_value,
                     CATEGORY=media_info.category,
-                    TMDBID=int(media_info.tmdb_id),
+                    TMDBID=int(media_info.tmdb_id) if str(media_info.tmdb_id or "").isdigit() else 0,
                     TITLE=title,
                     YEAR=media_info.year,
                     SEASON_EPISODE=season_episode,
@@ -134,6 +134,10 @@ class TransferRepository(BaseRepository):
                     DEST_FILENAME=dest_filename,
                     DST_BACKEND=dst_backend or "local",
                     DATE=timestr,
+                    IDENTITY_ID=getattr(media_info, "identity_id", None),
+                    ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
+                    ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
+                    CONTENT_PROFILE=getattr(media_info, "content_profile", None),
                 )
             )
 
@@ -168,6 +172,25 @@ class TransferRepository(BaseRepository):
                 return db.query(TRANSFERHISTORY).count(), db.query(TRANSFERHISTORY).order_by(
                     TRANSFERHISTORY.DATE.desc()
                 ).limit(int(rownum)).offset(begin_pos).all()
+
+    def get_transfer_info_by_dest_path(self, dest_path: str, filename: str | None = None) -> list[TRANSFERHISTORY]:
+        """按转移目标路径查询记录，供无 TMDB 的豆瓣/BGM 自动删除使用."""
+        path = os.path.normpath(dest_path)
+        name = str(filename or "").strip()
+        with self.session() as db:
+            if name:
+                return (
+                    db.query(TRANSFERHISTORY)
+                    .filter(
+                        TRANSFERHISTORY.DEST == os.path.dirname(path),
+                        TRANSFERHISTORY.DEST_FILENAME == name,
+                    )
+                    .all()
+                )
+            exact = db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.DEST == path).all()
+            if exact:
+                return exact
+            return db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.DEST.startswith(path.rstrip("/") + "/")).all()
 
     def get_transfer_info_by_id(self, logid: int | None) -> TRANSFERHISTORY | None:
         """

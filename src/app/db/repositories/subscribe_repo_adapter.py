@@ -99,6 +99,12 @@ class SubscribeMovieRepositoryAdapter:
         note=None,
         keyword=None,
         user_id: int | None = None,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> int:
         return self._repo.insert_rss_movie(
             media_info=media_info,
@@ -120,6 +126,12 @@ class SubscribeMovieRepositoryAdapter:
             note=note,
             keyword=keyword,
             user_id=user_id,
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            content_profile=content_profile,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
 
@@ -228,6 +240,12 @@ class SubscribeTvRepositoryAdapter:
         note=None,
         keyword=None,
         user_id: int | None = None,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> int:
         return self._repo.insert_rss_tv(
             media_info=media_info,
@@ -253,6 +271,12 @@ class SubscribeTvRepositoryAdapter:
             note=note,
             keyword=keyword,
             user_id=user_id,
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            content_profile=content_profile,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
 

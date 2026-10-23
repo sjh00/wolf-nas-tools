@@ -217,10 +217,10 @@ class MediaFileService:
     def download_subtitle(self, path: str, name: str) -> None:
         """下载字幕，失败时抛出异常"""
         media = self._media_service.get_media_info(title=name)
-        if not media or not media.tmdb_info:
+        if not media or not media.provider_data:
             raise ResourceNotFoundError(f"{name} 无法从TMDB查询到媒体信息")
         if not media.imdb_id:
-            media.set_tmdb_info(self._media_service.get_tmdb_info(mtype=media.type, tmdbid=media.tmdb_id))
+            media.set_provider_data(self._media_service.get_tmdb_info(mtype=media.type, tmdbid=media.tmdb_id))
         self._event_bus.publish(
             Event(
                 event_type=SUBTITLE_DOWNLOAD,

@@ -282,7 +282,7 @@ class RssFeedStrategy:
                 if not media_info:
                     log.warn(f"[RssFeedStrategy] {title} 无法识别出媒体信息！")
                     continue
-                elif not media_info.tmdb_info:
+                elif not media_info.provider_data:
                     log.info(f"[RssFeedStrategy] {title} 识别为 {media_info.get_name()} 未匹配到 TMDB 媒体信息")
 
                 media_info.set_torrent_info(
@@ -324,11 +324,11 @@ class RssFeedStrategy:
                     continue
 
                 if not match_info.get("fuzzy_match"):
-                    if not media_info.tmdb_info and media_info.tmdb_id:
-                        media_info.set_tmdb_info(
+                    if not media_info.provider_data and media_info.tmdb_id:
+                        media_info.set_provider_data(
                             self.media.get_tmdb_info(mtype=media_info.type, tmdbid=media_info.tmdb_id)
                         )
-                    if not media_info.tmdb_info:
+                    if not media_info.provider_data:
                         continue
 
                     if not match_info.get("over_edition"):
@@ -356,10 +356,10 @@ class RssFeedStrategy:
                                             new_total = len(season_eps)
                                     except Exception:  # noqa: BLE001
                                         new_total = 0
-                                    if new_total <= 0 and media_info.tmdb_info:
+                                    if new_total <= 0 and media_info.provider_data:
                                         new_total = int(
                                             self.media.get_tmdb_season_episodes_num(
-                                                tv_info=media_info.tmdb_info, season=season
+                                                tv_info=media_info.provider_data, season=season
                                             )
                                             or 0
                                         )

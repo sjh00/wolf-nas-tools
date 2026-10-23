@@ -92,7 +92,7 @@ class TestGetMediaInfoReidentify:
         strategy._media_cache = MagicMock()
         strategy._media_cache.get_tmdb_info.return_value = None
         identified = MagicMock()
-        identified.tmdb_info = {"id": 258348}
+        identified.provider_data = {"id": 258348}
         identified.get_poster_image.return_value = "poster.jpg"
         strategy._media_service = MagicMock()
         strategy._media_service.identify.return_value = identified

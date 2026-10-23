@@ -62,14 +62,16 @@ class TMDBCache(TypedCache):
         return f"{prefix}:{':'.join(str(p) for p in parts)}"
 
     def get_tmdb_info(self, mtype: Any, tmdbid: str, language: str | None = None, extra: str = "") -> Any | None:
-        """获取TMDB信息缓存"""
+        """获取TMDB信息缓存（DB:/content_id 等非 TMDB 引用直接返回空）"""
 
+        if not str(tmdbid or "").isdigit():
+            return None
         if mtype == MediaType.ANIME:
             mtype = MediaType.TV
         key = self._make_key("tmdb", self.TMDB_CACHE_VERSION, mtype.value, tmdbid, language or "default", extra)
         return self.get(key)
 
-    def set_tmdb_info(
+    def set_provider_data(
         self, mtype: Any, tmdbid: str, info: Any, language: str | None = None, ttl: int | None = None, extra: str = ""
     ) -> bool:
         """设置TMDB信息缓存"""

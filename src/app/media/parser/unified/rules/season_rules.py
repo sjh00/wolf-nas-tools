@@ -10,6 +10,41 @@ from .base import ExtractionRule
 
 RULES: list[ExtractionRule] = [
     ExtractionRule(
+        name="all_seasons_cn",
+        pattern=re.compile(r"(?:全|共)\s*([一二三四五六七八九十百\d]+)\s*季"),
+        category="season",
+        priority=97,
+        confidence=0.92,
+        stop=True,
+        _extract_fn=lambda m, _: {"season": [1, _cn2an_value(m.group(1))]},
+    ),
+    ExtractionRule(
+        name="s_plus_s",
+        pattern=re.compile(r"\b[Ss]\d{1,2}(?:\s*[+&]\s*[Ss]\d{1,2})+\b"),
+        category="season",
+        priority=96,
+        confidence=0.9,
+        stop=True,
+        _extract_fn=lambda m, _: {
+            "season": [
+                int(re.findall(r"\d+", m.group(0))[0]),
+                int(re.findall(r"\d+", m.group(0))[-1]),
+            ]
+        },
+    ),
+    ExtractionRule(
+        name="season_keyword_range",
+        pattern=re.compile(
+            r"\bSeasons?\s*(\d{1,2})\s*[-~]\s*(\d{1,2})\b",
+            re.IGNORECASE,
+        ),
+        category="season",
+        priority=96,
+        confidence=0.9,
+        stop=True,
+        _extract_fn=lambda m, _: {"season": [int(m.group(1)), int(m.group(2))]},
+    ),
+    ExtractionRule(
         name="s_dash_s",
         pattern=re.compile(r"[Ss][Ee]?\s*(\d{1,2})\s*[-~]\s*[Ss][Ee]?\s*(\d{1,2})"),
         category="season",
@@ -43,10 +78,19 @@ RULES: list[ExtractionRule] = [
         stop=True,
     ),
     ExtractionRule(
+        name="chinese_season_range_no_di",
+        pattern=re.compile(r"(?<![\d])(\d{1,2})\s*[-~]\s*(\d{1,2})\s*季"),
+        category="season",
+        priority=83,
+        confidence=0.85,
+        stop=True,
+        _extract_fn=lambda m, _: {"season": [int(m.group(1)), int(m.group(2))]},
+    ),
+    ExtractionRule(
         name="chinese_season_range",
         pattern=re.compile(r"第\s*(\d+)\s*[-~]\s*(\d+)\s*季"),
         category="season",
-        priority=82,
+        priority=84,
         confidence=0.85,
         stop=True,
         _extract_fn=lambda m, _: {"season": [int(m.group(1)), int(m.group(2))]},
@@ -95,6 +139,13 @@ RULES: list[ExtractionRule] = [
         _extract_fn=lambda m, _: {"season": [int(m.group(1)), int(m.group(2))]},
     ),
 ]
+
+
+def _cn2an_value(value: str) -> int:
+    try:
+        return int(cn2an.cn2an(value, mode="smart"))
+    except Exception:
+        return 1
 
 
 def _cn2an_season(match: re.Match[str]) -> dict[str, int] | None:

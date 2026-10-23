@@ -42,7 +42,7 @@ def _build(check_result, monkeypatch):
     svc.get_subscribe_tvs.return_value = {41: rss_info}
 
     media = MagicMock()
-    media.tmdb_info = {"seasons": []}
+    media.provider_data = {"seasons": []}
     media.tmdb_id = "335790"
     media.type = MediaType.ANIME
     media.total_episodes = 12

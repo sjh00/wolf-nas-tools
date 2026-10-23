@@ -50,6 +50,10 @@ class DOWNLOADHISTORY(Base):
     SAVE_PATH: Mapped[str] = mapped_column(String(512), index=True)
     STATE: Mapped[str] = mapped_column(String(20), default="downloading")
     DATE: Mapped[str] = mapped_column(String(20), index=True)
+    IDENTITY_ID: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}

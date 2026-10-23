@@ -119,7 +119,7 @@ def handle_download_completed(
             source_id=name,
             file_paths=[payload.path],
             operation=operation,
-            tmdb_info=tmdb_info,
+            provider_data=tmdb_info,
             media_type=media_type,
             season=season,
             fallback_episode=fallback_episode,

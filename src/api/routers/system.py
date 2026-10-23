@@ -59,6 +59,7 @@ from app.infrastructure.temp import temp_manager
 from app.mediaserver.registry import get_all_clients as get_all_mediaservers
 from app.message.registry import get_all_clients
 from app.message.switches import MESSAGE_SWITCHES
+from app.message.template_registry import message_template_registry
 from app.message.templates import DEFAULT_MESSAGE_TEMPLATES
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
@@ -323,6 +324,18 @@ def get_message_client_default_templates(
 ):
     """获取消息通知默认模板"""
     return success(data=DEFAULT_MESSAGE_TEMPLATES)
+
+
+@router.get(
+    "/message_clients/templates/profiles",
+    response_model=CommonResponse,
+    summary="获取插件内容画像消息模板",
+)
+def get_message_client_profile_templates(
+    current_user: UserContext = Depends(require_permission("setting:update")),
+):
+    """获取插件注入的画像模板；客户端可用 profile:msg_type 覆盖."""
+    return success(data={"profiles": message_template_registry.list_profiles()})
 
 
 @router.post("/net_test", response_model=CommonResponse, summary="网络连通性测试")

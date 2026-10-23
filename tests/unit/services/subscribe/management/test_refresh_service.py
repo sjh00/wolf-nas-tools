@@ -14,7 +14,7 @@ class _MediaInfo:
         self.title = title
         self.year = year
         self.overview = overview
-        self.tmdb_info = {"id": tmdb_id}
+        self.provider_data = {"id": tmdb_id}
         self.release_date = "2024-01-01"
         self.vote_average = 8.5
 
@@ -24,8 +24,8 @@ class _MediaInfo:
     def get_poster_image(self):
         return f"http://poster/{self.tmdb_id}"
 
-    def set_tmdb_info(self, info):
-        self.tmdb_info = info
+    def set_provider_data(self, info):
+        self.provider_data = info
 
 
 @pytest.fixture
@@ -106,7 +106,7 @@ class TestSubscribeRefreshService:
                 tmdbid=789, name="Direct", year="2024", mtype="movie"
             )
             assert result is mi
-            mi.set_tmdb_info.assert_called_once_with({"id": 789})
+            mi.set_provider_data.assert_called_once_with({"id": 789})
 
     def test_refresh_rss_metainfo_cached_reuses_media_info(self, service):
         """refresh_rss_metainfo_cached 对相同 name/year/mtype 只请求一次媒体信息."""
@@ -132,3 +132,23 @@ class TestSubscribeRefreshService:
         assert call_count[0] == 1
         # 同一缓存对象被用于两个订阅，因此更新两次
         assert service._movie_repo.update_tmdb.call_count == 2
+
+    def test_refresh_skips_douban_anchor_without_bridging(self, service):
+        service.refresh_rss_metainfo(
+            get_subscribe_movies_fn=lambda state: {
+                "1": {"id": "1", "name": "豆瓣电影", "anchor_provider": "douban", "tmdbid": ""}
+            },
+            get_subscribe_tvs_fn=lambda state: {},
+        )
+        service._movie_repo.update_tmdb.assert_not_called()
+        service._media.get_media_info.assert_not_called()
+
+    def test_refresh_skips_bangumi_anchor_without_bridging(self, service):
+        service.refresh_rss_metainfo(
+            get_subscribe_movies_fn=lambda state: {},
+            get_subscribe_tvs_fn=lambda state: {
+                "1": {"id": "1", "name": "番剧", "anchor_provider": "bangumi", "season": 1, "tmdbid": ""}
+            },
+        )
+        service._tv_repo.update_tmdb.assert_not_called()
+        service._media.get_media_info.assert_not_called()

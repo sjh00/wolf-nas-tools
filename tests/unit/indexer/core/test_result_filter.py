@@ -209,7 +209,7 @@ class TestCachedMediaInfoIsolation:
     """
 
     def test_model_copy_isolates_torrent_info(self):
-        cached = MediaInfo(cn_name="穹庐下的魔女", tmdb_id=288971, tmdb_info={"id": 288971})
+        cached = MediaInfo(cn_name="穹庐下的魔女", tmdb_id=288971, provider_data={"id": 288971})
 
         first = cached.model_copy(deep=True)
         first.set_torrent_info(site="SiteA", enclosure="magnet:a")

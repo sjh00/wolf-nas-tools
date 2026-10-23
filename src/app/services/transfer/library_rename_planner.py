@@ -11,6 +11,7 @@ from app.core.constants import RMT_FAVTYPE, RMT_MEDIAEXT
 from app.core.exceptions import ValidationError
 from app.db.repositories.library_rename_repository import path_hash
 from app.domain.mediatypes import MediaType
+from app.media.metadata.naming import naming_field_keys
 from app.media.scraper.media_library import MediaLibrary
 from app.services.transfer.library_rename_metadata import LibraryMetadataResolver
 from app.services.transfer.library_rename_models import LibraryRoot, RenameScope, ResolvedMetadata
@@ -54,7 +55,9 @@ class LibraryRenamePlanner:
         metadata_resolver: LibraryMetadataResolver,
         media_service,
         category_repo,
+        metadata_service=None,
     ):
+        self._metadata_service = metadata_service
         self._media_config_service = media_config_service
         self._storage_repo = storage_repo
         self._metadata = metadata_resolver
@@ -76,7 +79,7 @@ class LibraryRenamePlanner:
             resolver._tv_file_rmt_format,
         )
         for name, fmt in (("movie_name_format", movie_fmt), ("tv_name_format", tv_fmt)):
-            result = validate(fmt)
+            result = validate(fmt, naming_field_keys())
             if not result["ok"]:
                 raise ValidationError(f"{name} 格式非法: {'; '.join(result['problems'])}")
         self._movie_fields = set(parse_fields(movie_fmt))
@@ -361,21 +364,24 @@ class LibraryRenamePlanner:
             return None, "planner_not_ready"
         meta = resolved.media
         adapter = _FormatMetaService(resolved.episode_title, resolved.en_title)
+        snapshot = self._metadata_service.latest_snapshot_for_media(meta) if self._metadata_service else None
         ext = os.path.splitext(old_path)[1]
         if scope.layout_mode == "filename_only":
             if meta.type == MediaType.MOVIE:
-                _, file_name = resolver.get_movie_dest_path(meta, adapter)
+                _, file_name = resolver.get_movie_dest_path(meta, adapter, snapshot)
             else:
-                _, _, file_name = resolver.get_tv_dest_path(meta, adapter)
+                _, _, file_name = resolver.get_tv_dest_path(meta, adapter, snapshot)
+            file_name = self._fallback_filename(file_name, old_path)
             if not file_name:
                 return None, "empty_filename"
             new_path = os.path.join(os.path.dirname(old_path), file_name + ext)
         elif scope.reorganize_category:
             if meta.type == MediaType.MOVIE:
-                _, file_name = resolver.get_movie_dest_path(meta, adapter)
+                _, file_name = resolver.get_movie_dest_path(meta, adapter, snapshot)
             else:
-                _, _, file_name = resolver.get_tv_dest_path(meta, adapter)
-            new_dir = resolver.get_dest_path_by_info(root.root, meta, adapter)
+                _, _, file_name = resolver.get_tv_dest_path(meta, adapter, snapshot)
+            new_dir = resolver.get_dest_path_by_info(root.root, meta, adapter, snapshot)
+            file_name = self._fallback_filename(file_name, old_path)
             if not new_dir or not file_name:
                 return None, "empty_filename"
             new_path = os.path.join(new_dir, file_name + ext)
@@ -385,14 +391,14 @@ class LibraryRenamePlanner:
             category_in_format = "category" in fields
             meta.category = prefix or ""
             if meta.type == MediaType.MOVIE:
-                sub_dir, file_name = resolver.get_movie_dest_path(meta, adapter)
+                sub_dir, file_name = resolver.get_movie_dest_path(meta, adapter, snapshot)
                 new_dir = (
                     os.path.join(root.root, sub_dir)
                     if category_in_format
                     else (os.path.join(root.root, prefix, sub_dir) if prefix else os.path.join(root.root, sub_dir))
                 )
             else:
-                sub_dir, season_dir, file_name = resolver.get_tv_dest_path(meta, adapter)
+                sub_dir, season_dir, file_name = resolver.get_tv_dest_path(meta, adapter, snapshot)
                 parts = [root.root]
                 if prefix and not category_in_format:
                     parts.append(prefix)
@@ -401,6 +407,7 @@ class LibraryRenamePlanner:
                 if season_dir:
                     parts.append(season_dir)
                 new_dir = os.path.join(*parts)
+            file_name = self._fallback_filename(file_name, old_path)
             if not file_name:
                 return None, "empty_filename"
             new_path = os.path.join(new_dir, file_name + ext)
@@ -410,6 +417,13 @@ class LibraryRenamePlanner:
         if len(os.path.dirname(new_path)) > 255 or len(os.path.basename(new_path)) > 255:
             return None, "path_too_long"
         return new_path, None
+
+    @staticmethod
+    def _fallback_filename(file_name: str, old_path: str) -> str:
+        """模板字段全空时回退到原文件名，避免生成空目录/空文件名."""
+        if file_name and re.sub(r"[\W_]+", "", file_name):
+            return file_name
+        return os.path.splitext(os.path.basename(old_path))[0]
 
     def _current_category(self, root: LibraryRoot, path: str, media_type: MediaType | None) -> str:
         rel_dir = os.path.relpath(os.path.dirname(path), root.root)

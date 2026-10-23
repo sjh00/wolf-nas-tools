@@ -42,7 +42,7 @@ def _indexer(name):
 def _media():
     m = MagicMock()
     m.type = MagicMock()
-    m.tmdb_info = None
+    m.provider_data = None
     return m
 
 
@@ -77,7 +77,14 @@ class TestLastErrorIsolation:
         stats: list = []
         client = _make_client(stats)
 
-        def fake_engine(search_word, indexer, mtype=None, page=0, paginate=False):
+        def fake_engine(
+            search_word,
+            indexer,
+            mtype=None,
+            page=0,
+            paginate=False,
+            content_profile=None,
+        ):
             # 站点A 失败（HTTP 500），站点C 成功；通过并发制造交错
             if indexer.name == "站点A":
                 return True, [], "HTTP 500"

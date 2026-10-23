@@ -21,6 +21,9 @@ class ParserResult(BaseModel):
     type: MediaType | None = None
     confidence: float = 0.0
     org_string: str | None = None
+    content_profile: str = "default"
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
 
 
 class BaseParser:

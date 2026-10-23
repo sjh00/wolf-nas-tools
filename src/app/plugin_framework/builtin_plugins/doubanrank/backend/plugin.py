@@ -107,8 +107,16 @@ class DoubanRankPlugin:
         if not media:
             return
         data = self._load_history()
-        data[str(media.tmdb_id)] = {
-            "id": media.tmdb_id,
+        anchor = str(getattr(media, "anchor_external_id", "") or "")
+        ref_id = (
+            f"DB:{anchor}"
+            if getattr(media, "anchor_provider", "") == "douban" and anchor
+            else f"BG:{anchor}"
+            if getattr(media, "anchor_provider", "") == "bangumi" and anchor
+            else str(media.tmdb_id or "")
+        )
+        data[ref_id or str(media.title or "")] = {
+            "id": ref_id or str(media.title or ""),
             "name": media.title,
             "year": media.year,
             "type": media.type.value if hasattr(media.type, "value") else str(media.type),

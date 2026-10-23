@@ -80,8 +80,8 @@ class TmdbBlacklistService:
         tmdb_info = self._media.get_tmdb_info(mtype=mtype, tmdbid=tmdb_id)
         if not tmdb_info:
             raise ValueError(f"TMDB 信息获取失败：tmdb_id={tmdb_id}, type={media_type}")
-        mi = meta_info(tmdb_info.get("name") or tmdb_info.get("title"))
-        mi.set_tmdb_info(tmdb_info)
+        mi = meta_info(str(tmdb_info.get("name") or tmdb_info.get("title") or ""))
+        mi.set_provider_data(tmdb_info)
         self._db.insert_tmdb_blacklist(
             tmdb_id=tmdb_id,
             title=mi.title,

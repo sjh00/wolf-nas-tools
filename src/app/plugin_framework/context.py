@@ -13,6 +13,8 @@ import log
 from app.core.settings import settings
 from app.db.repositories.plugin_framework_repo_adapter import PluginConfigRepositoryAdapter, PluginLogRepositoryAdapter
 from app.domain.entities.plugin import PluginConfigEntity
+from app.media.metadata.registry import registry as metadata_registry
+from app.media.scraper.processor_registry import scraper_processor_registry
 from app.plugin_framework import api_registry
 from app.utils.json_utils import JsonUtils
 
@@ -30,6 +32,7 @@ class PluginContext:
         hook_system: Any = None,
         site_engine: Any = None,
         media_service: Any = None,
+        manifest_metadata: Any = None,
     ):
         self._plugin_id = plugin_id
         self._plugin_name = plugin_name or plugin_id
@@ -43,6 +46,12 @@ class PluginContext:
         self._hook_system = hook_system
         self._site_engine = site_engine
         self._media_service = media_service
+        self._metadata_manifest = manifest_metadata
+        self._metadata_cleanups: list[Callable[[], None]] = []
+        self._scraper_processors: list[str] = []
+        self._metadata_visibility = (
+            getattr(manifest_metadata, "visibility", "public") if manifest_metadata else "public"
+        )
 
     @property
     def plugin_id(self) -> str:
@@ -259,6 +268,86 @@ class PluginContext:
     def unregister_all_apis(self) -> None:
         """注销该插件的所有自定义 API"""
         api_registry.unregister_plugin_apis(self._plugin_id)
+
+    # ---------- 元数据扩展注册 ----------
+
+    def register_metadata_provider(self, key: str, provider: Any) -> None:
+        """注册元数据 provider（key 必须与 manifest 声明一致）."""
+        self._assert_metadata_declared("providers", key)
+        self._assert_private_visibility(provider)
+        self._apply_required_permission(provider)
+        metadata_registry.register_provider(provider, plugin_id=self._plugin_id, declared_key=key)
+
+    def register_discovery_provider(self, key: str, provider: Any) -> None:
+        """注册探索页发现来源."""
+        self._assert_metadata_declared("discovery_providers", key)
+        self._assert_private_visibility(provider)
+        self._apply_required_permission(provider)
+        metadata_registry.register_discovery_provider(provider, plugin_id=self._plugin_id, declared_key=key)
+
+    def register_metadata_profile(self, kind: str, key: str, profile: Any) -> None:
+        """注册 content/match/parser/naming/nfo 扩展."""
+        field = {
+            "content": "content_profiles",
+            "match": "match_profiles",
+            "parser": "parser_profiles",
+            "naming": "naming_profiles",
+            "nfo": "nfo_profiles",
+        }.get(kind, kind)
+        self._assert_metadata_declared(field, key)
+        metadata_registry.register_profile(kind, key, profile, plugin_id=self._plugin_id, declared_key=key)
+
+    def register_match_profile(self, key: str, profile: Any) -> None:
+        self.register_metadata_profile("match", key, profile)
+
+    def register_naming_profile(self, key: str, profile: Any) -> None:
+        self.register_metadata_profile("naming", key, profile)
+
+    def register_metadata_cleanup(self, cleanup: Callable[[], None]) -> None:
+        """注册 provider 缓存/限流清理回调，卸载时自动执行."""
+        self._metadata_cleanups.append(cleanup)
+
+    def register_scraper_processor(self, kind: str, processor: Callable[..., Any]) -> None:
+        """注册刮削后处理器：snapshot / poster / watermark."""
+        scraper_processor_registry.register(self._plugin_id, kind, processor)
+        if kind not in self._scraper_processors:
+            self._scraper_processors.append(kind)
+
+    def unregister_all_scraper_processors(self) -> None:
+        scraper_processor_registry.unregister_plugin(self._plugin_id)
+        self._scraper_processors.clear()
+
+    def unregister_all_metadata(self) -> None:
+        """注销该插件的全部 provider/发现来源/profile，并执行清理回调."""
+        while self._metadata_cleanups:
+            cleanup = self._metadata_cleanups.pop()
+            with contextlib.suppress(Exception):
+                cleanup()
+        metadata_registry.unregister_plugin(self._plugin_id)
+
+    def _assert_metadata_declared(self, field: str, key: str) -> None:
+        manifest = self._metadata_manifest
+        declared = manifest.keys(field) if manifest is not None else set()
+        if declared and key not in declared:
+            raise ValueError(f"插件未在 manifest 声明 {field}: {key}")
+
+    def _apply_required_permission(self, provider: Any) -> None:
+        descriptor = getattr(provider, "descriptor", None)
+        manifest = self._metadata_manifest
+        if descriptor is None or manifest is None:
+            return
+        required = getattr(manifest, "required_permission", "")
+        if getattr(self, "_metadata_visibility", "public") == "private" and required:
+            if not getattr(descriptor, "required_permission", ""):
+                descriptor.required_permission = required
+
+    def _assert_private_visibility(self, provider: Any) -> None:
+        descriptor = getattr(provider, "descriptor", None)
+        visibility = getattr(descriptor, "visibility", "public")
+        if self._metadata_visibility == "private" and visibility != "private":
+            raise ValueError("私有插件包注册的 provider 必须声明 visibility=private")
+        if self._metadata_visibility == "public" and visibility == "private":
+            raise ValueError("私有 provider 必须由 private 插件包注册")
 
     def register_public_webhook(self, path: str, handler: Callable[[dict], object]) -> None:
         """注册插件公开回调（免鉴权），供飞书/Telegram 等外部平台 webhook 回调：

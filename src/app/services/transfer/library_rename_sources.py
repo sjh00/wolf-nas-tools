@@ -12,7 +12,7 @@ from app.media.models import MediaInfo
 from app.media.parser import meta_info
 from app.services.transfer.library_rename_models import ResolvedMetadata
 from app.storage.backends.base import StorageBackend
-from app.utils import StringUtils
+from app.utils import JsonUtils, StringUtils
 
 _SEASON_EPISODE_RE = re.compile(r"(?i)S(\d{1,3})(?:\s*-\s*S(\d{1,3}))?[\s._-]*E(\d{1,4})(?:\s*-\s*E?(\d{1,4}))?")
 _SEASON_EPISODE_COMPACT_RE = re.compile(r"(?i)S(\d{1,3})E(\d{1,4})E?(\d{1,4})")
@@ -40,6 +40,10 @@ def from_history(row: dict[str, Any], hint: MediaType) -> ResolvedMetadata | Non
         year=row.get("YEAR") or None,
         tmdb_id=_to_int(row.get("TMDBID")),
         category=row.get("CATEGORY") or "",
+        content_profile=row.get("CONTENT_PROFILE") or "default",
+        anchor_provider=row.get("ANCHOR_PROVIDER"),
+        anchor_external_id=row.get("ANCHOR_EXTERNAL_ID"),
+        identity_id=row.get("IDENTITY_ID"),
     )
     apply_season_episode(meta, row.get("SEASON_EPISODE") or "")
     source_filename = _basename(row.get("SOURCE_FILENAME") or "")
@@ -68,11 +72,20 @@ def from_cache(row: dict[str, Any], backend: StorageBackend, path: str) -> Resol
     media_type = MediaType.from_string(str(row.get("TYPE") or ""))
     if media_type == MediaType.UNKNOWN:
         return None
+    raw = {}
+    try:
+        raw = JsonUtils.loads(row.get("RAW") or "{}")
+    except Exception:  # noqa: BLE001
+        raw = {}
     meta = MediaInfo(
         type=media_type,
         title=row.get("TITLE") or None,
         year=row.get("YEAR") or None,
         tmdb_id=_to_int(row.get("TMDBID")),
+        content_profile=raw.get("content_profile") or "default",
+        anchor_provider=raw.get("anchor_provider"),
+        anchor_external_id=raw.get("anchor_external_id"),
+        identity_id=raw.get("identity_id"),
     )
     _apply_range(meta, row.get("SEASON"), row.get("EPISODE"))
     meta.total_episodes = int(row.get("SEASON_EPISODE_COUNT") or 0) or meta.total_episodes
@@ -96,6 +109,10 @@ def from_download_history(entity: Any, base_name: str, hint: MediaType, *, exact
         title=getattr(entity, "title", None) or None,
         year=getattr(entity, "year", None) or None,
         tmdb_id=_to_int(getattr(entity, "tmdb_id", None)),
+        content_profile=getattr(entity, "content_profile", None) or "default",
+        anchor_provider=getattr(entity, "anchor_provider", None),
+        anchor_external_id=getattr(entity, "anchor_external_id", None),
+        identity_id=getattr(entity, "identity_id", None),
     )
     apply_season_episode(meta, getattr(entity, "season_episode", "") or "")
     source_filename = None
@@ -118,7 +135,8 @@ def from_nfo(data: dict[str, Any], hint: MediaType) -> ResolvedMetadata | None:
     tmdbid = _to_int(data.get("tmdbid"))
     season = data.get("season")
     episode = data.get("episode")
-    if not title and not tmdbid and not (season and episode):
+    content_id = data.get("content_id") or data.get("adult_id")
+    if not title and not tmdbid and not content_id and not (season and episode):
         return None
     meta = MediaInfo(
         type=media_type,
@@ -127,6 +145,9 @@ def from_nfo(data: dict[str, Any], hint: MediaType) -> ResolvedMetadata | None:
         tmdb_id=tmdbid,
         imdb_id=str(data.get("imdbid")) if data.get("imdbid") else "",
         original_title=data.get("original_title"),
+        content_profile=str(data.get("content_profile") or "default"),
+        anchor_provider="content_id" if content_id else None,
+        anchor_external_id=str(content_id) if content_id else None,
     )
     if season is not None:
         meta.begin_season = int(season)
@@ -228,6 +249,10 @@ def merge_missing(target: MediaInfo, source: MediaInfo) -> None:
         "tmdb_id",
         "imdb_id",
         "original_title",
+        "content_profile",
+        "anchor_provider",
+        "anchor_external_id",
+        "identity_id",
         "begin_season",
         "end_season",
         "begin_episode",
@@ -241,11 +266,15 @@ def merge_missing(target: MediaInfo, source: MediaInfo) -> None:
         "video_encode",
         "audio_encode",
         "part",
-        "tmdb_info",
+        "provider_data",
     )
     for field in fields:
         if _empty(getattr(target, field, None)) and not _empty(getattr(source, field, None)):
             setattr(target, field, getattr(source, field))
+    if str(getattr(target, "content_profile", "") or "default") == "default":
+        source_profile = str(getattr(source, "content_profile", "") or "default")
+        if source_profile != "default":
+            target.content_profile = source_profile
     if _empty(target.category) and not _empty(source.category):
         target.category = source.category
 
@@ -273,7 +302,7 @@ def apply_online(
     try:
         info = media_service.get_tmdb_info(meta.type, tmdbid, append_to_response="all")
         if info:
-            meta.set_tmdb_info(info)
+            meta.set_provider_data(info)
     except Exception as e:  # noqa: BLE001
         log.debug(f"[LibraryRename]补全 TMDB 信息失败 {tmdbid}: {e}")
         return

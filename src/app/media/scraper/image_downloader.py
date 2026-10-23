@@ -51,14 +51,14 @@ class ImageDownloader:
     def download(self, url, out_path, itype="", force=False):
         """下载图片并保存"""
         if not url or not out_path:
-            return
+            return False
         if itype:
             ext = self._guess_extension(url)
             image_path = os.path.join(out_path, f"{itype}{ext}")
         else:
             image_path = out_path
         if not force and os.path.exists(image_path):
-            return
+            return True
         try:
             log.info(f"[Scraper]正在下载{itype}图片：{url} ...")
             with _IMAGE_DOWNLOAD_SEMAPHORE:
@@ -73,13 +73,15 @@ class ImageDownloader:
                     with open(file=resolved_path, mode="wb") as img:
                         img.write(r.content)
                 log.info(f"[Scraper]{itype}图片已保存：{resolved_path}")
-            else:
-                log.info(f"[Scraper]{itype}图片下载失败，请检查网络连通性")
+                return True
+            log.info(f"[Scraper]{itype}图片下载失败，请检查网络连通性")
+            return False
         except HttpClientError as ex:
             raise HttpClientError(str(ex)) from ex
         except Exception as err:
             log.error(f"[Scraper]下载{itype}图片失败：{image_path}，错误：{err}")
             ExceptionUtils.exception_traceback(err)
+            return False
 
     @staticmethod
     def _guess_extension(url: str) -> str:

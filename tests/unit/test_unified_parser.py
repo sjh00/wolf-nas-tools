@@ -458,3 +458,23 @@ class TestSharedPostProcess:
         post = svc._post_process(parsed, title, "tmp /")
         assert post is not None and post.title_en is not None
         assert post.title_en.lower() == "sparks of tomorrow"
+
+
+class TestMultiSeasonRanges:
+    @pytest.mark.parametrize(
+        ("title", "start", "end"),
+        [
+            ("进击的巨人 全四季 1080p", 1, 4),
+            ("进击的巨人 S01-S02 1080p", 1, 2),
+            ("进击的巨人 S01+S02+S03 1080p", 1, 3),
+            ("Attack on Titan Season 1-4 1080p", 1, 4),
+            ("进击的巨人 1-4季 1080p", 1, 4),
+            ("进击的巨人 第1-4季 1080p", 1, 4),
+        ],
+    )
+    def test_multi_season_range(self, parser, title, start, end):
+        result = parser.parse(title)
+        assert result is not None
+        assert result.season == start
+        assert result.end_season == end
+        assert result.title_cn == "进击的巨人" or result.title_en == "Attack On Titan"

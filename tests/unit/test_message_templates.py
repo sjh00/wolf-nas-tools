@@ -89,3 +89,42 @@ def test_transfer_fail_template_renders(engine):
     )
     assert title and "入库失败" in title
     assert "原因：磁盘空间不足" in text
+
+
+def test_plugin_profile_template_override_and_fallback(engine):
+    from app.message.template_registry import message_template_registry
+
+    plugin_id = "test_message_templates"
+    message_template_registry.register_pack(
+        plugin_id,
+        {
+            "adult": {
+                "rss_added": {
+                    "title": "AV 已添加：{{ media_info.get_title_string() }}",
+                    "text": "类型：{{ profile_label }}",
+                }
+            }
+        },
+        {"adult": "AV"},
+    )
+    try:
+        title, text = engine.apply_client_template(
+            {},
+            "rss_added",
+            {"media_info": _item(), "in_from": "WEB"},
+            content_profile="adult",
+        )
+        assert "AV 已添加：少女怪兽焦糖味" in title
+        assert text == "类型：AV"
+        profiles = message_template_registry.list_profiles()
+        assert any(p["key"] == "adult" and p["label"] == "AV" for p in profiles)
+    finally:
+        message_template_registry.unregister_plugin(plugin_id)
+
+    default_title, _ = engine.apply_client_template(
+        {},
+        "rss_added",
+        {"media_info": _item(), "in_from": "WEB"},
+        content_profile="adult",
+    )
+    assert "已添加订阅" in default_title

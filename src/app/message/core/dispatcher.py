@@ -118,7 +118,12 @@ class MessageDispatcher:
         if not client or not client.get("client"):
             return False
         if msg_type and variables and template_engine:
-            template_title, template_text = template_engine.apply_client_template(client, msg_type, variables)
+            template_title, template_text = template_engine.apply_client_template(
+                client,
+                msg_type,
+                variables,
+                content_profile=str((variables or {}).get("content_profile") or ""),
+            )
             title = template_title if template_title is not None else title
             text = template_text if template_text else text
         if self._governor is not None:
@@ -197,7 +202,12 @@ class MessageDispatcher:
         delivered = False
         web_title, web_text = title, text
         if msg_type and variables and template_engine:
-            tpl_title, tpl_text = template_engine.apply_client_template({}, msg_type, variables)
+            tpl_title, tpl_text = template_engine.apply_client_template(
+                {},
+                msg_type,
+                variables,
+                content_profile=str((variables or {}).get("content_profile") or ""),
+            )
             web_title = tpl_title if tpl_title is not None else title
             web_text = tpl_text if tpl_text else text
         self.send_channel_msg(

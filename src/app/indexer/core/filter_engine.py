@@ -40,7 +40,13 @@ class IndexerFilterEngine:
             text = f"{text} {meta_info.subtitle}"
 
         # 过滤纯音频文件（FLAC/MP3/OST/OP/ED等）
-        _audio_patterns = [
+        # 注意 [FLAC]/[AAC] 也可能只是视频的音频轨标记，有明确视频特征时不能误杀
+        _video_markers = re.search(
+            r"(?i)(?:2160p|1080p|720p|4k|bdrip|bluray|web-?dl|webrip|hdtv|"
+            r"dvdrip|hevc|avc|x264|x265|h\.?264|h\.?265|\.mkv|\.mp4|\.avi)",
+            text,
+        )
+        _audio_tags = [
             r"\[FLAC\]",
             r"\[MP3\]",
             r"\[AAC\]",
@@ -55,15 +61,12 @@ class IndexerFilterEngine:
             r"EDテーマ",
             r"主題歌",
             r"キャラソン",
-            r"\.flac",
-            r"\.mp3",
-            r"\.m4a",
-            r"\.wav",
-            r"\.ogg",
         ]
-        for pat in _audio_patterns:
-            if re.search(pat, text, re.IGNORECASE):
-                return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
+        _audio_extensions = [r"\.flac", r"\.mp3", r"\.m4a", r"\.wav", r"\.ogg"]
+        if not _video_markers and any(re.search(pat, text, re.IGNORECASE) for pat in _audio_tags):
+            return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
+        if any(re.search(pat, text, re.IGNORECASE) for pat in _audio_extensions):
+            return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
 
         # 过滤漫画/书籍类资源（仅检查标题，不检查 description 避免误杀）
         target_type = filter_args.get("type")

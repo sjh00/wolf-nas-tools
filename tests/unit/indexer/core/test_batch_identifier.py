@@ -90,7 +90,7 @@ class TestDirectPass:
             year=year,
             type=MediaType.TV,
             tmdb_id=288971,
-            tmdb_info={"id": 288971, "title": "穹庐下的魔女"},
+            provider_data={"id": 288971, "title": "穹庐下的魔女"},
         )
 
     def test_direct_pass_caches_without_tmdb(self, identifier):
@@ -152,7 +152,7 @@ class TestDirectPass:
             year="2026",
             type=MediaType.TV,
             tmdb_id=999999,
-            tmdb_info={"id": 999999},
+            provider_data={"id": 999999},
         )
         identifier.media.get_all_names.return_value = ["Ghost in the Shell", "攻殻機動隊", "The Ghost in the Shell"]
         cands = [
@@ -202,7 +202,7 @@ class TestDirectPass:
             year="2026",
             type=MediaType.TV,
             tmdb_id=999999,
-            tmdb_info={"id": 999999},
+            provider_data={"id": 999999},
         )
         identifier.media.get_all_names.return_value = ["Ghost in the Shell", "攻殻機動隊"]
         cands = [

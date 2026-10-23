@@ -48,6 +48,7 @@ class HtmlSiteSearcher:
         page: int = 0,
         mtype: MediaType | None = None,
         page_size: int | None = None,
+        content_profile: str | None = None,
     ) -> list[dict[str, Any]]:
         if not self._site.html:
             return []
@@ -179,7 +180,7 @@ class HtmlSiteSearcher:
                 "chrome": True,
                 "ua": self._user_config.get("ua"),
                 "browser_render": True,
-                "browser_persistent": bool(self._user_config.get("browser_persistent")),
+                "browser_persistent": bool(self._user_config.get("browser_persistent", True)),
             },
             site_key=domain,
             proxy_url=proxy_url,
@@ -309,7 +310,7 @@ class HtmlSiteSearcher:
                     "ua": ua,
                     # 强制/内嵌验证场景需要渲染后再取 DOM（等待 JS/挑战完成）
                     "browser_render": True if (force_browser or has_pending_turnstile(html or "")) else render,
-                    "browser_persistent": bool(self._user_config.get("browser_persistent")),
+                    "browser_persistent": bool(self._user_config.get("browser_persistent", True)),
                 },
                 site_key=self._user_config.get("domain") or self._site.domain or "",
                 proxy_url=proxy_url,

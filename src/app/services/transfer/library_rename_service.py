@@ -44,6 +44,7 @@ class LibraryRenameService:
         download_repo,
         thread_executor,
         transfer_history_service=None,
+        metadata_service=None,
     ):
         self._repo = rename_repo
         self._storage_repo = storage_repo
@@ -53,6 +54,7 @@ class LibraryRenameService:
         self._download_repo = download_repo
         self._thread_executor = thread_executor
         self._transfer_history_service = transfer_history_service
+        self._metadata_service = metadata_service
         self._category_repo = CategoryConfigRepositoryAdapter()
         self._executor = LibraryRenameExecutor(
             rename_repo,
@@ -72,6 +74,7 @@ class LibraryRenameService:
             resolver,
             self._media_service,
             self._category_repo,
+            metadata_service=self._metadata_service,
         )
         rule_snapshot = planner.prepare(scope)
         items = planner.build_items(scope)

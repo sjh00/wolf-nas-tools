@@ -11,7 +11,7 @@ import tempfile
 import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 import log
 from api.deps import get_hook_system, get_plugin_framework_service, require_any_permission, require_permission
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import DomainError, NexusError, ServiceError
+from app.core.exceptions import DomainError, NexusError, PermissionDenied, ServiceError
 from app.core.settings import settings
 from app.plugin_framework import api_registry
 from app.plugin_framework.hook_system import HookSystem
@@ -28,6 +28,20 @@ from app.services.plugin_framework_service import PluginFrameworkService
 from app.utils.response import fail, success
 
 router = APIRouter()
+
+
+def _assert_private_plugin_access(svc, plugin_id: str, user) -> None:
+    """私有插件包配置/数据/API 需要 manifest 声明的权限码."""
+    manifest = svc.get_manifest(plugin_id)
+    if manifest is None:
+        return
+    metadata = manifest.backend.metadata
+    if getattr(metadata, "visibility", "public") != "private":
+        return
+    required = getattr(metadata, "required_permission", "") or "metadata:private:view"
+    permissions = set(getattr(user, "permissions", []) or [])
+    if not getattr(user, "is_superadmin", False) and required not in permissions:
+        raise PermissionDenied(f"缺少私有插件权限: {required}")
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +93,7 @@ def get_plugin_config(
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """获取插件配置"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     config = svc.get_config(plugin_id)
     fields = svc.get_config_fields(plugin_id)
     return success(data={"config": config, "fields": fields})
@@ -94,6 +109,7 @@ def save_plugin_config(
     """保存插件配置"""
     if not svc.get_manifest(plugin_id):
         return fail(code=ErrorCode.PLUGIN_NOT_FOUND, msg="插件未找到")
+    _assert_private_plugin_access(svc, plugin_id, user)
     svc.save_config(plugin_id, req.config)
     return success(message="保存成功")
 
@@ -101,6 +117,7 @@ def save_plugin_config(
 @router.post("/plugins/install", response_model=CommonResponse, summary="安装插件")
 def install_plugin(
     file: UploadFile = File(...),
+    sha256: str | None = Form(None),
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
@@ -111,7 +128,7 @@ def install_plugin(
             tmp.write(file.file.read())
             tmp_path = tmp.name
 
-        manifest = svc.install(tmp_path)
+        manifest = svc.install(tmp_path, expected_sha256=sha256)
         os.unlink(tmp_path)
 
         return success(data={"id": manifest.id, "name": manifest.name}, message="安装成功")
@@ -126,15 +143,16 @@ def install_plugin(
 @router.delete("/plugins/{plugin_id}", response_model=CommonResponse, summary="卸载插件")
 def uninstall_plugin(
     plugin_id: str,
+    purge_data: bool = False,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
-    """卸载插件"""
+    """卸载插件；默认删除插件私有数据和日志."""
     if not svc.get_manifest(plugin_id):
         return fail(code=ErrorCode.PLUGIN_NOT_FOUND, msg="插件未找到")
 
     try:
-        svc.uninstall(plugin_id)
+        svc.uninstall(plugin_id, purge_data=purge_data)
         return success(message="卸载成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -269,7 +287,9 @@ async def plugin_api_get(
     api_path: str,
     request: Request,
     user: str = Depends(require_permission("plugin:view")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
+    _assert_private_plugin_access(svc, plugin_id, user)
     return await _dispatch_plugin_api(plugin_id, api_path, dict(request.query_params), "GET")
 
 
@@ -279,7 +299,9 @@ async def plugin_api_post(
     api_path: str,
     request: Request,
     user: str = Depends(require_permission("plugin:manage")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
+    _assert_private_plugin_access(svc, plugin_id, user)
     params: dict = dict(request.query_params)
     try:
         content_length = request.headers.get("content-length")
@@ -346,14 +368,16 @@ def get_plugin_data(
     plugin_id: str,
     filename: str,
     user: str = Depends(require_any_permission("plugin:view", "plugin:manage")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """获取插件数据文件（JSON）"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     try:
         data_dir = os.path.join(settings.data_path, "plugins_data", plugin_id)
         target = os.path.join(data_dir, filename)
         real_dir = os.path.realpath(data_dir)
         real_target = os.path.realpath(target)
-        if not real_target.startswith(real_dir):
+        if os.path.commonpath([real_dir, real_target]) != real_dir:
             return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
         if not os.path.exists(target):
             return success(data=[])
@@ -377,14 +401,16 @@ def delete_plugin_data(
     filename: str,
     item_id: str,
     user: str = Depends(require_permission("plugin:manage")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """删除插件数据文件中的某条记录"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     try:
         data_dir = os.path.join(settings.data_path, "plugins_data", plugin_id)
         target = os.path.join(data_dir, filename)
         real_dir = os.path.realpath(data_dir)
         real_target = os.path.realpath(target)
-        if not real_target.startswith(real_dir):
+        if os.path.commonpath([real_dir, real_target]) != real_dir:
             return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
         if not os.path.exists(target):
             return fail(code=ErrorCode.RESOURCE_NOT_FOUND, msg="数据文件不存在")

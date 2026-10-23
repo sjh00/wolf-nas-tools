@@ -140,8 +140,13 @@ class MediaSyncDelPlugin:
             if series_name:
                 media_name = series_name
 
-        if not tmdb_id or not str(tmdb_id).isdigit():
-            self.ctx.error(f"{media_name} 同步删除失败，未获取到TMDB ID")
+        has_tmdb = bool(tmdb_id) and str(tmdb_id).isdigit()
+        path_history = None
+        if media_path:
+            filename = os.path.basename(media_path) if media_type in {"Movie", "Episode"} else None
+            path_history = self._filetransfer.get_transfer_info_by_path(media_path, filename)
+        if not has_tmdb and not path_history:
+            self.ctx.warn(f"{media_name} 无 TMDB ID，且目标路径未找到转移记录，跳过同步删除")
             return
 
         if season_num is not None and str(season_num).isdigit():
@@ -149,8 +154,9 @@ class MediaSyncDelPlugin:
         if episode_num is not None and str(episode_num).isdigit():
             episode_num = str(episode_num).rjust(2, "0")
 
-        # 批量删除熔断检查
-        if self._check_circuit_breaker(str(tmdb_id), config):
+        # 批量删除熔断检查（无 TMDB 时使用路径作为媒体键）
+        circuit_key = str(tmdb_id) if has_tmdb else f"path:{media_path}"
+        if self._check_circuit_breaker(circuit_key, config):
             return
 
         exclude_path = config.get("exclude_path")
@@ -163,29 +169,39 @@ class MediaSyncDelPlugin:
             return
 
         if media_type == "Movie":
-            msg = f"电影 {media_name} {tmdb_id}"
+            msg = f"电影 {media_name} {tmdb_id or media_path}"
             self.ctx.info(f"正在同步删除{msg}")
-            transfer_history = self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id)
+            transfer_history = self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id) if has_tmdb else path_history
+            transfer_history = transfer_history or path_history
         elif media_type == "Series":
-            msg = f"剧集 {media_name} {tmdb_id}"
+            msg = f"剧集 {media_name} {tmdb_id or media_path}"
             self.ctx.info(f"正在同步删除{msg}")
-            transfer_history = self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id)
+            transfer_history = self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id) if has_tmdb else path_history
+            transfer_history = transfer_history or path_history
         elif media_type == "Season":
             if not season_num or not str(season_num).isdigit():
                 self.ctx.error(f"{media_name} 季同步删除失败，未获取到具体季")
                 return
-            msg = f"剧集 {media_name} S{season_num} {tmdb_id}"
+            msg = f"剧集 {media_name} S{season_num} {tmdb_id or media_path}"
             self.ctx.info(f"正在同步删除{msg}")
-            transfer_history = self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id, season=f"S{season_num}")
+            transfer_history = (
+                self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id, season=f"S{season_num}")
+                if has_tmdb
+                else path_history
+            )
+            transfer_history = transfer_history or path_history
         elif media_type == "Episode":
             if not season_num or not str(season_num).isdigit() or not episode_num or not str(episode_num).isdigit():
                 self.ctx.error(f"{media_name} 集同步删除失败，未获取到具体集")
                 return
-            msg = f"剧集 {media_name} S{season_num}E{episode_num} {tmdb_id}"
+            msg = f"剧集 {media_name} S{season_num}E{episode_num} {tmdb_id or media_path}"
             self.ctx.info(f"正在同步删除{msg}")
-            transfer_history = self._filetransfer.get_transfer_info_by(
-                tmdbid=tmdb_id, season_episode=f"S{season_num} E{episode_num}"
+            transfer_history = (
+                self._filetransfer.get_transfer_info_by(tmdbid=tmdb_id, season_episode=f"S{season_num} E{episode_num}")
+                if has_tmdb
+                else path_history
             )
+            transfer_history = transfer_history or path_history
         else:
             return
 
@@ -233,7 +249,9 @@ class MediaSyncDelPlugin:
         self._filetransfer.delete_history(logids=logids, flag="del_source" if config.get("del_source") else "")
 
         if config.get("send_notify"):
-            if media_type == "Episode":
+            if not has_tmdb:
+                image_url = ""
+            elif media_type == "Episode":
                 image_url = self.ctx.media_service.get_episode_images(
                     tv_id=tmdb_id, season_id=season_num, episode_id=episode_num, orginal=True
                 )

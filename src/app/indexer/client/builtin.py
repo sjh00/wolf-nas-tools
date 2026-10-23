@@ -214,10 +214,19 @@ class BuiltinIndexer(_IIndexClient):
         result_array = []
         error_flag = False
         last_error = ""
-        mtype = match_media.type if (match_media and match_media.tmdb_info) else None
+        mtype = match_media.type if (match_media and match_media.provider_data) else None
+        content_profile = (
+            str(getattr(match_media, "content_profile", "") or "")
+            if match_media
+            else str(_filter_args.get("content_profile") or "")
+        )
         try:
             error_flag, result_array, last_error = self.__search_via_engine(
-                search_word=search_word, indexer=indexer, mtype=mtype, paginate=True
+                search_word=search_word,
+                indexer=indexer,
+                mtype=mtype,
+                content_profile=content_profile,
+                paginate=True,
             )
         except Exception as err:
             error_flag = True
@@ -296,7 +305,16 @@ class BuiltinIndexer(_IIndexClient):
             )
         return result_array
 
-    def __search_via_engine(self, search_word, indexer, mtype=None, page=0, paginate=False, page_size=100):
+    def __search_via_engine(
+        self,
+        search_word,
+        indexer,
+        mtype=None,
+        page=0,
+        paginate=False,
+        page_size=100,
+        content_profile=None,
+    ):
         """执行站点搜索，返回 (error_flag, result_array, last_error) — last_error 为局部值，避免并发共享污染"""
         engine = self._site_engine
         site_def = engine.get_by_id(str(indexer.id)) or engine.get_by_url(indexer.domain or "")
@@ -311,13 +329,24 @@ class BuiltinIndexer(_IIndexClient):
         result_array = []
         try:
             if not paginate:
-                result_array = searcher.search(keyword=search_word, page=page, mtype=mtype, page_size=page_size)
+                result_array = searcher.search(
+                    keyword=search_word,
+                    page=page,
+                    mtype=mtype,
+                    page_size=page_size,
+                    content_profile=content_profile,
+                )
             else:
                 seen: set = set()
                 first_page_count = None
                 cur_page = page
                 while cur_page - page < _MAX_SEARCH_PAGES:
-                    batch = searcher.search(keyword=search_word, page=cur_page, mtype=mtype)
+                    batch = searcher.search(
+                        keyword=search_word,
+                        page=cur_page,
+                        mtype=mtype,
+                        content_profile=content_profile,
+                    )
                     if not batch:
                         break
                     new_count = 0

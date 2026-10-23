@@ -67,6 +67,16 @@ from app.db.models.library_rename import (
     LIBRARYRENAMEJOB,
 )
 
+# 媒体身份与元数据快照模型
+from app.db.models.media_identity import (
+    MEDIA_EXTERNAL_REF,
+    MEDIA_FIELD_OVERRIDE,
+    MEDIA_IDENTITY,
+    MEDIA_METADATA_SNAPSHOT,
+    PERSON_EXTERNAL_REF,
+    PERSON_IDENTITY,
+)
+
 # 媒体同步模型
 from app.db.models.media_sync import (
     MEDIASYNCITEMS,

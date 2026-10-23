@@ -14,8 +14,15 @@ def meta_info(title: str, subtitle: str | None = None, mtype: MediaType | None =
     if title:
         # 路径 → 取文件名；裸数字文件名(1.mp4) → 父目录作标题
         # 区分真路径（含目录层级）和标题中的 " / " 分隔符
-        is_path = ("/" in title or "\\" in title) and bool(
-            re.search(r"[/\\](?:[^/\\]+[/\\])", title) or title.startswith("/")
+        is_path = bool(
+            title.startswith(("/", "\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", title)
+            or "\\" in title
+            or re.search(
+                r"\.(?:mkv|mp4|avi|ts|m2ts|mov|wmv|flv|rmvb|iso|img|strm)$",
+                title,
+                re.IGNORECASE,
+            )
         )
         if is_path:
             parent = os.path.basename(os.path.dirname(title)).strip()

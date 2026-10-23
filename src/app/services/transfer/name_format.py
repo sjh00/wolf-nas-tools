@@ -37,6 +37,14 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("audioCodec", "音频编码", "如 AAC / DTS", "both", False),
     ("tmdbid", "TMDB ID", "TMDB 编号", "both", False),
     ("imdbid", "IMDB ID", "IMDB 编号", "both", False),
+    ("doubanid", "豆瓣 ID", "豆瓣条目编号", "both", False),
+    ("bgmid", "Bangumi ID", "Bangumi 条目编号", "both", False),
+    ("provider", "来源", "tmdb / douban / bangumi", "both", False),
+    ("provider_id", "来源 ID", "当前锚点来源的编号", "both", False),
+    ("content_profile", "内容形态", "default / anime 等", "both", False),
+    ("release_date", "上映日期", "原始上映/首播日期", "both", False),
+    ("rating_douban", "豆瓣评分", "豆瓣评分（无则为空）", "both", False),
+    ("rating_tmdb", "TMDB 评分", "TMDB 评分（无则为空）", "both", False),
     ("media_type", "媒体类型", "movie / tv / anime", "both", False),
     ("category", "分类", "分类名称", "both", False),
     ("season", "季号", "季数（电影为空）", "tv", False),
@@ -49,7 +57,7 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
 FIELD_CATALOG = [dict(zip(("key", "label", "desc", "applies", "requires_ms"), f)) for f in _FIELDS]
 NAME_FORMAT_FIELDS = frozenset(f["key"] for f in FIELD_CATALOG)
 
-_KEY_RE = re.compile(r"\{([A-Za-z0-9_]+)")
+_KEY_RE = re.compile(r"\{([A-Za-z0-9_.]+)")
 
 
 def _find_conds(fmt: str) -> list[tuple[int, int, str, str]]:
@@ -99,16 +107,17 @@ def parse_fields(fmt: str) -> list[str]:
     return sorted(keys)
 
 
-def validate(fmt: str) -> dict:
-    """校验格式串，返回 ``{ok, problems}``。"""
+def validate(fmt: str, extra_fields: set[str] | None = None) -> dict:
+    """校验格式串，返回 ``{ok, problems}``；extra_fields 用于插件命名空间字段."""
     problems: list[str] = []
+    known = NAME_FORMAT_FIELDS | (extra_fields or set())
     if fmt and fmt.count("{") != fmt.count("}"):
         problems.append("花括号未闭合")
     for start, end, key, payload in _find_conds(fmt):
         if payload.count("{") != payload.count("}"):
             problems.append(f"条件段 {{{key}:...}} 内部花括号不匹配")
     for key in parse_fields(fmt):
-        if key not in NAME_FORMAT_FIELDS:
+        if key not in known:
             problems.append(f"未知字段: {{{key}}}")
     return {"ok": not problems, "problems": problems}
 
@@ -173,7 +182,25 @@ def field_groups() -> list[dict]:
         ("标题", ["title", "en_title", "original_title", "original_name", "rev_name", "name"]),
         ("季集", ["season", "episode", "season_episode", "episode_title", "part"]),
         ("年份媒体信息", ["year", "edition", "videoFormat", "source", "videoCodec", "audioCodec", "releaseGroup"]),
-        ("标识", ["tmdbid", "imdbid", "media_type", "category", "customization", "effect"]),
+        (
+            "标识",
+            [
+                "tmdbid",
+                "imdbid",
+                "doubanid",
+                "bgmid",
+                "provider",
+                "provider_id",
+                "content_profile",
+                "release_date",
+                "rating_douban",
+                "rating_tmdb",
+                "media_type",
+                "category",
+                "customization",
+                "effect",
+            ],
+        ),
     ]
     by_key = {f["key"]: f for f in FIELD_CATALOG}
     return [{"group": gname, "fields": [by_key[k] for k in keys if k in by_key]} for gname, keys in groups]

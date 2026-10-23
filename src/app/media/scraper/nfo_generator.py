@@ -1,11 +1,16 @@
 """刮削器 — NFO XML 文件生成器"""
 
+import json
 import os
+import shutil
+import subprocess
 import time
 import xml.dom.minidom
 
 import defusedxml.minidom  # type: ignore[import-untyped]  # noqa: F401 — XXE防护副作用导入
 
+from app.media.metadata.nfo import render_nfo_extra_tags
+from app.media.metadata.registry import registry as metadata_registry
 from app.utils import DomUtils
 
 
@@ -149,3 +154,263 @@ class NfoGenerator:
                 DomUtils.add_node(doc, root, "genre", genre.get("name") or "")
             DomUtils.add_node(doc, root, "rating", tmdbinfo.get("vote_average") or "0")
         return doc
+
+    # ---------- snapshot 渲染（ADR-025） ----------
+
+    def gen_movie_nfo_from_snapshot(self, snapshot, scraper_nfo, out_path, file_name):
+        """从 MediaMetadata 快照生成电影 NFO."""
+        doc = _create_document()
+        root = DomUtils.add_node(doc, doc, "movie")
+        self._gen_snapshot_common(snapshot, doc, root, scraper_nfo)
+        if scraper_nfo.get("basic"):
+            DomUtils.add_node(doc, root, "title", _snapshot_value(snapshot, "title"))
+            DomUtils.add_node(doc, root, "originaltitle", _snapshot_value(snapshot, "original_title"))
+            release = _snapshot_value(snapshot, "release_date")
+            DomUtils.add_node(doc, root, "premiered", release)
+            DomUtils.add_node(doc, root, "year", _snapshot_value(snapshot, "year") or str(release)[:4])
+        self._append_fileinfo(doc, root, out_path, file_name)
+        self._downloader.save_nfo(doc, os.path.join(out_path, f"{file_name}.nfo"))
+
+    def _append_fileinfo(self, doc, root, out_path, file_name):
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe:
+            return
+        if not os.path.isdir(out_path):
+            return
+        try:
+            names = os.listdir(out_path)
+        except OSError:
+            return
+        candidates = [
+            os.path.join(out_path, item)
+            for item in names
+            if item.startswith(file_name) and item.lower().endswith((".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts"))
+        ]
+        if not candidates:
+            return
+        try:
+            result = subprocess.run(
+                [ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", candidates[0]],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=True,
+            )
+            data = json.loads(result.stdout or "{}")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return
+        streams = data.get("streams") or []
+        video = next((item for item in streams if item.get("codec_type") == "video"), None)
+        audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+        if not video:
+            return
+        fileinfo = DomUtils.add_node(doc, root, "fileinfo")
+        details = DomUtils.add_node(doc, fileinfo, "streamdetails")
+        node = DomUtils.add_node(doc, details, "video")
+        DomUtils.add_node(doc, node, "codec", video.get("codec_name") or "")
+        DomUtils.add_node(doc, node, "micodec", video.get("codec_name") or "")
+        DomUtils.add_node(doc, node, "bitrate", video.get("bit_rate") or "")
+        DomUtils.add_node(doc, node, "width", video.get("width") or "")
+        DomUtils.add_node(doc, node, "height", video.get("height") or "")
+        aspect = "16:9" if int(video.get("width") or 0) > int(video.get("height") or 0) else "4:3"
+        DomUtils.add_node(doc, node, "aspect", aspect)
+        DomUtils.add_node(doc, node, "aspectratio", aspect)
+        DomUtils.add_node(doc, node, "framerate", video.get("avg_frame_rate") or "")
+        DomUtils.add_node(doc, node, "duration", (data.get("format") or {}).get("duration") or "")
+        DomUtils.add_node(doc, node, "durationinseconds", (data.get("format") or {}).get("duration") or "")
+        if audio:
+            audio_node = DomUtils.add_node(doc, details, "audio")
+            DomUtils.add_node(doc, audio_node, "codec", audio.get("codec_name") or "")
+            DomUtils.add_node(doc, audio_node, "micodec", audio.get("codec_name") or "")
+            DomUtils.add_node(doc, audio_node, "bitrate", audio.get("bit_rate") or "")
+            DomUtils.add_node(doc, audio_node, "channels", audio.get("channels") or "")
+            DomUtils.add_node(doc, audio_node, "samplingrate", audio.get("sample_rate") or "")
+
+    def gen_tv_nfo_from_snapshot(
+        self,
+        snapshot,
+        scraper_nfo,
+        out_path,
+        *,
+        show_title: str = "",
+    ):
+        """从 MediaMetadata 快照生成 tvshow NFO；剧名使用剧集级标题而非季标题."""
+        doc = _create_document()
+        root = DomUtils.add_node(doc, doc, "tvshow")
+        self._gen_snapshot_common(snapshot, doc, root, scraper_nfo)
+        if scraper_nfo.get("basic"):
+            DomUtils.add_node(
+                doc,
+                root,
+                "title",
+                show_title or _snapshot_value(snapshot, "title"),
+            )
+            DomUtils.add_node(doc, root, "originaltitle", _snapshot_value(snapshot, "original_title"))
+            release = _snapshot_value(snapshot, "release_date")
+            DomUtils.add_node(doc, root, "premiered", release)
+            DomUtils.add_node(doc, root, "year", _snapshot_value(snapshot, "year") or str(release)[:4])
+        self._downloader.save_nfo(doc, os.path.join(out_path, "tvshow.nfo"))
+
+    def gen_season_nfo_from_snapshot(self, season, season_number, out_path):
+        """从 SeasonRecord 生成 season.nfo."""
+        doc = _create_document()
+        root = DomUtils.add_node(doc, doc, "season")
+        DomUtils.add_node(doc, root, "dateadded", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())))
+        xplot = DomUtils.add_node(doc, root, "plot")
+        xplot.appendChild(doc.createCDATASection(season.overview or ""))
+        xoutline = DomUtils.add_node(doc, root, "outline")
+        xoutline.appendChild(doc.createCDATASection(season.overview or ""))
+        DomUtils.add_node(doc, root, "title", season.title or f"季 {season_number}")
+        DomUtils.add_node(doc, root, "premiered", season.air_date or "")
+        DomUtils.add_node(doc, root, "releasedate", season.air_date or "")
+        DomUtils.add_node(doc, root, "year", (season.air_date or "")[:4])
+        DomUtils.add_node(doc, root, "seasonnumber", season_number)
+        self._downloader.save_nfo(doc, os.path.join(out_path, "season.nfo"))
+
+    def gen_episode_nfo_from_snapshot(self, snapshot, episode, scraper_nfo, season, out_path, file_name):
+        """从 EpisodeRecord 生成分集 NFO."""
+        doc = _create_document()
+        root = DomUtils.add_node(doc, doc, "episodedetails")
+        if scraper_nfo.get("episode_basic"):
+            DomUtils.add_node(doc, root, "dateadded", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())))
+            self._write_snapshot_uniqueids(snapshot, doc, root)
+            DomUtils.add_node(doc, root, "title", episode.title or f"第 {episode.episode_number} 集")
+            xplot = DomUtils.add_node(doc, root, "plot")
+            xplot.appendChild(doc.createCDATASection(episode.overview or ""))
+            xoutline = DomUtils.add_node(doc, root, "outline")
+            xoutline.appendChild(doc.createCDATASection(episode.overview or ""))
+            DomUtils.add_node(doc, root, "aired", episode.air_date or "")
+            DomUtils.add_node(doc, root, "year", (episode.air_date or "")[:4])
+            DomUtils.add_node(doc, root, "season", season)
+            DomUtils.add_node(doc, root, "episode", episode.episode_number)
+            DomUtils.add_node(doc, root, "rating", episode.vote_average or "0")
+        self._downloader.save_nfo(doc, os.path.join(out_path, f"{file_name}.nfo"))
+
+    def _gen_snapshot_common(self, snapshot, doc, root, scraper_nfo):
+        if scraper_nfo.get("basic"):
+            DomUtils.add_node(doc, root, "dateadded", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())))
+            self._write_snapshot_uniqueids(snapshot, doc, root)
+            xplot = DomUtils.add_node(doc, root, "plot")
+            xplot.appendChild(doc.createCDATASection(_snapshot_value(snapshot, "overview")))
+            xoutline = DomUtils.add_node(doc, root, "outline")
+            xoutline.appendChild(doc.createCDATASection(_snapshot_value(snapshot, "overview")))
+            for genre in snapshot.genres:
+                DomUtils.add_node(doc, root, "genre", genre)
+            rating = _snapshot_rating(snapshot)
+            if rating is not None:
+                DomUtils.add_node(doc, root, "rating", rating)
+            votes = _snapshot_value(snapshot, "votes", "") or (snapshot.extra or {}).get("votes")
+            if votes:
+                DomUtils.add_node(doc, root, "votes", votes)
+            if snapshot.ratings:
+                ratings_node = DomUtils.add_node(doc, root, "ratings")
+                for provider_key, provider_value in snapshot.ratings.items():
+                    rating_node = DomUtils.add_node(doc, ratings_node, "rating")
+                    rating_node.setAttribute("name", str(provider_key))
+                    rating_node.setAttribute("max", _rating_max(provider_key))
+                    if provider_key == snapshot.primary_provider:
+                        rating_node.setAttribute("default", "true")
+                    value = float(provider_value)
+                    if value > 10:
+                        value = value / 100
+                    DomUtils.add_node(doc, rating_node, "value", value)
+                    if votes:
+                        DomUtils.add_node(doc, rating_node, "votes", votes)
+            runtime = _snapshot_value(snapshot, "runtime", "")
+            if runtime:
+                DomUtils.add_node(doc, root, "runtime", runtime)
+            for studio in snapshot.studios:
+                DomUtils.add_node(doc, root, "studio", studio)
+            for label in snapshot.labels:
+                DomUtils.add_node(doc, root, "tag", label)
+            for series in snapshot.series:
+                set_node = DomUtils.add_node(doc, root, "set")
+                DomUtils.add_node(doc, set_node, "name", series)
+            for tag, value in render_nfo_extra_tags(snapshot).items():
+                if isinstance(value, list):
+                    for entry in value:
+                        DomUtils.add_node(doc, root, tag, entry)
+                elif value not in (None, ""):
+                    DomUtils.add_node(doc, root, tag, value)
+        if scraper_nfo.get("credits"):
+            actor_images = (snapshot.extra or {}).get("actor_images") or {}
+            fallback_actors = (snapshot.extra or {}).get("actor_fallback") or []
+            for credit in snapshot.credits:
+                if credit.role == "director":
+                    node = DomUtils.add_node(doc, root, "director", credit.name)
+                    if credit.provider == "tmdb" and credit.external_id:
+                        node.setAttribute("tmdbid", credit.external_id)
+                elif credit.role == "actor":
+                    actor = DomUtils.add_node(doc, root, "actor")
+                    DomUtils.add_node(doc, actor, "name", credit.name)
+                    DomUtils.add_node(doc, actor, "type", "Actor")
+                    DomUtils.add_node(doc, actor, "role", credit.character or "")
+                    DomUtils.add_node(doc, actor, "order", credit.order)
+                    if credit.provider == "tmdb" and credit.external_id:
+                        DomUtils.add_node(doc, actor, "tmdbid", credit.external_id)
+                    if credit.image_url:
+                        DomUtils.add_node(doc, actor, "thumb", credit.image_url)
+                        DomUtils.add_node(doc, actor, "profile", credit.image_url)
+            if not snapshot.credits and fallback_actors:
+                for name in fallback_actors:
+                    actor = DomUtils.add_node(doc, root, "actor")
+                    DomUtils.add_node(doc, actor, "name", name)
+                    DomUtils.add_node(doc, actor, "type", "Actor")
+                    image = actor_images.get(name)
+                    if image:
+                        DomUtils.add_node(doc, actor, "thumb", image)
+                        DomUtils.add_node(doc, actor, "profile", image)
+
+    def _write_snapshot_uniqueids(self, snapshot, doc, root):
+        primary = snapshot.primary_provider
+        refs = []
+        seen = set()
+        for ref in snapshot.refs:
+            if ref.provider in seen:
+                continue
+            seen.add(ref.provider)
+            refs.append(ref)
+        default_provider = primary if any(ref.provider == primary for ref in refs) else None
+        if default_provider is None:
+            if any(ref.provider == "tmdb" for ref in refs):
+                default_provider = "tmdb"
+            else:
+                default_provider = refs[0].provider if refs else ""
+        for ref in refs:
+            uniqueid = DomUtils.add_node(doc, root, "uniqueid", ref.external_id)
+            uniqueid.setAttribute("type", ref.provider)
+            uniqueid.setAttribute("default", "true" if ref.provider == default_provider else "false")
+            if ref.provider == "tmdb":
+                DomUtils.add_node(doc, root, "tmdbid", ref.external_id)
+            elif ref.provider == "imdb":
+                DomUtils.add_node(doc, root, "imdbid", ref.external_id)
+            elif ref.provider == "tvdb":
+                DomUtils.add_node(doc, root, "tvdbid", ref.external_id)
+
+
+def _rating_max(provider: object) -> str:
+    item = metadata_registry.get_provider(str(provider))
+    return str(getattr(getattr(item, "descriptor", None), "rating_max", 10) or 10)
+
+
+def _snapshot_value(snapshot, name, default=""):
+    field = snapshot.fields.get(name)
+    if field is None or field.value is None:
+        return default
+    return field.value
+
+
+def _snapshot_rating(snapshot):
+    if not snapshot.ratings:
+        return None
+    if snapshot.primary_provider in snapshot.ratings:
+        value = snapshot.ratings[snapshot.primary_provider]
+    elif "tmdb" in snapshot.ratings:
+        value = snapshot.ratings["tmdb"]
+    else:
+        value = next(iter(snapshot.ratings.values()))
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return number / 100 if number > 10 else number

@@ -1,6 +1,7 @@
 """Subscribe refresh service - 刷新订阅TMDB信息."""
 
 import log
+from app.core.settings import settings
 from app.db.transaction import transaction_scope
 from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
@@ -18,11 +19,17 @@ class SubscribeRefreshService:
         self._media = media_service
 
     def refresh_rss_metainfo(self, get_subscribe_movies_fn, get_subscribe_tvs_fn) -> None:
+        legacy_fallback = bool((settings.get("media") or {}).get("legacy_tmdb_fallback", True))
         """定时将豆瓣订阅转换为TMDB的订阅，并更新订阅的TMDB信息"""
         log.info("[Subscribe]开始刷新订阅TMDB信息...")
         rss_movies = get_subscribe_movies_fn(state=SubscribeState.RUNNING.value)
         for _rid, rss_info in rss_movies.items():
             if rss_info.get("fuzzy_match"):
+                continue
+            if rss_info.get("anchor_provider") and rss_info.get("anchor_provider") != "tmdb":
+                # 豆瓣/Bangumi 锚点不再强制桥接为 TMDB 订阅
+                continue
+            if not legacy_fallback and not rss_info.get("anchor_provider"):
                 continue
             rssid = rss_info.get("id")
             name = rss_info.get("name")
@@ -51,6 +58,11 @@ class SubscribeRefreshService:
         for rss_info in rss_tvs.values():
             if rss_info.get("fuzzy_match"):
                 continue
+            if rss_info.get("anchor_provider") and rss_info.get("anchor_provider") != "tmdb":
+                # 豆瓣/Bangumi 锚点不再强制桥接为 TMDB 订阅
+                continue
+            if not legacy_fallback and not rss_info.get("anchor_provider"):
+                continue
             rssid = rss_info.get("id")
             name = rss_info.get("name")
             year = rss_info.get("year") or ""
@@ -65,7 +77,7 @@ class SubscribeRefreshService:
             media_info = self.__get_media_info(tmdbid=tmdbid, name=name, year=year, mtype=MediaType.TV, cache=True)
             if media_info and media_info.tmdb_id:
                 total_episode = self._media.get_tmdb_season_episodes_num(
-                    tv_info=media_info.tmdb_info, season=int(str(season).replace("S", ""))
+                    tv_info=media_info.provider_data, season=int(str(season).replace("S", ""))
                 )
                 if total_ep:
                     total_episode = total_ep
@@ -99,7 +111,7 @@ class SubscribeRefreshService:
         if tmdbid and not str(tmdbid).startswith("DB:"):
             media_info = meta_info(title=("%s %s" % (name, year)).strip())
             tmdb_info = self._media.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
-            media_info.set_tmdb_info(tmdb_info)
+            media_info.set_provider_data(tmdb_info)
         else:
             media_info = self._media.get_media_info(
                 title=f"{name} {year}".strip(), mtype=mtype, strict=True, cache=cache

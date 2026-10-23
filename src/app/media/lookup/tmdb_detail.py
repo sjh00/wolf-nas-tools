@@ -45,7 +45,7 @@ class TmdbDetail:
                 info["genre_ids"] = get_genre_ids_from_detail(info.get("genres"))
                 # 以本次实际语言决定是否补中文名：language="en" 时不得覆盖为中文
                 info = update_tmdbinfo_cn_title(info, language or active_lang or self.client._default_language)
-            self.client.redis_cache.set_tmdb_info(mtype, tmdbid, info, cache_lang, extra=append_to_response or "")
+            self.client.redis_cache.set_provider_data(mtype, tmdbid, info, cache_lang, extra=append_to_response or "")
             return info
 
         result = deduper.execute(cache_key, _fetch)

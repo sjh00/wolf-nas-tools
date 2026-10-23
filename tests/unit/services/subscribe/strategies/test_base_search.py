@@ -10,7 +10,7 @@ from app.services.subscribe.strategies.base_search import BaseSearchStrategy
 
 class _MediaInfo:
     def __init__(self):
-        self.tmdb_info = {"id": 123}
+        self.provider_data = {"id": 123}
         self.tmdb_id = 123
         self.title = "Test"
         self.type = "movie"
@@ -23,8 +23,8 @@ class _MediaInfo:
     def set_download_info(self, **kwargs):
         pass
 
-    def set_tmdb_info(self, info):
-        self.tmdb_info = info
+    def set_provider_data(self, info):
+        self.provider_data = info
 
     def get_title_string(self):
         return self.title
@@ -199,11 +199,13 @@ class TestBaseSearchStrategy:
         assert r2 is media2
         assert strategy._media_service.identify.call_count == 2
 
-    def test_get_media_info_douban_prefix(self, strategy):
-        media = _MediaInfo()
-        strategy._media_service.identify.return_value = media
+    def test_get_media_info_douban_prefix_does_not_identify_tmdb(self, strategy):
         result = strategy._get_media_info("DB:123", "Name", "2024", MediaType.MOVIE)
-        assert result is media
+        assert result is not None
+        assert result.tmdb_id == ""
+        assert result.douban_id == "123"
+        assert result.anchor_provider == "douban"
+        strategy._media_service.identify.assert_not_called()
 
 
 class TestEffectiveSearchSites:
@@ -285,3 +287,36 @@ class TestSubscribeSearchEnforcesOwnerScope:
             strategy._search_tvs()
         _, kwargs = strategy._searcher.search_one_media.call_args
         assert kwargs["user_id"] == 8
+
+
+class TestProviderRefSearch:
+    def test_get_media_info_content_id_skips_tmdb(self, strategy):
+        media = strategy._get_media_info("content_id:START-660", "タイトル", "2026", MediaType.MOVIE)
+
+        assert media is not None
+        assert media.tmdb_id == ""
+        assert media.anchor_provider == "content_id"
+        assert media.anchor_external_id == "START-660"
+        assert not media.provider_data
+        strategy._media_service.identify.assert_not_called()
+
+    def test_search_movies_provider_ref_uses_keyword(self, strategy):
+        strategy._service.get_subscribe_movies.return_value = {
+            "1": {
+                "id": 1,
+                "name": "タイトル",
+                "year": "2026",
+                "tmdbid": "content_id:START-660",
+                "keyword": "START-660",
+            }
+        }
+        strategy._movie_repo = MagicMock()
+        strategy._searcher.search_one_media.return_value = (None, None, None, None)
+
+        strategy._search_movies()
+
+        strategy._searcher.search_one_media.assert_called_once()
+        strategy._downloader.check_exists_medias.assert_not_called()
+        media = strategy._searcher.search_one_media.call_args.kwargs["media_info"]
+        assert media.keyword == "START-660"
+        strategy._movie_repo.update_state.assert_called_with(title=None, year=None, rssid=1, state="R")

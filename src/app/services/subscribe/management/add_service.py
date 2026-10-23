@@ -15,6 +15,21 @@ from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
 
 
+def _split_provider_ref(value: Any) -> tuple[str, str] | None:
+    """拆分 `<provider>:<external_id>`；忽略 TMDB/豆瓣等旧前缀."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if ":" not in text:
+        return None
+    provider, external_id = text.split(":", 1)
+    provider = provider.strip()
+    external_id = external_id.strip()
+    if not provider or not external_id:
+        return None
+    return provider, external_id
+
+
 class SubscribeAddService:
     """添加订阅服务"""
 
@@ -29,6 +44,7 @@ class SubscribeAddService:
         web_utils: WebUtils,
         download_repo=None,
         transfer_history_manager=None,
+        metadata_service=None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -39,6 +55,7 @@ class SubscribeAddService:
         self._web_utils = web_utils
         self._download_repo = download_repo
         self._transfer_history_manager = transfer_history_manager
+        self._metadata_service = metadata_service
 
     @property
     def default_subscribe_setting_tv(self) -> dict | None:
@@ -47,6 +64,81 @@ class SubscribeAddService:
     @property
     def default_subscribe_setting_mov(self) -> dict | None:
         return self._system_config.get(SystemConfigKey.DefaultSubscribeSettingMOV) or {}
+
+    def _identity_fields(
+        self,
+        media_info,
+        mtype,
+        mediaid=None,
+        metadata_policy=None,
+        content_profile=None,
+        naming_profile=None,
+    ) -> dict:
+        if self._metadata_service is None:
+            return {}
+        return self._metadata_service.link_subscription(
+            media_info,
+            media_type=mtype,
+            mediaid=mediaid,
+            metadata_policy=metadata_policy,
+            content_profile=content_profile,
+            naming_profile=naming_profile,
+        ).as_kwargs()
+
+    def _provider_media_info(
+        self,
+        provider: str,
+        external_id: str,
+        *,
+        name: str | None,
+        year: Any,
+        content_profile: str | None,
+        allow_private: bool,
+        permissions: set[str] | None,
+    ):
+        """用插件 provider 的详情构造 MediaInfo（成人等内容不走 TMDB 查询）."""
+        if self._metadata_service is None:
+            return None
+        try:
+            record = self._metadata_service.lookup(
+                provider,
+                external_id,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+        except Exception as exc:  # noqa: BLE001 - provider 失败回退旧查询
+            log.warn(f"[SubscribeAdd] provider 详情查询失败 {provider}:{external_id}: {exc}")
+            return None
+        if not record:
+            return None
+        title = record.get("title") or name or external_id
+        poster = record.get("poster")
+        if not poster:
+            images = record.get("images") or {}
+            posters = images.get("poster") or []
+            if posters:
+                poster = posters[0].get("url")
+        media_info = meta_info(title=title, mtype=MediaType.MOVIE)
+        media_info.title = title
+        media_info.cn_name = title
+        media_info.year = str(record.get("year") or year or "") or None
+        media_info.poster_path = poster or ""
+        media_info.overview = record.get("overview")
+        media_info.type = MediaType.MOVIE
+        media_info.content_profile = content_profile or record.get("content_profile") or "default"
+        return media_info
+
+    def _default_setting_for(self, mtype: Any, content_profile: str | None) -> dict:
+        """按载体和内容画像读取默认订阅设置；画像配置为空时回退到载体默认."""
+        if mtype in (MediaType.TV, MediaType.ANIME):
+            return self.default_subscribe_setting_tv or {}
+        profile = str(content_profile or "").strip()
+        if profile and profile != "default":
+            key = f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}"
+            setting = self._system_config.get(key)
+            if isinstance(setting, dict) and setting:
+                return setting
+        return self.default_subscribe_setting_mov or {}
 
     def add_rss_subscribe(
         self,
@@ -58,6 +150,7 @@ class SubscribeAddService:
         season: int | None = None,
         fuzzy_match: bool = False,
         mediaid: str | None = None,
+        metadata_ref: str | None = None,
         rss_sites: list[str] | str | None = None,
         search_sites: list[str] | str | None = None,
         # None = 未显式指定，新增时应用默认订阅设置的"洗版"；显式 True/False 以调用方为准
@@ -69,6 +162,7 @@ class SubscribeAddService:
         filter_include: str | None = None,
         filter_exclude: str | None = None,
         filter_free: bool | None = None,
+        image: str | None = None,
         save_path: str | None = None,
         download_setting: int | str | None = None,
         total_ep: int | None = None,
@@ -78,6 +172,11 @@ class SubscribeAddService:
         in_from: str | None = None,
         user_name: str | None = None,
         user_id: int | None = None,
+        metadata_policy: str | None = None,
+        content_profile: str | None = None,
+        naming_profile: str | None = None,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
     ) -> tuple[int, str, Any]:
         """添加电影、电视剧订阅（user_id 为订阅归属用户，None 为系统/插件创建）"""
         if not name:
@@ -86,11 +185,7 @@ class SubscribeAddService:
 
         # 新增订阅且未显式传值时，应用默认订阅设置
         if not rssid:
-            default_rss_setting = (
-                self.default_subscribe_setting_tv
-                if mtype in [MediaType.TV, MediaType.ANIME]
-                else self.default_subscribe_setting_mov
-            )
+            default_rss_setting = self._default_setting_for(mtype, content_profile)
             if default_rss_setting:
                 default_restype = default_rss_setting.get("restype")
                 default_pix = default_rss_setting.get("pix")
@@ -140,35 +235,71 @@ class SubscribeAddService:
         fuzzy_match = bool(fuzzy_match)
 
         if not fuzzy_match:
-            if mediaid:
+            provider_ref = _split_provider_ref(metadata_ref)
+            media_info = None
+            if provider_ref:
+                media_info = self._provider_media_info(
+                    provider_ref[0],
+                    provider_ref[1],
+                    name=name,
+                    year=year,
+                    content_profile=content_profile,
+                    allow_private=allow_private,
+                    permissions=permissions,
+                )
+                if media_info is not None:
+                    media_info.tmdb_id = ""
+                    mtype = MediaType.MOVIE
+                    anchor_ref = _split_provider_ref(mediaid)
+                    if anchor_ref:
+                        media_info.anchor_provider = anchor_ref[0]
+                        media_info.anchor_external_id = anchor_ref[1]
+                    if not keyword:
+                        keyword = (
+                            anchor_ref[1] if anchor_ref and anchor_ref[0].lower() == "content_id" else provider_ref[1]
+                        )
+            if media_info is None and mediaid:
                 media_info = self._web_utils.get_mediainfo_from_id(mtype=mtype, mediaid=mediaid)
                 if not season and media_info:
                     season = media_info.begin_season
-            else:
+            elif media_info is None:
                 if season:
                     title = "%s %s 第%s季".strip() % (name, year, season)
                 else:
                     title = "%s %s".strip() % (name, year)
                 media_info = self._media.get_media_info(title=title, mtype=mtype, strict=bool(year), cache=False)
-            if not media_info or not media_info.tmdb_info:
-                return 1, "TMDB无法查询到媒体信息", None
+            if media_info is None:
+                return 1, "无法查询到媒体信息", None
+            if image:
+                media_info.poster_path = image
+            has_source = bool(
+                media_info.provider_data
+                or getattr(media_info, "douban_id", None)
+                or str(mediaid or "").startswith(("DB:", "BG:"))
+                or getattr(media_info, "anchor_provider", None)
+                or provider_ref is not None
+            )
+            if not has_source:
+                return 1, "无法查询到媒体信息", None
             if media_info.type != MediaType.MOVIE:
-                if not season and str(mediaid).startswith("DB:"):
-                    season = 1
-                if season:
-                    total_episode = (
-                        total_ep
-                        if total_ep
-                        else self._media.get_tmdb_season_episodes_num(tv_info=media_info.tmdb_info, season=int(season))
-                    )
+                if not season:
+                    if media_info.provider_data:
+                        total_seasoninfo = self._media.get_tmdb_tv_seasons(tv_info=media_info.provider_data)
+                        if not total_seasoninfo:
+                            return 2, "获取剧集信息失败", media_info
+                        total_seasoninfo = sorted(total_seasoninfo, key=lambda x: x.get("season_number"), reverse=True)
+                        season = total_seasoninfo[0].get("season_number")
+                        total_episode = total_seasoninfo[0].get("episode_count")
+                    else:
+                        season = media_info.begin_season or 1
+                        total_episode = media_info.total_episodes or 0
                 else:
-                    total_seasoninfo = self._media.get_tmdb_tv_seasons(tv_info=media_info.tmdb_info)
-                    if not total_seasoninfo:
-                        return 2, "获取剧集信息失败", media_info
-                    total_seasoninfo = sorted(total_seasoninfo, key=lambda x: x.get("season_number"), reverse=True)
-                    season = total_seasoninfo[0].get("season_number")
-                    total_episode = total_seasoninfo[0].get("episode_count")
-                if not total_episode:
+                    total_episode = total_ep or (
+                        self._media.get_tmdb_season_episodes_num(tv_info=media_info.provider_data, season=int(season))
+                        if media_info.provider_data
+                        else (media_info.total_episodes or 0)
+                    )
+                if not total_episode and media_info.provider_data:
                     return 3, f"第{season}季获取剧集数失败，请确认该季是否存在", media_info
                 media_info.begin_season = int(season or 0)
                 media_info.total_episodes = total_episode
@@ -180,7 +311,7 @@ class SubscribeAddService:
                 # 避免重新订阅从头重复下载已下载剧集，或前端传入旧 current_ep 导致进度卡住。
                 # current_ep 语义 = 首个待下载集（与 RSS 兜底 range(current_ep, total+1) 一致）；
                 # 已获得连续 N 集 → 首个待下载 = N+1。转移记录集数最可靠，二者取较大值。
-                if media_info.tmdb_id:
+                if media_info.tmdb_id and not str(media_info.tmdb_id).startswith("DB:"):
                     continue_ep = 0
                     # start = 订阅起点（首个待下载集）：中途订阅从第 N 集开始跟踪时，
                     # 历史只有 N 之后的集，须从 N 数起而非从第 1 集（否则误判为 0）
@@ -215,10 +346,19 @@ class SubscribeAddService:
                     lack = max(0, total - current_ep + 1)
                 else:
                     lack = total
+                identity_fields = self._identity_fields(
+                    media_info,
+                    mtype,
+                    mediaid,
+                    metadata_policy,
+                    content_profile,
+                    naming_profile,
+                )
                 rssid = self._tv_repo.insert(
                     media_info=media_info,
                     total=total,
                     lack=lack,
+                    **identity_fields,
                     state=state,
                     rss_sites=rss_sites,
                     search_sites=search_sites,
@@ -242,9 +382,18 @@ class SubscribeAddService:
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
             else:
+                identity_fields = self._identity_fields(
+                    media_info,
+                    mtype,
+                    mediaid,
+                    metadata_policy,
+                    content_profile,
+                    naming_profile,
+                )
                 rssid = self._movie_repo.insert(
                     media_info=media_info,
                     state=state,
+                    **identity_fields,
                     rss_sites=rss_sites,
                     search_sites=search_sites,
                     over_edition=over_edition,
@@ -268,14 +417,25 @@ class SubscribeAddService:
             media_info = meta_info(title=name, mtype=mtype)
             media_info.title = name
             media_info.type = mtype
+            if image:
+                media_info.poster_path = image
             if year:
                 media_info.year = str(year)
             if season:
                 media_info.begin_season = int(season)
             if mtype == MediaType.MOVIE:
+                identity_fields = self._identity_fields(
+                    media_info,
+                    mtype,
+                    mediaid,
+                    metadata_policy,
+                    content_profile,
+                    naming_profile,
+                )
                 rssid = self._movie_repo.insert(
                     media_info=media_info,
                     state=SubscribeState.RUNNING.value,
+                    **identity_fields,
                     rss_sites=rss_sites,
                     search_sites=search_sites,
                     over_edition=over_edition,
@@ -294,10 +454,19 @@ class SubscribeAddService:
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
             else:
+                identity_fields = self._identity_fields(
+                    media_info,
+                    mtype,
+                    mediaid,
+                    metadata_policy,
+                    content_profile,
+                    naming_profile,
+                )
                 rssid = self._tv_repo.insert(
                     media_info=media_info,
                     total=0,
                     lack=0,
+                    **identity_fields,
                     state=SubscribeState.RUNNING.value,
                     rss_sites=rss_sites,
                     search_sites=search_sites,

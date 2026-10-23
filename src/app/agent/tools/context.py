@@ -43,6 +43,7 @@ class ToolContext:
     semantic_memory: Any = None
     rbac_service: Any = None
     site_grant_service: Any = None
+    metadata_service: Any = None
 
     def user_context(self, user_id: str | int | None):
         """按调用方 user_id 构建 UserContext（含权限与角色码快照）.

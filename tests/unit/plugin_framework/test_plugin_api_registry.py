@@ -4,7 +4,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.deps import get_current_user
+from api.deps import get_current_user, get_plugin_framework_service
 from api.routers import plugin_framework as plugin_router
 from app.plugin_framework import api_registry
 from app.schemas.auth import UserContext
@@ -27,7 +27,13 @@ def client():
         level=0,
         permissions=["plugin:view", "plugin:manage"],
     )
+
+    class _EmptyFrameworkService:
+        def get_manifest(self, plugin_id):
+            return None
+
     app.dependency_overrides[get_current_user] = lambda: user_ctx
+    app.dependency_overrides[get_plugin_framework_service] = _EmptyFrameworkService
     with TestClient(app) as c:
         yield c
 

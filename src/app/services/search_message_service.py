@@ -153,9 +153,9 @@ class MessageSearchService:
             tmdb_info = self._media_service.get_media_info(title=f"{title} {year or ''}".strip(), mtype=mtype)
 
         media_info = meta_info(title=f"{title} {year}".strip(), mtype=mtype)
-        media_info.set_tmdb_info(tmdb_info)
+        media_info.set_provider_data(tmdb_info)
 
-        if not media_info or not media_info.tmdb_info:
+        if not media_info or not media_info.provider_data:
             self._message.send_channel_msg(channel=in_from, title=f"无法识别媒体信息: {title}", user_id=user_id)
             self._pagination.clear_media_cache(user_id)
             return
@@ -325,7 +325,7 @@ class MessageSearchService:
                     media_info = self._media_service.get_media_info(
                         title=f"{media_info.title} {media_info.year}", mtype=media_info.type, strict=True
                     )
-                    if not media_info or not media_info.tmdb_info:
+                    if not media_info or not media_info.provider_data:
                         self._message.send_channel_msg(
                             channel=in_from, title=f"{title} 从TMDB查询不到媒体信息！", user_id=user_id
                         )

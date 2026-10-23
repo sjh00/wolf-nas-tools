@@ -28,7 +28,7 @@ def _make_strategy():
 
 def _prepare(strategy, search_result, downloaded_count):
     media = MagicMock()
-    media.tmdb_info = {"id": 123}
+    media.provider_data = {"id": 123}
     media.type = MediaType.MOVIE
     media.get_title_string.return_value = "年会不能停2"
     strategy._service.get_subscribe_movies.return_value = {

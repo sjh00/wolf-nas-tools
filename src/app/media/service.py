@@ -30,11 +30,11 @@ from app.utils import EpisodeFormat, PathUtils, StringUtils
 def _promote_tmdb_anime_type(info) -> None:
     """批量识别路径按 TMDB genre 16 提升为动漫.
 
-    单条 identify()/identify_files() 经 MediaInfo.set_tmdb_info 已具备该判定；
-    批量路径手工拼 tmdb_info，需在此补齐，否则 RSS/搜索得到的动漫会被当作 tv。
+    单条 identify()/identify_files() 经 MediaInfo.set_provider_data 已具备该判定；
+    批量路径手工拼 provider_data，需在此补齐，否则 RSS/搜索得到的动漫会被当作 tv。
     仅做 tv -> anime 提升，不会降级已判定的 anime。
     """
-    tmdb_info = getattr(info, "tmdb_info", None)
+    tmdb_info = getattr(info, "provider_data", None)
     if not isinstance(tmdb_info, dict) or info.type == MediaType.ANIME:
         return
     media_type = tmdb_info.get("media_type")
@@ -295,7 +295,7 @@ class MediaService:
                         "backdrop_path",
                         "fanart_poster",
                         "fanart_backdrop",
-                        "tmdb_info",
+                        "provider_data",
                         "cn_name",
                         "en_name",
                         "type",
@@ -401,7 +401,7 @@ class MediaService:
             info.vote_average = result.vote_average
             info.poster_path = result.poster_path
             info.backdrop_path = result.backdrop_path
-            info.tmdb_info = {
+            info.provider_data = {
                 "id": result.tmdb_id,
                 "title": result.title,
                 "original_title": result.original_title,
@@ -423,7 +423,7 @@ class MediaService:
                 chinese=chinese,
             )
             if full_info:
-                info.tmdb_info = full_info
+                info.provider_data = full_info
                 info.title = full_info.get("title") or full_info.get("name") or info.title
                 info.original_title = (
                     full_info.get("original_title") or full_info.get("original_name") or info.original_title
@@ -438,7 +438,7 @@ class MediaService:
                 info.poster_path = ImageProxy.get_tmdbimage_url(full_info.get("poster_path")) or info.poster_path
                 info.backdrop_path = ImageProxy.get_tmdbimage_url(full_info.get("backdrop_path")) or info.backdrop_path
                 # 根据 genre_ids 更新类型（动漫 vs 电视剧）
-                info.set_tmdb_info(full_info)
+                info.set_provider_data(full_info)
 
         # 6.1 获取英文 / 中文标题用于匹配
         if info.tmdb_id:
@@ -624,7 +624,7 @@ class MediaService:
                     info.vote_average = looked_up.vote_average
                     info.poster_path = looked_up.poster_path
                     info.backdrop_path = looked_up.backdrop_path
-                    info.tmdb_info = {
+                    info.provider_data = {
                         "id": looked_up.tmdb_id,
                         "title": looked_up.title,
                         "original_title": looked_up.original_title,
@@ -816,7 +816,7 @@ class MediaService:
             info.vote_average = looked_up.vote_average
             info.poster_path = looked_up.poster_path
             info.backdrop_path = looked_up.backdrop_path
-            info.tmdb_info = {
+            info.provider_data = {
                 "id": looked_up.tmdb_id,
                 "title": looked_up.title,
                 "original_title": looked_up.original_title,
@@ -875,7 +875,7 @@ class MediaService:
                     parsed = self._post_process(parsed, file_name)
                     self._fill_episode_from_parent_paths(file_path, parsed)
                     info = MediaInfo.from_parser(parsed) if parsed else MediaInfo()
-                    info.set_tmdb_info(tmdb_info)
+                    info.set_provider_data(tmdb_info)
                     self._backfill_total_episodes(info)
                     if season and info.type != MediaType.MOVIE:
                         info.begin_season = int(season)
@@ -1029,16 +1029,16 @@ class MediaService:
                     info.poster_path = looked_up.poster_path
                     info.backdrop_path = looked_up.backdrop_path
                     # 取完整 TMDB detail（含 origin_country/genre_ids 等），
-                    # 确保 set_tmdb_info 的类型与分类判定正确，避免落到"未分类"
+                    # 确保 set_provider_data 的类型与分类判定正确，避免落到"未分类"
                     detail = self.get_tmdb_info(
                         mtype=looked_up.media_type or parsed.type,
                         tmdbid=looked_up.tmdb_id,
                     )
                     if detail:
-                        info.tmdb_info = detail
-                        info.set_tmdb_info(detail)
+                        info.provider_data = detail
+                        info.set_provider_data(detail)
                     else:
-                        info.tmdb_info = {
+                        info.provider_data = {
                             "id": looked_up.tmdb_id,
                             "title": looked_up.title,
                             "name": looked_up.title,
@@ -1053,7 +1053,7 @@ class MediaService:
                             "genres": looked_up.genres,
                             "external_ids": looked_up.external_ids,
                         }
-                        info.set_tmdb_info(info.tmdb_info)
+                        info.set_provider_data(info.provider_data)
                 if episode_format:
                     begin_ep, end_ep, part = episode_format.split_episode(item["title"])
                     if begin_ep is not None:
@@ -1187,6 +1187,8 @@ class MediaService:
     # ---------- TMDB 代理方法 ----------
 
     def get_tmdb_info(self, mtype, tmdbid, language=None, append_to_response=None, chinese=True):
+        if not str(tmdbid or "").isdigit():
+            return {}
         return self._lookup.get_tmdb_info(mtype, tmdbid, language, append_to_response, chinese)
 
     def get_tmdb_infos(self, title, year=None, mtype=None, language=None, page=1):
@@ -1215,6 +1217,8 @@ class MediaService:
         return self._lookup.get_tmdb_season_episodes(tmdbid, season)
 
     def get_tmdb_tv_season_detail(self, tmdbid, season):
+        if not str(tmdbid or "").isdigit():
+            return {}
         return self._lookup.get_tmdb_tv_season_detail(tmdbid, season)
 
     def get_tmdb_backdrop(self, mtype, tmdbid):
@@ -1243,7 +1247,7 @@ class MediaService:
 
     def enrich_en_name(self, media_info) -> None:
         """补全英文名：en_name 为空或非拉丁（日/韩/中文原名）时取 TMDB 英文标题用于搜索与匹配."""
-        if not media_info or not getattr(media_info, "tmdb_id", None):
+        if not media_info or not str(getattr(media_info, "tmdb_id", "") or "").isdigit():
             return
         if not media_info.en_name or not re.search(r"[A-Za-z]", str(media_info.en_name or "")):
             try:
@@ -1321,6 +1325,8 @@ class MediaService:
 
         开启 laboratory.identity_index 后走别名索引（热路径零网络），失败回退旧路径。
         """
+        if not str(tmdb_id).isdigit():
+            return []
         if settings.get("laboratory").get("identity_index"):
             try:
                 names = get_identity_builder().get_work_names("tmdb", int(tmdb_id), mtype)
@@ -1334,7 +1340,7 @@ class MediaService:
         """发布组季/集重映射（种子编号 → TMDB 规范编号）"""
         if not self._episode_mapping_enabled:
             return
-        if not info or not info.tmdb_id or info.type == MediaType.MOVIE or info.begin_season is None:
+        if not info or not str(info.tmdb_id).isdigit() or info.type == MediaType.MOVIE or info.begin_season is None:
             return
         # 已映射成功则跳过（begin_season != seeds_season 说明 remap 已生效）
         if info.seeds_season and info.begin_season != info.seeds_season:

@@ -483,18 +483,24 @@ class TmdbLookup(BaseLookup):
         return self.discover.discover(mtype, params, page)
 
     def get_tmdb_en_title(self, media_info):
+        if not str(getattr(media_info, "tmdb_id", "") or "").isdigit():
+            return None
         en_info = self.detail.get_detail(media_info.tmdb_id, media_info.type, language="en")
         if en_info:
             return en_info.get("title") if media_info.type == MediaType.MOVIE else en_info.get("name")
         return None
 
     def get_tmdb_zh_title(self, media_info):
+        if not str(getattr(media_info, "tmdb_id", "") or "").isdigit():
+            return None
         zh_info = self.detail.get_detail(media_info.tmdb_id, media_info.type, language="zh-CN")
         if zh_info:
             return zh_info.get("title") if media_info.type == MediaType.MOVIE else zh_info.get("name")
         return None
 
     def get_tmdb_zhtw_title(self, media_info):
+        if not str(getattr(media_info, "tmdb_id", "") or "").isdigit():
+            return None
         zhtw_info = self.detail.get_detail(media_info.tmdb_id, media_info.type)
         if zhtw_info:
             return zhtw_info.get("title") if media_info.type == MediaType.MOVIE else zhtw_info.get("name")
@@ -676,9 +682,9 @@ class TmdbLookup(BaseLookup):
         return ""
 
     def get_tmdb_factinfo(self, media_info):
-        if not media_info or not media_info.tmdb_info:
+        if not media_info or not media_info.provider_data:
             return []
-        tmdbinfo = media_info.tmdb_info
+        tmdbinfo = media_info.provider_data
         media_type = media_info.type
         if media_type == MediaType.MOVIE:
             title = tmdbinfo.get("title", "")
@@ -755,7 +761,7 @@ class TmdbLookup(BaseLookup):
             return target
         target.title = source.title or target.title
         target.tmdb_id = source.tmdb_id or target.tmdb_id
-        target.tmdb_info = source.tmdb_info or target.tmdb_info
+        target.provider_data = source.provider_data or target.provider_data
         target.type = source.type or target.type
         target.year = source.year or target.year
         # 搜索结果的 media_info 通常只有文件名解析出的基础信息，缺少图片，
