@@ -73,6 +73,30 @@ class Bangumi:
         data = resp.json() if resp else {}
         return data.get("data") or []
 
+    def search_season(self, start: str, end: str, page: int = 1, limit: int = 100) -> tuple[list, int]:
+        """按 air_date 区间搜索当季动画，返回 (items, total)."""
+        offset = max(0, (int(page) - 1) * int(limit))
+        try:
+            resp = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings(), timeout=20)).post(
+                url=self._base_url + "v0/search/subjects",
+                params={"limit": int(limit), "offset": offset},
+                json={
+                    "keyword": "",
+                    "sort": "heat",
+                    "filter": {
+                        "type": [2],
+                        "air_date": [f">={start}", f"<={end}"],
+                    },
+                },
+            )
+            data = resp.json() if resp else {}
+            if not isinstance(data, dict):
+                return [], 0
+            return data.get("data") or [], int(data.get("total") or 0)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"获取Bangumi季度新番失败: {start}~{end}, {e}")
+            return [], 0
+
     def episodes(self, bid, limit: int = 100, offset: int = 0) -> list:
         """获取条目分集列表（v0/episodes）."""
         try:

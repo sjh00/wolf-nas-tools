@@ -218,22 +218,37 @@ class BangumiDiscovery:
     def items(self, feed: str, page: int, filters: dict, ctx: object) -> DiscoveryPage:
         if feed not in self._FEEDS:
             return DiscoveryPage(items=[], page=page)
-        raw = self._client.calendar() or []
         start, end = season_range(str(filters.get("season") or current_season()))
         items: list[DiscoveryItem] = []
-        for day in raw:
-            for source in day.get("items") or []:
+        has_more = False
+        search_season: Any = getattr(self._client, "search_season", None)
+        if feed == "seasonal" and callable(search_season):
+            search_fn: Any = search_season
+            raw_items, total = search_fn(start, end, page=page, limit=100)
+            for source in raw_items:
                 item = _bangumi_discovery_item(source)
                 if item is None:
-                    continue
-                air_date = item.extra.get("air_date")
-                if feed == "seasonal" and air_date and not (start <= str(air_date) <= end):
                     continue
                 year = str(filters.get("year") or "")
                 if year and item.year != year:
                     continue
                 items.append(item)
-        return DiscoveryPage(items=items, page=page, has_more=False)
+            has_more = page * 100 < total
+        else:
+            raw = self._client.calendar() or []
+            for day in raw:
+                for source in day.get("items") or []:
+                    item = _bangumi_discovery_item(source)
+                    if item is None:
+                        continue
+                    air_date = item.extra.get("air_date")
+                    if feed == "seasonal" and air_date and not (start <= str(air_date) <= end):
+                        continue
+                    year = str(filters.get("year") or "")
+                    if year and item.year != year:
+                        continue
+                    items.append(item)
+        return DiscoveryPage(items=items, page=page, has_more=has_more)
 
 
 def _douban_discovery_item(raw: dict[str, Any]) -> DiscoveryItem | None:
