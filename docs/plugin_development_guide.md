@@ -119,6 +119,133 @@ my_plugin/
 | `frontend.routes` | object[] | 否 | 独立页面路由定义 |
 | `frontend.settings.fields` | object[] | 否 | 设置表单字段 |
 | `frontend.slots` | object[] | 否 | 页面插槽定义 |
+| `frontend.content_profiles` | object[] | 否 | 自定义内容画像：`key`/`label`/`presentation_type`（展示类型，如 `av`；不要与核心媒体类型混用） |
+
+### 自定义内容画像（frontend.content_profiles）
+
+插件可声明自己的内容画像，宿主 UI 会动态渲染标签（无需改核心代码）：
+
+```json
+{
+  "frontend": {
+    "content_profiles": [
+      {"key": "adult", "label": "AV", "presentation_type": "av"}
+    ],
+    "routes": [
+      {
+        "path": "/subscription/adult",
+        "component": "AdultSubscriptionsPage",
+        "title": "AV订阅",
+        "icon": "lucide:clapperboard",
+        "menu": true,
+        "parent": "Subscription",
+        "permission": "subscription:view"
+      }
+    ]
+  }
+}
+```
+
+插件路由会自动挂到「插件中心 → <插件名>」下；`media_type` 决定订阅时按单片（`movie`）或剧集（`tv`）处理。
+自定义画像的订阅不会出现在电影订阅列表，插件页面可通过 `/subscription/movie/list` 传
+`content_profile` 查询自己的分类。
+
+### 元数据扩展（backend.metadata）
+
+插件可注册元数据 provider、探索来源与命名/解析/NFO profile。manifest 声明 key 与入口类，
+Sandbox 加载插件时会自动实例化并注册；插件代码中也可通过 `ctx.register_*` 手动注册。
+
+```json
+{
+  "backend": {
+    "metadata": {
+      "visibility": "public",
+      "required_permission": "",
+      "providers": [
+        {"key": "my-provider", "entry": "backend.provider:MyProvider"}
+      ],
+      "discovery_providers": [
+        {"key": "my-discovery", "entry": "backend.discovery:MyDiscovery"}
+      ],
+      "match_profiles": [
+        {"key": "my.match", "entry": "backend.profiles:MyMatchProfile"}
+      ],
+      "parser_profiles": [
+        {"key": "my.parser", "entry": "backend.profiles:MyParserProfile"}
+      ],
+      "naming_profiles": [
+        {"key": "my.naming", "entry": "backend.profiles:MyNamingProfile"}
+      ],
+      "nfo_profiles": [
+        {"key": "my.nfo", "entry": "backend.profiles:MyNfoProfile"}
+      ]
+    }
+  }
+}
+```
+
+- provider 类需暴露 `descriptor: ProviderDescriptor`；
+- 私有包必须设置 `visibility: "private"` 与 `required_permission`；
+- key 必须与 manifest 声明一致；
+- 插件卸载时自动注销全部元数据扩展并执行 `ctx.register_metadata_cleanup()` 回调；
+- 手动注册 API：
+
+```python
+ctx.register_metadata_provider("my-provider", MyProvider())
+ctx.register_discovery_provider("my-discovery", MyDiscovery())
+ctx.register_match_profile("my.match", MyMatchProfile())
+ctx.register_parser_profile("my.parser", MyParserProfile())
+ctx.register_naming_profile("my.naming", MyNamingProfile())
+ctx.register_nfo_profile("my.nfo", MyNfoProfile())
+ctx.register_metadata_cleanup(lambda: cache.clear())
+```
+
+### 插件 SDK 与扩展边界
+
+插件后端只应依赖稳定门面 `app.plugin_sdk`，不要直接 import `app.core.*`、`app.infrastructure.*`、`app.media.metadata.registry` 等内部模块。SDK 提供元数据 DTO、命名/NFO profile、setting、Chrome、限流器和 registry 门面。
+
+刮削后处理通过 `ctx.register_scraper_processor(kind, fn)` 注册：
+
+- `snapshot`：`fn(snapshot)`，补充演员/图片等快照字段
+- `poster`：`fn(poster_path, snapshot) -> str | None`，返回裁剪模式
+- `watermark`：`fn(target_dir, snapshot) -> int`，返回处理图片数量
+
+插件禁用或卸载时核心自动注销处理器，核心不再读取插件私有文件。
+
+ProviderDescriptor 还支持：
+
+- `content_profiles`：provider 所属内容画像
+- `ref_prefixes`：旧 ID 前缀，例如 `JAVDB`
+- `search_mode`：站点搜索模式，例如 `ADULT`
+- `rating_max`：评分制式，例如 5 或 10
+
+### 消息模板（backend.metadata.message_templates）
+
+插件可按内容画像覆盖核心消息模板。模板只允许 Jinja 文本，不执行插件代码；插件禁用或卸载后自动回退核心默认模板。
+
+```json
+{
+  "backend": {
+    "metadata": {
+      "message_labels": {"adult": "AV"},
+      "message_templates": {
+        "adult": {
+          "rss_added": {"title": "{{ media_info.get_title_string() }} 已添加 AV 订阅", "text": "番号：{{ media_info.keyword }}"},
+          "download_start": {"title": "{{ item.get_title_ep_string() }} 开始下载", "text": "画像：{{ profile_label }}"},
+          "rss_finished": {"title": "{{ media_info.get_title_string() }} AV 订阅完成", "text": "来源：{{ source_provider }}"},
+          "transfer_finished": {"title": "{{ media_info.get_title_string() }} 已入库", "text": "番号：{{ media_info.keyword }}"}
+        }
+      }
+    }
+  }
+}
+```
+
+可用 `msg_type`：`rss_added`、`download_start`、`download_fail`、`rss_finished`、`transfer_finished`、`transfer_fail`。核心注入变量包括 `media_info`/`item`、`in_from`、`content_profile`、`profile_label`、`source_provider`；模板选择顺序为客户端自定义 → 插件画像模板 → 核心默认模板。
+
+插件启用后，画像模板会自动出现在「消息通知 → 消息模板」中，显示为 `AV · 添加订阅` 等条目；编辑保存后按 `adult:rss_added` 写入客户端模板配置，优先于插件默认模板。插件禁用后回退核心默认模板。
+
+详细契约见 `docs/decisions/ADR-025-metadata-provider-and-naming-architecture.md`。
 
 ### settings fields 类型
 

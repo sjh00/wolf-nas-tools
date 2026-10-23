@@ -130,6 +130,12 @@ media:
   default_rmt_mode: copy
   # 默认TMDB信息语种
   tmdb_language: zh
+  # 多源元数据不可用时是否回退旧 TMDB 刮削链路（默认开启）
+  legacy_tmdb_fallback: true
+  # 豆瓣 HTML 分集补全（PoW + Cookie，较慢，仅电视/动漫启用）
+  douban_html_episodes: true
+  # 豆瓣 HTML 分集后台队列并发数（默认 1，建议保持 1 避免风控）
+  douban_html_episodes_workers: 1
 
 # 【订阅监控调度配置】（ADR-007 统一配置）
 subscribe:
