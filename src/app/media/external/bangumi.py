@@ -73,7 +73,7 @@ class Bangumi:
         data = resp.json() if resp else {}
         return data.get("data") or []
 
-    def search_season(self, start: str, end: str, page: int = 1, limit: int = 100) -> tuple[list, int]:
+    def search_season(self, start: str, end: str, page: int = 1, limit: int = 20) -> tuple[list, int]:
         """按 air_date 区间搜索当季动画，返回 (items, total)."""
         offset = max(0, (int(page) - 1) * int(limit))
         try:

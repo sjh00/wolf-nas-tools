@@ -93,7 +93,7 @@ class DoubanDiscovery:
     def items(self, feed: str, page: int, filters: dict, ctx: object) -> DiscoveryPage:
         if feed not in self._FEEDS:
             return DiscoveryPage(items=[], page=page)
-        count = 20
+        count = 50
         start = max(0, (page - 1) * count)
         method = getattr(self._api, feed)
         raw = method(start=start, count=count) or {}
@@ -224,7 +224,7 @@ class BangumiDiscovery:
         search_season: Any = getattr(self._client, "search_season", None)
         if feed == "seasonal" and callable(search_season):
             search_fn: Any = search_season
-            raw_items, total = search_fn(start, end, page=page, limit=100)
+            raw_items, total = search_fn(start, end, page=page, limit=20)
             for source in raw_items:
                 item = _bangumi_discovery_item(source)
                 if item is None:
@@ -233,7 +233,7 @@ class BangumiDiscovery:
                 if year and item.year != year:
                     continue
                 items.append(item)
-            has_more = page * 100 < total
+            has_more = page * 20 < total
         else:
             raw = self._client.calendar() or []
             for day in raw:
