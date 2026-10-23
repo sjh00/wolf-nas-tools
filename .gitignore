@@ -72,3 +72,6 @@ tests/config_test.yaml
 
 # 本地调试日志
 /log
+
+# 私有设计文档（不进入公共仓库/文档站点）
+/docs-private/

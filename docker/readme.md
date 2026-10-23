@@ -8,6 +8,7 @@
 - 非 root 用户运行（nexus:nexus，UID 911，可用 PUID/PGID 覆盖）
 - s6-overlay 进程管理，支持优雅退出
 - 数据库迁移在容器启动时自动执行（`alembic upgrade head`，幂等，无需独立 migration 容器）
+- ADR-025 之前的 TMDB/DB:/BG: 历史数据会在启动时自动补齐 anchor/identity；完成标记在 data/.migrations，重复启动不会重复扫全表
 
 ## 端口约定
 
@@ -58,7 +59,7 @@ docker compose -f docker-compose.postgresql.yml up -d
    VNC_PASSWORD=你的Chrome VNC密码         # 完整版
    ```
 
-3. **数据库迁移**：后端启动时自动执行 `alembic upgrade head`，无需手动迁移
+3. **数据库迁移**：后端启动时自动执行 `alembic upgrade head`，并自动迁移 ADR-025 之前的历史锚点数据，无需手动操作
 
 ### 访问
 
@@ -168,7 +169,7 @@ compose 中 Redis 服务已配置（无密码、使用 `./data/redis_data` 持�
 ## 数据库配置
 
 - **基础版（SQLite + Redis）** 使用 SQLite，无需配置数据库（数据在 `./data/db/`）
-- **MySQL / PostgreSQL 版** 由 compose 自动配置，后端启动时自动执行 `alembic upgrade head` 迁移（幂等，无需独立 migration 容器）
+- **MySQL / PostgreSQL 版** 由 compose 自动配置，后端启动时自动执行 `alembic upgrade head` 和多元数据锚点迁移（幂等，无需独立 migration 容器）
 - 使用外部数据库时设置 `DATABASE__*` 指向外部实例，后端启动时同样自动迁移
 
 ## 环境变量
