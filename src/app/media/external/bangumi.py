@@ -28,6 +28,7 @@ class Bangumi:
         "calendar": "calendar",
         "detail": "v0/subjects/%s",
         "relations": "v0/subjects/%s/subjects",
+        "episodes": "v0/episodes",
     }
     _base_url = "https://api.bgm.tv/"
     _page_num = 30
@@ -58,6 +59,37 @@ class Bangumi:
         获取番剧详情
         """
         return self.__invoke(self._urls["detail"] % bid, _ts=datetime.strftime(datetime.now(), "%Y%m%d"))
+
+    def search(self, keyword: str, page: int = 1, limit: int = 20, subject_type: int = 2) -> list:
+        """v0 条目搜索；subject_type=2 为动画."""
+        if not keyword:
+            return []
+        offset = max(0, (int(page) - 1) * int(limit))
+        resp = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings(), timeout=10)).post(
+            url=self._base_url + "v0/search/subjects",
+            params={"limit": int(limit), "offset": offset},
+            json={"keyword": keyword, "filter": {"type": [subject_type]}},
+        )
+        data = resp.json() if resp else {}
+        return data.get("data") or []
+
+    def episodes(self, bid, limit: int = 100, offset: int = 0) -> list:
+        """获取条目分集列表（v0/episodes）."""
+        try:
+            data = self.__invoke(
+                self._urls["episodes"],
+                subject_id=bid,
+                type=0,
+                limit=int(limit),
+                offset=int(offset),
+                _ts=datetime.strftime(datetime.now(), "%Y%m%d"),
+            )
+            if isinstance(data, dict):
+                return data.get("data") or []
+            return data if isinstance(data, list) else []
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"获取Bangumi分集失败: {bid}, {e}")
+            return []
 
     def relations(self, bid) -> list:
         """

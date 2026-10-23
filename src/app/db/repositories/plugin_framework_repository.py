@@ -5,7 +5,7 @@ Plugin Framework v2 Repository
 
 from typing import Any, cast
 
-from app.db.models import PLUGINCONFIG, PLUGINHOOKS, PLUGINLOGS, PLUGINMANIFEST
+from app.db.models import PLUGINCONFIG, PLUGINHISTORY, PLUGINHOOKS, PLUGINLOGS, PLUGINMANIFEST
 from app.db.repositories.base_repository import BaseRepository
 from app.domain.entities.plugin import (
     PluginConfigEntity,
@@ -188,6 +188,12 @@ class PluginFrameworkRepository(BaseRepository):
         """删除指定钩子订阅"""
         with self.session() as db:
             db.query(PLUGINHOOKS).filter(PLUGINHOOKS.PLUGIN_ID == plugin_id, PLUGINHOOKS.EVENT == event).delete()
+            return True
+
+    def delete_history_by_plugin(self, plugin_id: str) -> bool:
+        """删除插件历史记录."""
+        with self.session() as db:
+            db.query(PLUGINHISTORY).filter(PLUGINHISTORY.PLUGIN_ID == plugin_id).delete()
             return True
 
     def delete_hooks_by_plugin(self, plugin_id: str) -> bool:

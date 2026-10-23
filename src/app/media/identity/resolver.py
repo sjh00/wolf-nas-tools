@@ -110,7 +110,7 @@ class IdentityResolver:
         if match_media and target_names and names:
             matched = [self._strict(n, target_names) for n in names]
             if all(matched):
-                tmdb_id = int(match_media.tmdb_id) if match_media.tmdb_id else 0
+                tmdb_id = int(match_media.tmdb_id) if str(match_media.tmdb_id or "").isdigit() else 0
                 info = self._build_media_info(group, tmdb_id=tmdb_id, from_media=match_media)
                 return ResolveResult(
                     IdentifyStatus.HIT,
@@ -305,7 +305,7 @@ class IdentityResolver:
 
     def _learn_work(self, info) -> None:
         """外部解析命中后回写最小 Work 元数据（完成冷→热闭环，避免同作品重复外部解析）"""
-        if not info or not getattr(info, "tmdb_id", None):
+        if not info or not str(getattr(info, "tmdb_id", "") or "").isdigit():
             return
         tmdb_id = int(info.tmdb_id)
         if self.index.get_work("tmdb", tmdb_id):
@@ -347,7 +347,7 @@ class IdentityResolver:
         return not (g_year and m_year and g_year != m_year)
 
     def _target_names(self, match_media: MediaInfo | None) -> list[str]:
-        if not match_media or not getattr(match_media, "tmdb_id", None):
+        if not match_media or not str(getattr(match_media, "tmdb_id", "") or "").isdigit():
             return []
         tmdb_id = int(match_media.tmdb_id)
         cache = getattr(self, "_target_names_cache", None)
@@ -406,7 +406,7 @@ class IdentityResolver:
             info.type = info.type or getattr(from_media, "type", None)
             info.title = getattr(from_media, "title", None)
             info.original_title = getattr(from_media, "original_title", None)
-            info.tmdb_info = getattr(from_media, "tmdb_info", None) or {}
+            info.provider_data = getattr(from_media, "provider_data", None) or {}
             info.poster_path = getattr(from_media, "poster_path", None)
             info.backdrop_path = getattr(from_media, "backdrop_path", None)
         elif work is not None:
@@ -417,7 +417,7 @@ class IdentityResolver:
                     info.original_title = work.official_titles[1]
             info.year = info.year or (str(work.year) if work.year else None)
             if tmdb_id:
-                info.tmdb_info = {"id": tmdb_id, "title": info.title, "year": info.year}
+                info.provider_data = {"id": tmdb_id, "title": info.title, "year": info.year}
         return info
 
 

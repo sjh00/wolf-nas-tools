@@ -1,5 +1,6 @@
 """订阅重订阅续订点推导测试（修复：转移历史已到 N 集，前端回传旧 current_ep 导致进度卡住）."""
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from app.domain.mediatypes import MediaType
@@ -35,6 +36,7 @@ def _build_service(transfer_contiguous=0, download_contiguous=0):
     svc._web_utils = MagicMock()
     svc._transfer_history_manager = _FakeTransferHistory(transfer_contiguous)
     svc._download_repo = _FakeDownloadRepo(download_contiguous)
+    svc._metadata_service = None
     svc._tv_repo.insert.return_value = 999
     svc._tv_repo.insert_movies.return_value = 999
     return svc
@@ -47,7 +49,7 @@ def _make_media_info(tmdb_id=223564):
     mi.begin_season = 1
     mi.title = "超超超超超喜欢你的100个女朋友"
     mi.total_episodes = 48
-    mi.tmdb_info = {"id": tmdb_id, "name": mi.title, "season": 1}
+    mi.provider_data = {"id": tmdb_id, "name": mi.title, "season": 1}
     return mi
 
 
@@ -141,3 +143,117 @@ class TestDefaultSubscribeSetting:
         svc.add_rss_subscribe(name="测试", year="2023", mtype=MediaType.TV, season=1, over_edition=False)
 
         assert svc._tv_repo.insert.call_args.kwargs["over_edition"] == 0
+
+
+def test_identity_fields_are_passed_to_insert():
+    """双写：订阅身份字段应通过 adapter 传入 insert."""
+    svc = _build_service()
+    svc._media.get_media_info.return_value = _make_media_info()
+    svc._media.get_tmdb_season_episodes_num.return_value = 48
+    identity_fields = {
+        "identity_id": "01J00000000000000000000000",
+        "anchor_provider": "tmdb",
+        "anchor_external_id": "223564",
+        "content_profile": "default",
+        "metadata_policy": None,
+        "naming_profile": None,
+    }
+    svc._metadata_service = MagicMock()
+    svc._metadata_service.link_subscription.return_value.as_kwargs.return_value = identity_fields
+
+    code, _, _ = svc.add_rss_subscribe(
+        name="测试", year="2023", mtype=MediaType.TV, season=1, total_ep=48, current_ep=1
+    )
+
+    assert code == 0
+    inserted_kw = svc._tv_repo.insert.call_args.kwargs
+    assert inserted_kw["identity_id"] == identity_fields["identity_id"]
+    assert inserted_kw["anchor_provider"] == "tmdb"
+    assert inserted_kw["anchor_external_id"] == "223564"
+
+
+def test_douban_only_tv_subscription_without_tmdb():
+    """豆瓣条目无 TMDB 匹配时仍可创建订阅，分集数来自豆瓣."""
+    svc = _build_service()
+    media = MediaInfo()
+    media.tmdb_id = "DB:25848328"
+    media.douban_id = "25848328"
+    media.type = MediaType.TV
+    media.title = "最后生还者 第一季"
+    media.year = "2023"
+    media.begin_season = 1
+    media.total_episodes = 9
+    cast(Any, media).provider_data = None
+    cast(Any, svc)._web_utils.get_mediainfo_from_id.return_value = media
+    identity_fields = {
+        "identity_id": "01J00000000000000000000001",
+        "anchor_provider": "douban",
+        "anchor_external_id": "25848328",
+        "content_profile": "default",
+        "metadata_policy": None,
+        "naming_profile": None,
+    }
+    svc._metadata_service = MagicMock()
+    svc._metadata_service.link_subscription.return_value.as_kwargs.return_value = identity_fields
+    svc._tv_repo.insert.return_value = 999
+
+    code, msg, result = svc.add_rss_subscribe(
+        name="最后生还者",
+        year="2023",
+        mtype=MediaType.TV,
+        mediaid="DB:25848328",
+        season=1,
+    )
+
+    assert code == 0
+    assert msg in ("", "添加订阅成功")
+    inserted_kw = svc._tv_repo.insert.call_args.kwargs
+    assert inserted_kw["total"] == 9
+    assert inserted_kw["anchor_provider"] == "douban"
+    assert inserted_kw["anchor_external_id"] == "25848328"
+    svc._media.get_tmdb_season_episodes_num.assert_not_called()
+
+
+def test_provider_ref_subscribes_adult_movie():
+    """成人卡片用 content_id 作锚点、javdb ref 取详情，按单片订阅."""
+    svc = _build_service()
+    svc._metadata_service = MagicMock()
+    svc._metadata_service.lookup.return_value = {
+        "title": "START-649",
+        "year": "2026",
+        "poster": "https://example.com/start-649.jpg",
+        "overview": "adult",
+        "content_profile": "adult",
+    }
+    svc._metadata_service.link_subscription.return_value.as_kwargs.return_value = {
+        "identity_id": "01J00000000000000000000002",
+        "anchor_provider": "content_id",
+        "anchor_external_id": "START-649",
+        "content_profile": "adult",
+        "metadata_policy": "provider_only:adult",
+        "naming_profile": None,
+    }
+    svc._movie_repo.insert.return_value = 999
+
+    code, _, _ = svc.add_rss_subscribe(
+        name="START-649",
+        year="",
+        mtype=MediaType.MOVIE,
+        mediaid="content_id:START-649",
+        metadata_ref="javdb:qAZBWN",
+        content_profile="adult",
+        metadata_policy="provider_only:adult",
+        allow_private=True,
+    )
+
+    assert code == 0
+    svc._metadata_service.lookup.assert_called_once_with("javdb", "qAZBWN", allow_private=True, permissions=None)
+    inserted_kw = svc._movie_repo.insert.call_args.kwargs
+    assert inserted_kw["anchor_provider"] == "content_id"
+    assert inserted_kw["anchor_external_id"] == "START-649"
+    assert inserted_kw["content_profile"] == "adult"
+    assert inserted_kw["media_info"].tmdb_id == ""
+    assert inserted_kw["media_info"].anchor_provider == "content_id"
+    assert inserted_kw["media_info"].anchor_external_id == "START-649"
+    assert inserted_kw["keyword"] == "START-649"
+    cast(Any, svc._web_utils.get_mediainfo_from_id).assert_not_called()

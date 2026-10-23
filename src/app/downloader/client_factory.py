@@ -410,11 +410,16 @@ class DownloadClientFactory:
     def get_download_dir_info(media, downloaddir):
         """根据媒体信息读取一个下载目录的信息；多个匹配目录按剩余空间均衡选择"""
         if media.type:
+            profile_candidates = []
             candidates = []
+            allowed_types = {media.type.value, media.type.display_name}
+            profile = str(getattr(media, "content_profile", "") or "").strip()
+            if profile and profile != "default":
+                allowed_types.add(profile)
             for attr in downloaddir or []:
                 if not attr or not isinstance(attr, dict):
                     continue
-                if attr.get("type") and attr.get("type") not in (media.type.value, media.type.display_name):
+                if attr.get("type") and attr.get("type") not in allowed_types:
                     continue
                 if attr.get("category") and media.category and attr.get("category") != media.category:
                     continue
@@ -429,7 +434,12 @@ class DownloadClientFactory:
                             continue
                     except Exception as e:  # noqa: BLE001
                         log.debug(f"[Downloader]剩余空间检查失败: {e}")
-                candidates.append(attr)
+                if profile and attr.get("type") == profile:
+                    profile_candidates.append(attr)
+                else:
+                    candidates.append(attr)
+            if profile_candidates:
+                candidates = profile_candidates
             if candidates:
                 if len(candidates) > 1:
 

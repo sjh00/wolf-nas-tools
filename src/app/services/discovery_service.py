@@ -1,0 +1,128 @@
+"""探索页发现服务：来源列表 + feed 聚合."""
+
+from __future__ import annotations
+
+import json
+import threading
+from datetime import datetime, timedelta
+from typing import Any
+
+from app.core.exceptions import ValidationError
+from app.media.metadata.models import DiscoveryPage
+from app.media.metadata.providers.discovery import BangumiDiscovery, DoubanDiscovery, TmdbDiscovery
+from app.media.metadata.registry import MetadataRegistry
+from app.media.metadata.registry import registry as global_registry
+
+
+class DiscoveryService:
+    """API → DiscoveryService → DiscoveryProvider."""
+
+    def __init__(
+        self,
+        *,
+        registry: MetadataRegistry | None = None,
+        media_service: Any = None,
+        register_builtins: bool = True,
+        cache_ttl_seconds: int = 300,
+    ) -> None:
+        self._registry = registry or global_registry
+        self._media_service = media_service
+        self._builtin_lock = threading.Lock()
+        self._builtin_ready = not register_builtins
+        self._cache_ttl = max(0, cache_ttl_seconds)
+        self._cache: dict[str, tuple[datetime, DiscoveryPage]] = {}
+        self._cache_lock = threading.Lock()
+
+    def list_sources(
+        self,
+        *,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        self._ensure_builtin()
+        sources = []
+        for provider in self._registry.list_discovery_providers():
+            descriptor = provider.descriptor
+            if descriptor.visibility == "private":
+                required = getattr(descriptor, "required_permission", "") or "metadata:private:view"
+                if not allow_private or (permissions is not None and required not in permissions):
+                    continue
+            sources.append(
+                {
+                    "provider": descriptor.provider_key,
+                    "name": descriptor.display_name,
+                    "visibility": descriptor.visibility,
+                    "feeds": [feed.model_dump(mode="json") for feed in provider.feeds(None)],
+                }
+            )
+        return sources
+
+    def items(
+        self,
+        provider: str,
+        feed: str,
+        *,
+        page: int = 1,
+        filters: dict | None = None,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
+    ) -> DiscoveryPage:
+        self._ensure_builtin()
+        target = self._registry.get_discovery_provider(provider)
+        if target is None:
+            raise ValidationError(f"未知发现来源: {provider}")
+        if target.descriptor.visibility == "private":
+            required = getattr(target.descriptor, "required_permission", "") or "metadata:private:view"
+            if not allow_private:
+                raise ValidationError(f"无权访问私有来源: {provider}")
+            if permissions is not None and required not in permissions:
+                raise ValidationError(f"缺少权限 {required}")
+        feeds = {item.key for item in target.feeds(None)}
+        if feed not in feeds:
+            raise ValidationError(f"未知 feed: {provider}/{feed}")
+        cache_key = json.dumps(
+            {"provider": provider, "feed": feed, "page": max(1, page), "filters": filters or {}},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        result = target.items(feed, max(1, page), filters or {}, None)
+        self._cache_put(cache_key, result)
+        return result
+
+    def clear_cache(self) -> None:
+        with self._cache_lock:
+            self._cache.clear()
+
+    def _cache_get(self, key: str) -> DiscoveryPage | None:
+        if not self._cache_ttl:
+            return None
+        with self._cache_lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            created, page = entry
+            if datetime.now() - created > timedelta(seconds=self._cache_ttl):
+                self._cache.pop(key, None)
+                return None
+            return page
+
+    def _cache_put(self, key: str, page: DiscoveryPage) -> None:
+        if not self._cache_ttl:
+            return
+        with self._cache_lock:
+            self._cache[key] = (datetime.now(), page)
+
+    def _ensure_builtin(self) -> None:
+        if self._builtin_ready:
+            return
+        with self._builtin_lock:
+            if self._builtin_ready:
+                return
+            self._registry.register_discovery_provider(DoubanDiscovery())
+            if self._media_service is not None:
+                self._registry.register_discovery_provider(TmdbDiscovery(self._media_service))
+            self._registry.register_discovery_provider(BangumiDiscovery())
+            self._builtin_ready = True

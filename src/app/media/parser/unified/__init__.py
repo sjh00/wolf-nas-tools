@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from app.domain.mediatypes import MediaType
+from app.media.metadata.matching import MatchChain
+from app.media.metadata.parsing import ParserChain
 from app.media.parser.base import BaseParser, ParserResult
 
+from .match_profiles import ensure_builtin_match_profiles
 from .name_extractor import clean_names, extract_name
 from .preprocessor import prepare_title
 from .rules import get_rule_engine
@@ -15,12 +18,24 @@ from .types import ParseContext
 class UnifiedParser(BaseParser):
     """统一标题解析器 — 合并动漫/影视两条管线"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        match_chain: MatchChain | None = None,
+        parser_chain: ParserChain | None = None,
+    ) -> None:
         self._engine = get_rule_engine()
+        ensure_builtin_match_profiles()
+        self._match_chain = match_chain or MatchChain()
+        self._parser_chain = parser_chain or ParserChain()
 
     def parse(self, title: str, subtitle: str = "") -> ParserResult | None:
         if not title:
             return None
+
+        # Phase 0: 插件 ParserProfile 高置信度短路
+        profile_result = self._parser_chain.extract(title, subtitle)
+        if profile_result is not None:
+            return profile_result
 
         # Phase 1: 预处理
         prepared = prepare_title(title)
@@ -33,13 +48,23 @@ class UnifiedParser(BaseParser):
         extract_name(ctx, title)
         clean_names(ctx)
 
-        # Phase 4: 类型推断
-        media_type = infer_type(ctx)
+        # Phase 4: 类型推断：插件 MatchProfile 高置信度优先，否则走旧规则
+        detection = self._match_chain.detect(ctx) if self._match_chain else None
+        media_type = detection.base_media_type if detection and detection.base_media_type else infer_type(ctx)
+        content_profile = detection.content_profile if detection else "default"
 
         # Phase 5: 组装结果
-        return self._build_result(ctx, media_type, title)
+        return self._build_result(ctx, media_type, title, content_profile=content_profile, detection=detection)
 
-    def _build_result(self, ctx: ParseContext, media_type: MediaType, original: str) -> ParserResult:
+    def _build_result(
+        self,
+        ctx: ParseContext,
+        media_type: MediaType,
+        original: str,
+        *,
+        content_profile: str = "",
+        detection=None,
+    ) -> ParserResult:
         confidence = self._calculate_confidence(ctx)
         season, end_season = self._to_int_pair(ctx.season)
         episode, end_episode = self._to_int_pair(ctx.episode)
@@ -60,6 +85,9 @@ class UnifiedParser(BaseParser):
             type=media_type,
             confidence=confidence,
             org_string=original,
+            content_profile=content_profile or ("anime" if media_type == MediaType.ANIME else "default"),
+            anchor_provider=getattr(getattr(detection, "anchor_hint", None), "provider", None),
+            anchor_external_id=getattr(getattr(detection, "anchor_hint", None), "external_id", None),
         )
 
     def _calculate_confidence(self, ctx: ParseContext) -> float:

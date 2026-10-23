@@ -64,9 +64,9 @@ class MediaInfoService:
             title_season = None
         if not str(tmdbid).isdigit():
             media_info = get_mediainfo_from_id(mtype=MediaType.TV, mediaid=tmdbid)
-            if not media_info or not media_info.tmdb_info:
+            if not media_info or not media_info.provider_data:
                 return []
-            season_infos = self._media.get_tmdb_tv_seasons(media_info.tmdb_info)
+            season_infos = self._media.get_tmdb_tv_seasons(media_info.provider_data)
         else:
             season_infos = self._media.get_tmdb_tv_seasons_byid(tmdbid=tmdbid)
         if title_season:
@@ -117,7 +117,7 @@ class MediaInfoService:
                 media = get_mediainfo_from_id(mtype=media_type, mediaid=mediaid)
             else:
                 media = self._media.get_media_info(title=f"{title} {year}", mtype=media_type)
-            if not media or not media.tmdb_info:
+            if not media or not media.provider_data:
                 return MediaInfoResultDTO(
                     type=mtype, type_str=media_type.value, page=page, title=title or "", year=year or ""
                 )
@@ -130,16 +130,16 @@ class MediaInfoService:
             vote_average = round(float(media.vote_average or 0), 1)
             year = media.year or ""
             if media_type != MediaType.MOVIE:
-                release_date = media.tmdb_info.get("first_air_date") or ""
+                release_date = media.provider_data.get("first_air_date") or ""
                 seasons = [
                     {
                         "text": "第{}季".format(cn2an.an2cn(season.get("season_number"), mode="low")),
                         "num": season.get("season_number"),
                     }
-                    for season in self._media.get_tmdb_tv_seasons(tv_info=media.tmdb_info)
+                    for season in self._media.get_tmdb_tv_seasons(tv_info=media.provider_data)
                 ]
             else:
-                release_date = media.tmdb_info.get("release_date") or ""
+                release_date = media.provider_data.get("release_date") or ""
             if not rssid:
                 rssid = self._subscribe.get_subscribe_id(
                     mtype=media_type, title=title, tmdbid=str(mediaid) if mediaid else None
@@ -344,7 +344,7 @@ class MediaInfoService:
         """获取媒体详情"""
         mtype = MediaType.MOVIE if MediaType.from_string(mtype_str) == MediaType.MOVIE else MediaType.TV
         media_info = get_mediainfo_from_id(mtype=mtype, mediaid=tmdbid)
-        if not media_info or not media_info.tmdb_info:
+        if not media_info or not media_info.provider_data:
             return None
         fav, rssid, item_url = check_media_exists(
             media_server=self._media_server,
@@ -354,7 +354,7 @@ class MediaInfoService:
             year=media_info.year,
             mediaid=media_info.tmdb_id,
         )
-        seasons = self._media.get_tmdb_tv_seasons(media_info.tmdb_info)
+        seasons = self._media.get_tmdb_tv_seasons(media_info.provider_data)
         sub_seasons: list[int] = []
         if mtype == MediaType.TV:
             try:
@@ -392,16 +392,16 @@ class MediaInfoService:
             "tmdbid": media_info.tmdb_id,
             "douban_id": media_info.douban_id,
             "type": mtype.value,
-            "background": self._media.get_tmdb_backdrops(tmdbinfo=media_info.tmdb_info),
+            "background": self._media.get_tmdb_backdrops(tmdbinfo=media_info.provider_data),
             "image": poster_image,
             "vote": media_info.vote_average,
             "year": media_info.year,
             "title": media_info.title,
-            "genres": self._media.get_tmdb_genres_names(tmdbinfo=media_info.tmdb_info),
+            "genres": self._media.get_tmdb_genres_names(tmdbinfo=media_info.provider_data),
             "overview": media_info.overview,
             "runtime": StringUtils.str_timehours(media_info.runtime),
             "fact": self._media.get_tmdb_factinfo(media_info),
-            "crews": self._media.get_tmdb_crews(tmdbinfo=media_info.tmdb_info, nums=6),
+            "crews": self._media.get_tmdb_crews(tmdbinfo=media_info.provider_data, nums=6),
             "actors": self._media.get_tmdb_cats(mtype=mtype, tmdbid=media_info.tmdb_id),
             "link": media_info.get_detail_url(),
             "douban_link": media_info.get_douban_detail_url(),

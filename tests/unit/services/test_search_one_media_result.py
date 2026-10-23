@@ -58,3 +58,22 @@ class TestSearchOneMediaReturn:
         (first, _no_exists, _total, download_count), _downloaded = self._run(MediaType.TV)
         assert first is None
         assert download_count == 1
+
+
+class TestCustomProfileSearchNames:
+    """自定义画像只用番号搜索，不叠加标题."""
+
+    def test_custom_profile_returns_keyword_only(self):
+        media = MediaInfo(
+            title="サドらせ淫語 美人CA",
+            type=MediaType.MOVIE,
+            year="2026",
+            tmdb_id="content_id:START-660",
+            keyword="START-660",
+            content_profile="adult",
+        )
+
+        names, workers = SearchQueryBuilder.build_search_names(media, MagicMock())
+
+        assert names == ["START-660"]
+        assert workers == 1

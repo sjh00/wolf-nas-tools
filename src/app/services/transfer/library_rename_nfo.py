@@ -44,6 +44,8 @@ def _parse_root(root, path: str) -> dict[str, Any]:
                 "year": _year(root),
                 "tmdbid": _unique_id(root, "tmdb") or _text(root, "tmdbid"),
                 "imdbid": _unique_id(root, "imdb") or _text(root, "imdbid"),
+                "content_id": _unique_id(root, "content_id"),
+                "adult_id": _unique_id(root, "adult"),
                 "original_title": _text(root, "originaltitle"),
             }
         )

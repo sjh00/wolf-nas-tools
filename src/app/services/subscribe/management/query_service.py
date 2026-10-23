@@ -114,6 +114,12 @@ class SubscribeQueryService:
                 "name": rss_movie.NAME,
                 "year": rss_movie.YEAR,
                 "tmdbid": rss_movie.TMDBID,
+                "identity_id": rss_movie.IDENTITY_ID,
+                "anchor_provider": rss_movie.ANCHOR_PROVIDER,
+                "anchor_external_id": rss_movie.ANCHOR_EXTERNAL_ID,
+                "content_profile": rss_movie.CONTENT_PROFILE,
+                "metadata_policy": rss_movie.METADATA_POLICY,
+                "naming_profile": rss_movie.NAMING_PROFILE,
                 "image": rss_movie.IMAGE,
                 "overview": rss_movie.DESC,
                 "rss_sites": rss_sites,
@@ -198,6 +204,12 @@ class SubscribeQueryService:
                 "year": rss_tv.YEAR,
                 "season": rss_tv.SEASON,
                 "tmdbid": rss_tv.TMDBID,
+                "identity_id": rss_tv.IDENTITY_ID,
+                "anchor_provider": rss_tv.ANCHOR_PROVIDER,
+                "anchor_external_id": rss_tv.ANCHOR_EXTERNAL_ID,
+                "content_profile": rss_tv.CONTENT_PROFILE,
+                "metadata_policy": rss_tv.METADATA_POLICY,
+                "naming_profile": rss_tv.NAMING_PROFILE,
                 "image": rss_tv.IMAGE,
                 "overview": rss_tv.DESC,
                 "rss_sites": rss_sites,
@@ -230,6 +242,36 @@ class SubscribeQueryService:
     def get_subscribe_tv_episodes(self, rssid: int | None) -> Any:
         """查询数据库中订阅的电视剧缺失集数"""
         return self._tv_episode_repo.get(int(rssid or 0))
+
+    def get_subscribe_by_anchor(
+        self,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        mtype: MediaType,
+        user: UserContext | None = None,
+    ) -> dict | None:
+        """按 ANCHOR_PROVIDER/ANCHOR_EXTERNAL_ID 查询订阅（DB/插件锚点）."""
+        provider = str(anchor_provider or "").strip()
+        external = str(anchor_external_id or "").strip()
+        if not provider or not external:
+            return None
+        repo = self._movie_repo if mtype == MediaType.MOVIE else self._tv_repo
+        legacy_ref = f"DB:{external}" if provider == "douban" else f"BG:{external}" if provider == "bangumi" else ""
+        for row in repo.get_all(user=user):
+            anchor_match = (
+                str(getattr(row, "anchor_provider", "") or "") == provider
+                and str(getattr(row, "anchor_external_id", "") or "") == external
+            )
+            legacy_match = bool(legacy_ref) and str(getattr(row, "tmdb_id", "") or "").strip() == legacy_ref
+            if anchor_match or legacy_match:
+                seasons = self._parse_season_numbers(getattr(row, "season", None)) if mtype != MediaType.MOVIE else []
+                return {
+                    "rssid": str(row.id),
+                    "fav": "1",
+                    "sub_seasons": seasons,
+                    "state": getattr(row, "state", ""),
+                }
+        return None
 
     def get_subscribe_seasons(
         self,

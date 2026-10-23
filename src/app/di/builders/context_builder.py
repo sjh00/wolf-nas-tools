@@ -64,6 +64,8 @@ def build_app_context() -> AppContext:
         site_resolver=services.site_resolver,
         site_favicon_service=services.site_favicon_service,
         media_info_service=services.media_info_service,
+        metadata_service=services.metadata_service,
+        discovery_service=services.discovery_service,
         media_config_service=services.media_config_service,
         media_file_service=services.media_file_service,
         media_library_service=services.media_library_service,

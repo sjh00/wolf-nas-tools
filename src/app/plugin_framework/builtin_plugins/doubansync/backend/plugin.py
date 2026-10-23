@@ -311,7 +311,7 @@ class DoubanSyncPlugin:
                 mediaid=f"DB:{media_info.douban_id}",
                 wait=True,
             )
-            if not mediainfo or not mediainfo.tmdb_info:
+            if not mediainfo or not mediainfo.provider_data:
                 self.ctx.warn(f"{media_info.get_name()} 未查询到媒体信息")
                 self._apply_history_update(media_info, "FAILED", history_data)
                 return

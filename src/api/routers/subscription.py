@@ -41,6 +41,11 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+class MovieListRequest(BaseModel):
+    user_id: int | None = None
+    content_profile: str | None = None
+
+
 class EmptyRequest(BaseModel):
     data: dict | None = None
     user_id: int | None = None  # superadmin 按归属用户过滤订阅列表
@@ -57,6 +62,7 @@ class AddRssMediaRequest(BaseModel):
     keyword: str | None = None
     fuzzy_match: bool | None = None
     mediaid: str | int | None = None
+    metadata_ref: str | None = None
     rss_sites: list | None = None
     search_sites: list | None = None
     over_edition: bool | None = None
@@ -72,6 +78,9 @@ class AddRssMediaRequest(BaseModel):
     total_ep: int | None = None
     current_ep: int | None = None
     image: str | None = None
+    metadata_policy: str | None = None
+    content_profile: str | None = None
+    naming_profile: str | None = None
     tmdbid: str | int | None = None
 
 
@@ -113,10 +122,12 @@ class SubscribeSeasonsRequest(BaseModel):
 
 class GetDefaultSubscribeSettingRequest(BaseModel):
     mtype: str | None = None
+    content_profile: str | None = None
 
 
 class DefaultSubscribeSettingSaveRequest(BaseModel):
     mtype: str | None = None
+    content_profile: str | None = None
     over_edition: str | None = None
     restype: str | None = None
     pix: str | None = None
@@ -156,6 +167,7 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "keyword": req.keyword,
         "fuzzy_match": req.fuzzy_match,
         "mediaid": req.mediaid,
+        "metadata_ref": req.metadata_ref,
         "rss_sites": req.rss_sites,
         "search_sites": req.search_sites,
         "over_edition": req.over_edition,
@@ -166,8 +178,12 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "filter_include": req.filter_include,
         "filter_exclude": req.filter_exclude,
         "filter_free": req.filter_free,
+        "image": req.image,
         "save_path": req.save_path,
         "download_setting": req.download_setting,
+        "metadata_policy": req.metadata_policy,
+        "content_profile": req.content_profile,
+        "naming_profile": req.naming_profile,
     }
 
 
@@ -191,9 +207,9 @@ def _build_update_kwargs(req: AddRssMediaRequest) -> dict:
         "filter_include": req.filter_include,
         "filter_exclude": req.filter_exclude,
         "filter_free": req.filter_free,
+        "image": req.image,
         "save_path": req.save_path,
         "download_setting": req.download_setting,
-        "image": req.image,
     }
 
 
@@ -285,6 +301,13 @@ def add_rss_media(
 ):
     kwargs = _build_add_kwargs(req)
     kwargs["user_id"] = user.user_id
+    permissions = set(getattr(user, "permissions", []) or [])
+    allow_private = bool(getattr(user, "is_superadmin", False)) or "metadata:private:view" in permissions
+    profile = str(req.content_profile or "").strip()
+    if profile and profile != "default" and not allow_private:
+        return fail(msg="无权创建该内容画像的订阅")
+    kwargs["allow_private"] = allow_private
+    kwargs["permissions"] = None if getattr(user, "is_superadmin", False) else permissions
     denied = _check_site_grants(app_context, user, kwargs)
     if denied:
         return fail(
@@ -467,10 +490,14 @@ def get_default_rss_setting(
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
     parsed = MediaType.from_string(req.mtype or "")
+    profile = (req.content_profile or "").strip()
     if parsed in (MediaType.TV, MediaType.ANIME):
         setting = svc.default_subscribe_setting_tv
     elif parsed == MediaType.MOVIE:
-        setting = svc.default_subscribe_setting_mov
+        if profile and profile != "default":
+            setting = SystemConfig().get(f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}") or {}
+        else:
+            setting = svc.default_subscribe_setting_mov
     else:
         setting = {}
     if setting:
@@ -487,10 +514,13 @@ def save_default_rss_setting(
     mtype = req.mtype
     data = req.model_dump()
     data.pop("mtype", None)
+    profile = (data.pop("content_profile", None) or "").strip()
     parsed = MediaType.from_string(mtype or "")
     # 动漫与电视剧共用一份默认设置（读取侧同样把 ANIME 归到 TV），否则动漫页保存会被静默丢弃
     if parsed in (MediaType.TV, MediaType.ANIME):
         cfg.set(key=SystemConfigKey.DefaultSubscribeSettingTV, value=data)
+    elif parsed == MediaType.MOVIE and profile and profile != "default":
+        cfg.set(key=f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}", value=data)
     elif parsed == MediaType.MOVIE:
         cfg.set(key=SystemConfigKey.DefaultSubscribeSettingMOV, value=data)
     return success()
@@ -549,12 +579,17 @@ def get_movie_rss_items(
 
 @router.post("/movie/list", response_model=CommonResponse, summary="获取电影 RSS 订阅列表")
 def get_movie_rss_list(
-    req: EmptyRequest = EmptyRequest(),
+    req: MovieListRequest = MovieListRequest(),
     user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
     result = svc.get_subscribe_movies(user=_scoped_user(user, req.user_id))
-    return success(data=list(result.values()) if isinstance(result, dict) else result)
+    items = list(result.values()) if isinstance(result, dict) else result
+    profile = (req.content_profile or "").strip()
+    if profile:
+        return success(data=[item for item in items if item.get("content_profile") == profile])
+    # 默认只返回默认内容画像；插件自定义画像由插件页面按 content_profile 查询
+    return success(data=[item for item in items if item.get("content_profile") in (None, "", "default")])
 
 
 @router.post("/history", response_model=CommonResponse, summary="获取 RSS 历史")

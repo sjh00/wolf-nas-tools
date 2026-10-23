@@ -624,7 +624,7 @@ class TestFileTransferService:
         media.type = MediaType.ANIME
         media.begin_season = 1
         media.begin_episode = None
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
 
         captured = {}
 
@@ -656,7 +656,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
                 fallback_episode=7,
@@ -672,7 +672,7 @@ class TestFileTransferService:
         media.type = MediaType.ANIME
         media.begin_season = 1
         media.begin_episode = 6
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
 
         captured = {}
 
@@ -704,7 +704,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
                 fallback_episode=7,
@@ -721,7 +721,7 @@ class TestFileTransferService:
         media.begin_season = 1
         media.begin_episode = None
         media.tmdb_id = 1
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
         media.get_title_string.return_value = "Some Anime"
 
         with (
@@ -745,7 +745,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
             )
@@ -761,7 +761,7 @@ class TestFileTransferService:
         media.begin_season = 1
         media.begin_episode = 6
         media.tmdb_id = 1
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
         media.get_title_string.return_value = "Some Anime"
 
         with (
@@ -785,7 +785,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
             )

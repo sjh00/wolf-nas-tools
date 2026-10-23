@@ -25,6 +25,7 @@ from app.infrastructure.cache_system import get_cache_manager
 from app.infrastructure.progress import ProgressTracker
 from app.media.identity.matcher import get_target_matcher
 from app.media.identity.models import EDITION_MARKERS as _EDITION_MARKERS
+from app.media.parser._metainfo import meta_info
 from app.media.parser.parse_cache import cached_meta_info
 from app.utils import StringUtils
 
@@ -229,6 +230,13 @@ class ResultFilter:
         if not match_names or not meta_names:
             return False
 
+        # 成人标题通常是“品牌 + 演员/日期/分辨率”，不能用整串比例做快速门禁
+        if str(getattr(match_media, "content_profile", "") or "") not in ("", "default"):
+            for mn in meta_names:
+                for mmn in match_names:
+                    if len(mmn) >= 3 and (mn.startswith(mmn) or mmn.startswith(mn)):
+                        return True
+
         if meta_names & match_names:
             # 所有 meta 名都在 match 中才算可靠；否则另一半名包含区分信息
             if meta_names.issubset(match_names):
@@ -416,7 +424,16 @@ class ResultFilter:
                 stats.index_rule_fail += 1
                 continue
 
-            mi = cached_meta_info(title=torrent_name, subtitle=f"{labels} {description}")
+            profile = str(filter_args.get("content_profile") or "").strip()
+            if profile and profile != "default":
+                # 成人等非默认画像只做本地解析，避免 300+ 结果逐个走缓存/远端识别
+                mi = meta_info(
+                    title=torrent_name,
+                    subtitle=f"{labels} {description}",
+                    mtype=MediaType.MOVIE,
+                )
+            else:
+                mi = cached_meta_info(title=torrent_name, subtitle=f"{labels} {description}")
             # 若标题未解析出中文名，尝试从 description 中提取与目标媒体匹配的中文短语
             if not mi.cn_name and description and match_media:
                 desc = str(description)
@@ -439,7 +456,11 @@ class ResultFilter:
                             log.info(f"[ResultFilter]{torrent_name} 从 description 提取中文名: {mi.cn_name}")
                             break
             if not mi.get_name():
-                log.info(f"[ResultFilter]{torrent_name} 无法识别到名称")
+                log.info(
+                    f"[ResultFilter]{torrent_name} 无法识别到名称 "
+                    f"(cn={mi.cn_name!r}, en={mi.en_name!r}, "
+                    f"org={getattr(mi, 'org_string', None)!r})"
+                )
                 stats.index_match_fail += 1
                 continue
 
@@ -534,19 +555,26 @@ class ResultFilter:
                 continue
 
             qnm_result = self.quick_name_match(mi, match_media)
+            anchor_provider = str(getattr(match_media, "anchor_provider", "") or "")
+            raw_tmdb = str(getattr(match_media, "tmdb_id", "") or "")
+            non_tmdb_anchor = bool(
+                (anchor_provider and anchor_provider != "tmdb")
+                or getattr(match_media, "douban_id", None)
+                or (raw_tmdb and not raw_tmdb.isdigit())
+            )
             log.info(
                 f"[ResultFilter]{torrent_name} quick_name_match: {qnm_result}, "
                 f"meta_name={mi.get_name()}, match_name={match_media.get_name()}"
             )
             if qnm_result:
-                # ADR-014：qnm 降级为召回门，命中不再直通，交 BatchIdentifier 身份层识别
+                # ADR-014：qnm 降级为召回门；非 TMDB 锚点直接走本地匹配，不再调用 TMDB
                 log.info(f"[ResultFilter]{torrent_name} 快速名称匹配，走身份层识别")
                 candidates.append(
                     SearchCandidate(
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=False,
+                        skip_tmdb=non_tmdb_anchor,
                         media_info=mi,
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
@@ -555,7 +583,7 @@ class ResultFilter:
                 )
                 continue
 
-            # cn_name 部分匹配但 en_name 别名不同 → 低置信走 TMDB 识别
+            # cn_name 部分匹配但 en_name 别名不同 → 低置信候选
             _mi_names = set()
             for n in (mi.title, mi.cn_name, mi.en_name):
                 if n and isinstance(n, str):
@@ -567,13 +595,13 @@ class ResultFilter:
             _mi_names.discard("")
             _mm_names.discard("")
             if _mi_names & _mm_names:
-                log.info(f"[ResultFilter]{torrent_name} 中文名匹配但英文名不同，低置信走 TMDB")
+                log.info(f"[ResultFilter]{torrent_name} 中文名匹配但英文名不同，低置信走本地匹配")
                 candidates.append(
                     SearchCandidate(
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=False,
+                        skip_tmdb=non_tmdb_anchor,
                         media_info=mi,
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
@@ -661,7 +689,7 @@ class ResultFilter:
                 if media_info is not None:
                     log.info(
                         f"[ResultFilter]{torrent_name} 从缓存获取: {cache_key}, "
-                        f"tmdb_id={media_info.tmdb_id}, tmdb_info={media_info.tmdb_info is not None}"
+                        f"tmdb_id={media_info.tmdb_id}, tmdb_info={media_info.provider_data is not None}"
                     )
 
                 if not media_info:
@@ -669,7 +697,7 @@ class ResultFilter:
                     stats.index_error += 1
                     continue
 
-                if not media_info.tmdb_info:
+                if not media_info.provider_data:
                     # 低置信（仅有中文名）且 TMDB 未识别 → 拒绝，不用回退
                     if not meta_info.en_name and meta_info.cn_name:
                         log.info(f"[ResultFilter]{torrent_name} ({cache_key}) 仅中文名低置信匹配 + TMDB 未识别，拒绝")
@@ -753,6 +781,20 @@ class ResultFilter:
             sey_match = self._engine.is_torrent_match_sey(
                 media_info, filter_args.get("season"), filter_args.get("episode"), filter_args.get("year")
             )
+            if cand.skip_tmdb and match_media:
+                # 锚点身份负责匹配；TMDB 只回填补充字段/结构，不参与本结果的判定
+                media_info.anchor_provider = match_media.anchor_provider
+                media_info.anchor_external_id = match_media.anchor_external_id
+                media_info.identity_id = match_media.identity_id
+                media_info.content_profile = match_media.content_profile
+                if str(getattr(match_media, "tmdb_id", "") or "").isdigit():
+                    media_info.tmdb_id = match_media.tmdb_id
+                    media_info.provider_data = match_media.provider_data
+                if not media_info.poster_path:
+                    media_info.poster_path = match_media.poster_path
+                if not media_info.backdrop_path:
+                    media_info.backdrop_path = match_media.backdrop_path
+
             if not sey_match:
                 media_type_str = media_info.type.value if media_info.type else "Unknown"
                 log.info(

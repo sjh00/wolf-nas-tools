@@ -143,7 +143,7 @@ class TestSubscribeUpdateService:
         movie_repo.update.return_value = 0
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.title = "Test"
         media_info.year = "2024"
@@ -169,7 +169,7 @@ class TestSubscribeUpdateService:
         tv_repo = MagicMock()
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.TV
         media_info.title = "Test"
         media_info.year = "2024"
@@ -213,7 +213,7 @@ class TestSubscribeAddService:
         movie_repo.insert.return_value = 1
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.title = "Test"
         media_info.year = "2024"
@@ -242,7 +242,7 @@ class TestSubscribeAddService:
         tv_repo.insert.return_value = 2
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.TV
         media_info.title = "Test"
         media_info.year = "2024"
@@ -279,7 +279,7 @@ class TestSubscribeAddService:
         movie_repo.insert.return_value = 0
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.title = "Test"
         media_info.year = "2024"
@@ -305,7 +305,7 @@ class TestSubscribeAddService:
         movie_repo.insert.return_value = 9
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.to_dict.return_value = {}
         media_service.get_media_info.return_value = media_info

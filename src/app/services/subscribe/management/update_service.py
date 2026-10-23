@@ -100,7 +100,7 @@ class SubscribeUpdateService:
                 else:
                     title = "%s %s".strip() % (name, year)
                 media_info = self._media.get_media_info(title=title, mtype=mtype, strict=bool(year), cache=False)
-            if not media_info or not media_info.tmdb_info:
+            if not media_info or not media_info.provider_data:
                 return 1, "TMDB无法查询到媒体信息", None
             if media_info.type != MediaType.MOVIE:
                 if not season and str(mediaid).startswith("DB:"):
@@ -109,10 +109,12 @@ class SubscribeUpdateService:
                     total_episode = (
                         total_ep
                         if total_ep
-                        else self._media.get_tmdb_season_episodes_num(tv_info=media_info.tmdb_info, season=int(season))
+                        else self._media.get_tmdb_season_episodes_num(
+                            tv_info=media_info.provider_data, season=int(season)
+                        )
                     )
                 else:
-                    total_seasoninfo = self._media.get_tmdb_tv_seasons(tv_info=media_info.tmdb_info)
+                    total_seasoninfo = self._media.get_tmdb_tv_seasons(tv_info=media_info.provider_data)
                     if not total_seasoninfo:
                         return 2, "获取剧集信息失败", media_info
                     total_seasoninfo = sorted(total_seasoninfo, key=lambda x: x.get("season_number"), reverse=True)

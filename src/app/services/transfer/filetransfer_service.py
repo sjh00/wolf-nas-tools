@@ -92,6 +92,7 @@ class FileTransferService:
         cleanup_service: TransferCleanupService,
         download_repo=None,
         subscribe_repo=None,
+        metadata_service=None,
     ):
         self.media = media_service
         self.message = message
@@ -113,6 +114,7 @@ class FileTransferService:
         self._download_repo = download_repo or DownloadHistoryRepositoryAdapter()
         self._subscribe_repo = subscribe_repo or SubscribeRepository()
         self._cleanup = cleanup_service
+        self._metadata_service = metadata_service
 
         # 从配置读取媒体处理参数
         media = settings.get("media")
@@ -153,12 +155,18 @@ class FileTransferService:
             return None
         try:
             tmdb_id = str(getattr(media, "tmdb_id", "") or "")
-            if not tmdb_id:
-                return None
-            if getattr(media, "type", None) == MediaType.MOVIE:
-                return self._subscribe_repo.find_movie_owner_user_id(tmdb_id)
-            season = media.get_season_string() if hasattr(media, "get_season_string") else None
-            return self._subscribe_repo.find_tv_owner_user_id(tmdb_id, season)
+            if tmdb_id:
+                if getattr(media, "type", None) == MediaType.MOVIE:
+                    return self._subscribe_repo.find_movie_owner_user_id(tmdb_id)
+                season = media.get_season_string() if hasattr(media, "get_season_string") else None
+                return self._subscribe_repo.find_tv_owner_user_id(tmdb_id, season)
+            provider = str(getattr(media, "anchor_provider", "") or "")
+            external = str(getattr(media, "anchor_external_id", "") or "")
+            if provider and external:
+                return self._subscribe_repo.find_owner_by_anchor(
+                    provider, external, getattr(media, "type", None) or MediaType.MOVIE
+                )
+            return None
         except Exception:  # noqa: BLE001
             log.debug("[FileTransfer]按订阅解析归属失败")
             return None
@@ -219,6 +227,9 @@ class FileTransferService:
 
     def get_transfer_info_by(self, tmdbid, season=None, season_episode=None):
         return self._history.get_transfer_info_by(tmdbid, season, season_episode)
+
+    def get_transfer_info_by_path(self, dest_path, filename=None):
+        return self._history.get_transfer_info_by_path(dest_path, filename)
 
     def get_transfer_info_by_id(self, logid):
         return self._history.get_transfer_info_by_id(logid)
@@ -343,7 +354,7 @@ class FileTransferService:
         files=None,
         target_dir=None,
         unknown_dir=None,
-        tmdb_info=None,
+        provider_data=None,
         media_type=None,
         season=None,
         episode=None,
@@ -402,14 +413,19 @@ class FileTransferService:
             # ---------- 阶段 3：查下载记录 + 批量识别 ----------
             dl_season = None
             dl_episode = None
-            if not tmdb_info:
-                tmdb_info, media_type, dl_season, dl_episode = self._lookup_download_record(in_path)
+            if not provider_data:
+                provider_data, media_type, dl_season, dl_episode = self._lookup_download_record(in_path)
 
             medias = self.media.get_media_info_on_files(
-                file_list, tmdb_info, media_type, season, episode[0], backend=src_backend
+                file_list, provider_data, media_type, season, episode[0], backend=src_backend
             )
             if not medias:
                 return self._finish_transfer(False, "搜索媒体信息出错")
+            for _path, _info in medias.items():
+                if not getattr(_info, "org_string", ""):
+                    _info.org_string = os.path.basename(_path)
+                if not getattr(_info, "title", ""):
+                    _info.title = os.path.splitext(os.path.basename(_path))[0]
 
             # 订阅/下载历史已知季集时兜底：文件名解析失败的动漫单集用订阅记录的集号补齐，
             # 避免"无法从文件名中识别出集数"导致订阅下载的剧集无法入库
@@ -807,13 +823,23 @@ class FileTransferService:
 
                 reg_path = bluray_disk_dir if bluray_disk_dir else file_item
 
+                profile_ref = bool(
+                    media
+                    and getattr(media, "content_profile", "") not in (None, "", "default")
+                    and getattr(media, "anchor_external_id", "")
+                )
+                media_ref = str(getattr(media, "tmdb_id", "") or "").strip()
+                anchor_ref = bool(
+                    media and getattr(media, "anchor_provider", "") and getattr(media, "anchor_external_id", "")
+                )
+                douban_ref = media_ref.startswith("DB:")
                 if (
                     not media
-                    or not media.tmdb_info
+                    or (not media.provider_data and not profile_ref and not douban_ref and not anchor_ref)
                     or not media.get_title_string()
                     or media.get_title_string().strip().isdigit()
                     or len(media.get_title_string().strip()) < 2
-                    or not int(media.tmdb_id or 0)
+                    or (not profile_ref and not douban_ref and not anchor_ref and not media_ref.isdigit())
                 ):
                     fc, ac, am = self._handle_unrecognized_file(
                         file_item,
@@ -897,8 +923,19 @@ class FileTransferService:
                     continue
 
                 file_ext = os.path.splitext(file_item)[-1]
-                media.set_tmdb_info(
-                    self.media.get_tmdb_info(mtype=media.type, tmdbid=media.tmdb_id, append_to_response="all")
+                raw_tmdb_id = str(media.tmdb_id or "").strip()
+                if raw_tmdb_id.isdigit():
+                    media.set_provider_data(
+                        self.media.get_tmdb_info(
+                            mtype=media.type,
+                            tmdbid=raw_tmdb_id,
+                            append_to_response="all",
+                        )
+                    )
+                snapshot = (
+                    self._metadata_service.latest_snapshot_for_media(media)
+                    if self._metadata_service is not None
+                    else None
                 )
                 out_path = new_file if not bluray_disk_dir else ret_dir_path
                 season_episode = media.get_season_episode_string() if out_path else media.get_season_string()
@@ -906,9 +943,13 @@ class FileTransferService:
                     title=media.title or "",
                     type_value=media.type.value if media.type else "",
                     category=media.category or "",
-                    tmdb_id=int(media.tmdb_id) if media.tmdb_id else 0,
+                    tmdb_id=int(raw_tmdb_id) if raw_tmdb_id.isdigit() else 0,
                     year=media.year or "",
                     season_episode=season_episode,
+                    identity_id=getattr(snapshot, "identity_id", None),
+                    anchor_provider=getattr(media, "anchor_provider", None),
+                    anchor_external_id=getattr(media, "anchor_external_id", None),
+                    content_profile=getattr(media, "content_profile", None),
                 )
 
                 self._history.insert_transfer_history(

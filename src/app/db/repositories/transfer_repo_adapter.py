@@ -38,6 +38,15 @@ class TransferHistoryRepositoryAdapter:
         row = self._repo.get_transfer_info_by_id(logid)
         return TransferHistoryEntity.from_orm(row)
 
+    def get_by_dest_path(self, dest_path: str, filename: str | None = None) -> list[TransferHistoryEntity]:
+        rows = self._repo.get_transfer_info_by_dest_path(dest_path, filename)
+        return [e for e in [TransferHistoryEntity.from_orm(r) for r in rows] if e is not None]
+
+    def get_transfer_info_by_dest_path(
+        self, dest_path: str, filename: str | None = None
+    ) -> list[TransferHistoryEntity]:
+        return self.get_by_dest_path(dest_path, filename)
+
     def get_by_tmdb(
         self, tmdbid: int, season: str | None = None, season_episode: str | None = None
     ) -> list[TransferHistoryEntity]:

@@ -24,7 +24,7 @@ def build_movie_media(tmdb_id=550, title="Fight Club") -> MediaInfo:
     media.year = "1999"
     media.poster_path = "https://image.tmdb.org/t/p/original/poster.jpg"
     media.backdrop_path = "https://image.tmdb.org/t/p/original/backdrop.jpg"
-    media.tmdb_info = {
+    media.provider_data = {
         "id": tmdb_id,
         "title": title,
         "original_title": title,
@@ -51,7 +51,7 @@ def build_tv_media(tmdb_id=1399, title="Game of Thrones") -> MediaInfo:
     media.year = "2011"
     media.poster_path = "https://image.tmdb.org/t/p/original/got_poster.jpg"
     media.backdrop_path = "https://image.tmdb.org/t/p/original/got_backdrop.jpg"
-    media.tmdb_info = {
+    media.provider_data = {
         "id": tmdb_id,
         "name": title,
         "original_name": title,

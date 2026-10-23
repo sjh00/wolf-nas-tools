@@ -6,7 +6,6 @@ Plugin Registry - 插件注册表
 import os
 import shutil
 import time
-import zipfile
 from typing import Any
 
 import log
@@ -14,6 +13,7 @@ from app.core.settings import settings
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
 from app.domain.entities.plugin import PluginConfigEntity, PluginManifestEntity
 from app.plugin_framework.dependency_manager import PluginDependencyManager
+from app.plugin_framework.private_pack import safe_extract, validate_private_manifest
 from app.schemas.plugin import PluginManifest, PluginState
 from app.utils.json_utils import JsonUtils
 
@@ -87,8 +87,7 @@ class PluginRegistry:
             shutil.rmtree(extract_dir)
         os.makedirs(extract_dir)
 
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(extract_dir)
+        safe_extract(zip_path, extract_dir)
 
         manifest_path = os.path.join(extract_dir, "manifest.json")
         if not os.path.exists(manifest_path):
@@ -99,6 +98,8 @@ class PluginRegistry:
             manifest_data = JsonUtils.load(f)
 
         manifest = PluginManifest.from_dict(manifest_data)
+        if manifest.backend.metadata.visibility == "private":
+            validate_private_manifest(manifest)
         if not manifest.id or not manifest.name:
             shutil.rmtree(extract_dir)
             raise ValueError("manifest.json 缺少 id 或 name")

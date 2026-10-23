@@ -248,6 +248,29 @@ class TestSubscriptionRouter:
         assert resp.status_code == 200
         mock_subscribe_service.get_subscribe_movies.assert_called_once()
 
+    def test_movie_list_excludes_custom_profiles(self, client, mock_subscribe_service):
+        mock_subscribe_service.get_subscribe_movies.return_value = {
+            "1": {"id": 1, "content_profile": "adult"},
+            "2": {"id": 2, "content_profile": "default"},
+            "3": {"id": 3},
+        }
+
+        resp = client.post("/api/v1/subscription/movie/list", json={})
+
+        assert resp.status_code == 200
+        assert [item["id"] for item in resp.json()["data"]] == [2, 3]
+
+    def test_movie_list_filters_custom_profile(self, client, mock_subscribe_service):
+        mock_subscribe_service.get_subscribe_movies.return_value = {
+            "1": {"id": 1, "content_profile": "adult"},
+            "2": {"id": 2, "content_profile": "default"},
+        }
+
+        resp = client.post("/api/v1/subscription/movie/list", json={"content_profile": "adult"})
+
+        assert resp.status_code == 200
+        assert [item["id"] for item in resp.json()["data"]] == [1]
+
     def test_get_rss_history(self, client, mock_history_service):
         resp = client.post("/api/v1/subscription/history", json={"type": "movie"})
         assert resp.status_code == 200

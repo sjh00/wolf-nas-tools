@@ -7,6 +7,7 @@ import time
 from jinja2 import BaseLoader, Environment
 
 import log
+from app.message.template_registry import message_template_registry
 from app.message.templates import DEFAULT_MESSAGE_TEMPLATES
 from app.utils import ExceptionUtils, StringUtils
 from app.utils.json_utils import JsonUtils
@@ -91,10 +92,17 @@ class TemplateEngine:
             log.error(f"[Message]模板渲染失败：{str(e)}")
             return None
 
-    def apply_client_template(self, client, msg_type, variables):
-        """应用客户端模板，返回 (rendered_title, rendered_text)."""
+    def apply_client_template(self, client, msg_type, variables, content_profile: str | None = None):
+        """应用客户端/插件/核心模板，返回 (rendered_title, rendered_text)."""
         client_name = client.get("name", "未知")
         templates = client.get("templates")
+        variables = dict(variables or {})
+        profile = str(content_profile or variables.get("content_profile") or "").strip()
+        if profile:
+            variables.setdefault(
+                "profile_label",
+                message_template_registry.label(profile) or profile,
+            )
 
         if isinstance(templates, str):
             try:
@@ -103,12 +111,17 @@ class TemplateEngine:
                 log.error(f"[Message]客户端 {client_name} 模板配置 JSON 解析失败: {e}")
                 return None, None
 
-        # 客户端无模板配置或对应类型模板：回退默认模板（非纯文本）
+        # 客户端模板优先；其次插件按 content_profile 注册的模板；最后核心默认模板
         template_config = None
         if isinstance(templates, dict):
-            template_config = templates.get(msg_type)
+            if profile:
+                template_config = templates.get(f"{profile}:{msg_type}")
+            if not isinstance(template_config, dict):
+                template_config = templates.get(msg_type)
             if not isinstance(template_config, dict):
                 template_config = None
+        if template_config is None:
+            template_config = message_template_registry.resolve(profile, msg_type)
         if template_config is None:
             template_config = DEFAULT_MESSAGE_TEMPLATES.get(msg_type)
         if not template_config:

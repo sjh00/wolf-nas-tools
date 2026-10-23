@@ -24,13 +24,19 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
         return self._repo.is_exists_download_history(enclosure, downloader, download_id)
 
     def is_exists_by_tmdb(self, tmdb_id: str, season_episode: str) -> bool:
+        if not str(tmdb_id).isdigit():
+            return False
         return self._repo.is_exists_download_history_by_tmdb(int(tmdb_id), season_episode)
 
     def is_completed_by_tmdb(self, tmdb_id: str, season_episode: str) -> bool:
+        if not str(tmdb_id).isdigit():
+            return False
         return self._repo.is_completed_download_history_by_tmdb(int(tmdb_id), season_episode)
 
     def get_contiguous_completed_episode_by_tmdb(self, tmdb_id, season: int | None, start: int = 1) -> int:
         """查询某季已完成下载的连续集数（重订阅续订用，季包保守记 start）."""
+        if not str(tmdb_id).isdigit():
+            return 0
         return self._repo.get_contiguous_completed_episode_by_tmdb(int(tmdb_id), season, start=start)
 
     def insert(self, media_info, downloader: str, download_id: str, save_dir: str) -> None:

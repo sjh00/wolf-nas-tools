@@ -164,7 +164,12 @@ class SubscribeMatcher:
             # 种子未识别时不覆盖 TMDB，避免衍生作品被错标
             rss_info = match_rss_info
             if media_info.type != MediaType.MOVIE:
-                if rss_info.get("tmdbid") and media_info.tmdb_id and int(rss_info["tmdbid"]) == media_info.tmdb_id:
+                if (
+                    rss_info.get("tmdbid")
+                    and str(rss_info["tmdbid"]).isdigit()
+                    and media_info.tmdb_id
+                    and int(rss_info["tmdbid"]) == media_info.tmdb_id
+                ):
                     media_info.tmdb_id = int(rss_info["tmdbid"])
                 sub_type = MediaType.from_string(rss_info.get("type") or "")
                 # 订阅声明动漫时以动漫为准；已识别为动漫不因订阅属于电视剧表而降级

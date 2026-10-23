@@ -49,3 +49,11 @@ class TestNoteMediaType:
 
     def test_anime_maps_to_tv_table(self):
         assert MediaTypeMapper.to_tmdb(MediaType.ANIME) == "tv"
+
+
+def test_media_type_from_chinese_display_name():
+    from app.domain.mediatypes import MediaType
+
+    assert MediaType.from_string("电影") == MediaType.MOVIE
+    assert MediaType.from_string("电视剧") == MediaType.TV
+    assert MediaType.from_string("动漫") == MediaType.ANIME

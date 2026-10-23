@@ -26,7 +26,10 @@ DEFAULT_MESSAGE_TEMPLATES = {
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
-            "📺 类型：{{ media_info.type.value }}\n"
+            "📺 类型："
+            "{% if content_profile and content_profile != 'default' %}"
+            "{{ profile_label|default(content_profile) }}"
+            "{% else %}{{ media_info.type.value }}{% endif %}\n"
             "{% if media_info.category and category_flag %}📁 类别：{{ media_info.category }}\n{% endif %}"
             "{% if media_info.get_resource_type_string() %}"
             "📦 质量：{{ media_info.get_resource_type_string() }}\n{% endif %}"
@@ -51,7 +54,10 @@ DEFAULT_MESSAGE_TEMPLATES = {
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
-            "📺 类型：{{ media_info.type.value }}\n"
+            "📺 类型："
+            "{% if content_profile and content_profile != 'default' %}"
+            "{{ profile_label|default(content_profile) }}"
+            "{% else %}{{ media_info.type.value }}{% endif %}\n"
             "📥 来自：{{ in_from }}"
             "{% if media_info.user_name %}\n👤 用户：{{ media_info.user_name }}{% endif %}"
         ),
@@ -63,7 +69,10 @@ DEFAULT_MESSAGE_TEMPLATES = {
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
-            "📺 类型：{{ media_info.type.value }}"
+            "📺 类型："
+            "{% if content_profile and content_profile != 'default' %}"
+            "{{ profile_label|default(content_profile) }}"
+            "{% else %}{{ media_info.type.value }}{% endif %}"
         ),
     },
     "site_signin": {"title": "📊 站点签到", "text": "{{ msgs|join('\\n') }}"},

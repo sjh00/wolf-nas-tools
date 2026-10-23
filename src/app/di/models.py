@@ -130,6 +130,8 @@ class ServiceObjects:
     user_rss_service: Any
     site_grant_service: Any = None
     channel_binding_service: Any = None
+    metadata_service: Any = None
+    discovery_service: Any = None
 
 
 @dataclass(frozen=True)

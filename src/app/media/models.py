@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 import log
 from app.core.constants import ANIME_GENREIDS
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
+from app.domain.media_ref import MediaRef
 from app.domain.mediatypes import MediaType
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.category_matcher import get_category
@@ -25,6 +26,10 @@ class MediaInfo(BaseModel):
     rev_string: str | None = None
     subtitle: str | None = None
     type: MediaType | None = None
+    content_profile: str = "default"
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    identity_id: str | None = None
 
     # ---- 名称 ----
     cn_name: str | None = None
@@ -92,8 +97,8 @@ class MediaInfo(BaseModel):
     vote_average: float = 0.0
     overview: str | None = None
 
-    # ---- TMDB 完整信息 ----
-    tmdb_info: dict[str, Any] = Field(default_factory=dict)
+    # ---- 当前 provider 的完整原始信息（中性字段） ----
+    provider_data: dict[str, Any] = Field(default_factory=dict)
 
     # ---- 识别置信度（ADR-014 透传，0.0-1.0；未识别/旧路径默认 0） ----
     confidence: float = 0.0
@@ -219,7 +224,7 @@ class MediaInfo(BaseModel):
 
     def _get_tmdb_season_episode_count(self) -> int:
         """从 TMDB 详情读取当前季集数，缺失时返回 0。"""
-        seasons = self.tmdb_info.get("seasons") if isinstance(self.tmdb_info, dict) else None
+        seasons = self.provider_data.get("seasons") if isinstance(self.provider_data, dict) else None
         if not seasons or self.begin_season is None:
             return 0
         for season in seasons:
@@ -461,7 +466,7 @@ class MediaInfo(BaseModel):
         if save_path:
             self.save_path = save_path
 
-    def set_tmdb_info(self, info):
+    def set_provider_data(self, info):
         if not info:
             return
         adapter = CategoryConfigRepositoryAdapter()
@@ -508,7 +513,7 @@ class MediaInfo(BaseModel):
         if info.get("external_ids"):
             self.tvdb_id = info.get("external_ids", {}).get("tvdb_id", 0)
             self.imdb_id = info.get("external_ids", {}).get("imdb_id", "")
-        self.tmdb_info = info
+        self.provider_data = info
         self.vote_average = round(float(info.get("vote_average")), 1) if info.get("vote_average") else 0
         self.overview = info.get("overview")
         self.original_language = info.get("original_language")
@@ -522,7 +527,7 @@ class MediaInfo(BaseModel):
             tmdb_year = info.get("first_air_date", "")[:4] if info.get("first_air_date") else ""
             if tmdb_year.isdigit() and self.year.isdigit() and abs(int(self.year) - int(tmdb_year)) > 5:
                 self.tmdb_id = None  # type: ignore[reportAttributeAccessIssue]
-                self.tmdb_info = None  # type: ignore[reportAttributeAccessIssue]
+                self.provider_data = {}
                 return
 
         if media_type == MediaType.MOVIE:
@@ -602,16 +607,63 @@ class MediaInfo(BaseModel):
                 else ""
             )
 
-    def get_detail_url(self) -> str:
-        if self.tmdb_id:
-            if str(self.tmdb_id).startswith("DB:"):
-                return "https://movie.douban.com/subject/{}".format(str(self.tmdb_id).replace("DB:", ""))
-            if self.type == MediaType.MOVIE:
-                return f"https://www.themoviedb.org/movie/{self.tmdb_id}"
-            return f"https://www.themoviedb.org/tv/{self.tmdb_id}"
+    def get_media_ref(self) -> MediaRef | None:
+        provider = str(getattr(self, "anchor_provider", "") or "")
+        external = str(getattr(self, "anchor_external_id", "") or "")
+        if provider and external:
+            return MediaRef(provider=provider, external_id=external, media_type=self.type)
+        raw = str(self.tmdb_id or "")
+        if raw.isdigit():
+            return MediaRef(provider="tmdb", external_id=raw, media_type=self.type)
         if self.douban_id:
-            return f"https://movie.douban.com/subject/{self.douban_id}"
+            return MediaRef(provider="douban", external_id=str(self.douban_id), media_type=self.type)
+        return None
+
+    def get_detail_url(self, provider: str | None = None) -> str:
+        """返回详情页；默认跟随 anchor，而不是无条件跳 TMDB."""
+        target = (provider or self.anchor_provider or "").strip().lower()
+        if not target:
+            target = "douban" if self.douban_id else ("tmdb" if str(self.tmdb_id or "").isdigit() else "")
+        if target == "douban":
+            return self.get_douban_detail_url()
+        if target == "tmdb":
+            raw_id = str(self.tmdb_id or "")
+            if not raw_id.isdigit():
+                return ""
+            base = "movie" if self.type == MediaType.MOVIE else "tv"
+            return f"https://www.themoviedb.org/{base}/{raw_id}"
+        if target == "bangumi" and self.anchor_external_id:
+            return f"https://bgm.tv/subject/{self.anchor_external_id}"
         return ""
+
+    def get_detail_links(self) -> list[dict[str, str]]:
+        """按 provider 返回可用详情链接，供前端并列展示."""
+        links: list[dict[str, str]] = []
+        if self.douban_id:
+            links.append(
+                {
+                    "provider": "douban",
+                    "label": "豆瓣",
+                    "url": self.get_douban_detail_url(),
+                }
+            )
+        if str(self.tmdb_id or "").isdigit():
+            links.append(
+                {
+                    "provider": "tmdb",
+                    "label": "TMDB",
+                    "url": self.get_detail_url("tmdb"),
+                }
+            )
+        if self.anchor_provider == "bangumi" and self.anchor_external_id:
+            links.append(
+                {
+                    "provider": "bangumi",
+                    "label": "Bangumi",
+                    "url": self.get_detail_url("bangumi"),
+                }
+            )
+        return links
 
     def get_douban_detail_url(self) -> str:
         if self.douban_id:
@@ -665,6 +717,11 @@ class MediaInfo(BaseModel):
             "audio_encode": self.audio_encode,
             "category": self.category,
             "douban_id": self.douban_id,
+            "anchor_provider": self.anchor_provider,
+            "links": self.get_detail_links(),
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
+            "identity_id": self.identity_id,
             "keyword": self.keyword,
             "original_language": self.original_language,
             "original_title": self.original_title,
@@ -715,6 +772,9 @@ class MediaInfo(BaseModel):
             audio_encode=parsed.audio_encode,
             resource_team=parsed.resource_team,
             type=parsed.type,
+            content_profile=getattr(parsed, "content_profile", "default"),
+            anchor_provider=getattr(parsed, "anchor_provider", None),
+            anchor_external_id=getattr(parsed, "anchor_external_id", None),
         )
 
     def init_subtitle(self, title_text):

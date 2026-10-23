@@ -13,7 +13,10 @@ from typing import Any
 
 import log
 from app.core.exceptions import PluginError
+from app.media.metadata.registry import registry as metadata_registry
+from app.media.scraper.processor_registry import scraper_processor_registry
 from app.message import Message
+from app.message.template_registry import message_template_registry
 from app.plugin_framework import api_registry
 from app.plugin_framework.context import PluginContext
 from app.plugin_framework.dependency_manager import PluginDependencyManager
@@ -50,6 +53,7 @@ class PluginSandbox:
         app_context: Any | None = None,
     ):
         self._instances: dict[str, Any] = {}
+        self._contexts: dict[str, Any] = {}
         self._registry = plugin_registry
         self._message = message
         self._scheduler_core = scheduler_core
@@ -196,6 +200,7 @@ class PluginSandbox:
                 hook_system=self._hook_system,
                 site_engine=self._site_engine,
                 media_service=self._media_service,
+                manifest_metadata=manifest.backend.metadata,
             )
             deps = {
                 "sites": self._site_cache,
@@ -216,6 +221,8 @@ class PluginSandbox:
             instance = plugin_class(ctx, **self._filter_kwargs(plugin_class, deps))
 
             self._instances[plugin_id] = instance
+            self._contexts[plugin_id] = ctx
+            self._load_manifest_metadata(ctx, plugin_id, plugin_path, manifest)
 
             # 注册 manifest 声明的事件钩子
             hooks = getattr(manifest.backend, "hooks", None) or []
@@ -237,10 +244,56 @@ class PluginSandbox:
             log.error(f"[Sandbox] 插件加载失败 {plugin_id}: {e}")
             return False
 
-    def unload(self, plugin_id: str) -> None:
-        """卸载插件"""
+    def _load_manifest_metadata(self, ctx, plugin_id: str, plugin_path: str, manifest) -> None:
+        """按 manifest 的 backend.metadata 自动实例化并注册 provider/profile."""
+        metadata = getattr(manifest.backend, "metadata", None)
+        if metadata is None:
+            return
+        specs = (
+            ("providers", ctx.register_metadata_provider),
+            ("discovery_providers", ctx.register_discovery_provider),
+            ("content_profiles", lambda key, obj: ctx.register_metadata_profile("content", key, obj)),
+            ("match_profiles", lambda key, obj: ctx.register_metadata_profile("match", key, obj)),
+            ("parser_profiles", lambda key, obj: ctx.register_metadata_profile("parser", key, obj)),
+            ("naming_profiles", lambda key, obj: ctx.register_metadata_profile("naming", key, obj)),
+            ("nfo_profiles", lambda key, obj: ctx.register_metadata_profile("nfo", key, obj)),
+        )
+        if plugin_path not in sys.path:
+            sys.path.insert(0, plugin_path)
+        for field, register in specs:
+            for item in getattr(metadata, field, []) or []:
+                key = item.get("key")
+                entry = item.get("entry")
+                if not key or not entry:
+                    continue
+                try:
+                    module_name, class_name = entry.split(":", 1)
+                    module = importlib.import_module(module_name)
+                    target = getattr(module, class_name)
+                    register(key, target())
+                    log.info(f"[Sandbox]元数据扩展已注册 {plugin_id}: {field}/{key}")
+                except Exception as exc:  # noqa: BLE001 - 单个扩展失败不影响插件
+                    log.warn(f"[Sandbox]元数据扩展注册失败 {plugin_id} {field}/{key}: {exc}")
+        message_template_registry.register_pack(
+            plugin_id,
+            getattr(metadata, "message_templates", None),
+            getattr(metadata, "message_labels", None),
+        )
+
+    def unload(self, plugin_id: str, purge_data: bool = False) -> None:
+        """卸载插件；purge_data 仅传给插件的清理钩子."""
+        ctx = self._contexts.pop(plugin_id, None)
+        if ctx is not None:
+            with contextlib.suppress(Exception):
+                ctx.unregister_all_metadata()
+
         instance = self._instances.get(plugin_id)
         if instance:
+            if hasattr(instance, "on_uninstall"):
+                try:
+                    instance.on_uninstall(purge_data)
+                except Exception as exc:  # noqa: BLE001 - 清理失败不阻断卸载
+                    log.warn(f"[Sandbox] 插件卸载清理失败 {plugin_id}: {exc}")
             try:
                 if hasattr(instance, "on_disable"):
                     instance.on_disable()
@@ -255,6 +308,11 @@ class PluginSandbox:
 
             # 注销该插件的所有自定义 API 与公开回调
             api_registry.unregister_plugin_all(plugin_id)
+
+            # 注销该插件注册的元数据 provider / 发现来源 / profile
+            metadata_registry.unregister_plugin(plugin_id)
+            message_template_registry.unregister_plugin(plugin_id)
+            scraper_processor_registry.unregister_plugin(plugin_id)
 
             # 自动注销该插件的所有消息命令
             self._message.clear_plugin_commands(plugin_id)

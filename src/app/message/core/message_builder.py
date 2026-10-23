@@ -9,6 +9,7 @@ from typing import Any
 import log
 from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAdapter
 from app.domain.mediatypes import MediaType
+from app.message.template_registry import message_template_registry
 from app.schemas.auth import SUPERADMIN_ROLE_CODE
 from app.services.web import WebUtils
 from app.utils import StringUtils
@@ -27,6 +28,13 @@ def _should_notify_fail(key: str) -> bool:
             return False
         _fail_notify_cache[key] = now
         return True
+
+
+def _type_label(media_info, profile: str) -> str:
+    """消息中的用户可见类型：普通媒体用电影/电视剧，扩展画像用插件标签."""
+    if profile and profile != "default":
+        return message_template_registry.label(profile) or profile
+    return media_info.type.display_name
 
 
 class MessageBuilder:
@@ -127,6 +135,8 @@ class MessageBuilder:
             "star_string": can_item.get_star_string() if hasattr(can_item, "get_star_string") else "",
             "title_ep_string": can_item.get_title_ep_string() if hasattr(can_item, "get_title_ep_string") else "",
             "title_string": can_item.get_title_string() if hasattr(can_item, "get_title_string") else "",
+            "content_profile": str(getattr(can_item, "content_profile", "") or "default"),
+            "source_provider": str(getattr(can_item, "anchor_provider", "") or ""),
         }
         # 归属用户的下载事件：定向推送（Web + 绑定渠道），不广播全局外部渠道（ADR-021 5.6）
         owner_user_id = getattr(can_item, "user_id", None)
@@ -159,10 +169,12 @@ class MessageBuilder:
 
     def send_transfer_movie_message(self, in_from, media_info, exist_filenum, category_flag) -> None:
         msg_title = f"{media_info.get_title_string()} 已入库"
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        type_label = _type_label(media_info, profile)
         if media_info.vote_average:
-            msg_str = f"{media_info.get_vote_string()}，类型：{MediaType.MOVIE.display_name}"
+            msg_str = f"{media_info.get_vote_string()}，类型：{type_label}"
         else:
-            msg_str = f"类型：{MediaType.MOVIE.display_name}"
+            msg_str = f"类型：{type_label}"
         if media_info.category:
             if category_flag:
                 msg_str = f"{msg_str}，类别：{media_info.category}"
@@ -179,6 +191,8 @@ class MessageBuilder:
             "in_from": StringUtils.resolve_in_from_display(in_from),
             "exist_filenum": exist_filenum,
             "category_flag": category_flag,
+            "content_profile": str(getattr(media_info, "content_profile", "") or "default"),
+            "source_provider": str(getattr(media_info, "anchor_provider", "") or ""),
         }
         # 归属用户的入库事件：定向推送（ADR-021 5.6）
         owner_user_id = getattr(media_info, "user_id", None)
@@ -240,6 +254,8 @@ class MessageBuilder:
                 "season_episode": item_info.get_season_episode_string()
                 if hasattr(item_info, "get_season_episode_string")
                 else "",
+                "content_profile": str(getattr(item_info, "content_profile", "") or "default"),
+                "source_provider": str(getattr(item_info, "anchor_provider", "") or ""),
             }
             # 归属用户的入库事件：定向推送（ADR-021 5.6）
             owner_user_id = getattr(item_info, "user_id", None)
@@ -301,7 +317,12 @@ class MessageBuilder:
                 text,
                 image=item.get_message_image(),
                 msg_type="download_fail",
-                variables={"item": item, "error_msg": error_msg},
+                variables={
+                    "item": item,
+                    "error_msg": error_msg,
+                    "content_profile": str(getattr(item, "content_profile", "") or "default"),
+                    "source_provider": str(getattr(item, "anchor_provider", "") or ""),
+                },
                 template_engine=self._template_engine,
             )
             return
@@ -309,7 +330,12 @@ class MessageBuilder:
         self._send_admin_msg(title, text, image=item.get_message_image())
         for client in self._client_manager.active_clients:
             if "download_fail" in (client.get("switches") or ""):
-                variables = {"item": item, "error_msg": error_msg}
+                variables = {
+                    "item": item,
+                    "error_msg": error_msg,
+                    "content_profile": str(getattr(item, "content_profile", "") or "default"),
+                    "source_provider": str(getattr(item, "anchor_provider", "") or ""),
+                }
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -325,13 +351,22 @@ class MessageBuilder:
             msg_title = f"{media_info.get_title_string()} 已添加订阅"
         else:
             msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已添加订阅"
-        msg_str = f"类型：{media_info.type.display_name}"
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        source = str(getattr(media_info, "anchor_provider", "") or "")
+        msg_str = f"类型：{_type_label(media_info, profile)}"
+        if source:
+            msg_str = f"{msg_str}，来源：{source}"
         if media_info.vote_average:
             msg_str = f"{msg_str}，{media_info.get_vote_string()}"
         msg_str = f"{msg_str}，来自：{StringUtils.resolve_in_from_display(in_from)}"
         if media_info.user_name:
             msg_str = f"{msg_str}，用户：{media_info.user_name}"
-        variables = {"media_info": media_info, "in_from": StringUtils.resolve_in_from_display(in_from)}
+        variables = {
+            "media_info": media_info,
+            "in_from": StringUtils.resolve_in_from_display(in_from),
+            "content_profile": profile,
+            "source_provider": source,
+        }
         # 归属用户的订阅事件：定向推送给该用户（Web + 绑定渠道），不广播到全局外部渠道（ADR-021 5.6）
         owner_user_id = getattr(media_info, "user_id", None)
         if owner_user_id:
@@ -362,18 +397,25 @@ class MessageBuilder:
                 )
 
     def send_rss_finished_message(self, media_info, owner_user_id: int | None = None) -> None:
-        if media_info.type == MediaType.MOVIE:
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        # 普通电影沿用历史上不推送“订阅完成”；成人电影需要独立完成通知
+        if media_info.type == MediaType.MOVIE and profile == "default":
             return
         if media_info.over_edition:
             msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
         else:
             msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已完成订阅"
-        msg_str = f"类型：{media_info.type.display_name}"
+        source = str(getattr(media_info, "anchor_provider", "") or "")
+        msg_str = f"类型：{_type_label(media_info, profile)}"
+        if source:
+            msg_str = f"{msg_str}，来源：{source}"
         if media_info.vote_average:
             msg_str = f"{msg_str}，{media_info.get_vote_string()}"
         variables = {
             "media_info": media_info,
             "over_edition": media_info.over_edition if hasattr(media_info, "over_edition") else False,
+            "content_profile": profile,
+            "source_provider": source,
         }
         # 归属用户的订阅完成事件：定向推送（ADR-021 5.6）
         if owner_user_id:

@@ -30,12 +30,12 @@ class TestEpisodeBit:
 
     def test_tmdb_season_episode_count_drives_bit(self):
         media = _tv(season=1, begin=5)
-        media.tmdb_info = {"seasons": [{"season_number": 1, "episode_count": 120}]}
+        media.provider_data = {"seasons": [{"season_number": 1, "episode_count": 120}]}
         assert media.get_episode_bit() == 3
 
     def test_tmdb_other_season_ignored(self):
         media = _tv(season=1, begin=5)
-        media.tmdb_info = {"seasons": [{"season_number": 2, "episode_count": 120}]}
+        media.provider_data = {"seasons": [{"season_number": 2, "episode_count": 120}]}
         assert media.get_episode_bit() == 2
 
     def test_movie_has_no_episode_bit_impact(self):
@@ -66,7 +66,7 @@ class TestEpisodeRendering:
     def test_three_digit_uniform_within_season(self):
         # 同季低集号也应补齐到 3 位（TMDB 季集数 120）
         media = _tv(season=1, begin=5)
-        media.tmdb_info = {"seasons": [{"season_number": 1, "episode_count": 120}]}
+        media.provider_data = {"seasons": [{"season_number": 1, "episode_count": 120}]}
         assert media.get_episode_seqs() == "005"
         assert media.get_episode_items() == "E005"
         assert media.get_season_episode_string() == "S01 E005"

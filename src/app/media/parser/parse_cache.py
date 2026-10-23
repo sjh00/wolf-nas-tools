@@ -19,7 +19,7 @@ from app.utils import StringUtils
 _TTL = 24 * 3600
 
 # 解析规则版本：规则变更（如集号/季号提取修复）时 +1，使旧缓存自动失效
-_PARSER_VERSION = 4
+_PARSER_VERSION = 5
 
 
 class ParseCache:

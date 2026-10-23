@@ -5,19 +5,46 @@ from app.agent.tools.base import BaseTool, ToolLevel
 
 class SubscribeAddTool(BaseTool):
     name = "subscribe_add"
-    description = "添加 RSS 订阅追新（电影或电视剧）。当用户说'订阅/追更某部作品'时调用。"
+    description = (
+        "添加订阅。普通电影/电视剧使用 tmdb；插件内容画像通过 provider + external_id "
+        "指定元数据来源，并传对应的 content_profile。"
+    )
     parameters = {
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "影视标题"},
+            "title": {"type": "string", "description": "影视标题或番号"},
             "media_type": {
                 "type": "string",
                 "enum": ["movie", "tv"],
-                "description": "媒体类型，默认 movie",
+                "description": "载体类型；AV 也使用 movie；默认 movie",
                 "default": "movie",
             },
             "year": {"type": "integer", "description": "可选，年份"},
             "season": {"type": "integer", "description": "可选，电视剧季号"},
+            "provider": {
+                "type": "string",
+                "description": (
+                    "元数据来源 key；以当前注册的 metadata provider 为准，普通影视通常为 tmdb/douban/bangumi"
+                ),
+            },
+            "external_id": {
+                "type": "string",
+                "description": "provider 详情 ID，例如 TMDB ID 或插件 provider 的外部 ID",
+            },
+            "content_id": {"type": "string", "description": "可选，番号/内容 ID；用于资源搜索关键词"},
+            "metadata_ref": {
+                "type": "string",
+                "description": "可选，直接传 provider:external_id；与 provider/external_id 二选一",
+            },
+            "content_profile": {
+                "type": "string",
+                "description": "内容画像 key；未填时按 provider descriptor 自动推断",
+                "default": "default",
+            },
+            "metadata_policy": {
+                "type": "string",
+                "description": "可选；非默认内容画像默认 provider_only:<profile>",
+            },
         },
         "required": ["title"],
     }
@@ -32,9 +59,11 @@ class SubscribeListTool(BaseTool):
         "type": "object",
         "properties": {
             "media_type": {"type": "string", "enum": ["movie", "tv"], "description": "可选，限定类型"},
+            "content_profile": {"type": "string", "description": "可选，限定内容画像 key"},
         },
     }
     level = ToolLevel.READ
+    permission = "subscription:view"
 
 
 class SubscribeDetailTool(BaseTool):
@@ -47,6 +76,8 @@ class SubscribeDetailTool(BaseTool):
         "properties": {
             "title": {"type": "string", "description": "剧名（模糊匹配）"},
             "tmdb_id": {"type": "integer", "description": "可选，TMDB ID"},
+            "media_type": {"type": "string", "enum": ["movie", "tv"], "description": "可选，限定类型"},
+            "content_profile": {"type": "string", "description": "可选，限定内容画像 key"},
         },
         "required": ["title"],
     }

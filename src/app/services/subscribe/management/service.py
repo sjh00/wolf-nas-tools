@@ -50,6 +50,7 @@ class SubscribeService:
         download_repo: Any = None,
         transfer_history_manager: Any = None,
         user_repo: Any = None,
+        metadata_service: Any = None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -88,6 +89,7 @@ class SubscribeService:
             self._web_utils,
             self._download_repo,
             self._transfer_history_manager,
+            metadata_service,
         )
         self._finish_svc = SubscribeFinishService(
             self._movie_repo, self._tv_repo, self._history_repo, self._message, self._event_bus, self._download_repo
@@ -200,6 +202,15 @@ class SubscribeService:
 
     def get_subscribe_tv_episodes(self, rssid):
         return self._query_svc.get_subscribe_tv_episodes(rssid)
+
+    def get_subscribe_by_anchor(
+        self,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        mtype: MediaType,
+        user: Any = None,
+    ) -> dict | None:
+        return self._query_svc.get_subscribe_by_anchor(anchor_provider, anchor_external_id, mtype, user=user)
 
     def get_subscribe_seasons(self, tmdbid=None, title=None, year=None, user=None):
         return self._query_svc.get_subscribe_seasons(tmdbid, title, year, user=user)

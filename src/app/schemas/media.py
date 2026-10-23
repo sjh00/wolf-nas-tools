@@ -75,6 +75,10 @@ class TransferMediaDTO:
     title: str
     type_value: str
     category: str
-    tmdb_id: int
+    tmdb_id: int | str
     year: str
     season_episode: str
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None

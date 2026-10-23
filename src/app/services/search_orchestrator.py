@@ -126,7 +126,7 @@ class SearchOrchestrator:
             media_info = self._identify_media(ctx)
             ctx.match_media = media_info
 
-        if media_info and media_info.tmdb_info:
+        if media_info and media_info.provider_data:
             search_names, max_workers = SearchQueryBuilder.build_search_names(media_info, self._media)
             search_season = media_info.get_season_list() if media_info.begin_season is not None else None
             search_episode = media_info.get_episode_list()
@@ -173,7 +173,7 @@ class SearchOrchestrator:
             if ctx.media_type:
                 mtype = ctx.media_type
             ident = self._media.get_media_info(mtype=mtype, title=keyword)
-            if ident and ident.tmdb_info:
+            if ident and ident.provider_data:
                 if season_num:
                     ident.begin_season = int(season_num)
                 if episode_num:

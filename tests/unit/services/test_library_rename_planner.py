@@ -68,17 +68,17 @@ class _FakeResolver:
     _tv_category_flag = False
     _anime_category_flag = False
 
-    def get_movie_dest_path(self, media, _adapter=None):
+    def get_movie_dest_path(self, media, _adapter=None, _snapshot=None):
         return f"{media.title} ({media.year})", f"{media.title} ({media.year})"
 
-    def get_tv_dest_path(self, media, _adapter=None):
+    def get_tv_dest_path(self, media, _adapter=None, _snapshot=None):
         return (
             f"{media.title} ({media.year})",
             f"Season {media.begin_season}",
             f"{media.title} - S{media.begin_season:02d}E{media.begin_episode:02d}",
         )
 
-    def get_dest_path_by_info(self, root, media, _adapter=None):
+    def get_dest_path_by_info(self, root, media, _adapter=None, _snapshot=None):
         return f"{root}/{media.title} ({media.year})"
 
 

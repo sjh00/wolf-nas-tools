@@ -189,6 +189,10 @@ class DownloadRepository(BaseRepository):
                         "SE": media_info.get_season_episode_string() or "",
                         "STATE": "downloading",
                         "DATE": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
+                        "IDENTITY_ID": getattr(media_info, "identity_id", None),
+                        "ANCHOR_PROVIDER": getattr(media_info, "anchor_provider", None),
+                        "ANCHOR_EXTERNAL_ID": getattr(media_info, "anchor_external_id", None),
+                        "CONTENT_PROFILE": getattr(media_info, "content_profile", None),
                         **({"USER_ID": user_id} if user_id is not None else {}),
                     }
                 )
@@ -213,6 +217,10 @@ class DownloadRepository(BaseRepository):
                         SAVE_PATH=save_dir,
                         SE=media_info.get_season_episode_string() or "",
                         STATE="downloading",
+                        IDENTITY_ID=getattr(media_info, "identity_id", None),
+                        ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
+                        ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
+                        CONTENT_PROFILE=getattr(media_info, "content_profile", None),
                     )
                 )
 

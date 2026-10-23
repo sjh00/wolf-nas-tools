@@ -102,7 +102,7 @@ class TransferPipeline:
             operation=task.operation,
             target_dir=task.target_dir,
             unknown_dir=task.unknown_dir,
-            tmdb_info=task.tmdb_info,
+            provider_data=task.provider_data,
             media_type=task.media_type,
             season=task.season,
             episode=task.episode,
