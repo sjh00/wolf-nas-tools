@@ -45,6 +45,8 @@ services:
       REDIS__HOST: redis
       REDIS__PORT: "6379"
       REDIS__DB: "0"
+      LABORATORY__CHROME_ENABLED: "true"
+      LABORATORY__CHROME_SERVER_HOST: http://nexus-chrome:9850
     depends_on:
       postgresql:
         condition: service_healthy
