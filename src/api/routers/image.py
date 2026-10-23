@@ -30,6 +30,7 @@ from app.infrastructure.image_proxy import (
     get_cache_path,
     resize_image,
 )
+from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.utils.json_utils import JsonUtils
 
 router = APIRouter()
@@ -87,15 +88,6 @@ def _is_allowed_library_host(host: str) -> bool:
     except OSError:
         return False
     return bool(resolved & _ms_hosts_cache["ips"])
-
-
-def _referer_for_image(url: str) -> str | None:
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    if host.endswith("javbus.com"):
-        return "https://www.javbus.com/"
-    if host.endswith("javdb.com") or host.endswith("jdbstatic.com"):
-        return "https://javdb.com/"
-    return None
 
 
 def _is_blocked_ip(ip: str) -> bool:
@@ -234,7 +226,7 @@ async def proxy_library_image(request: Request, img_url: str):
     return await _serve_image(
         cache_path,
         decoded_url,
-        referer=_referer_for_image(decoded_url),
+        referer=image_referer_registry.resolve(decoded_url),
     )
 
 

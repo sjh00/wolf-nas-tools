@@ -71,6 +71,7 @@ class PluginMetadataConfig:
     nfo_profiles: list[dict] = field(default_factory=list)
     message_templates: dict = field(default_factory=dict)
     message_labels: dict = field(default_factory=dict)
+    image_referers: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "PluginMetadataConfig":
@@ -87,6 +88,7 @@ class PluginMetadataConfig:
 
         message_templates = data.get("message_templates")
         message_labels = data.get("message_labels")
+        image_referers = data.get("image_referers")
         return cls(
             visibility=data.get("visibility", "public"),
             required_permission=data.get("required_permission", ""),
@@ -99,6 +101,7 @@ class PluginMetadataConfig:
             nfo_profiles=normalize(data.get("nfo_profiles")),
             message_templates=dict(message_templates) if isinstance(message_templates, dict) else {},
             message_labels=dict(message_labels) if isinstance(message_labels, dict) else {},
+            image_referers=dict(image_referers) if isinstance(image_referers, dict) else {},
         )
 
     def keys(self, kind: str) -> set[str]:
@@ -118,6 +121,7 @@ class PluginMetadataConfig:
             "nfo_profiles": self.nfo_profiles,
             "message_templates": self.message_templates,
             "message_labels": self.message_labels,
+            "image_referers": self.image_referers,
         }
 
 
