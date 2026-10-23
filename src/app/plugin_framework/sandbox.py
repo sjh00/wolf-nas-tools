@@ -13,6 +13,7 @@ from typing import Any
 
 import log
 from app.core.exceptions import PluginError
+from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.media.metadata.registry import registry as metadata_registry
 from app.media.scraper.processor_registry import scraper_processor_registry
 from app.message import Message
@@ -279,6 +280,10 @@ class PluginSandbox:
             getattr(metadata, "message_templates", None),
             getattr(metadata, "message_labels", None),
         )
+        image_referer_registry.register_pack(
+            plugin_id,
+            getattr(metadata, "image_referers", None),
+        )
 
     def unload(self, plugin_id: str, purge_data: bool = False) -> None:
         """卸载插件；purge_data 仅传给插件的清理钩子."""
@@ -313,6 +318,7 @@ class PluginSandbox:
             metadata_registry.unregister_plugin(plugin_id)
             message_template_registry.unregister_plugin(plugin_id)
             scraper_processor_registry.unregister_plugin(plugin_id)
+            image_referer_registry.unregister_plugin(plugin_id)
 
             # 自动注销该插件的所有消息命令
             self._message.clear_plugin_commands(plugin_id)
