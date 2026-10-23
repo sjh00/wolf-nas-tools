@@ -1,0 +1,41 @@
+# Nexus Media Chrome / OCR 可选服务叠加层
+#
+# 与基础 compose 一起使用：
+#   VNC_PASSWORD='<强密码>' docker compose -f docker-compose.yml -f docker-compose.chrome.yml up -d
+#
+# 数据库版：
+#   VNC_PASSWORD='<强密码>' docker compose -f docker-compose.mysql.yml -f docker-compose.chrome.yml up -d
+
+services:
+  backend:
+    environment:
+      LABORATORY__CHROME_ENABLED: "true"
+      LABORATORY__CHROME_SERVER_HOST: http://nexus-chrome:9850
+    depends_on:
+      nexus-chrome:
+        condition: service_started
+
+  nexus-chrome:
+    image: linyuan0213/nexus-chrome:latest
+    container_name: nexus-chrome
+    restart: unless-stopped
+    networks:
+      - nexus-media-network
+    shm_size: 2gb
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      TZ: Asia/Shanghai
+      APP_HOST: 0.0.0.0
+      APP_PORT: "9850"
+      CHROME_RENDER_MODE: vulkan
+      VNC_PASSWORD: ${VNC_PASSWORD:?请在 .env 中设置 VNC_PASSWORD}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      DATA_DIR: /app/data
+      PROFILE_DATA_DIR: /app/data/profiles
+      USER_DATA_PATH: /app/data/user_data
+    volumes:
+      - ./data/chrome:/app/data
+      - /dev/shm:/dev/shm
+    ports:
+      - 9850:9850
