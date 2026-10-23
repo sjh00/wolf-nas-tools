@@ -26,7 +26,14 @@ class RateLimitMiddleware:
     - /docs /openapi.json  Swagger
     """
 
-    _EXEMPT_PATHS = ("/health", "/static", "/docs", "/openapi.json", "/redoc")
+    _EXEMPT_PATHS = (
+        "/health",
+        "/static",
+        "/img",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+    )
 
     # 特定路径自定义限流规则：{path: rate}
     _PATH_LIMITS: dict[str, str] = {
