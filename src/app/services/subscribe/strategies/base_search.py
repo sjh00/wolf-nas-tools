@@ -573,7 +573,11 @@ class BaseSearchStrategy:
             media_info.title = name or media_info.title
             media_info.cn_name = name or media_info.cn_name
             media_info.year = year or media_info.year
-            # 各来源使用自己的元数据；TMDB 只用于正常 TMDB 订阅补充。
+            # 除 AV 外，非 TMDB 来源仍可用 TMDB 补充海报、简介等；但不参与错误判定。
+            raw_tmdb = str(tmdbid or "").strip()
+            if raw_tmdb.isdigit() and str(content_profile or "").strip().lower() != "adult":
+                media_info.tmdb_id = raw_tmdb
+                media_info.provider_data = self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=raw_tmdb) or {}
         elif self._is_external_ref(tmdbid):
             media_info = meta_info(title=("%s %s" % (name, year)).strip(), mtype=mtype)
             media_info.tmdb_id = ""
