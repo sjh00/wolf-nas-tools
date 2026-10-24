@@ -11,23 +11,35 @@ from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
+from app.media.metadata.refs import parse_media_ref
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
 
 
 def _split_provider_ref(value: Any) -> tuple[str, str] | None:
-    """拆分 `<provider>:<external_id>`；忽略 TMDB/豆瓣等旧前缀."""
+    """拆分 `<provider>:<external_id>`，并归一化 DB/BG/TMDB 等旧前缀."""
     if value is None:
         return None
     text = str(value).strip()
     if ":" not in text:
         return None
+    parsed = parse_media_ref(text)
+    if parsed is not None:
+        return parsed
     provider, external_id = text.split(":", 1)
-    provider = provider.strip()
+    provider = provider.strip().lower()
     external_id = external_id.strip()
     if not provider or not external_id:
         return None
-    return provider, external_id
+    aliases = {
+        "db": "douban",
+        "douban": "douban",
+        "bgm": "bangumi",
+        "bg": "bangumi",
+        "bangumi": "bangumi",
+        "tmdb": "tmdb",
+    }
+    return aliases.get(provider, provider), external_id
 
 
 class SubscribeAddService:
@@ -95,6 +107,7 @@ class SubscribeAddService:
         content_profile: str | None,
         allow_private: bool,
         permissions: set[str] | None,
+        media_type: MediaType | None = None,
     ):
         """用插件 provider 的详情构造 MediaInfo（成人等内容不走 TMDB 查询）."""
         if self._metadata_service is None:
@@ -118,13 +131,23 @@ class SubscribeAddService:
             posters = images.get("poster") or []
             if posters:
                 poster = posters[0].get("url")
-        media_info = meta_info(title=title, mtype=MediaType.MOVIE)
+        resolved_type = media_type or MediaType.from_string(str(record.get("media_type") or ""))
+        if resolved_type == MediaType.ANIME:
+            resolved_type = MediaType.TV
+        if resolved_type not in (MediaType.MOVIE, MediaType.TV):
+            resolved_type = MediaType.MOVIE
+        media_info = meta_info(title=title, mtype=resolved_type)
         media_info.title = title
         media_info.cn_name = title
         media_info.year = str(record.get("year") or year or "") or None
         media_info.poster_path = poster or ""
         media_info.overview = record.get("overview")
-        media_info.type = MediaType.MOVIE
+        media_info.type = resolved_type
+        extra = record.get("extra") or {}
+        total_episodes = record.get("episode_count") or extra.get("bangumi.eps") or extra.get("total_episodes")
+        if str(total_episodes or "").isdigit():
+            media_info.total_episodes = int(str(total_episodes))
+        media_info.begin_season = 1
         media_info.content_profile = content_profile or record.get("content_profile") or "default"
         return media_info
 
@@ -246,10 +269,11 @@ class SubscribeAddService:
                     content_profile=content_profile,
                     allow_private=allow_private,
                     permissions=permissions,
+                    media_type=mtype,
                 )
                 if media_info is not None:
                     media_info.tmdb_id = ""
-                    mtype = MediaType.MOVIE
+                    mtype = media_info.type
                     anchor_ref = _split_provider_ref(mediaid)
                     if anchor_ref:
                         media_info.anchor_provider = anchor_ref[0]
