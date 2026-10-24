@@ -12,6 +12,7 @@ from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
 from app.media.metadata.refs import parse_media_ref
+from app.media.metadata.registry import registry as metadata_registry
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
 
@@ -284,17 +285,28 @@ class SubscribeAddService:
             provider_ref = _split_provider_ref(metadata_ref)
             media_info = None
             if provider_ref:
-                media_info = self._provider_media_info(
-                    provider_ref[0],
-                    provider_ref[1],
-                    name=name,
-                    year=year,
-                    content_profile=content_profile,
-                    allow_private=allow_private,
-                    permissions=permissions,
-                    media_type=mtype,
-                    season=int(str(season)) if str(season or "").isdigit() else None,
-                )
+                descriptor = getattr(metadata_registry.get_provider(provider_ref[0]), "descriptor", None)
+                if name and getattr(descriptor, "visibility", "public") == "private":
+                    # 私有插件来源已有标题时先落库，详情和海报由插件列表异步补全，
+                    # 避免被 JavLibrary/Cloudflare 等详情请求阻塞。
+                    media_info = meta_info(title=name, mtype=mtype)
+                    media_info.title = name
+                    media_info.cn_name = name
+                    media_info.year = year or media_info.year
+                    media_info.type = mtype
+                    media_info.content_profile = content_profile or "default"
+                else:
+                    media_info = self._provider_media_info(
+                        provider_ref[0],
+                        provider_ref[1],
+                        name=name,
+                        year=year,
+                        content_profile=content_profile,
+                        allow_private=allow_private,
+                        permissions=permissions,
+                        media_type=mtype,
+                        season=int(str(season)) if str(season or "").isdigit() else None,
+                    )
                 if media_info is not None:
                     media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
                     mtype = media_info.type
