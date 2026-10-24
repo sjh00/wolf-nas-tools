@@ -91,12 +91,20 @@ class SubscribeUpdateService:
         resolved_year = str(year or self._existing(row, "YEAR", "year", default="") or "")
         provider = self._existing(row, "ANCHOR_PROVIDER", "anchor_provider")
         external = self._existing(row, "ANCHOR_EXTERNAL_ID", "anchor_external_id")
+        if str(external or "").startswith("content_id:"):
+            provider = "content_id"
+            external = str(external).split(":", 1)[1]
         profile = self._existing(row, "CONTENT_PROFILE", "content_profile")
         identity_id = self._existing(row, "IDENTITY_ID", "identity_id")
+        current_keyword = str(self._existing(row, "KEYWORD", "keyword", default="") or "")
+        if current_keyword.startswith("content_id:"):
+            current_keyword = current_keyword.split(":", 1)[1]
+        if keyword and str(keyword).startswith("content_id:"):
+            keyword = str(keyword).split(":", 1)[1]
         values = {
             "name": title,
             "year": resolved_year,
-            "keyword": keyword or self._existing(row, "KEYWORD", "keyword", default=""),
+            "keyword": keyword or current_keyword,
             "image": image or self._existing(row, "IMAGE", "image", default=""),
             "tmdbid": self._existing(row, "TMDBID", "tmdbid", default=""),
             "identity_id": identity_id,
