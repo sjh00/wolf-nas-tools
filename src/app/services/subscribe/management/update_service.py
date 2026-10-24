@@ -36,6 +36,113 @@ class SubscribeUpdateService:
         self._system_config = system_config
         self._web_utils = web_utils
 
+    @staticmethod
+    def _text(row, name: str) -> str:
+        value = getattr(row, name, "")
+        return value.strip() if isinstance(value, str) else ""
+
+    @classmethod
+    def _is_generic_subscription(cls, row) -> bool:
+        provider = cls._text(row, "ANCHOR_PROVIDER")
+        profile = cls._text(row, "CONTENT_PROFILE")
+        tmdbid = cls._text(row, "TMDBID")
+        return bool(
+            (provider and provider != "tmdb") or (profile and profile != "default") or (not tmdbid and provider)
+        )
+
+    @staticmethod
+    def _existing(row, *names, default=None):
+        for name in names:
+            value = getattr(row, name, None)
+            if value is not None:
+                return value
+        return default
+
+    def _update_generic(
+        self,
+        repo,
+        row,
+        *,
+        mtype,
+        rssid,
+        name,
+        year,
+        keyword,
+        season,
+        image,
+        over_edition,
+        filter_restype,
+        filter_pix,
+        filter_team,
+        filter_rule,
+        filter_include,
+        filter_exclude,
+        filter_free,
+        save_path,
+        download_setting,
+        total_ep,
+        current_ep,
+        state,
+        rss_sites,
+        search_sites,
+        user,
+    ):
+        title = str(name or self._existing(row, "NAME", "name", default="") or "")
+        resolved_year = str(year or self._existing(row, "YEAR", "year", default="") or "")
+        provider = self._existing(row, "ANCHOR_PROVIDER", "anchor_provider")
+        external = self._existing(row, "ANCHOR_EXTERNAL_ID", "anchor_external_id")
+        profile = self._existing(row, "CONTENT_PROFILE", "content_profile")
+        identity_id = self._existing(row, "IDENTITY_ID", "identity_id")
+        values = {
+            "name": title,
+            "year": resolved_year,
+            "keyword": keyword or self._existing(row, "KEYWORD", "keyword", default=""),
+            "image": image or self._existing(row, "IMAGE", "image", default=""),
+            "tmdbid": self._existing(row, "TMDBID", "tmdbid", default=""),
+            "identity_id": identity_id,
+            "anchor_provider": provider,
+            "anchor_external_id": external,
+            "content_profile": profile,
+            "metadata_policy": self._existing(row, "METADATA_POLICY", "metadata_policy"),
+            "naming_profile": self._existing(row, "NAMING_PROFILE", "naming_profile"),
+            "over_edition": over_edition,
+            "filter_restype": filter_restype,
+            "filter_pix": filter_pix,
+            "filter_team": filter_team,
+            "filter_rule": filter_rule,
+            "filter_include": filter_include,
+            "filter_exclude": filter_exclude,
+            "filter_free": filter_free,
+            "save_path": save_path,
+            "download_setting": download_setting,
+            "state": state or self._existing(row, "STATE", "state", default="R"),
+            "rss_sites": rss_sites,
+            "search_sites": search_sites,
+        }
+        if mtype != MediaType.MOVIE:
+            values.update(
+                {
+                    "season": season or self._existing(row, "SEASON", "season", default=""),
+                    "total": self._existing(row, "TOTAL", "total", default=0),
+                    "lack": self._existing(row, "LACK", "lack", default=0),
+                    "total_ep": total_ep if total_ep is not None else self._existing(row, "TOTAL_EP", "total_ep"),
+                    "current_ep": current_ep
+                    if current_ep is not None
+                    else self._existing(row, "CURRENT_EP", "current_ep"),
+                }
+            )
+        code = repo.update(rssid=rssid, user=user, **values)
+        media_info = meta_info(title=title, mtype=mtype)
+        media_info.title = title
+        media_info.year = resolved_year
+        media_info.type = mtype
+        media_info.poster_path = values["image"]
+        media_info.anchor_provider = provider
+        media_info.anchor_external_id = external
+        media_info.identity_id = identity_id
+        media_info.content_profile = str(profile or "default")
+        return code, "更新成功" if code == 0 else "更新失败", media_info
+
     def update_rss_subscribe(
         self,
         mtype: Any,
@@ -87,6 +194,38 @@ class SubscribeUpdateService:
         current_ep = int(str(current_ep)) if str(current_ep).isdigit() else None
         download_setting = int(str(download_setting)) if str(download_setting).replace("-", "").isdigit() else -1
         fuzzy_match = bool(fuzzy_match)
+
+        repo = self._movie_repo if mtype == MediaType.MOVIE else self._tv_repo
+        existing_rows = repo.get_all(rssid=int(rssid), user=user)
+        existing = existing_rows[0] if existing_rows else None
+        if existing is not None and self._is_generic_subscription(existing):
+            return self._update_generic(
+                repo,
+                existing,
+                mtype=mtype,
+                rssid=int(rssid),
+                name=name,
+                year=year,
+                keyword=keyword,
+                season=season,
+                image=image,
+                over_edition=over_edition,
+                filter_restype=filter_restype,
+                filter_pix=filter_pix,
+                filter_team=filter_team,
+                filter_rule=filter_rule,
+                filter_include=filter_include,
+                filter_exclude=filter_exclude,
+                filter_free=filter_free,
+                save_path=save_path,
+                download_setting=download_setting,
+                total_ep=total_ep,
+                current_ep=current_ep,
+                state=state,
+                rss_sites=rss_sites,
+                search_sites=search_sites,
+                user=user,
+            )
 
         media_info = None
         if not fuzzy_match:
