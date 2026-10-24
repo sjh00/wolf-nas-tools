@@ -349,3 +349,10 @@ def test_provider_ref_tmdb_tv_passes_media_type_to_lookup():
     assert svc._tv_repo.insert.call_args.kwargs["media_info"].type == MediaType.TV
     assert svc._tv_repo.insert.call_args.kwargs["total"] == 10
     svc._movie_repo.insert.assert_not_called()
+
+
+def test_content_id_anchor_is_normalized_for_subscription_list():
+    from app.services.subscribe.management.query_service import _normalized_anchor, _source_label
+
+    assert _normalized_anchor("tmdb", "content_id:JUR-897") == ("content_id", "JUR-897")
+    assert _source_label("content_id", "") == "插件"
