@@ -322,23 +322,95 @@ class TestProviderRefSearch:
         strategy._movie_repo.update_state.assert_called_with(title=None, year=None, rssid=1, state="R")
 
 
-def test_non_tmdb_anchor_never_queries_tmdb(strategy):
-    """JavDB/Bangumi 等来源只用自己的锚点，不借用 TMDB 识别."""
+def test_plugin_anchor_never_queries_tmdb(strategy):
+    """JavDB 等插件来源只用自己的锚点，不借用 TMDB 识别."""
     strategy._media_cache.get_tmdb_info = MagicMock()
 
     result = strategy._get_media_info(
         "123",
-        "魔法少女育成计划 restart",
+        "JUR-897",
         "2026",
-        MediaType.TV,
-        anchor_provider="bangumi",
-        anchor_external_id="418229",
-        content_profile="anime",
+        MediaType.MOVIE,
+        anchor_provider="javdb",
+        anchor_external_id="JUR-897",
+        content_profile="adult",
     )
 
     assert result is not None
-    assert result.anchor_provider == "bangumi"
-    assert result.anchor_external_id == "418229"
+    assert result.anchor_provider == "javdb"
+    assert result.anchor_external_id == "JUR-897"
     assert result.tmdb_id == ""
     assert not result.provider_data
     strategy._media_cache.get_tmdb_info.assert_not_called()
+
+
+def test_douban_anchor_can_use_tmdb_supplement(strategy):
+    """豆瓣锚点可用 TMDB 补全，但不以此判定订阅是否错误."""
+    strategy._media_cache.get_tmdb_info = MagicMock(return_value={"id": 123})
+
+    result = strategy._get_media_info(
+        123,
+        "七龙珠超：比鲁斯",
+        "2026",
+        MediaType.TV,
+        anchor_provider="douban",
+        anchor_external_id="38221205",
+    )
+
+    assert result is not None
+    assert result.anchor_provider == "douban"
+    assert result.anchor_external_id == "38221205"
+    assert result.tmdb_id == "123"
+    assert result.provider_data == {"id": 123}
+    strategy._media_cache.get_tmdb_info.assert_called_once()
+
+
+def test_external_movie_anchor_without_provider_data_is_not_error(strategy):
+    """插件订阅没有 TMDB 数据也不能被判成错误."""
+    strategy._service.get_subscribe_movies.return_value = {
+        "1": {
+            "id": 1,
+            "name": "JUR-897",
+            "tmdbid": "",
+            "anchor_provider": "javdb",
+            "anchor_external_id": "JUR-897",
+            "content_profile": "adult",
+        }
+    }
+    strategy._movie_repo = MagicMock()
+    media = _MediaInfo()
+    strategy._searcher.search_one_media.return_value = (None, None, None, None)
+    strategy._downloader.check_exists_medias.return_value = (False, {}, None)
+
+    with patch.object(strategy, "_get_media_info", return_value=media):
+        strategy._search_movies()
+
+    states = [call.kwargs.get("state") for call in strategy._movie_repo.update_state.call_args_list]
+    assert "E" not in states
+
+
+def test_external_tv_anchor_without_provider_data_is_not_error(strategy):
+    """非 TMDB 电视剧没有 provider_data 也不能被判成错误."""
+    strategy._service.get_subscribe_tvs.return_value = {
+        "1": {
+            "id": 1,
+            "name": "魔法少女育成计划 restart",
+            "season": 1,
+            "tmdbid": "",
+            "anchor_provider": "bangumi",
+            "anchor_external_id": "418229",
+            "content_profile": "anime",
+        }
+    }
+    strategy._tv_repo = MagicMock()
+    strategy._tv_episode_repo = MagicMock()
+    media = _MediaInfo()
+    media.type = "tv"
+    strategy._searcher.search_one_media.return_value = (None, None, None, None)
+    strategy._downloader.check_exists_medias.return_value = (False, {}, None)
+
+    with patch.object(strategy, "_get_media_info", return_value=media):
+        strategy._search_tvs()
+
+    states = [call.kwargs.get("state") for call in strategy._tv_repo.update_state.call_args_list]
+    assert "E" not in states
