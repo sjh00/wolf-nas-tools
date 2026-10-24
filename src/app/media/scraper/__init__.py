@@ -135,6 +135,20 @@ class Scraper:
                         log.info(f"[Scraper]{file} 插件画像快照刮削完成")
                         continue
                     log.warn(f"[Scraper]{file} 插件画像无法合成元数据快照")
+                standard_snapshot = self._compose_standard_snapshot(file, mi)
+                if standard_snapshot is not None:
+                    self.gen_snapshot_files(
+                        snapshot=standard_snapshot,
+                        media=mi,
+                        dir_path=os.path.dirname(file),
+                        file_name=_nfo_base_name(file),
+                        file_ext=os.path.splitext(file)[-1],
+                        force_nfo=force_nfo,
+                        force_pic=force_pic,
+                        dst_backend=dst_backend,
+                    )
+                    log.info(f"[Scraper]{file} 普通媒体快照刮削完成")
+                    continue
                 tmdbid = self._extract_tmdbid(file, mi, dst_backend)
                 if tmdbid and not force_nfo:
                     log.info(f"[Scraper]读取到本地nfo文件的tmdbid：{tmdbid}")
@@ -199,7 +213,10 @@ class Scraper:
                         media_info = next(iter(medias.values()), None)
                 metadata_service = self._metadata_service
                 if media_info is not None and metadata_service is not None:
-                    snapshot = metadata_service.compose_for_media(media_info, with_episodes=True, persist=True)
+                    # 转移阶段已写入的快照优先直接读取，避免重复抓取和重复限流。
+                    snapshot = metadata_service.latest_snapshot_for_media(media_info)
+                    if snapshot is None:
+                        snapshot = metadata_service.compose_for_media(media_info, with_episodes=True, persist=True)
                     if snapshot is not None:
                         self.gen_snapshot_files(
                             snapshot=snapshot,
@@ -321,6 +338,9 @@ class Scraper:
             )
         if episode is not None and scraper_tv_pic.get("episode_thumb") and episode.still:
             self._downloader.download(episode.still, dir_path, f"{file_name}-thumb", force_pic)
+        self._download_snapshot_season_images(
+            snapshot, media, season, season_number, tv_root, scraper_tv_pic, force_pic
+        )
 
     def _apply_watermark(self, snapshot, target_dir):
         if self._dst_backend is not None:
@@ -414,7 +434,8 @@ class Scraper:
                                 continue
                     return True
             except Exception as exc:  # noqa: BLE001 - 候选 fallback
-                log.debug(f"[Scraper]快照图片候选失败 {url}: {exc}")
+                log.warn(f"[Scraper]图片候选下载失败 {file_name}: {url}: {exc}")
+        log.warn(f"[Scraper]图片下载失败，候选为空: {file_name}")
         return False
 
     def _ensure_snapshot_images(self, snapshot) -> None:
@@ -497,8 +518,107 @@ class Scraper:
                 min_width,
                 min_height,
             )
+        # 额外图片类型：优先使用快照内已有资源（插件可扩展），缺失再由 Fanart.tv 补齐。
+        for image_type in ("background", "disc", "banner", "clearart"):
+            if not scraper_pic.get(image_type):
+                continue
+            candidates = self._images.candidates(snapshot, image_type)
+            self._download_candidates(candidates, target_dir, image_type, force_pic, 100, 100)
+        self._download_fanart_images(snapshot, target_dir, scraper_pic, force_pic)
         if scraper_pic.get("actor"):
             self._download_snapshot_actors(snapshot, target_dir, force_pic)
+
+    def _snapshot_fanart_id(self, snapshot, media=None) -> tuple[MediaType, str] | None:
+        """解析 Fanart.tv 所需 ID：电影用 TMDB，剧集用 TVDB."""
+        media_type = getattr(snapshot, "media_type", None)
+        if not isinstance(media_type, MediaType):
+            media_type = getattr(media, "type", None)
+        if not isinstance(media_type, MediaType):
+            return None
+        if media_type == MediaType.MOVIE:
+            if media is not None and getattr(media, "tmdb_id", None):
+                return media_type, str(media.tmdb_id)
+            refs = getattr(snapshot, "refs", []) or []
+            for provider in ("tmdb", "imdb"):
+                for ref in refs:
+                    if getattr(ref, "provider", "") == provider:
+                        return media_type, str(ref.external_id)
+            return None
+        if media is not None and getattr(media, "tvdb_id", None):
+            return media_type, str(media.tvdb_id)
+        for ref in getattr(snapshot, "refs", []) or []:
+            if getattr(ref, "provider", "") == "tvdb":
+                return media_type, str(ref.external_id)
+        return None
+
+    def _download_fanart_images(self, snapshot, target_dir, scraper_pic, force_pic) -> None:
+        fanart = getattr(self, "fanart", None)
+        if fanart is None:
+            return
+        query = self._snapshot_fanart_id(snapshot)
+        if query is None:
+            return
+        media_type, query_id = query
+        specs = [
+            ("background", "background", fanart.get_background),
+            ("logo", "logo", fanart.get_logo),
+            ("banner", "banner", fanart.get_banner),
+            ("thumb", "thumb", fanart.get_thumb),
+        ]
+        if media_type == MediaType.MOVIE:
+            specs.append(("disc", "disc", fanart.get_disc))
+        else:
+            specs.append(("clearart", "clearart", fanart.get_clearart))
+        for image_type, file_name, getter in specs:
+            if not scraper_pic.get(image_type):
+                continue
+            try:
+                url = getter(media_type=media_type, queryid=query_id)
+                if url:
+                    self._downloader.download(url, target_dir, file_name, force_pic)
+            except Exception as exc:  # noqa: BLE001
+                log.debug(f"[Scraper]Fanart {image_type} 下载失败: {exc}")
+
+    def _download_snapshot_season_images(
+        self, snapshot, media, season, season_number, tv_root, scraper_pic, force_pic
+    ) -> None:
+        fanart = getattr(self, "fanart", None)
+        if fanart is None:
+            return
+        query = self._snapshot_fanart_id(snapshot, media)
+        if query is None:
+            return
+        media_type, query_id = query
+        if media_type == MediaType.MOVIE:
+            return
+        season_no = int(season_number)
+        if scraper_pic.get("season_poster") and (season is None or not season.poster):
+            url = fanart.get_seasonposter(media_type=media_type, queryid=query_id, season=season_no)
+            if url:
+                self._downloader.download(
+                    url,
+                    tv_root,
+                    "season{}-poster".format(str(season_no).rjust(2, "0")),
+                    force_pic,
+                )
+        if scraper_pic.get("season_banner"):
+            url = fanart.get_seasonbanner(media_type=media_type, queryid=query_id, season=season_no)
+            if url:
+                self._downloader.download(
+                    url,
+                    tv_root,
+                    "season{}-banner".format(str(season_no).rjust(2, "0")),
+                    force_pic,
+                )
+        if scraper_pic.get("season_thumb"):
+            url = fanart.get_seasonthumb(media_type=media_type, queryid=query_id, season=season_no)
+            if url:
+                self._downloader.download(
+                    url,
+                    tv_root,
+                    "season{}-landscape".format(str(season_no).rjust(2, "0")),
+                    force_pic,
+                )
 
     def _download_snapshot_actors(self, snapshot, target_dir, force_pic):
         actors = self._images.actor_candidates(snapshot)
@@ -514,6 +634,83 @@ class Scraper:
                 self._downloader.download(url, actors_dir, safe_name, force_pic)
             except Exception as exc:  # noqa: BLE001
                 log.debug(f"[Scraper]演员图片下载失败 {name}: {exc}")
+
+    def _compose_standard_snapshot(self, file_path: str, media_info):
+        """普通媒体接入 metadata snapshot：优先历史/NFO 锚点，其次按默认策略搜索."""
+        metadata_service = self._metadata_service
+        if metadata_service is None:
+            return None
+        provider = ""
+        external_id = ""
+        history = self._download_history_tmdb(file_path)
+        dl_tmdbid, dl_type, dl_provider, dl_external, _dl_profile = history
+        if dl_provider and dl_external:
+            provider, external_id = str(dl_provider), str(dl_external)
+        elif dl_tmdbid:
+            raw = str(dl_tmdbid)
+            if raw.startswith("DB:"):
+                provider, external_id = "douban", raw[3:]
+            elif raw.isdigit():
+                provider, external_id = "tmdb", raw
+        media_type = getattr(media_info, "type", None) or MediaType.MOVIE
+        policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
+        if self._metadata_service is not None:
+            self._metadata_service.identify_anchor(media_info, policy=policy)
+        anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
+        anchor_external = str(getattr(media_info, "anchor_external_id", "") or "")
+        if anchor_provider and anchor_external:
+            provider, external_id = anchor_provider, anchor_external
+        if not provider:
+            tmdbid = getattr(media_info, "tmdb_id", None)
+            if tmdbid:
+                provider, external_id = "tmdb", str(tmdbid)
+            elif getattr(media_info, "douban_id", None):
+                provider, external_id = "douban", str(media_info.douban_id)
+        if not provider:
+            primary = policy.split("_", 1)[0]
+            if primary not in {"tmdb", "douban", "bangumi"}:
+                primary = "tmdb"
+            title = str(getattr(media_info, "title", "") or "")
+            if title:
+                try:
+                    hits = metadata_service.search(
+                        query=title,
+                        provider=primary,
+                        media_type=media_type,
+                        content_profile="anime" if primary == "bangumi" else "default",
+                        limit=5,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warn(f"[Scraper]普通媒体快照搜索失败: {exc}")
+                    hits = []
+                hit = next(
+                    (item for item in hits if str(item.get("title") or "").strip() == title.strip()),
+                    hits[0] if hits else None,
+                )
+                if hit:
+                    ref = hit.get("ref") or {}
+                    provider = str(ref.get("provider") or "")
+                    external_id = str(ref.get("external_id") or "")
+                    parsed_type = MediaType.from_string(str(hit.get("media_type") or ""))
+                    if parsed_type != MediaType.UNKNOWN:
+                        media_type = parsed_type
+        if not provider or not external_id:
+            return None
+        if provider == "bangumi":
+            media_info.type = MediaType.ANIME
+            media_info.content_profile = "anime"
+        try:
+            return metadata_service.compose_for_media(
+                media_info,
+                policy=policy,
+                anchor_provider=provider,
+                content_profile="anime" if provider == "bangumi" else None,
+                with_episodes=True,
+                persist=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - 快照失败继续旧路径
+            log.warn(f"[Scraper]普通媒体快照合成失败: {exc}")
+            return None
 
     def _download_history_tmdb(self, file_path):
         """从下载历史中读取订阅时记录的 TMDB 信息。

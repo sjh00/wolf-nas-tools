@@ -5,7 +5,10 @@ API 层只调用本服务；provider 注册、编排、快照持久化都在这�
 
 from __future__ import annotations
 
+import difflib
+import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -13,11 +16,13 @@ from typing import Any, Protocol
 
 import log
 from app.core.exceptions import ValidationError
+from app.core.settings import settings
 from app.db.repositories.media_identity_repository import MediaIdentityRepository
 from app.db.repositories.person_identity_repository import PersonIdentityRepository
 from app.domain.media_ref import MediaSubject
 from app.domain.mediatypes import MediaType
 from app.media.metadata import (
+    DEFAULT_POLICY_KEY,
     FieldValue,
     MediaMetadata,
     MetadataOrchestrator,
@@ -163,7 +168,7 @@ class MetadataService:
         identity_repo: IdentityRepositoryProtocol | None = None,
         person_repo: PersonIdentityRepository | None = None,
         media_service: Any = None,
-        system_default_policy: str = "tmdb_primary",
+        system_default_policy: str | None = None,
         register_builtins: bool = True,
     ) -> None:
         self._registry = registry or global_registry
@@ -174,6 +179,14 @@ class MetadataService:
         self._system_default_policy = system_default_policy
         self._builtin_lock = threading.Lock()
         self._builtin_ready = not register_builtins
+        self._anchor_cache: dict[tuple, tuple[float, str, str]] = {}
+        self._anchor_locks: dict[tuple, threading.Lock] = {}
+        self._anchor_locks_guard = threading.Lock()
+
+    @property
+    def system_default_policy(self) -> str:
+        """优先使用显式注入值，否则读取当前系统配置。"""
+        return self._system_default_policy or settings.media.metadata_default_policy or "tmdb_primary"
 
     def preview(
         self,
@@ -192,7 +205,7 @@ class MetadataService:
             resolved = resolve_policy(
                 policy,
                 anchor_provider=anchor_provider,
-                system_default=self._system_default_policy,
+                system_default=self.system_default_policy,
             )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
@@ -334,7 +347,7 @@ class MetadataService:
                 policy_key = resolve_policy(
                     None,
                     anchor_provider=anchor.provider,
-                    system_default=self._system_default_policy,
+                    system_default=self.system_default_policy,
                 ).key
             return SubscriptionIdentityFields(
                 identity_id=identity.IDENTITY_ID,
@@ -353,6 +366,130 @@ class MetadataService:
                 metadata_policy=metadata_policy,
                 naming_profile=naming_profile,
             )
+
+    def identify_anchor(
+        self,
+        media_info: Any,
+        *,
+        policy: str | None = None,
+        media_type: MediaType | None = None,
+    ) -> bool:
+        """按系统策略为普通媒体选择主源锚点，失败时按回退链尝试。
+
+        返回 True 表示找到了新的主源并写入 media_info.anchor_*。
+        """
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        if profile != "default":
+            return False
+        policy_key = str(policy or settings.media.metadata_default_policy or "tmdb_primary")
+        primary = policy_key.split("_", 1)[0]
+        if primary not in {"tmdb", "douban", "bangumi"}:
+            primary = "tmdb"
+        anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
+        if primary == "tmdb" and getattr(media_info, "tmdb_id", None) and not anchor_provider:
+            return False
+        order = [primary, *[item for item in ("tmdb", "douban", "bangumi") if item != primary]]
+        title = str(
+            getattr(media_info, "title", "")
+            or getattr(media_info, "get_title_string", lambda: "")()
+            or getattr(media_info, "org_string", "")
+            or ""
+        ).strip()
+        if not title:
+            return False
+        target_type = media_type or getattr(media_info, "type", None) or MediaType.MOVIE
+        cache_key = (policy_key, title.casefold(), str(getattr(media_info, "year", "") or ""), target_type.value)
+        cached = self._anchor_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 300:
+            _, cached_provider, cached_external = cached
+            media_info.anchor_provider = cached_provider
+            media_info.anchor_external_id = cached_external
+            if cached_provider == "bangumi":
+                media_info.type = MediaType.ANIME
+                media_info.content_profile = "anime"
+            return True
+        with self._anchor_locks_guard:
+            anchor_lock = self._anchor_locks.setdefault(cache_key, threading.Lock())
+        with anchor_lock:
+            # 双检：等待同一标题的其他线程完成搜索后直接复用缓存。
+            cached = self._anchor_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < 300:
+                _, cached_provider, cached_external = cached
+                media_info.anchor_provider = cached_provider
+                media_info.anchor_external_id = cached_external
+                if cached_provider == "bangumi":
+                    media_info.type = MediaType.ANIME
+                    media_info.content_profile = "anime"
+                return True
+            return self._identify_anchor_search(
+                media_info,
+                policy_key=policy_key,
+                title=title,
+                target_type=target_type,
+                order=order,
+                cache_key=cache_key,
+            )
+
+    def _identify_anchor_search(
+        self,
+        media_info: Any,
+        *,
+        policy_key: str,
+        title: str,
+        target_type: MediaType,
+        order: list[str],
+        cache_key: tuple,
+    ) -> bool:
+        for provider in order:
+            content_profile = "anime" if provider == "bangumi" else "default"
+            try:
+                hits = self.search(
+                    query=title,
+                    provider=provider,
+                    media_type=target_type,
+                    content_profile=content_profile,
+                    limit=5,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug(f"[Metadata]主源识别失败 {provider}: {exc}")
+                continue
+            if not hits:
+                continue
+            year = str(getattr(media_info, "year", "") or "")
+            normalized = re.sub(r"[\W_]+", "", title.casefold())
+
+            def _score(item: dict) -> float:
+                candidate = re.sub(
+                    r"[\W_]+",
+                    "",
+                    str(item.get("title") or item.get("name") or "").casefold(),
+                )
+                score = difflib.SequenceMatcher(None, normalized, candidate).ratio() if normalized else 0.0
+                item_year = str(item.get("year") or "")
+                if year and item_year:
+                    score += 0.25 if year == item_year else -0.15
+                return score
+
+            ranked = sorted(hits, key=_score, reverse=True)
+            hit = ranked[0]
+            if _score(hit) < 0.55:
+                log.debug(f"[Metadata]主源 {provider} 标题匹配度过低: {hit.get('title')}")
+                continue
+            ref = hit.get("ref") or {}
+            external_id = str(ref.get("external_id") or "")
+            if not external_id:
+                continue
+            media_info.anchor_provider = provider
+            media_info.anchor_external_id = external_id
+            self._anchor_cache[cache_key] = (time.monotonic(), provider, external_id)
+            if provider == "bangumi":
+                media_info.type = MediaType.ANIME
+                media_info.content_profile = "anime"
+            log.info(f"[Metadata]主源策略 {policy_key} 命中 {provider}:{external_id}")
+            return True
+        return False
+
+        return False
 
     def compose_for_media(
         self,
@@ -425,7 +562,7 @@ class MetadataService:
         if (
             media_profile != "default"
             and self._registry.get_provider(media_profile) is not None
-            and effective_policy in (None, "", self._system_default_policy)
+            and effective_policy in (None, "", self.system_default_policy, DEFAULT_POLICY_KEY)
         ):
             # 旧成人订阅可能仍存着系统默认 tmdb_primary；自定义画像必须回到自身 provider
             effective_policy = f"provider_only:{media_profile}"
@@ -434,13 +571,13 @@ class MetadataService:
                 resolved = resolve_policy(
                     effective_policy or f"provider_only:{media_profile}",
                     anchor_provider=anchor,
-                    system_default=self._system_default_policy,
+                    system_default=self.system_default_policy,
                 )
             else:
                 resolved = resolve_policy(
                     effective_policy,
                     anchor_provider=anchor,
-                    system_default=self._system_default_policy,
+                    system_default=self.system_default_policy,
                 )
         except ValueError:
             resolved = self.get_policy(None, anchor_provider=anchor)
@@ -822,7 +959,9 @@ class MetadataService:
                 required = descriptor.required_permission or "metadata:private:view"
                 if not allow_private or (permissions is not None and required not in permissions):
                     continue
+            runtime = self._orchestrator.runtime_for(descriptor)
             try:
+                runtime.acquire()
                 results = item.search(
                     SearchQuery(
                         query=query,
@@ -832,9 +971,15 @@ class MetadataService:
                     ),
                     None,
                 )
-            except Exception as exc:  # noqa: BLE001 - 单源搜索失败不影响其他源
+            except ProviderError as exc:
+                runtime.record_failure()
                 log.warn(f"[Metadata]搜索失败 {descriptor.provider_key}: {exc}")
                 continue
+            except Exception as exc:  # noqa: BLE001 - 单源搜索失败不影响其他源
+                runtime.record_failure()
+                log.warn(f"[Metadata]搜索失败 {descriptor.provider_key}: {exc}")
+                continue
+            runtime.record_success()
             for hit in results or []:
                 hits.append(hit.model_dump(mode="json"))
         hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
@@ -972,6 +1117,7 @@ class MetadataService:
         media_type: MediaType | None = None,
         scope: str = "default",
         allow_private: bool = False,
+        content_profile: str | None = None,
         permissions: set[str] | None = None,
     ) -> dict[str, Any] | None:
         self._ensure_builtin()
@@ -980,7 +1126,17 @@ class MetadataService:
         target = self._registry.get_provider(provider)
         if target is None:
             return None
-        record = target.detail(ref, None)
+        runtime = self._orchestrator.runtime_for(target.descriptor)
+        try:
+            runtime.acquire()
+            record = target.detail(ref, None)
+        except ProviderError:
+            runtime.record_failure()
+            raise
+        except Exception:
+            runtime.record_failure()
+            raise
+        runtime.record_success()
         return record.model_dump(mode="json") if record is not None else None
 
     def list_providers(
@@ -988,6 +1144,7 @@ class MetadataService:
         *,
         allow_private: bool = False,
         permissions: set[str] | None = None,
+        probe_health: bool = True,
     ) -> list[dict[str, Any]]:
         self._ensure_builtin()
         runtime = {item["provider"]: item for item in self._orchestrator.runtime_snapshot()}
@@ -1010,8 +1167,11 @@ class MetadataService:
                     "message": str(exc),
                 }
 
-        with ThreadPoolExecutor(max_workers=min(8, len(visible) or 1)) as pool:
-            healths = list(pool.map(probe, visible))
+        if probe_health:
+            with ThreadPoolExecutor(max_workers=min(8, len(visible) or 1)) as pool:
+                healths = list(pool.map(probe, visible))
+        else:
+            healths = [{} for _ in visible]
 
         result = []
         for provider, health in zip(visible, healths):
@@ -1060,7 +1220,7 @@ class MetadataService:
         return resolve_policy(
             policy,
             anchor_provider=anchor_provider,
-            system_default=self._system_default_policy,
+            system_default=self.system_default_policy,
         )
 
     def resolve_subscription_policy(self, subscription: Any) -> MetadataPolicy:

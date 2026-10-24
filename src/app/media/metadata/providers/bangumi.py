@@ -148,6 +148,9 @@ class BangumiProvider:
     descriptor = ProviderDescriptor(
         provider_key="bangumi",
         display_name="Bangumi",
+        subscription_id_format="BG:{id}",
+        default_media_type=MediaType.TV,
+        default_content_profile="anime",
         detail_url_template="https://bgm.tv/subject/{external_id}",
         capabilities=frozenset(
             {

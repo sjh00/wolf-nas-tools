@@ -229,6 +229,9 @@ class MetadataOrchestrator:
         with self._cache_lock:
             self._cache.clear()
 
+    def runtime_for(self, descriptor):
+        return self._runtimes.get(descriptor)
+
     def runtime_snapshot(self) -> list[dict]:
         return self._runtimes.snapshot()
 
