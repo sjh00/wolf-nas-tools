@@ -326,7 +326,8 @@ class MessageBuilder:
         if not getattr(item, "rssid", None):
             item.rssid = getattr(subscription, "id", None)
         profile = str(getattr(subscription, "content_profile", "") or "")
-        if profile and str(getattr(item, "content_profile", "") or "default") in ("", "default"):
+        if profile:
+            # 订阅画像优先于搜索条目的临时画像，避免普通番剧被按 AV 规则处理。
             item.content_profile = profile
         return subscription
 
