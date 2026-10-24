@@ -284,7 +284,7 @@ class TestSubscribeHistoryService:
         svc = SubscribeHistoryService(history_repo=repo, subscribe=MagicMock(), rss_helper=MagicMock())
         result = svc.get_history("MOV")
         assert result == [{"id": 1}]
-        repo.get_all.assert_called_once_with(rtype="MOV", user=None)
+        repo.get_all.assert_called_once_with(rtype="MOV", user=None, content_profile=None)
 
     def test_delete(self):
         repo = MagicMock()
