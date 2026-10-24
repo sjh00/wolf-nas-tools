@@ -39,11 +39,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
 ARG S6_OVERLAY_VERSION=3.2.3.0
-RUN S6_ARCH=$(case "$(uname -m)" in x86_64) echo "x86_64";; aarch64) echo "aarch64";; esac) \
-    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" | tar -Jxpf - -C / \
-    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" | tar -Jxpf - -C / \
-    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz" | tar -Jxpf - -C / \
-    && curl -sSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-arch.tar.xz" | tar -Jxpf - -C /
+RUN set -eux; \
+    S6_ARCH=$(case "$(uname -m)" in x86_64) echo "x86_64";; aarch64) echo "aarch64";; esac); \
+    S6_BASE="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
+    for pkg in "s6-overlay-noarch.tar.xz" "s6-overlay-${S6_ARCH}.tar.xz" "s6-overlay-symlinks-noarch.tar.xz" "s6-overlay-symlinks-arch.tar.xz"; do \
+        curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+            "${S6_BASE}/${pkg}" -o "/tmp/${pkg}"; \
+        tar -Jxpf "/tmp/${pkg}" -C /; \
+        rm -f "/tmp/${pkg}"; \
+    done
 
 COPY --chmod=755 docker/rootfs /
 RUN mkdir -p /var/log/nginx /var/run
