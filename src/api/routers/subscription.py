@@ -143,6 +143,7 @@ class DefaultSubscribeSettingSaveRequest(BaseModel):
 
 class GetSubscribeHistoryRequest(BaseModel):
     type: str | None = None
+    content_profile: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +601,7 @@ def get_rss_history(
 ):
     parsed = MediaType.from_string(req.type or "")
     mtype = MediaType.MOVIE.value if parsed == MediaType.MOVIE else MediaType.TV.value
-    return success(data=svc.get_history(mtype=mtype, user=user))
+    return success(data=svc.get_history(mtype=mtype, user=user, content_profile=req.content_profile))
 
 
 @router.post("/tv/items", response_model=CommonResponse, summary="获取电视剧 RSS 订阅项")

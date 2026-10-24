@@ -353,9 +353,13 @@ class SubscribeHistoryRepositoryAdapter:
         self.delete(rssid)
 
     def get_all(
-        self, rtype: str | None = None, rid: int | None = None, user: UserContext | None = None
+        self,
+        rtype: str | None = None,
+        rid: int | None = None,
+        user: UserContext | None = None,
+        content_profile: str | None = None,
     ) -> list[SubscribeHistoryEntity]:
-        rows = self._repo.get_rss_history(rtype=rtype, rid=rid, user=user)
+        rows = self._repo.get_rss_history(rtype=rtype, rid=rid, user=user, content_profile=content_profile)
         if not rows:
             return []
         return [entity for entity in [SubscribeHistoryEntity.from_orm(r) for r in rows] if entity is not None]

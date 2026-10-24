@@ -20,9 +20,16 @@ class SubscribeHistoryService:
         self._subscribe = subscribe
         self._rss_helper = rss_helper
 
-    def get_history(self, mtype: str, user: UserContext | None = None) -> list[dict]:
-        """获取订阅历史记录（user 非空时按数据归属过滤）."""
-        return [rec.to_dict() for rec in self._history_repo.get_all(rtype=mtype, user=user)]
+    def get_history(
+        self,
+        mtype: str,
+        user: UserContext | None = None,
+        content_profile: str | None = None,
+    ) -> list[dict]:
+        """获取订阅历史记录（按媒体类型、内容画像和归属过滤）."""
+        return [
+            rec.to_dict() for rec in self._history_repo.get_all(rtype=mtype, user=user, content_profile=content_profile)
+        ]
 
     def delete(self, rssid: int | None, user: UserContext | None = None) -> None:
         """删除订阅历史记录（普通用户仅可删除自己的历史）."""
