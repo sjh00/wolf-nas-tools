@@ -1,6 +1,7 @@
 """Subscribe query service - 订阅查询与删除."""
 
 import re
+from datetime import date
 from typing import Any
 
 import log
@@ -86,6 +87,23 @@ class SubscribeQueryService:
             return {}
         ids = list({r.USER_ID for r in rows if getattr(r, "USER_ID", None)})
         return self._user_repo.get_usernames_by_ids(ids) if ids else {}
+
+    def get_subscription_count(self, user: UserContext | None = None) -> dict[str, int]:
+        """首页统计：返回全部内容画像的订阅数，不再只统计 default."""
+        movies = self._movie_repo.get_all(user=user)
+        tvs = self._tv_repo.get_all(user=user)
+        today = date.today().isoformat()
+
+        def is_today(item) -> bool:
+            value = getattr(item, "add_date", None) or getattr(item, "ADD_DATE", None) or ""
+            return str(value)[:10] == today
+
+        return {
+            "movie": len(movies),
+            "tv": len(tvs),
+            "total": len(movies) + len(tvs),
+            "new_today": sum(1 for item in movies if is_today(item)) + sum(1 for item in tvs if is_today(item)),
+        }
 
     def get_subscribe_movies(
         self, rid: int | None = None, state: str | None = None, user: UserContext | None = None

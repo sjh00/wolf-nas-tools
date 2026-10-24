@@ -196,6 +196,9 @@ class SubscribeService:
             except Exception as e:  # noqa: BLE001
                 log.warn(f"[Subscribe]待转移电影清理失败 rid={getattr(mv, 'id', None)}: {e!s}")
 
+    def get_subscription_count(self, user=None):
+        return self._query_svc.get_subscription_count(user=user)
+
     def get_subscribe_movies(self, rid=None, state=None, user=None):
         return self._query_svc.get_subscribe_movies(rid, state, user=user)
 

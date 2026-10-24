@@ -593,6 +593,15 @@ def get_movie_rss_list(
     return success(data=[item for item in items if item.get("content_profile") in (None, "", "default")])
 
 
+@router.post("/count", response_model=CommonResponse, summary="获取订阅统计")
+def get_subscription_count(
+    req: EmptyRequest = EmptyRequest(),
+    user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
+    svc: SubscribeService = Depends(get_subscribe_service),
+):
+    return success(data=svc.get_subscription_count(user=user))
+
+
 @router.post("/history", response_model=CommonResponse, summary="获取 RSS 历史")
 def get_rss_history(
     req: GetSubscribeHistoryRequest,
