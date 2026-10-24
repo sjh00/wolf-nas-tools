@@ -247,7 +247,14 @@ def test_provider_ref_subscribes_adult_movie():
     )
 
     assert code == 0
-    svc._metadata_service.lookup.assert_called_once_with("javdb", "qAZBWN", allow_private=True, permissions=None)
+    svc._metadata_service.lookup.assert_called_once_with(
+        "javdb",
+        "qAZBWN",
+        media_type=MediaType.MOVIE,
+        content_profile="adult",
+        allow_private=True,
+        permissions=None,
+    )
     inserted_kw = svc._movie_repo.insert.call_args.kwargs
     assert inserted_kw["anchor_provider"] == "content_id"
     assert inserted_kw["anchor_external_id"] == "START-649"
@@ -297,4 +304,48 @@ def test_provider_ref_subscribes_bangumi_tv():
     assert inserted_kw["anchor_provider"] == "bangumi"
     assert inserted_kw["anchor_external_id"] == "456"
     assert inserted_kw["media_info"].type == MediaType.TV
+    svc._movie_repo.insert.assert_not_called()
+
+
+def test_provider_ref_tmdb_tv_passes_media_type_to_lookup():
+    """TMDB 同名数字 ID 可能对应另一部电影，必须带 media_type 查询."""
+    svc = _build_service()
+    svc._metadata_service = MagicMock()
+    svc._metadata_service.lookup.return_value = {
+        "title": "权力的游戏",
+        "year": "2011",
+        "media_type": "tv",
+        "content_profile": "default",
+        "seasons": [{"season_number": 1, "episode_count": 10}],
+    }
+    svc._metadata_service.link_subscription.return_value.as_kwargs.return_value = {
+        "identity_id": "01J00000000000000000000004",
+        "anchor_provider": "tmdb",
+        "anchor_external_id": "1399",
+        "content_profile": "default",
+        "metadata_policy": None,
+        "naming_profile": None,
+    }
+    svc._tv_repo.insert.return_value = 1000
+
+    code, _, _ = svc.add_rss_subscribe(
+        name="权力的游戏",
+        year="2011",
+        mtype=MediaType.TV,
+        season=1,
+        mediaid="1399",
+        metadata_ref="tmdb:1399",
+    )
+
+    assert code == 0
+    svc._metadata_service.lookup.assert_called_once_with(
+        "tmdb",
+        "1399",
+        media_type=MediaType.TV,
+        content_profile=None,
+        allow_private=False,
+        permissions=None,
+    )
+    assert svc._tv_repo.insert.call_args.kwargs["media_info"].type == MediaType.TV
+    assert svc._tv_repo.insert.call_args.kwargs["total"] == 10
     svc._movie_repo.insert.assert_not_called()

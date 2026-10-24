@@ -108,6 +108,7 @@ class SubscribeAddService:
         allow_private: bool,
         permissions: set[str] | None,
         media_type: MediaType | None = None,
+        season: int | None = None,
     ):
         """用插件 provider 的详情构造 MediaInfo（成人等内容不走 TMDB 查询）."""
         if self._metadata_service is None:
@@ -116,6 +117,8 @@ class SubscribeAddService:
             record = self._metadata_service.lookup(
                 provider,
                 external_id,
+                media_type=media_type,
+                content_profile=content_profile,
                 allow_private=allow_private,
                 permissions=permissions,
             )
@@ -144,10 +147,22 @@ class SubscribeAddService:
         media_info.overview = record.get("overview")
         media_info.type = resolved_type
         extra = record.get("extra") or {}
-        total_episodes = record.get("episode_count") or extra.get("bangumi.eps") or extra.get("total_episodes")
+        season_number = int(season or 1)
+        total_episodes = (
+            record.get("episode_count")
+            or extra.get("bangumi.eps")
+            or extra.get("douban.episodes_count")
+            or extra.get("total_episodes")
+        )
+        for item in record.get("seasons") or []:
+            if not isinstance(item, dict):
+                continue
+            if int(item.get("season_number") or -1) == season_number:
+                total_episodes = item.get("episode_count") or total_episodes
+                break
         if str(total_episodes or "").isdigit():
             media_info.total_episodes = int(str(total_episodes))
-        media_info.begin_season = 1
+        media_info.begin_season = season_number
         media_info.content_profile = content_profile or record.get("content_profile") or "default"
         return media_info
 
@@ -270,9 +285,10 @@ class SubscribeAddService:
                     allow_private=allow_private,
                     permissions=permissions,
                     media_type=mtype,
+                    season=int(str(season)) if str(season or "").isdigit() else None,
                 )
                 if media_info is not None:
-                    media_info.tmdb_id = ""
+                    media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
                     mtype = media_info.type
                     anchor_ref = _split_provider_ref(mediaid)
                     if anchor_ref:
