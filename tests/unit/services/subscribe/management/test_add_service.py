@@ -257,3 +257,44 @@ def test_provider_ref_subscribes_adult_movie():
     assert inserted_kw["media_info"].anchor_external_id == "START-649"
     assert inserted_kw["keyword"] == "START-649"
     cast(Any, svc._web_utils.get_mediainfo_from_id).assert_not_called()
+
+
+def test_provider_ref_subscribes_bangumi_tv():
+    """Bangumi provider 的 TV/番剧必须进入电视剧订阅，而不是电影订阅."""
+    svc = _build_service()
+    svc._metadata_service = MagicMock()
+    svc._metadata_service.lookup.return_value = {
+        "title": "测试番剧",
+        "year": "2026",
+        "media_type": "tv",
+        "poster": "https://example.com/anime.jpg",
+        "overview": "anime",
+        "content_profile": "anime",
+    }
+    svc._metadata_service.link_subscription.return_value.as_kwargs.return_value = {
+        "identity_id": "01J00000000000000000000003",
+        "anchor_provider": "bangumi",
+        "anchor_external_id": "456",
+        "content_profile": "anime",
+        "metadata_policy": "bangumi_primary",
+        "naming_profile": None,
+    }
+    svc._tv_repo.insert.return_value = 999
+
+    code, _, _ = svc.add_rss_subscribe(
+        name="测试番剧",
+        year="2026",
+        mtype=MediaType.TV,
+        season=1,
+        total_ep=12,
+        mediaid="BG:456",
+        metadata_ref="bangumi:456",
+        content_profile="anime",
+    )
+
+    assert code == 0
+    inserted_kw = svc._tv_repo.insert.call_args.kwargs
+    assert inserted_kw["anchor_provider"] == "bangumi"
+    assert inserted_kw["anchor_external_id"] == "456"
+    assert inserted_kw["media_info"].type == MediaType.TV
+    svc._movie_repo.insert.assert_not_called()
