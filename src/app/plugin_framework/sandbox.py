@@ -213,6 +213,7 @@ class PluginSandbox:
                 media_service=self._media_service,
                 manifest_metadata=manifest.backend.metadata,
                 filter_service=getattr(self._app_context, "filter_service", None),
+                discovery_service=getattr(self._app_context, "discovery_service", None),
             )
             deps = {
                 "sites": self._site_cache,

@@ -9,6 +9,7 @@ import log
 from app.infrastructure.http import HttpClientError
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
+from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.storage.backends.base import StorageBackend
 from app.utils import ExceptionUtils
 from app.utils.commons import retry
@@ -63,10 +64,9 @@ class ImageDownloader:
             log.info(f"[Scraper]正在下载{itype}图片：{url} ...")
             with _IMAGE_DOWNLOAD_SEMAPHORE:
                 headers = {}
-                if "doubanio.com" in url or "douban.com" in url:
-                    headers["Referer"] = "https://movie.douban.com/"
-                elif "bgm.tv" in url:
-                    headers["Referer"] = "https://bangumi.tv/"
+                referer = image_referer_registry.resolve(url)
+                if referer:
+                    headers["Referer"] = referer
                 kwargs = {"url": url, "raise_exception": True}
                 if headers:
                     kwargs["headers"] = headers

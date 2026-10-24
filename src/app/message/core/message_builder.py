@@ -9,8 +9,10 @@ from typing import Any
 import log
 from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAdapter
 from app.domain.mediatypes import MediaType
+from app.media.metadata.registry import registry as metadata_registry
 from app.message.template_registry import message_template_registry
 from app.schemas.auth import SUPERADMIN_ROLE_CODE
+from app.services.subscription_context import resolve_subscription_context
 from app.services.web import WebUtils
 from app.utils import StringUtils
 
@@ -65,6 +67,7 @@ class MessageBuilder:
         return True
 
     def send_download_message(self, in_from, can_item, download_setting_name=None, downloader_name=None) -> None:
+        self._enrich_from_subscription(can_item)
         msg_title = f"{can_item.get_title_ep_string()} 开始下载"
         msg_text = f"{can_item.get_star_string()}"
         msg_text = f"{msg_text}\n来自：{StringUtils.resolve_in_from_display(in_from)}"
@@ -168,6 +171,7 @@ class MessageBuilder:
                 )
 
     def send_transfer_movie_message(self, in_from, media_info, exist_filenum, category_flag) -> None:
+        self._enrich_from_subscription(media_info)
         msg_title = f"{media_info.get_title_string()} 已入库"
         profile = str(getattr(media_info, "content_profile", "") or "default")
         type_label = _type_label(media_info, profile)
@@ -227,6 +231,7 @@ class MessageBuilder:
         self, message_medias: dict, in_from: Enum, exist_filenum: int = 0, category_flag: bool = False
     ) -> None:
         for item_info in message_medias.values():
+            self._enrich_from_subscription(item_info)
             if item_info.total_episodes == 1:
                 msg_title = f"{item_info.get_title_string()} {item_info.get_season_episode_string()} 已入库"
             else:
@@ -301,14 +306,58 @@ class MessageBuilder:
             tag = item.get_season_string() or ""
         return tag
 
+    @staticmethod
+    def _subscription_context(item):
+        return resolve_subscription_context(item)
+
+    def _enrich_from_subscription(self, item):
+        """统一给下载/入库/完成消息补订阅名称、来源和海报."""
+        subscription = self._subscription_context(item)
+        if subscription is None:
+            return None
+        if not str(getattr(item, "poster_path", "") or ""):
+            image = str(getattr(subscription, "image", "") or "")
+            if image:
+                item.poster_path = image
+        if not str(getattr(item, "anchor_provider", "") or ""):
+            provider = str(getattr(subscription, "anchor_provider", "") or "")
+            if provider:
+                item.anchor_provider = provider
+        if not getattr(item, "rssid", None):
+            item.rssid = getattr(subscription, "id", None)
+        return subscription
+
     def send_download_fail_message(self, item, error_msg: str) -> None:
-        title = f"{item.get_title_string()} {self._format_season_episode(item)} 添加下载任务失败".strip()
-        if not _should_notify_fail(f"{title}|{getattr(item, 'enclosure', '')}"):
+        subscription = self._subscription_context(item)
+        # 同一订阅/同一媒体在短时间内只通知一次，避免 1080P、4K 等
+        # 多个种子连续失败时刷屏。
+        failure_key = str(getattr(item, "rssid", None) or getattr(item, "tmdb_id", None) or item.get_title_string())
+        if not _should_notify_fail(f"download-fail:{failure_key}"):
             return
+        if subscription is not None:
+            subscription_image = str(getattr(subscription, "image", "") or "")
+            if subscription_image and not str(getattr(item, "poster_path", "") or ""):
+                item.poster_path = subscription_image
+            if not getattr(item, "title", ""):
+                item.title = getattr(subscription, "name", "") or item.title
+        title = f"{item.get_title_string()} {self._format_season_episode(item)} 添加下载任务失败".strip()
         site = getattr(item, "site", "") or ""
         org_string = getattr(item, "org_string", "") or ""
         enclosure = getattr(item, "enclosure", "") or ""
-        text = f"标题：{title}\n站点：{site}\n种子名称：{org_string}\n种子链接：{enclosure}\n错误信息：{error_msg}"
+        subscription_line = ""
+        if subscription is not None:
+            provider = str(getattr(subscription, "anchor_provider", "") or "")
+            if not provider and str(getattr(subscription, "content_profile", "") or "") not in ("", "default"):
+                provider = "插件"
+            desc = getattr(metadata_registry.get_provider(provider), "descriptor", None) if provider else None
+            source = str(getattr(desc, "display_name", "") or provider or "未知")
+            subscription_line = (
+                f"订阅：{getattr(subscription, 'name', '')} (#{getattr(subscription, 'id', '')})\n来源：{source}\n"
+            )
+        text = (
+            f"标题：{title}\n{subscription_line}站点：{site}\n"
+            f"种子名称：{org_string}\n种子链接：{enclosure}\n错误信息：{error_msg}"
+        )
         owner_user_id = getattr(item, "user_id", None)
         if owner_user_id:
             self._dispatcher.send_user_msg(
@@ -322,6 +371,7 @@ class MessageBuilder:
                     "error_msg": error_msg,
                     "content_profile": str(getattr(item, "content_profile", "") or "default"),
                     "source_provider": str(getattr(item, "anchor_provider", "") or ""),
+                    "subscription": subscription,
                 },
                 template_engine=self._template_engine,
             )
@@ -335,6 +385,7 @@ class MessageBuilder:
                     "error_msg": error_msg,
                     "content_profile": str(getattr(item, "content_profile", "") or "default"),
                     "source_provider": str(getattr(item, "anchor_provider", "") or ""),
+                    "subscription": subscription,
                 }
                 self._dispatcher.sendmsg(
                     client=client,
@@ -347,6 +398,7 @@ class MessageBuilder:
                 )
 
     def send_subscribe_success_message(self, in_from: Enum, media_info) -> None:
+        self._enrich_from_subscription(media_info)
         if media_info.type == MediaType.MOVIE:
             msg_title = f"{media_info.get_title_string()} 已添加订阅"
         else:
@@ -397,6 +449,7 @@ class MessageBuilder:
                 )
 
     def send_rss_finished_message(self, media_info, owner_user_id: int | None = None) -> None:
+        self._enrich_from_subscription(media_info)
         profile = str(getattr(media_info, "content_profile", "") or "default")
         # 普通电影沿用历史上不推送“订阅完成”；成人电影需要独立完成通知
         if media_info.type == MediaType.MOVIE and profile == "default":

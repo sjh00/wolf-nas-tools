@@ -48,3 +48,12 @@ class ImageRefererRegistry:
 
 
 image_referer_registry = ImageRefererRegistry()
+# 核心自带来源的 Referer 规则；插件规则仍由 manifest 注入。
+image_referer_registry.register_pack(
+    "builtin",
+    {
+        "doubanio.com": "https://movie.douban.com/",
+        "douban.com": "https://movie.douban.com/",
+        "bgm.tv": "https://bangumi.tv/",
+    },
+)
