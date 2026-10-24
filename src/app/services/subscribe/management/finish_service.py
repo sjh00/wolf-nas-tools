@@ -12,6 +12,16 @@ from app.media import MediaInfo
 from app.services.subscribe.management.utils import tv_filter_signature
 
 
+def _history_scope(row: Any) -> dict[str, Any]:
+    return {
+        "anchor_provider": getattr(row, "ANCHOR_PROVIDER", None),
+        "anchor_external_id": getattr(row, "ANCHOR_EXTERNAL_ID", None),
+        "identity_id": getattr(row, "IDENTITY_ID", None),
+        "content_profile": getattr(row, "CONTENT_PROFILE", None),
+        "metadata_policy": getattr(row, "METADATA_POLICY", None),
+    }
+
+
 class SubscribeFinishService:
     """完成订阅服务"""
 
@@ -68,6 +78,7 @@ class SubscribeFinishService:
                 image=media.get_poster_image(),
                 desc=media.overview,
                 user_id=owner_user_id,
+                **_history_scope(rss[0]),
             )
             delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
         else:
@@ -92,6 +103,7 @@ class SubscribeFinishService:
                 total=total,
                 start=rss[0].CURRENT_EP,
                 user_id=owner_user_id,
+                **_history_scope(rss[0]),
             )
             delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
             self._finish_sibling_tvs(rss[0], media, delete_subscribe_fn)
@@ -148,6 +160,7 @@ class SubscribeFinishService:
             total=total,
             start=row.CURRENT_EP,
             user_id=owner_user_id,
+            **_history_scope(row),
         )
         delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
         self._finish_sibling_tvs(row, media, delete_subscribe_fn)
@@ -179,6 +192,7 @@ class SubscribeFinishService:
             image=row.IMAGE,
             desc=row.DESC,
             user_id=owner_user_id,
+            **_history_scope(row),
         )
         delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
         # 仅洗版电影完成后清理下载历史（允许后续升级重下）

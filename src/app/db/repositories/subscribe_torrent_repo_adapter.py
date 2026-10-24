@@ -22,9 +22,33 @@ class SubscribeTorrentRepositoryAdapter(IRssTorrentRepository):
         return SubscribeTorrentEntity.from_orm(row)
 
     def insert(
-        self, torrent_name: str, enclosure: str, type_: str, title: str, year: str, season: str, episode: str
+        self,
+        torrent_name: str,
+        enclosure: str,
+        type_: str,
+        title: str,
+        year: str,
+        season: str,
+        episode: str,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
     ) -> bool:
-        self._repo.insert_rss_torrent(torrent_name, enclosure, type_, title, year, season, episode)
+        self._repo.insert_rss_torrent(
+            torrent_name,
+            enclosure,
+            type_,
+            title,
+            year,
+            season,
+            episode,
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            content_profile=content_profile,
+        )
         return True
 
     def simple_insert(self, title: str, enclosure: str) -> bool:

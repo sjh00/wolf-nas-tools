@@ -196,6 +196,10 @@ class RssHelper:
             year=media_info.year,
             season=media_info.get_season_string(),
             episode=media_info.get_episode_string(),
+            identity_id=getattr(media_info, "identity_id", None),
+            anchor_provider=getattr(media_info, "anchor_provider", None),
+            anchor_external_id=getattr(media_info, "anchor_external_id", None),
+            content_profile=getattr(media_info, "content_profile", None),
         )
 
     def is_rssd_by_enclosure(self, enclosure):

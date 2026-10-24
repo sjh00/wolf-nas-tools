@@ -104,16 +104,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # MySQL 不允许删除外键依赖的索引；直接删表会一并清理索引和外键。
     if has_table("MEDIA_FIELD_OVERRIDE"):
-        op.drop_index("INDX_MEDIA_FIELD_OVERRIDE_IDENTITY", table_name="MEDIA_FIELD_OVERRIDE")
         op.drop_table("MEDIA_FIELD_OVERRIDE")
     if has_table("MEDIA_METADATA_SNAPSHOT"):
-        op.drop_index("INDX_MEDIA_SNAPSHOT_HASH", table_name="MEDIA_METADATA_SNAPSHOT")
-        op.drop_index("INDX_MEDIA_SNAPSHOT_IDENTITY", table_name="MEDIA_METADATA_SNAPSHOT")
         op.drop_table("MEDIA_METADATA_SNAPSHOT")
     if has_table("MEDIA_EXTERNAL_REF"):
-        op.drop_index("INDX_MEDIA_EXTERNAL_REF_IDENTITY", table_name="MEDIA_EXTERNAL_REF")
         op.drop_table("MEDIA_EXTERNAL_REF")
     if has_table("MEDIA_IDENTITY"):
-        op.drop_index("INDX_MEDIA_IDENTITY_TYPE_PROFILE", table_name="MEDIA_IDENTITY")
         op.drop_table("MEDIA_IDENTITY")

@@ -18,6 +18,8 @@ from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.data_scope import apply_owner_scope
 from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
+from app.media.metadata.legacy import parse_legacy_ref
+from app.media.metadata.policy import ANCHOR_POLICY
 from app.schemas.auth import UserContext
 from app.utils.json_utils import JsonUtils
 
@@ -33,6 +35,55 @@ _DESC_MAX_LEN = 200
 def _trim_desc(desc: str | None) -> str:
     """按仓库既有约定截断简介，保证新增/更新/历史各写入路径一致。"""
     return (desc or "")[:_DESC_MAX_LEN]
+
+
+def _subscription_scope(row) -> dict[str, str | None]:
+    if row is None:
+        return {}
+    return {
+        "IDENTITY_ID": getattr(row, "IDENTITY_ID", None),
+        "ANCHOR_PROVIDER": getattr(row, "ANCHOR_PROVIDER", None),
+        "ANCHOR_EXTERNAL_ID": getattr(row, "ANCHOR_EXTERNAL_ID", None),
+        "CONTENT_PROFILE": getattr(row, "CONTENT_PROFILE", None),
+    }
+
+
+def _history_scope(
+    tmdbid: str | None,
+    rtype: str,
+    *,
+    anchor_provider: str | None = None,
+    anchor_external_id: str | None = None,
+    identity_id: str | None = None,
+    content_profile: str | None = None,
+    metadata_policy: str | None = None,
+) -> dict[str, str | None]:
+    provider = str(anchor_provider or "").strip()
+    external = str(anchor_external_id or "").strip()
+    if not provider or not external:
+        media_type = MediaType.from_string(str(rtype or ""))
+        if media_type == MediaType.UNKNOWN:
+            media_type = MediaType.MOVIE
+        ref = parse_legacy_ref(tmdbid, media_type)
+        if ref is not None:
+            provider = provider or ref.provider
+            external = external or ref.external_id
+    if not provider or not external:
+        return {
+            "IDENTITY_ID": identity_id,
+            "ANCHOR_PROVIDER": None,
+            "ANCHOR_EXTERNAL_ID": None,
+            "CONTENT_PROFILE": content_profile,
+            "METADATA_POLICY": metadata_policy,
+        }
+    profile = content_profile or ("anime" if provider == "bangumi" else "default")
+    return {
+        "IDENTITY_ID": identity_id,
+        "ANCHOR_PROVIDER": provider,
+        "ANCHOR_EXTERNAL_ID": external,
+        "CONTENT_PROFILE": profile,
+        "METADATA_POLICY": metadata_policy or ANCHOR_POLICY.get(provider),
+    }
 
 
 class SubscribeRepository(BaseRepository):
@@ -383,6 +434,12 @@ class SubscribeRepository(BaseRepository):
             "desc": "DESC",
             "note": "NOTE",
             "keyword": "KEYWORD",
+            "identity_id": "IDENTITY_ID",
+            "anchor_provider": "ANCHOR_PROVIDER",
+            "anchor_external_id": "ANCHOR_EXTERNAL_ID",
+            "content_profile": "CONTENT_PROFILE",
+            "metadata_policy": "METADATA_POLICY",
+            "naming_profile": "NAMING_PROFILE",
         }
         for k, v in kwargs.items():
             col = field_map.get(k)
@@ -751,6 +808,12 @@ class SubscribeRepository(BaseRepository):
             "desc": "DESC",
             "note": "NOTE",
             "keyword": "KEYWORD",
+            "identity_id": "IDENTITY_ID",
+            "anchor_provider": "ANCHOR_PROVIDER",
+            "anchor_external_id": "ANCHOR_EXTERNAL_ID",
+            "content_profile": "CONTENT_PROFILE",
+            "metadata_policy": "METADATA_POLICY",
+            "naming_profile": "NAMING_PROFILE",
         }
         for k, v in kwargs.items():
             col = field_map.get(k)
@@ -966,12 +1029,18 @@ class SubscribeRepository(BaseRepository):
         else:
             episodes = [str(epi) for epi in episodes]
         with self.session() as db:
-            if db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rid)).count() > 0:
-                db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rid)).update(
-                    {"EPISODES": ",".join(episodes)}
-                )
+            subscription = db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rid)).first()
+            scope = _subscription_scope(subscription)
+            existing = (
+                db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rid)).first()
+            )
+            if existing:
+                existing.EPISODES = ",".join(episodes)
+                for key, value in scope.items():
+                    if value is not None:
+                        setattr(existing, key, value)
             else:
-                db.add(SubscribeTvEpisodes(RSSID=rid, EPISODES=",".join(episodes)))
+                db.add(SubscribeTvEpisodes(RSSID=rid, EPISODES=",".join(episodes), **scope))
 
     def get_rss_tv_episodes(self, rid: int | None) -> list[int] | None:
         """
@@ -1093,6 +1162,12 @@ class SubscribeRepository(BaseRepository):
         start: str | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
     ) -> None:
         """
         登记RSS历史（user_id 为归属用户）
@@ -1101,6 +1176,15 @@ class SubscribeRepository(BaseRepository):
         season = season or ""
         total = "0" if total is None else str(total)
         start = "0" if start is None else str(start)
+        scope = _history_scope(
+            tmdbid,
+            rtype,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            metadata_policy=metadata_policy,
+        )
         with self.session() as db:
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
                 return
@@ -1119,6 +1203,7 @@ class SubscribeRepository(BaseRepository):
                     NOTE=note,
                     FINISH_TIME=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
                     USER_ID=user_id,
+                    **scope,
                 )
             )
 
@@ -1136,6 +1221,12 @@ class SubscribeRepository(BaseRepository):
         start: str | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
     ) -> None:
         """
         登记或更新RSS历史：按媒体维度去重，同一 TMDB ID + 季的记录只保留一条
@@ -1144,6 +1235,15 @@ class SubscribeRepository(BaseRepository):
         season = season or ""
         total = "0" if total is None else str(total)
         start = "0" if start is None else str(start)
+        scope = _history_scope(
+            tmdbid,
+            rtype,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            metadata_policy=metadata_policy,
+        )
         with self.session() as db:
             # 防御：同一 rssid 已完成过则跳过
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
@@ -1181,6 +1281,9 @@ class SubscribeRepository(BaseRepository):
                 existing.START = int(start or 0)
                 existing.NOTE = note
                 existing.FINISH_TIME = finish_time
+                for key, value in scope.items():
+                    if value is not None:
+                        setattr(existing, key, value)
             else:
                 db.add(
                     SubscribeHistory(
@@ -1197,6 +1300,7 @@ class SubscribeRepository(BaseRepository):
                         NOTE=note,
                         FINISH_TIME=finish_time,
                         USER_ID=user_id,
+                        **scope,
                     )
                 )
 
@@ -1226,7 +1330,19 @@ class SubscribeRepository(BaseRepository):
             return db.query(SubscribeTorrents).filter(SubscribeTorrents.TORRENT_NAME == torrent_name).first()
 
     def insert_rss_torrent(
-        self, torrent_name: str, enclosure: str, type_: str, title: str, year: str, season: str, episode: str
+        self,
+        torrent_name: str,
+        enclosure: str,
+        type_: str,
+        title: str,
+        year: str,
+        season: str,
+        episode: str,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
     ) -> None:
         """插入 RSS 种子记录"""
         if enclosure and enclosure.startswith("magnet:"):
@@ -1243,6 +1359,10 @@ class SubscribeRepository(BaseRepository):
                     YEAR=year,
                     SEASON=season,
                     EPISODE=episode,
+                    IDENTITY_ID=identity_id,
+                    ANCHOR_PROVIDER=anchor_provider,
+                    ANCHOR_EXTERNAL_ID=anchor_external_id,
+                    CONTENT_PROFILE=content_profile,
                 )
             )
 

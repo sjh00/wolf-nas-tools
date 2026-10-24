@@ -29,6 +29,13 @@ target_metadata = Base.metadata
 # ... etc.
 
 
+def include_object(object, name, type_, reflected, compare_to):
+    """忽略迁移过程专用表，避免 alembic check 误报漂移。"""
+    if type_ == "table" and name and name.startswith("MIGRATION_"):
+        return False
+    return True
+
+
 def get_database_url():
     """
     获取数据库连接URL
@@ -65,6 +72,7 @@ def run_migrations_offline() -> None:
         render_as_batch=True,  # 支持SQLite的批量操作
         compare_type=False,  # 不比较列类型，避免历史遗留类型差异产生垃圾迁移
         compare_server_default=False,  # 不比较默认值
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -88,6 +96,7 @@ def run_migrations_online() -> None:
             render_as_batch=True,  # 支持SQLite的批量操作
             compare_type=False,  # 不比较列类型，避免历史遗留类型差异产生垃圾迁移
             compare_server_default=False,  # 不比较默认值
+            include_object=include_object,
         )
 
         # 全新库判定：无 alembic_version 且无任何业务表 → 用模型直接建最新 schema 并 stamp 到 head。

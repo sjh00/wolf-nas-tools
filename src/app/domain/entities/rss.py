@@ -55,6 +55,12 @@ class SubscribeHistoryEntity:
     finish_time: str
     note: str
     user_id: int | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
+    metadata_policy: str | None = None
+    naming_profile: str | None = None
 
     @classmethod
     def from_orm(cls, orm_model) -> Optional["SubscribeHistoryEntity"]:
@@ -75,6 +81,12 @@ class SubscribeHistoryEntity:
             finish_time=orm_model.FINISH_TIME or "",
             note=orm_model.NOTE or "",
             user_id=getattr(orm_model, "USER_ID", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
+            naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
 
     # 从 ORM 列名到 dataclass 字段名的映射

@@ -326,9 +326,21 @@ class SubscribeHistoryRepositoryAdapter:
 
     # 兼容旧Repository方法名
     def insert_rss_history(
-        self, rssid, rtype, name, year, tmdbid, image, desc, season=None, total=None, start=None, note=""
+        self,
+        rssid,
+        rtype,
+        name,
+        year,
+        tmdbid,
+        image,
+        desc,
+        season=None,
+        total=None,
+        start=None,
+        note="",
+        **scope,
     ) -> None:
-        self.insert(rssid, rtype, name, year, tmdbid, image, desc, season, total, start, note)
+        self.insert(rssid, rtype, name, year, tmdbid, image, desc, season, total, start, note, **scope)
 
     # 兼容旧Repository方法名
     def check_rss_history(self, type_str, name, year, season) -> bool:
@@ -370,6 +382,12 @@ class SubscribeHistoryRepositoryAdapter:
         start: int | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
     ) -> None:
         self._repo.insert_rss_history(
             rssid,
@@ -384,6 +402,11 @@ class SubscribeHistoryRepositoryAdapter:
             str(start) if start is not None else None,
             note,
             user_id=user_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            metadata_policy=metadata_policy,
         )
 
     def upsert(
@@ -400,6 +423,12 @@ class SubscribeHistoryRepositoryAdapter:
         start: int | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
     ) -> None:
         self._repo.upsert_rss_history(
             rssid,
@@ -414,6 +443,11 @@ class SubscribeHistoryRepositoryAdapter:
             str(start) if start is not None else None,
             note,
             user_id=user_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            metadata_policy=metadata_policy,
         )
 
     def delete(self, rssid: int | None) -> None:

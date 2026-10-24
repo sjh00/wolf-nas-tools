@@ -70,6 +70,30 @@ class DownloadRepository(BaseRepository):
                 query = query.filter(DOWNLOADHISTORY.SE == season_episode)
             return query.first() is not None
 
+    def is_completed_download_history_by_identity(
+        self,
+        *,
+        identity_id: str | None,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        season_episode: str | None,
+    ) -> bool:
+        """按统一身份查询已完成下载（不依赖 TMDB 数字 ID）."""
+        if not identity_id and not (anchor_provider and anchor_external_id):
+            return False
+        with self.session() as db:
+            query = db.query(DOWNLOADHISTORY.ID).filter(DOWNLOADHISTORY.STATE == "completed")
+            if identity_id:
+                query = query.filter(DOWNLOADHISTORY.IDENTITY_ID == str(identity_id))
+            else:
+                query = query.filter(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
+                )
+            if season_episode:
+                query = query.filter(DOWNLOADHISTORY.SE == season_episode)
+            return query.first() is not None
+
     def get_contiguous_completed_episode_by_tmdb(
         self, tmdb_id: int | str | None, season: int | None, start: int = 1
     ) -> int:

@@ -52,7 +52,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     if has_table("PERSON_EXTERNAL_REF"):
-        op.drop_index("INDX_PERSON_EXTERNAL_REF_PERSON", table_name="PERSON_EXTERNAL_REF")
+        # MySQL 不允许删除外键依赖的索引；直接删表会一并清理索引和外键。
         op.drop_table("PERSON_EXTERNAL_REF")
     if has_table("PERSON_IDENTITY"):
         op.drop_index("INDX_PERSON_IDENTITY_NAME", table_name="PERSON_IDENTITY")

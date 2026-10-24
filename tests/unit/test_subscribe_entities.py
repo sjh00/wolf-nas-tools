@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from app.domain.entities.rss import SubscribeMovieEntity, SubscribeTvEntity
+from app.domain.entities.rss import SubscribeHistoryEntity, SubscribeMovieEntity, SubscribeTvEntity
 from app.domain.mediatypes import MediaType
 from app.media.models import MediaInfo
 
@@ -123,3 +123,60 @@ def test_media_info_exposes_typed_ref():
     ref = info.get_media_ref()
     assert ref is not None
     assert (ref.provider, ref.external_id) == ("douban", "26584183")
+
+
+def test_history_entity_maps_identity_fields():
+    row = SimpleNamespace(
+        ID=1,
+        TYPE="movie",
+        RSSID="rss-1",
+        NAME="历史",
+        YEAR="2024",
+        TMDBID="DB:123",
+        SEASON="",
+        IMAGE="",
+        DESC="",
+        TOTAL=0,
+        START=0,
+        FINISH_TIME="2026-01-01 00:00:00",
+        NOTE="",
+        USER_ID=1,
+        IDENTITY_ID="01J00000000000000000000000",
+        ANCHOR_PROVIDER="douban",
+        ANCHOR_EXTERNAL_ID="123",
+        CONTENT_PROFILE="default",
+        METADATA_POLICY="douban_primary",
+        NAMING_PROFILE=None,
+    )
+    entity = SubscribeHistoryEntity.from_orm(row)
+
+    assert entity is not None
+    assert entity.to_dict()["anchor_provider"] == "douban"
+    assert entity.to_dict()["metadata_policy"] == "douban_primary"
+
+
+def test_media_ref_and_identity_key_legacy_prefixes():
+    from app.domain.media_ref import identity_keys_match, media_identity_key
+    from app.media.models import MediaInfo
+
+    info = MediaInfo(title="Legacy", tmdb_id="DB:12345")
+    ref = info.get_media_ref()
+    assert ref is not None
+    assert ref.provider == "douban"
+    assert ref.external_id == "12345"
+    assert identity_keys_match(media_identity_key(info), "DB:12345")
+    assert identity_keys_match(media_identity_key(info), "douban:12345")
+    assert identity_keys_match("123", "TMDB:123")
+
+
+def test_media_detail_links_follow_anchor():
+    from app.media.models import MediaInfo
+
+    info = MediaInfo(
+        title="Anchored",
+        tmdb_id="",
+        anchor_provider="bangumi",
+        anchor_external_id="456",
+    )
+    links = {item["provider"]: item["url"] for item in info.get_detail_links()}
+    assert links["bangumi"].endswith("/456")
