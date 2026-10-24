@@ -130,6 +130,7 @@ def test_fail_message_inherits_anime_profile(builder, monkeypatch):
         org_string="魔法少女 S01E01",
         enclosure="http://site/1",
         user_id=1,
+        content_profile="adult",
     )
 
     builder.send_download_fail_message(item, "下载设置无效")
