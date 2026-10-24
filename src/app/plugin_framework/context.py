@@ -33,6 +33,7 @@ class PluginContext:
         site_engine: Any = None,
         media_service: Any = None,
         manifest_metadata: Any = None,
+        filter_service: Any = None,
     ):
         self._plugin_id = plugin_id
         self._plugin_name = plugin_name or plugin_id
@@ -47,6 +48,7 @@ class PluginContext:
         self._site_engine = site_engine
         self._media_service = media_service
         self._metadata_manifest = manifest_metadata
+        self._filter_service = filter_service
         self._metadata_cleanups: list[Callable[[], None]] = []
         self._scraper_processors: list[str] = []
         self._metadata_visibility = (
@@ -348,6 +350,17 @@ class PluginContext:
             raise ValueError("私有插件包注册的 provider 必须声明 visibility=private")
         if self._metadata_visibility == "public" and visibility == "private":
             raise ValueError("私有 provider 必须由 private 插件包注册")
+
+    def ensure_filter_group(self, name: str, rules: list[dict], default: str = "N") -> int:
+        """确保插件声明的过滤规则组存在；已存在时保留用户修改."""
+        if not self._filter_service:
+            self.warn("过滤规则服务未注入，跳过默认规则组")
+            return 0
+        try:
+            return int(self._filter_service.ensure_filter_group(name, rules, default))
+        except Exception as exc:  # noqa: BLE001
+            self.error(f"创建默认过滤规则组失败: {exc}")
+            return 0
 
     def register_public_webhook(self, path: str, handler: Callable[[dict], object]) -> None:
         """注册插件公开回调（免鉴权），供飞书/Telegram 等外部平台 webhook 回调：

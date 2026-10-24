@@ -115,6 +115,16 @@ class PluginSandbox:
             # 3. 遗留兼容：plugin_{id} 前缀
             if key.startswith(f"plugin_{plugin_id}"):
                 to_remove.append(key)
+                continue
+            # 4. 入口顶层包（插件升级后仍可能指向旧目录）
+            entry_root = (module_path or "").split(".", 1)[0]
+            if entry_root and (key == entry_root or key.startswith(entry_root + ".")):
+                to_remove.append(key)
+                continue
+            # 5. 模块文件位于当前插件目录
+            module_file = getattr(sys.modules.get(key), "__file__", None) or ""
+            if plugin_path and module_file.startswith(os.path.abspath(plugin_path) + os.sep):
+                to_remove.append(key)
 
         for key in to_remove:
             try:
@@ -202,6 +212,7 @@ class PluginSandbox:
                 site_engine=self._site_engine,
                 media_service=self._media_service,
                 manifest_metadata=manifest.backend.metadata,
+                filter_service=getattr(self._app_context, "filter_service", None),
             )
             deps = {
                 "sites": self._site_cache,
