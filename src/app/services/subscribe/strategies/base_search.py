@@ -199,6 +199,7 @@ class BaseSearchStrategy:
                     MediaType.MOVIE,
                     anchor_provider=rss_info.get("anchor_provider"),
                     anchor_external_id=rss_info.get("anchor_external_id"),
+                    content_profile=str(rss_info.get("content_profile") or ""),
                 )
                 if media_info is not None:
                     if rss_info.get("content_profile"):
@@ -342,6 +343,7 @@ class BaseSearchStrategy:
                     MediaType.TV,
                     anchor_provider=rss_info.get("anchor_provider"),
                     anchor_external_id=rss_info.get("anchor_external_id"),
+                    content_profile=str(rss_info.get("content_profile") or ""),
                 )
                 non_tmdb_anchor = (
                     bool(rss_info.get("anchor_provider") and rss_info.get("anchor_provider") != "tmdb")
@@ -549,10 +551,12 @@ class BaseSearchStrategy:
         cache=True,
         anchor_provider=None,
         anchor_external_id=None,
+        content_profile: str = "",
     ):
-        """综合返回媒体信息；非 TMDB 锚点不查询 TMDB."""
+        """综合返回媒体信息；非 TMDB 来源不查询 TMDB."""
         key = (
-            f"ident:{mtype}:{name or ''}:{year or ''}:{tmdbid or ''}:{anchor_provider or ''}:{anchor_external_id or ''}"
+            f"ident:{mtype}:{name or ''}:{year or ''}:{tmdbid or ''}:{anchor_provider or ''}:"
+            f"{anchor_external_id or ''}:{content_profile or ''}"
         )
         cached = self._ident_cache.get(key)
         if cached is not None:
@@ -569,12 +573,7 @@ class BaseSearchStrategy:
             media_info.title = name or media_info.title
             media_info.cn_name = name or media_info.cn_name
             media_info.year = year or media_info.year
-            raw_tmdb = str(tmdbid or "")
-            if raw_tmdb.isdigit():
-                # 豆瓣 anchor 不变；TMDB 仅作为可选结构/缺字段补充
-                media_info.tmdb_id = raw_tmdb
-                tmdb_info = self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=raw_tmdb)
-                media_info.provider_data = tmdb_info or {}
+            # 各来源使用自己的元数据；TMDB 只用于正常 TMDB 订阅补充。
         elif self._is_external_ref(tmdbid):
             media_info = meta_info(title=("%s %s" % (name, year)).strip(), mtype=mtype)
             media_info.tmdb_id = ""
@@ -588,6 +587,13 @@ class BaseSearchStrategy:
             media_info.douban_id = str(tmdbid)[3:]
             media_info.anchor_provider = "douban"
             media_info.anchor_external_id = str(tmdbid)[3:]
+            media_info.type = mtype
+            media_info.title = name or media_info.title
+            media_info.cn_name = name or media_info.cn_name
+            media_info.year = year or media_info.year
+        elif content_profile not in ("", "default"):
+            media_info = meta_info(title=("%s %s" % (name, year)).strip(), mtype=mtype)
+            media_info.tmdb_id = ""
             media_info.type = mtype
             media_info.title = name or media_info.title
             media_info.cn_name = name or media_info.cn_name
