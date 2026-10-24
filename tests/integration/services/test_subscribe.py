@@ -79,8 +79,8 @@ class TestSubscribeQueryService:
         svc = SubscribeQueryService(movie_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
         from app.domain.mediatypes import MediaType
 
-        svc.delete_subscribe(MediaType.MOVIE, rssid=1)
-        movie_repo.delete.assert_called_once_with(title=None, year=None, rssid=1, tmdbid=None, user=None)
+        svc.delete_subscribe(MediaType.MOVIE, title="错误的标题", year="2026", rssid=1, tmdbid="999")
+        movie_repo.delete.assert_called_once_with(rssid=1, user=None)
 
     def test_delete_subscribe_tv(self):
         tv_repo = MagicMock()
@@ -88,8 +88,8 @@ class TestSubscribeQueryService:
         svc = SubscribeQueryService(MagicMock(), tv_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock())
         from app.domain.mediatypes import MediaType
 
-        svc.delete_subscribe(MediaType.TV, rssid=1)
-        tv_repo.delete.assert_called_once_with(title=None, season=None, rssid=1, tmdbid=None, user=None)
+        svc.delete_subscribe(MediaType.TV, title="错误的标题", season="S01", rssid=1, tmdbid="999")
+        tv_repo.delete.assert_called_once_with(rssid=1, user=None)
 
     def test_get_subscribe_id_movie(self):
         movie_repo = MagicMock()
