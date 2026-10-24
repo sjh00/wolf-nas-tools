@@ -47,12 +47,25 @@ def _resolve_subscribe_type(value, tmdbid=None) -> str:
 
 def _source_label(provider: str, raw_id: str | None = None) -> str:
     value = str(provider or "").strip()
-    if not value and raw_id:
-        parsed = parse_media_ref(str(raw_id))
+    raw = str(raw_id or "").strip()
+    if raw.startswith("content_id:") or value == "content_id":
+        return "插件"
+    if not value and raw:
+        parsed = parse_media_ref(raw)
         value = parsed[0] if parsed else ""
     item = metadata_registry.get_provider(value) if value else None
     desc = getattr(item, "descriptor", None)
     return str(getattr(desc, "display_name", "") or value or "未知")
+
+
+def _normalized_anchor(provider, external_id) -> tuple[str | None, str | None]:
+    value = str(provider or "").strip()
+    external = str(external_id or "").strip()
+    if external.startswith("content_id:"):
+        return "content_id", external.split(":", 1)[1]
+    if value == "content_id" and not external:
+        return value, None
+    return value or None, external or None
 
 
 class SubscribeQueryService:
@@ -119,6 +132,9 @@ class SubscribeQueryService:
                 note_info = {}
             rss_sites = [site for site in (rss_sites or []) if site in rss_sites_valid]
             search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
+            anchor_provider, anchor_external_id = _normalized_anchor(
+                rss_movie.ANCHOR_PROVIDER, rss_movie.ANCHOR_EXTERNAL_ID
+            )
             ret_dict[str(rss_movie.ID)] = {
                 "id": rss_movie.ID,
                 "user_id": rss_movie.USER_ID,
@@ -127,9 +143,9 @@ class SubscribeQueryService:
                 "year": rss_movie.YEAR,
                 "tmdbid": rss_movie.TMDBID,
                 "identity_id": rss_movie.IDENTITY_ID,
-                "anchor_provider": rss_movie.ANCHOR_PROVIDER,
-                "anchor_external_id": rss_movie.ANCHOR_EXTERNAL_ID,
-                "source_label": _source_label(rss_movie.ANCHOR_PROVIDER, rss_movie.TMDBID),
+                "anchor_provider": anchor_provider,
+                "anchor_external_id": anchor_external_id,
+                "source_label": _source_label(anchor_provider or "", rss_movie.TMDBID),
                 "content_profile": rss_movie.CONTENT_PROFILE,
                 "metadata_policy": rss_movie.METADATA_POLICY,
                 "naming_profile": rss_movie.NAMING_PROFILE,
@@ -209,6 +225,7 @@ class SubscribeQueryService:
                 note_info = {}
             rss_sites = [site for site in (rss_sites or []) if site in rss_sites_valid]
             search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
+            anchor_provider, anchor_external_id = _normalized_anchor(rss_tv.ANCHOR_PROVIDER, rss_tv.ANCHOR_EXTERNAL_ID)
             ret_dict[str(rss_tv.ID)] = {
                 "id": rss_tv.ID,
                 "user_id": rss_tv.USER_ID,
@@ -218,9 +235,9 @@ class SubscribeQueryService:
                 "season": rss_tv.SEASON,
                 "tmdbid": rss_tv.TMDBID,
                 "identity_id": rss_tv.IDENTITY_ID,
-                "anchor_provider": rss_tv.ANCHOR_PROVIDER,
-                "anchor_external_id": rss_tv.ANCHOR_EXTERNAL_ID,
-                "source_label": _source_label(rss_tv.ANCHOR_PROVIDER, rss_tv.TMDBID),
+                "anchor_provider": anchor_provider,
+                "anchor_external_id": anchor_external_id,
+                "source_label": _source_label(anchor_provider or "", rss_tv.TMDBID),
                 "content_profile": rss_tv.CONTENT_PROFILE,
                 "metadata_policy": rss_tv.METADATA_POLICY,
                 "naming_profile": rss_tv.NAMING_PROFILE,
