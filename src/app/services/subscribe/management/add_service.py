@@ -303,11 +303,10 @@ class SubscribeAddService:
                         media_info.anchor_provider = anchor_ref[0]
                         media_info.anchor_external_id = anchor_ref[1]
                     if not keyword:
-                        keyword = (
-                            anchor_ref[1]
-                            if anchor_ref and anchor_ref[0].lower() == "content_id"
-                            else (media_info.title or name or provider_ref[1])
-                        )
+                        if str(content_profile or "").strip() not in ("", "default") and anchor_ref:
+                            keyword = anchor_ref[1]
+                        else:
+                            keyword = media_info.title or name or provider_ref[1]
             if media_info is None and mediaid:
                 media_info = self._web_utils.get_mediainfo_from_id(mtype=mtype, mediaid=mediaid)
                 if not season and media_info:
