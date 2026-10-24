@@ -325,6 +325,9 @@ class MessageBuilder:
                 item.anchor_provider = provider
         if not getattr(item, "rssid", None):
             item.rssid = getattr(subscription, "id", None)
+        profile = str(getattr(subscription, "content_profile", "") or "")
+        if profile and str(getattr(item, "content_profile", "") or "default") in ("", "default"):
+            item.content_profile = profile
         return subscription
 
     def send_download_fail_message(self, item, error_msg: str) -> None:

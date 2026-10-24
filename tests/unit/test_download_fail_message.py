@@ -87,3 +87,23 @@ class TestDownloadFailMessage:
         builder.send_download_fail_message(item, "第二次失败")
 
         assert builder._dispatcher.send_user_msg.call_count == 1
+
+
+def test_subscription_profile_is_propagated_to_item(builder, monkeypatch):
+    from types import SimpleNamespace
+
+    subscription = SimpleNamespace(
+        content_profile="anime",
+        image="https://img/anime.jpg",
+        anchor_provider="bangumi",
+        id=9,
+    )
+    monkeypatch.setattr(builder, "_subscription_context", lambda item: subscription)
+    item = _Item(title="魔法少女", type=MediaType.TV, content_profile="default")
+
+    enriched = builder._enrich_from_subscription(item)
+
+    assert enriched is subscription
+    assert item.content_profile == "anime"
+    assert item.anchor_provider == "bangumi"
+    assert item.poster_path == "https://img/anime.jpg"
