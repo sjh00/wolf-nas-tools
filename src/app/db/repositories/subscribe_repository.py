@@ -1086,7 +1086,11 @@ class SubscribeRepository(BaseRepository):
     # ==================== RSS History ====================
 
     def get_rss_history(
-        self, rtype: str | None = None, rid: int | None = None, user: UserContext | None = None
+        self,
+        rtype: str | None = None,
+        rid: int | None = None,
+        user: UserContext | None = None,
+        content_profile: str | None = None,
     ) -> list[SubscribeHistory]:
         """
         查询RSS历史（user=None 为系统上下文不过滤；否则按数据归属过滤）
@@ -1097,6 +1101,17 @@ class SubscribeRepository(BaseRepository):
                 query = query.filter(SubscribeHistory.ID == int(rid))
             elif rtype:
                 query = query.filter(SubscribeHistory.TYPE == rtype)
+            if content_profile:
+                if content_profile in ("default", "core"):
+                    query = query.filter(
+                        or_(
+                            SubscribeHistory.CONTENT_PROFILE.is_(None),
+                            SubscribeHistory.CONTENT_PROFILE == "",
+                            SubscribeHistory.CONTENT_PROFILE == "default",
+                        )
+                    )
+                else:
+                    query = query.filter(SubscribeHistory.CONTENT_PROFILE == content_profile)
             if user is not None:
                 query = apply_owner_scope(query, SubscribeHistory, user)
             return query.order_by(SubscribeHistory.FINISH_TIME.desc()).all()
