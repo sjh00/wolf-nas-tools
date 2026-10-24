@@ -22,6 +22,7 @@ from app.events.constants import SEARCH_START
 from app.events.payloads import SearchStartPayload
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.progress import ProgressTracker
+from app.media.image_resolver import DEFAULT_TMDB_IMAGE
 from app.media.service import MediaService
 from app.message import Message
 from app.services.downloader_core import DownloaderCore as Downloader
@@ -42,6 +43,7 @@ class SearchOrchestrator:
         progress_helper: ProgressTracker,
         event_bus: EventBus,
         intent_resolver: IntentResolver | None = None,
+        metadata_service=None,
     ):
         self._searcher = searcher
         self._search_repo = search_repo
@@ -52,6 +54,7 @@ class SearchOrchestrator:
         self._progress = progress_helper
         self._event_bus = event_bus
         self._intent_resolver = intent_resolver
+        self._metadata_service = metadata_service
         self._search_auto = settings.get("pt").get("search_auto", True)
 
     def orchestrate(self, ctx: SearchContext) -> tuple[Any | None, dict | None, int, int]:
@@ -260,11 +263,14 @@ class SearchOrchestrator:
         # 从匹配媒体注入海报/简介/评分到每条搜索结果
         match_media = ctx.match_media
         if match_media:
+            if not match_media.get_poster_image() and self._metadata_service is not None:
+                self._metadata_service.hydrate_media(match_media)
             poster_url = match_media.get_poster_image()
             overview = match_media.overview
             vote = match_media.vote_average
             for mi in media_list:
-                if poster_url and not mi.get_poster_image():
+                current_poster = mi.get_poster_image()
+                if poster_url and (not current_poster or str(current_poster) == DEFAULT_TMDB_IMAGE):
                     mi.poster_path = poster_url
                 if overview and not mi.overview:
                     mi.overview = overview

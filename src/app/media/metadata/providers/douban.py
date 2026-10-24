@@ -185,7 +185,10 @@ class DoubanProvider:
 
     descriptor = ProviderDescriptor(
         provider_key="douban",
+        subscription_order=2,
+        default_subscription_policy="douban_primary",
         display_name="豆瓣",
+        ref_prefixes=frozenset({"DB", "DOUBAN"}),
         subscription_id_format="DB:{id}",
         default_media_type=MediaType.MOVIE,
         detail_url_template="https://movie.douban.com/subject/{external_id}",

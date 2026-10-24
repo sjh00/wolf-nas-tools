@@ -80,6 +80,10 @@ class ProviderDescriptor(BaseModel):
     subscription_ref: bool = False
     default_media_type: MediaType | None = None
     default_content_profile: str = "default"
+    subscription_order: int = 100
+    default_subscription_policy: str = ""
+    virtual: bool = False
+    uniqueid_fallback: str = ""
 
 
 class ImageAsset(BaseModel):

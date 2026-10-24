@@ -208,7 +208,10 @@ class TmdbProvider:
 
     descriptor = ProviderDescriptor(
         provider_key="tmdb",
+        subscription_order=1,
+        default_subscription_policy="tmdb_primary",
         display_name="TMDB",
+        ref_prefixes=frozenset({"TMDB"}),
         subscription_id_format="{id}",
         default_media_type=MediaType.MOVIE,
         detail_url_template="https://www.themoviedb.org/{media_type}/{external_id}",
