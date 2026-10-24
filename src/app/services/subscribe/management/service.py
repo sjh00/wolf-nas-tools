@@ -105,7 +105,9 @@ class SubscribeService:
             self._indexer_service,
             user_repo,
         )
-        self._refresh_svc = SubscribeRefreshService(self._movie_repo, self._tv_repo, self._tv_episode_repo, self._media)
+        self._refresh_svc = SubscribeRefreshService(
+            self._movie_repo, self._tv_repo, self._tv_episode_repo, self._media, metadata_service
+        )
 
     @property
     def default_subscribe_setting_tv(self) -> dict | None:

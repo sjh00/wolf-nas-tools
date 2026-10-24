@@ -325,7 +325,7 @@ class LibraryRenamePlanner:
             return "missing_title"
         if "year" in fields and not meta.year:
             return "missing_year"
-        if "tmdbid" in fields and not meta.tmdb_id:
+        if "tmdbid" in fields and not meta.tmdb_id and meta.get_media_ref() is None:
             return "missing_tmdbid"
         if "original_name" in fields and not meta.org_string:
             return "missing_original_name"

@@ -29,6 +29,7 @@ from app.domain.interfaces.rss_repo import (
     ISubscribeTvEpisodeRepository,
     ISubscribeTvRepository,
 )
+from app.domain.media_ref import media_identity_key
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system import get_cache_manager
 from app.media import MediaCache, MediaService, meta_info
@@ -407,8 +408,9 @@ class BaseSearchStrategy:
                 else:
                     episodes_list = episodes
 
+                media_key = media_identity_key(media_info) or media_info.tmdb_id
                 rss_no_exists_local = {
-                    media_info.tmdb_id: [{"season": season, "episodes": episodes_list, "total_episodes": total_ep}]
+                    media_key: [{"season": season, "episodes": episodes_list, "total_episodes": total_ep}]
                 }
 
                 if self._coordinator and not self._coordinator.try_acquire(media_info):
@@ -424,7 +426,7 @@ class BaseSearchStrategy:
                             meta_info=media_info, total_ep={season: total_ep}
                         )
                         if exist_flag:
-                            if not library_no_exists or not library_no_exists.get(media_info.tmdb_id):
+                            if not library_no_exists or not library_no_exists.get(media_key):
                                 log.info(
                                     f"[Subscribe]{MediaType.TV.display_name}"
                                     f" {media_info.get_title_string()} 订阅剧集已全部存在"
@@ -433,10 +435,10 @@ class BaseSearchStrategy:
                                     self._service.finish_rss_subscribe(rssid=rss_info.get("id"), media=media_info)
                             return
                         rss_no_exists_local = Torrent.get_intersection_episodes(
-                            target=rss_no_exists_local, source=library_no_exists, title=media_info.tmdb_id
+                            target=rss_no_exists_local, source=library_no_exists, title=media_key
                         )
-                        if rss_no_exists_local.get(media_info.tmdb_id):
-                            missing = rss_no_exists_local.get(media_info.tmdb_id)
+                        if rss_no_exists_local.get(media_key):
+                            missing = rss_no_exists_local.get(media_key)
                             log.info(f"[Subscribe]{media_info.get_title_string()} 订阅缺失季集：{missing}")
                             if self._service:
                                 self._service.update_subscribe_tv_lack(
@@ -490,17 +492,17 @@ class BaseSearchStrategy:
                         if exist_flag:
                             if self._service:
                                 self._service.finish_rss_subscribe(rssid=rid, media=media_info)
-                        elif library_no_exists and library_no_exists.get(media_info.tmdb_id):
+                        elif library_no_exists and library_no_exists.get(media_key):
                             if self._service:
                                 self._service.update_subscribe_tv_lack(
                                     rssid=rid,
                                     media_info=media_info,
-                                    seasoninfo=library_no_exists.get(media_info.tmdb_id),
+                                    seasoninfo=library_no_exists.get(media_key),
                                 )
-                        elif no_exists and no_exists.get(media_info.tmdb_id):
+                        elif no_exists and no_exists.get(media_key):
                             if self._service:
                                 self._service.update_subscribe_tv_lack(
-                                    rssid=rid, media_info=media_info, seasoninfo=no_exists.get(media_info.tmdb_id)
+                                    rssid=rid, media_info=media_info, seasoninfo=no_exists.get(media_key)
                                 )
                         else:
                             log.info(f"[Subscribe]{media_info.get_title_string()} 订阅完成情况无法确认，保持运行")
