@@ -346,8 +346,10 @@ def test_provider_ref_tmdb_tv_passes_media_type_to_lookup():
         allow_private=False,
         permissions=None,
     )
-    assert svc._tv_repo.insert.call_args.kwargs["media_info"].type == MediaType.TV
-    assert svc._tv_repo.insert.call_args.kwargs["total"] == 10
+    inserted = svc._tv_repo.insert.call_args.kwargs
+    assert inserted["media_info"].type == MediaType.TV
+    assert inserted["total"] == 10
+    assert inserted["keyword"] == "权力的游戏"
     svc._movie_repo.insert.assert_not_called()
 
 

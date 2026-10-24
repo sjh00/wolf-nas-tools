@@ -144,7 +144,15 @@ class SubscribeAddService:
         media_info.cn_name = title
         media_info.year = str(record.get("year") or year or "") or None
         media_info.poster_path = poster or ""
-        media_info.overview = record.get("overview")
+        actors = [
+            str(item.get("name"))
+            for item in (record.get("credits") or [])
+            if isinstance(item, dict) and item.get("role") in ("actor", "actress") and item.get("name")
+        ]
+        overview = str(record.get("overview") or "").strip()
+        if not overview and actors:
+            overview = f"演员：{' / '.join(actors[:12])}"
+        media_info.overview = overview
         media_info.type = resolved_type
         extra = record.get("extra") or {}
         season_number = int(season or 1)
@@ -296,7 +304,9 @@ class SubscribeAddService:
                         media_info.anchor_external_id = anchor_ref[1]
                     if not keyword:
                         keyword = (
-                            anchor_ref[1] if anchor_ref and anchor_ref[0].lower() == "content_id" else provider_ref[1]
+                            anchor_ref[1]
+                            if anchor_ref and anchor_ref[0].lower() == "content_id"
+                            else (media_info.title or name or provider_ref[1])
                         )
             if media_info is None and mediaid:
                 media_info = self._web_utils.get_mediainfo_from_id(mtype=mtype, mediaid=mediaid)
