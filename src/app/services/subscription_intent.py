@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.domain.mediatypes import MediaType
+from app.media.metadata.providers.tmdb import TmdbProvider
 from app.media.metadata.registry import registry as metadata_registry
+
+_LEGACY_DESCRIPTORS = {"tmdb": TmdbProvider.descriptor}
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,9 @@ class SubscriptionIntent:
 
 def _descriptor(provider: str):
     item = metadata_registry.get_provider(provider) if provider else None
+    if item is None:
+        # 订阅工具可能早于 MetadataService 被调用；TMDB 是内置旧 ID 来源。
+        return _LEGACY_DESCRIPTORS.get(provider)
     return getattr(item, "descriptor", None)
 
 
@@ -52,18 +58,19 @@ def resolve_subscription(
         if profiles:
             profile = sorted(profiles)[0]
     media_type = descriptor.default_media_type or (MediaType.TV if profile == "anime" else MediaType.MOVIE)
-    id_format = str(getattr(descriptor, "subscription_id_format", "") or "")
-    if not id_format:
-        id_format = "{provider}:{id}" if profile != "default" else "{id}"
+    declared_format = str(getattr(descriptor, "subscription_id_format", "") or "")
+    id_format = declared_format or ("{provider}:{id}" if profile != "default" else "{id}")
     mediaid = id_format.format(provider=provider, id=external_id)
-    core_provider = provider in {"tmdb", "douban", "bangumi"}
-    ref = None
-    if not core_provider or bool(getattr(descriptor, "subscription_ref", False)):
-        ref = f"{provider}:{external_id}"
+    # 没有声明正式订阅 ID 格式的来源视为插件锚点，需要 metadata_ref。
+    ref = (
+        f"{provider}:{external_id}"
+        if bool(getattr(descriptor, "subscription_ref", False)) or not declared_format
+        else None
+    )
     if metadata_policy:
         policy = metadata_policy
-    elif core_provider:
-        policy = f"{provider}_primary"
+    elif str(getattr(descriptor, "default_subscription_policy", "") or ""):
+        policy = str(descriptor.default_subscription_policy)
     elif profile != "default":
         policy = f"provider_only:{profile}"
     else:

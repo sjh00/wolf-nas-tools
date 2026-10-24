@@ -363,18 +363,19 @@ class NfoGenerator:
 
     def _write_snapshot_uniqueids(self, snapshot, doc, root):
         primary = snapshot.primary_provider
+        primary_desc = getattr(metadata_registry.get_provider(primary), "descriptor", None)
+        if getattr(primary_desc, "virtual", False):
+            primary = str(getattr(primary_desc, "uniqueid_fallback", "") or "")
         refs = []
         seen = set()
         for ref in snapshot.refs:
-            # adult 是插件的虚拟聚合 provider，不是标准 NFO uniqueid 类型。
-            if ref.provider == "adult":
+            provider_desc = getattr(metadata_registry.get_provider(ref.provider), "descriptor", None)
+            if getattr(provider_desc, "virtual", False):
                 continue
             if ref.provider in seen:
                 continue
             seen.add(ref.provider)
             refs.append(ref)
-        if primary == "adult":
-            primary = "content_id"
         default_provider = primary if any(ref.provider == primary for ref in refs) else None
         if default_provider is None:
             if any(ref.provider == "tmdb" for ref in refs):

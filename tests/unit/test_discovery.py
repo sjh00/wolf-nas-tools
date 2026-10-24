@@ -7,9 +7,11 @@ import pytest
 from app.core.exceptions import ValidationError
 from app.media.metadata import (
     DiscoveryFeed,
+    DiscoveryItem,
     DiscoveryPage,
     ProviderCapability,
     ProviderDescriptor,
+    ProviderRef,
 )
 from app.media.metadata.providers.discovery import (
     BangumiDiscovery,
@@ -182,7 +184,12 @@ def test_discovery_service_caches_items():
 
         def items(self, feed, page, filters, ctx):
             self.calls += 1
-            return DiscoveryPage(items=[], page=page)
+            item = DiscoveryItem(
+                provider="fake-cache",
+                ref=ProviderRef(provider="fake-cache", external_id="1"),
+                title="缓存条目",
+            )
+            return DiscoveryPage(items=[item], page=page)
 
     registry = MetadataRegistry()
     provider = _CountingProvider()

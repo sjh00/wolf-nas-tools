@@ -557,7 +557,8 @@ def test_identify_anchor_follows_policy(monkeypatch):
 
     from app.domain.mediatypes import MediaType
 
-    svc = MetadataService(register_builtins=False)
+    svc = MetadataService(register_builtins=True)
+    svc._ensure_builtin()
     calls = []
 
     def fake_search(**kwargs):
@@ -579,7 +580,8 @@ def test_identify_anchor_falls_back_when_primary_misses(monkeypatch):
 
     from app.domain.mediatypes import MediaType
 
-    svc = MetadataService(register_builtins=False)
+    svc = MetadataService(register_builtins=True)
+    svc._ensure_builtin()
 
     def fake_search(**kwargs):
         if kwargs["provider"] == "bangumi":
@@ -601,7 +603,8 @@ def test_identify_anchor_singleflight(monkeypatch):
 
     from app.domain.mediatypes import MediaType
 
-    svc = MetadataService(register_builtins=False)
+    svc = MetadataService(register_builtins=True)
+    svc._ensure_builtin()
     call_count = 0
     count_lock = threading.Lock()
 

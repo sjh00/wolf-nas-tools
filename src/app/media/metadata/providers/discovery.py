@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 from typing import Any, Literal
 
+import log
 from app.domain.mediatypes import MediaType
 from app.infrastructure.external.doubanapi.apiv2 import DoubanApi
 from app.infrastructure.image_proxy import ImageProxy
@@ -14,6 +16,7 @@ from ..models import (
     DiscoveryFeed,
     DiscoveryItem,
     DiscoveryPage,
+    FacetValue,
     ProviderCapability,
     ProviderDescriptor,
     ProviderRef,
@@ -86,7 +89,7 @@ class DoubanDiscovery:
 
     def feeds(self, ctx: object) -> list[DiscoveryFeed]:
         return [
-            DiscoveryFeed(key=key, title=title, kind=kind, facets=["year"])
+            DiscoveryFeed(key=key, title=title, kind=kind, facets=["year", "genre"])
             for key, (title, kind) in self._FEEDS.items()
         ]
 
@@ -103,11 +106,18 @@ class DoubanDiscovery:
             for raw_item in raw.get("subject_collection_items") or []
             if (item := _douban_discovery_item(raw_item)) is not None and (not year or item.year == year)
         ]
+        mainstream, facets = _genre_facets(items)
+        genre = str(filters.get("genre") or "").strip()
+        if genre == "其他":
+            items = [item for item in items if not any(any(main in tag for tag in item.tags) for main in mainstream)]
+        elif genre:
+            items = [item for item in items if any(genre in tag for tag in item.tags)]
         total = int(raw.get("total") or len(items))
         return DiscoveryPage(
             items=items,
             page=page,
             has_more=start + count < total,
+            facets={"genre": facets},
         )
 
 
@@ -132,6 +142,7 @@ class TmdbDiscovery:
 
     def __init__(self, media_service: Any) -> None:
         self._media = media_service
+        self._genre_maps: dict[str, dict[str, str]] = {}
 
     def feeds(self, ctx: object) -> list[DiscoveryFeed]:
         feeds = []
@@ -141,7 +152,7 @@ class TmdbDiscovery:
                     key=key,
                     title=title,
                     kind=kind,
-                    facets=["season", "year"] if seasonal else ["year"],
+                    facets=["season", "year", "genre"] if seasonal else ["year", "genre"],
                 )
             )
         return feeds
@@ -158,12 +169,48 @@ class TmdbDiscovery:
         else:
             raw = self._seasonal(feed, page, filters)
         year = str(filters.get("year") or "")
-        items = [
-            item
-            for source in raw
-            if (item := _tmdb_discovery_item(source)) is not None and (not year or item.year == year)
-        ]
-        return DiscoveryPage(items=items, page=page, has_more=bool(raw and len(raw) >= 20))
+        items = []
+        for source in raw:
+            item = _tmdb_discovery_item(source)
+            if item is None or (year and item.year != year):
+                continue
+            genre_map = self._tmdb_genre_map(item.ref.media_type)
+            item.tags = [
+                genre_map[str(genre_id)] for genre_id in source.get("genre_ids") or [] if str(genre_id) in genre_map
+            ]
+            items.append(item)
+        mainstream, facets = _genre_facets(items)
+        genre = str(filters.get("genre") or "").strip()
+        if genre == "其他":
+            items = [item for item in items if not any(any(main in tag for tag in item.tags) for main in mainstream)]
+        elif genre:
+            items = [item for item in items if any(genre in tag for tag in item.tags)]
+        return DiscoveryPage(
+            items=items,
+            page=page,
+            has_more=bool(raw and len(raw) >= 20),
+            facets={"genre": facets},
+        )
+
+    def _tmdb_genre_map(self, media_type: MediaType | None) -> dict[str, str]:
+        key = media_type.value if media_type else "movie"
+        if key in self._genre_maps:
+            return self._genre_maps[key]
+        mapping: dict[str, str] = {}
+        raw_genres = []
+        try:
+            raw_genres = self._media.get_tmdb_genres(media_type) or []
+            for item in raw_genres:
+                if isinstance(item, dict):
+                    genre_id, genre_name = item.get("id"), item.get("name")
+                else:
+                    genre_id, genre_name = getattr(item, "id", None), getattr(item, "name", None)
+                if genre_id and genre_name:
+                    mapping[str(genre_id)] = str(genre_name)
+        except Exception as exc:  # noqa: BLE001
+            log.warn(f"[Discovery]TMDB题材加载失败: {exc}")
+        self._genre_maps[key] = mapping
+        return mapping
 
     def _seasonal(self, feed: str, page: int, filters: dict) -> list[dict]:
         start, end = season_range(str(filters.get("season") or current_season()))
@@ -211,7 +258,14 @@ class BangumiDiscovery:
 
     def feeds(self, ctx: object) -> list[DiscoveryFeed]:
         return [
-            DiscoveryFeed(key=key, title=title, kind=kind, facets=["season", "year"] if seasonal else ["year"])
+            DiscoveryFeed(
+                key=key,
+                title=title,
+                kind=kind,
+                facets=(
+                    ["season", "year", "genre"] if seasonal else ["weekday", "year"] if kind == "calendar" else ["year"]
+                ),
+            )
             for key, (title, kind, seasonal) in self._FEEDS.items()
         ]
 
@@ -236,7 +290,15 @@ class BangumiDiscovery:
             has_more = page * 20 < total
         else:
             raw = self._client.calendar() or []
+            weekday_filter = str(filters.get("weekday") or "")
             for day in raw:
+                day_weekday = str(
+                    (day.get("weekday") or {}).get("id")
+                    if isinstance(day.get("weekday"), dict)
+                    else day.get("weekday") or ""
+                )
+                if weekday_filter and day_weekday and weekday_filter != day_weekday:
+                    continue
                 for source in day.get("items") or []:
                     item = _bangumi_discovery_item(source)
                     if item is None:
@@ -248,7 +310,77 @@ class BangumiDiscovery:
                     if year and item.year != year:
                         continue
                     items.append(item)
-        return DiscoveryPage(items=items, page=page, has_more=has_more)
+        mainstream, facets = _genre_facets(items)
+        genre = str(filters.get("genre") or "").strip()
+        if genre == "其他":
+            items = [item for item in items if not any(any(main in tag for tag in item.tags) for main in mainstream)]
+        elif genre:
+            items = [item for item in items if any(genre in tag for tag in item.tags)]
+        return DiscoveryPage(
+            items=items,
+            page=page,
+            has_more=has_more,
+            facets={"genre": facets},
+        )
+
+
+_NON_GENRE_TAGS = {
+    "日本",
+    "中国",
+    "美国",
+    "韩国",
+    "欧美",
+    "TV",
+    "TVA",
+    "WEB",
+    "OVA",
+    "剧场版",
+    "动画",
+    "日本动画",
+    "漫画",
+    "小说",
+    "游戏",
+    "原创",
+    "续作",
+    "未定档",
+    "季番",
+    "漫改",
+    "轻改",
+    "小说改",
+    "漫画改",
+    "游戏改",
+    "轻小说改",
+}
+
+
+def _genre_facets(items: list[DiscoveryItem], limit: int = 16) -> tuple[list[str], list[FacetValue]]:
+    """从当前页标签动态提取主流题材，其余归入其他."""
+    counts = Counter(
+        str(tag).strip()
+        for item in items
+        for tag in item.tags
+        if str(tag).strip()
+        and str(tag).strip() not in _NON_GENRE_TAGS
+        and not any(char.isdigit() for char in str(tag))
+        and not str(tag).isascii()
+        and len(str(tag)) <= 6
+    )
+    mainstream = [tag for tag, _count in counts.most_common(limit)]
+    tagged = 0
+    for item in items:
+        if any(any(main in tag for tag in item.tags) for main in mainstream):
+            tagged += 1
+    facets = [
+        FacetValue(
+            value=tag,
+            label=tag,
+            count=sum(1 for item in items if any(tag in value for value in item.tags)),
+        )
+        for tag in mainstream
+    ]
+    if tagged < len(items):
+        facets.append(FacetValue(value="其他", label="其他", count=len(items) - tagged))
+    return mainstream, facets
 
 
 def _douban_discovery_item(raw: dict[str, Any]) -> DiscoveryItem | None:
@@ -266,9 +398,15 @@ def _douban_discovery_item(raw: dict[str, Any]) -> DiscoveryItem | None:
         media_type = MediaType.TV if raw.get("episodes_info") else MediaType.MOVIE
     rating = raw.get("rating") or {}
     year = str(raw.get("year") or "")
+    card = str(raw.get("card_subtitle") or "")
     if not year:
-        card = str(raw.get("card_subtitle") or "")
         year = card[:4] if card[:4].isdigit() else ""
+    card_parts = [part.strip() for part in card.split("/") if part.strip()]
+    genres = []
+    if len(card_parts) > 2:
+        candidate = card_parts[2]
+        if "·" not in candidate and " " not in candidate and len(candidate) <= 6:
+            genres.append(candidate)
     return DiscoveryItem(
         provider="douban",
         ref=ProviderRef(provider="douban", external_id=external_id, media_type=media_type),
@@ -277,7 +415,7 @@ def _douban_discovery_item(raw: dict[str, Any]) -> DiscoveryItem | None:
         year=year or None,
         poster=cover,
         rating={"douban": float(rating["value"])} if rating.get("value") is not None else {},
-        tags=[str(tag) for tag in raw.get("tags") or [] if tag],
+        tags=genres or [str(tag) for tag in raw.get("tags") or [] if tag],
         anchor_ref=ProviderRef(provider="douban", external_id=external_id, media_type=media_type),
         actions=["subscribe", "detail"],
         extra={

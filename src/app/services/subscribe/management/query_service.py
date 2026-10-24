@@ -7,6 +7,8 @@ import log
 from app.core.constants import ANIME_GENREIDS
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system.caches import TMDBCache
+from app.media.metadata.refs import parse_media_ref
+from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.auth import UserContext
 from app.services.subscribe.management.utils import parse_rss_desc
 from app.utils.json_utils import JsonUtils
@@ -41,6 +43,16 @@ def _resolve_subscribe_type(value, tmdbid=None) -> str:
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Subscribe]推断订阅类型失败 {tmdbid}: {e!s}")
     return MediaType.TV.value
+
+
+def _source_label(provider: str, raw_id: str | None = None) -> str:
+    value = str(provider or "").strip()
+    if not value and raw_id:
+        parsed = parse_media_ref(str(raw_id))
+        value = parsed[0] if parsed else ""
+    item = metadata_registry.get_provider(value) if value else None
+    desc = getattr(item, "descriptor", None)
+    return str(getattr(desc, "display_name", "") or value or "未知")
 
 
 class SubscribeQueryService:
@@ -117,6 +129,7 @@ class SubscribeQueryService:
                 "identity_id": rss_movie.IDENTITY_ID,
                 "anchor_provider": rss_movie.ANCHOR_PROVIDER,
                 "anchor_external_id": rss_movie.ANCHOR_EXTERNAL_ID,
+                "source_label": _source_label(rss_movie.ANCHOR_PROVIDER, rss_movie.TMDBID),
                 "content_profile": rss_movie.CONTENT_PROFILE,
                 "metadata_policy": rss_movie.METADATA_POLICY,
                 "naming_profile": rss_movie.NAMING_PROFILE,
@@ -207,6 +220,7 @@ class SubscribeQueryService:
                 "identity_id": rss_tv.IDENTITY_ID,
                 "anchor_provider": rss_tv.ANCHOR_PROVIDER,
                 "anchor_external_id": rss_tv.ANCHOR_EXTERNAL_ID,
+                "source_label": _source_label(rss_tv.ANCHOR_PROVIDER, rss_tv.TMDBID),
                 "content_profile": rss_tv.CONTENT_PROFILE,
                 "metadata_policy": rss_tv.METADATA_POLICY,
                 "naming_profile": rss_tv.NAMING_PROFILE,

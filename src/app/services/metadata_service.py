@@ -367,6 +367,50 @@ class MetadataService:
                 naming_profile=naming_profile,
             )
 
+    def hydrate_media(self, media_info: Any) -> bool:
+        """按已有锚点补齐 media_info 图片，不直接依赖任何具体 provider."""
+        refs: list[tuple[str, str]] = []
+        anchor = str(getattr(media_info, "anchor_provider", "") or "")
+        anchor_id = str(getattr(media_info, "anchor_external_id", "") or "")
+        if anchor and anchor_id:
+            refs.append((anchor, anchor_id))
+        douban_id = str(getattr(media_info, "douban_id", "") or "")
+        if douban_id:
+            refs.append(("douban", douban_id))
+        tmdb_id = str(getattr(media_info, "tmdb_id", "") or "")
+        if tmdb_id.isdigit():
+            refs.append(("tmdb", tmdb_id))
+        seen: set[tuple[str, str]] = set()
+        for provider, external_id in refs:
+            if (provider, external_id) in seen:
+                continue
+            seen.add((provider, external_id))
+            try:
+                record = self.lookup(
+                    provider=provider,
+                    external_id=external_id,
+                    media_type=getattr(media_info, "type", None),
+                    scope=str(getattr(media_info, "content_profile", "") or "default"),
+                    content_profile=str(getattr(media_info, "content_profile", "") or ""),
+                    allow_private=True,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            images = record.get("images") if isinstance(record, dict) else getattr(record, "images", {})
+            images = images or {}
+            poster = images.get("poster") or []
+            if poster:
+                asset = poster[0]
+                media_info.poster_path = asset.get("url") if isinstance(asset, dict) else getattr(asset, "url", None)
+                fanart = images.get("fanart") or []
+                if fanart:
+                    first = fanart[0]
+                    media_info.fanart_backdrop = (
+                        first.get("url") if isinstance(first, dict) else getattr(first, "url", None)
+                    )
+                return True
+        return False
+
     def identify_anchor(
         self,
         media_info: Any,
@@ -382,13 +426,25 @@ class MetadataService:
         if profile != "default":
             return False
         policy_key = str(policy or settings.media.metadata_default_policy or "tmdb_primary")
-        primary = policy_key.split("_", 1)[0]
-        if primary not in {"tmdb", "douban", "bangumi"}:
-            primary = "tmdb"
-        anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
-        if primary == "tmdb" and getattr(media_info, "tmdb_id", None) and not anchor_provider:
+        candidates = sorted(
+            self._registry.list_providers(
+                capability=ProviderCapability.SEARCH,
+                visibility="public",
+            ),
+            key=lambda item: int(getattr(item.descriptor, "subscription_order", 100)),
+        )
+        if not candidates:
             return False
-        order = [primary, *[item for item in ("tmdb", "douban", "bangumi") if item != primary]]
+        primary = policy_key.split("_", 1)[0]
+        if not any(item.descriptor.provider_key == primary for item in candidates):
+            primary = candidates[0].descriptor.provider_key
+        anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
+        if not anchor_provider and getattr(media_info, f"{primary}_id", None):
+            return False
+        order = [
+            primary,
+            *[item.descriptor.provider_key for item in candidates if item.descriptor.provider_key != primary],
+        ]
         title = str(
             getattr(media_info, "title", "")
             or getattr(media_info, "get_title_string", lambda: "")()
@@ -441,7 +497,9 @@ class MetadataService:
         cache_key: tuple,
     ) -> bool:
         for provider in order:
-            content_profile = "anime" if provider == "bangumi" else "default"
+            provider_obj = self._registry.get_provider(provider)
+            descriptor = getattr(provider_obj, "descriptor", None)
+            content_profile = str(getattr(descriptor, "default_content_profile", "") or "default")
             try:
                 hits = self.search(
                     query=title,
@@ -482,9 +540,9 @@ class MetadataService:
             media_info.anchor_provider = provider
             media_info.anchor_external_id = external_id
             self._anchor_cache[cache_key] = (time.monotonic(), provider, external_id)
-            if provider == "bangumi":
+            if content_profile == "anime":
                 media_info.type = MediaType.ANIME
-                media_info.content_profile = "anime"
+                media_info.content_profile = content_profile
             log.info(f"[Metadata]主源策略 {policy_key} 命中 {provider}:{external_id}")
             return True
         return False
@@ -536,9 +594,17 @@ class MetadataService:
                     media_type=media_type,
                 )
             )
-        douban_id = getattr(media_info, "douban_id", None)
-        if douban_id and not any(item.provider == "douban" for item in refs):
-            refs.append(ProviderRef(provider="douban", external_id=str(douban_id), media_type=media_type))
+        legacy_ref = media_info.get_media_ref() if hasattr(media_info, "get_media_ref") else None
+        if legacy_ref is not None and all(
+            (item.provider, item.external_id) != (legacy_ref.provider, legacy_ref.external_id) for item in refs
+        ):
+            refs.append(
+                ProviderRef(
+                    provider=legacy_ref.provider,
+                    external_id=legacy_ref.external_id,
+                    media_type=media_type,
+                )
+            )
         if anchor_provider:
             for index, item in enumerate(refs):
                 if item.provider == anchor_provider:
@@ -1024,7 +1090,6 @@ class MetadataService:
         media_info = MediaSubject(
             media_type=media_type,
             tmdb_id=tmdb_id,
-            douban_id=str(external_id) if provider == "douban" else None,
             content_profile=content_profile,
             anchor_provider=provider,
             anchor_external_id=str(external_id),
