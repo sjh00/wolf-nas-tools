@@ -68,32 +68,32 @@ class MessageBuilder:
 
     def send_download_message(self, in_from, can_item, download_setting_name=None, downloader_name=None) -> None:
         self._enrich_from_subscription(can_item)
-        msg_title = f"{can_item.get_title_ep_string()} 开始下载"
+        msg_title = f"⬇️ {can_item.get_title_ep_string()} 开始下载"
         msg_text = f"{can_item.get_star_string()}"
-        msg_text = f"{msg_text}\n来自：{StringUtils.resolve_in_from_display(in_from)}"
+        msg_text = f"{msg_text}\n📥 来自：{StringUtils.resolve_in_from_display(in_from)}"
         message_image = can_item.get_message_image() if hasattr(can_item, "get_message_image") else ""
         log.debug(f"[MessageBuilder]下载消息图片: {message_image}")
         if download_setting_name:
-            msg_text = f"{msg_text}\n下载设置：{download_setting_name}"
+            msg_text = f"{msg_text}\n⚙️ 下载设置：{download_setting_name}"
         if downloader_name:
-            msg_text = f"{msg_text}\n下载器：{downloader_name}"
+            msg_text = f"{msg_text}\n🖥️ 下载器：{downloader_name}"
         if can_item.user_name:
-            msg_text = f"{msg_text}\n用户：{can_item.user_name}"
+            msg_text = f"{msg_text}\n👤 用户：{can_item.user_name}"
         if can_item.site:
             if StringUtils.resolve_in_from_display(in_from) == "自定义订阅":
-                msg_text = f"{msg_text}\n任务：{can_item.site}"
+                msg_text = f"{msg_text}\n📌 任务：{can_item.site}"
             else:
-                msg_text = f"{msg_text}\n站点：{can_item.site}"
+                msg_text = f"{msg_text}\n🌐 站点：{can_item.site}"
         if can_item.get_resource_type_string():
-            msg_text = f"{msg_text}\n质量：{can_item.get_resource_type_string()}"
+            msg_text = f"{msg_text}\n📦 质量：{can_item.get_resource_type_string()}"
         if can_item.size:
             if str(can_item.size).isdigit():
                 size = StringUtils.str_filesize(can_item.size)
             else:
                 size = can_item.size
-            msg_text = f"{msg_text}\n大小：{size}"
+            msg_text = f"{msg_text}\n💾 大小：{size}"
         if can_item.org_string:
-            msg_text = f"{msg_text}\n种子：{can_item.org_string}"
+            msg_text = f"{msg_text}\n🎬 种子：{can_item.org_string}"
         if can_item.seeders:
             msg_text = f"{msg_text}\n做种数：{can_item.seeders}"
         msg_text = f"{msg_text}\n促销：{can_item.get_volume_factor_string()}"
@@ -172,7 +172,7 @@ class MessageBuilder:
 
     def send_transfer_movie_message(self, in_from, media_info, exist_filenum, category_flag) -> None:
         self._enrich_from_subscription(media_info)
-        msg_title = f"{media_info.get_title_string()} 已入库"
+        msg_title = f"✅ {media_info.get_title_string()} 已入库"
         profile = str(getattr(media_info, "content_profile", "") or "default")
         type_label = _type_label(media_info, profile)
         if media_info.vote_average:
@@ -233,10 +233,10 @@ class MessageBuilder:
         for item_info in message_medias.values():
             self._enrich_from_subscription(item_info)
             if item_info.total_episodes == 1:
-                msg_title = f"{item_info.get_title_string()} {item_info.get_season_episode_string()} 已入库"
+                msg_title = f"✅ {item_info.get_title_string()} {item_info.get_season_episode_string()} 已入库"
             else:
                 msg_title = (
-                    f"{item_info.get_title_string()} {item_info.get_season_string()} "
+                    f"✅ {item_info.get_title_string()} {item_info.get_season_string()} "
                     f"共{item_info.total_episodes}集 已入库"
                 )
             if item_info.vote_average:
@@ -344,7 +344,7 @@ class MessageBuilder:
                 item.poster_path = subscription_image
             if not getattr(item, "title", ""):
                 item.title = getattr(subscription, "name", "") or item.title
-        title = f"{item.get_title_string()} {self._format_season_episode(item)} 添加下载任务失败".strip()
+        title = f"❌ {item.get_title_string()} {self._format_season_episode(item)} 添加下载任务失败".strip()
         site = getattr(item, "site", "") or ""
         org_string = getattr(item, "org_string", "") or ""
         enclosure = getattr(item, "enclosure", "") or ""
@@ -408,19 +408,19 @@ class MessageBuilder:
     def send_subscribe_success_message(self, in_from: Enum, media_info) -> None:
         self._enrich_from_subscription(media_info)
         if media_info.type == MediaType.MOVIE:
-            msg_title = f"{media_info.get_title_string()} 已添加订阅"
+            msg_title = f"📌 {media_info.get_title_string()} 已添加订阅"
         else:
-            msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已添加订阅"
+            msg_title = f"📌 {media_info.get_title_string()} {media_info.get_season_string()} 已添加订阅"
         profile = str(getattr(media_info, "content_profile", "") or "default")
         source = str(getattr(media_info, "anchor_provider", "") or "")
-        msg_str = f"类型：{_type_label(media_info, profile)}"
+        msg_str = f"📺 类型：{_type_label(media_info, profile)}"
         if source:
-            msg_str = f"{msg_str}，来源：{source}"
+            msg_str = f"{msg_str}\n📡 来源：{source}"
         if media_info.vote_average:
-            msg_str = f"{msg_str}，{media_info.get_vote_string()}"
-        msg_str = f"{msg_str}，来自：{StringUtils.resolve_in_from_display(in_from)}"
+            msg_str = f"{msg_str}\n⭐ {media_info.get_vote_string()}"
+        msg_str = f"{msg_str}\n📥 来自：{StringUtils.resolve_in_from_display(in_from)}"
         if media_info.user_name:
-            msg_str = f"{msg_str}，用户：{media_info.user_name}"
+            msg_str = f"{msg_str}\n👤 用户：{media_info.user_name}"
         variables = {
             "media_info": media_info,
             "in_from": StringUtils.resolve_in_from_display(in_from),
@@ -463,15 +463,15 @@ class MessageBuilder:
         if media_info.type == MediaType.MOVIE and profile == "default":
             return
         if media_info.over_edition:
-            msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
+            msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
         else:
-            msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已完成订阅"
+            msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成订阅"
         source = str(getattr(media_info, "anchor_provider", "") or "")
-        msg_str = f"类型：{_type_label(media_info, profile)}"
+        msg_str = f"📺 类型：{_type_label(media_info, profile)}"
         if source:
-            msg_str = f"{msg_str}，来源：{source}"
+            msg_str = f"{msg_str}\n📡 来源：{source}"
         if media_info.vote_average:
-            msg_str = f"{msg_str}，{media_info.get_vote_string()}"
+            msg_str = f"{msg_str}\n⭐ {media_info.get_vote_string()}"
         variables = {
             "media_info": media_info,
             "over_edition": media_info.over_edition if hasattr(media_info, "over_edition") else False,
@@ -509,7 +509,7 @@ class MessageBuilder:
     def send_site_signin_message(self, msgs: list) -> None:
         if not msgs:
             return
-        title = "站点签到"
+        title = "📊 站点签到"
         text = "\n".join(msgs)
         if self._messagecenter:
             self._messagecenter.insert_system_message(title=title, content=text)
@@ -528,6 +528,7 @@ class MessageBuilder:
     def send_site_message(self, title=None, text=None) -> None:
         if not title:
             return
+        title = f"📬 {title}"
         if not text:
             text = ""
         if self._messagecenter:
@@ -548,6 +549,7 @@ class MessageBuilder:
         """站点解析健康告警：独立开关 site_parse_health，与通用站点通知分开控制."""
         if not title:
             return
+        title = f"🩺 {title}"
         if not text:
             text = ""
         if self._messagecenter:
@@ -587,6 +589,7 @@ class MessageBuilder:
     def send_auto_remove_torrents_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
+        title = f"🗑️ {title}"
         if self._messagecenter:
             self._messagecenter.insert_system_message(title=title, content=text)
         for client in self._client_manager.active_clients:
@@ -605,6 +608,7 @@ class MessageBuilder:
     def send_brushtask_remove_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
+        title = f"🗑️ {title}"
         if self._messagecenter:
             self._messagecenter.insert_system_message(title=title, content=text)
         for client in self._client_manager.active_clients:
@@ -623,6 +627,7 @@ class MessageBuilder:
     def send_brushtask_added_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
+        title = f"🌊 {title}"
         if self._messagecenter:
             self._messagecenter.insert_system_message(title=title, content=text)
         for client in self._client_manager.active_clients:
@@ -641,6 +646,7 @@ class MessageBuilder:
     def send_brushtask_pause_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
+        title = f"⏸️ {title}"
         if self._messagecenter:
             self._messagecenter.insert_system_message(title=title, content=text)
         for client in self._client_manager.active_clients:
