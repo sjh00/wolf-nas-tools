@@ -152,3 +152,99 @@ class TestSubscribeRefreshService:
         )
         service._tv_repo.update_tmdb.assert_not_called()
         service._media.get_media_info.assert_not_called()
+
+
+class TestGenericAnchorRefresh:
+    def _snapshot(self, **overrides):
+        data = {
+            "identity_id": "01IDENTITY",
+            "content_profile": "default",
+            "fields": {
+                "title": {"value": "统一标题"},
+                "year": {"value": "2024"},
+                "overview": {"value": "统一简介"},
+                "release_date": {"value": "2024-02-01"},
+                "vote_average": {"value": 8.1},
+            },
+            "images": {"poster": [{"url": "http://img/poster.jpg"}]},
+            "refs": [{"provider": "tmdb", "external_id": "999"}],
+        }
+        data.update(overrides)
+        return data
+
+    def test_non_tmdb_movie_uses_metadata_snapshot(self):
+        metadata = MagicMock()
+        metadata.compose_for_ref.return_value = self._snapshot()
+        svc = SubscribeRefreshService(
+            movie_repo=MagicMock(),
+            tv_repo=MagicMock(),
+            tv_episode_repo=MagicMock(),
+            media_service=MagicMock(),
+            metadata_service=metadata,
+        )
+        with patch("app.services.subscribe.management.refresh_service.meta_info") as mock_meta:
+            mock_meta.return_value = MediaInfo()
+            svc.refresh_rss_metainfo(
+                get_subscribe_movies_fn=lambda state: {
+                    "1": {
+                        "id": "1",
+                        "name": "豆瓣电影",
+                        "anchor_provider": "douban",
+                        "anchor_external_id": "123",
+                        "content_profile": "default",
+                    }
+                },
+                get_subscribe_tvs_fn=lambda state: {},
+            )
+        metadata.compose_for_ref.assert_called_once()
+        kwargs = svc._movie_repo.update.call_args.kwargs
+        assert kwargs["name"] == "统一标题"
+        assert kwargs["anchor_provider"] == "douban"
+        assert kwargs["anchor_external_id"] == "123"
+        assert kwargs["identity_id"] == "01IDENTITY"
+        svc._media.get_tmdb_info.assert_not_called()
+
+    def test_non_tmdb_tv_uses_snapshot_season_episodes(self):
+        metadata = MagicMock()
+        snapshot = self._snapshot(
+            seasons=[{"season_number": 1, "episode_count": 12}],
+            fields={
+                "title": {"value": "统一剧集"},
+                "year": {"value": "2024"},
+                "overview": {"value": "简介"},
+                "first_air_date": {"value": "2024-01-01"},
+            },
+        )
+        metadata.compose_for_ref.return_value = snapshot
+        svc = SubscribeRefreshService(
+            movie_repo=MagicMock(),
+            tv_repo=MagicMock(),
+            tv_episode_repo=MagicMock(),
+            media_service=MagicMock(),
+            metadata_service=metadata,
+        )
+        with patch("app.services.subscribe.management.refresh_service.meta_info") as mock_meta:
+            mock_meta.return_value = MediaInfo()
+            with patch("app.services.subscribe.management.refresh_service.transaction_scope"):
+                svc.refresh_rss_metainfo(
+                    get_subscribe_movies_fn=lambda state: {},
+                    get_subscribe_tvs_fn=lambda state: {
+                        "1": {
+                            "id": "1",
+                            "name": "番剧",
+                            "anchor_provider": "bangumi",
+                            "anchor_external_id": "456",
+                            "content_profile": "anime",
+                            "season": 1,
+                            "total": 0,
+                            "total_ep": 0,
+                            "lack": 0,
+                        }
+                    },
+                )
+        kwargs = svc._tv_repo.update.call_args.kwargs
+        assert kwargs["name"] == "统一剧集"
+        assert kwargs["total"] == 12
+        assert kwargs["anchor_provider"] == "bangumi"
+        svc._tv_episode_repo.update.assert_called_once()
+        svc._media.get_tmdb_info.assert_not_called()

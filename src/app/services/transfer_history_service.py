@@ -1,4 +1,5 @@
 from math import floor
+from types import SimpleNamespace
 from typing import Callable
 
 from app.core.exceptions import DomainError, RepositoryError, ServiceError  # noqa: F401
@@ -20,6 +21,7 @@ class TransferHistoryService:
         sync_service: SyncService,
         cache_ttl: int = 30,
         poster_resolver: Callable[[str, int], str] | None = None,
+        metadata_service=None,
     ):
         self._filetransfer = filetransfer
         self._sync_service = sync_service
@@ -27,8 +29,53 @@ class TransferHistoryService:
         self._cache_ttl = cache_ttl
         # (type, tmdbid) -> 海报 URL；None 表示不富化海报
         self._poster_resolver = poster_resolver
-        # 进程级 memo：同一 (type, tmdbid) 只回源一次，跨页复用
-        self._poster_memo: dict[tuple[str, int], str] = {}
+        self._metadata_service = metadata_service
+        # 进程级 memo：同一身份只回源一次，跨页复用
+        self._poster_memo: dict[str, str] = {}
+
+    def _resolve_poster(self, history: dict) -> str:
+        identity_id = str(history.get("IDENTITY_ID") or "").strip()
+        provider = str(history.get("ANCHOR_PROVIDER") or "").strip()
+        external = str(history.get("ANCHOR_EXTERNAL_ID") or "").strip()
+        if identity_id or (provider and external):
+            key = f"id:{identity_id}" if identity_id else f"{provider}:{external}"
+            if key not in self._poster_memo:
+                self._poster_memo[key] = self._snapshot_poster(history)
+            if self._poster_memo[key]:
+                return self._poster_memo[key]
+        tmdbid = history.get("TMDBID")
+        if self._poster_resolver and tmdbid:
+            try:
+                key = f"tmdb:{int(tmdbid)}"
+            except (TypeError, ValueError):
+                key = ""
+            if key:
+                if key not in self._poster_memo:
+                    self._poster_memo[key] = self._poster_resolver(str(history.get("TYPE") or ""), int(tmdbid)) or ""
+                return self._poster_memo[key]
+        return ""
+
+    def _snapshot_poster(self, history: dict) -> str:
+        if self._metadata_service is None:
+            return ""
+        try:
+            media = SimpleNamespace(
+                type=MediaType.from_string(str(history.get("TYPE") or "")),
+                anchor_provider=history.get("ANCHOR_PROVIDER"),
+                anchor_external_id=history.get("ANCHOR_EXTERNAL_ID"),
+                identity_id=history.get("IDENTITY_ID"),
+                content_profile=history.get("CONTENT_PROFILE"),
+            )
+            snapshot = self._metadata_service.latest_snapshot_for_media(media)
+            if snapshot is None:
+                return ""
+            for key in ("poster", "thumb", "cover"):
+                for item in (snapshot.images or {}).get(key) or []:
+                    if getattr(item, "url", ""):
+                        return str(item.url)
+        except Exception:  # noqa: BLE001
+            return ""
+        return ""
 
     def _cache_key(self, prefix: str, *parts) -> str:
         return f"{prefix}:{':'.join(str(p) for p in parts)}"
@@ -59,13 +106,9 @@ class TransferHistoryService:
             history.update({"SYNC_MODE": sync_mode, "RMT_MODE": rmt_mode})
             # 海报富化：同 (type, tmdbid) 进程内只解析一次，缺 TMDBID/无解析器则跳过
             history["image"] = ""
-            if self._poster_resolver:
-                tmdbid = history.get("TMDBID")
-                if tmdbid:
-                    poster_key = (str(history.get("TYPE") or ""), int(tmdbid))
-                    if poster_key not in self._poster_memo:
-                        self._poster_memo[poster_key] = self._poster_resolver(poster_key[0], poster_key[1]) or ""
-                    history["image"] = self._poster_memo[poster_key]
+            poster = self._resolve_poster(history)
+            if poster:
+                history["image"] = poster
             historys_list.append(history)
         total_page = floor(total_count / page_num) + 1
         dto = TransferHistoryPageDTO(

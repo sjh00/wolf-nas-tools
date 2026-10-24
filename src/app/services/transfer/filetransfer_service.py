@@ -40,6 +40,8 @@ from app.infrastructure.thread import ThreadExecutor
 from app.media import MediaService
 from app.media import meta_info as meta_info_fn
 from app.media.metadata.parsing import ParserChain
+from app.media.metadata.refs import parse_media_ref
+from app.media.metadata.registry import registry as metadata_registry
 from app.media.parser import RegexParser
 from app.message import Message
 from app.schemas.media import TransferMediaDTO
@@ -487,6 +489,7 @@ class FileTransferService:
                         )
                         if _snapshot is not None:
                             _info.snapshot = _snapshot
+                            self._apply_snapshot_to_media(_info, _snapshot)
                     except Exception as exc:  # noqa: BLE001
                         log.debug(f"[Rmt]主源识别失败: {exc}")
 
@@ -551,6 +554,107 @@ class FileTransferService:
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Rmt]蓝光目录检测失败: {e}")
         return None
+
+    @staticmethod
+    def _is_virtual_provider(provider: str) -> bool:
+        desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+        return bool(getattr(desc, "virtual", False)) or provider == "content_id"
+
+    def _apply_snapshot_to_media(self, media_info, snapshot) -> None:
+        """把快照结果回填到 MediaInfo，供转移通知与命名使用."""
+
+        def _record_poster(record):
+            if not record:
+                return []
+            images = record.get("images") if isinstance(record, dict) else getattr(record, "images", {})
+            return (images or {}).get("poster") or []
+
+        def _poster_value(asset, key, default=None):
+            if isinstance(asset, dict):
+                return asset.get(key, default)
+            return getattr(asset, key, default)
+
+        fields = getattr(snapshot, "fields", {}) or {}
+        for key in ("title", "year"):
+            value = fields.get(key)
+            value = getattr(value, "value", value)
+            if value:
+                setattr(media_info, key, value)
+        poster = (getattr(snapshot, "images", {}) or {}).get("poster") or []
+        extra = getattr(snapshot, "extra", {}) or {}
+        source = extra.get("source_provider") or next(
+            (value for key, value in extra.items() if str(key).endswith(".source_provider")),
+            None,
+        )
+        if not poster and self._metadata_service is not None:
+            # 部分插件快照只带字段，图片在单独 lookup 中；用 refs 找一张真实海报。
+            for ref in getattr(snapshot, "refs", []) or []:
+                provider = str(getattr(ref, "provider", "") or "")
+                external_id = str(getattr(ref, "external_id", "") or "")
+                if (
+                    not provider
+                    or not external_id
+                    or self._is_virtual_provider(provider)
+                    or provider in {"tmdb", "imdb"}
+                ):
+                    continue
+                try:
+                    record = self._metadata_service.lookup(
+                        provider=provider,
+                        external_id=external_id,
+                        media_type=getattr(snapshot, "media_type", None),
+                        scope=str(getattr(media_info, "content_profile", "") or "default"),
+                        content_profile=str(getattr(media_info, "content_profile", "") or ""),
+                        allow_private=True,
+                    )
+                    poster = _record_poster(record)
+                    if poster:
+                        source = _poster_value(poster[0], "provider") or provider
+                        break
+                except Exception:
+                    continue
+        if not poster and self._metadata_service is not None:
+            source_ref = str(
+                extra.get("source_ref")
+                or next(
+                    (value for key, value in extra.items() if str(key).endswith(".source_ref")),
+                    "",
+                )
+            )
+            if not source_ref:
+                primary = str(getattr(snapshot, "primary_provider", "") or "")
+                external = str(getattr(media_info, "anchor_external_id", "") or "")
+                if primary and external:
+                    source_ref = f"{primary}:{external}"
+            if ":" in source_ref:
+                lookup_provider, lookup_external = source_ref.split(":", 1)
+                try:
+                    record = self._metadata_service.lookup(
+                        provider=lookup_provider,
+                        external_id=lookup_external,
+                        media_type=getattr(snapshot, "media_type", None) or getattr(media_info, "type", None),
+                        scope=str(getattr(media_info, "content_profile", "") or "default"),
+                        content_profile=str(getattr(media_info, "content_profile", "") or ""),
+                    )
+                    poster = _record_poster(record)
+                    if poster:
+                        source = _poster_value(poster[0], "provider") or source
+                except Exception as exc:  # noqa: BLE001
+                    log.debug(f"[Rmt]主来源海报补全失败: {exc}")
+        if poster:
+            media_info.poster_path = _poster_value(poster[0], "url") or str(poster[0])
+        if (not source or self._is_virtual_provider(str(source))) and poster:
+            source = _poster_value(poster[0], "provider")
+        if not source or self._is_virtual_provider(str(source)):
+            for ref in getattr(snapshot, "refs", []) or []:
+                provider = str(getattr(ref, "provider", "") or "")
+                if provider and not self._is_virtual_provider(provider):
+                    source = provider
+                    break
+        if source:
+            media_info.anchor_provider = str(source)
+        elif getattr(snapshot, "primary_provider", ""):
+            media_info.anchor_provider = str(snapshot.primary_provider)
 
     def _discover_files(self, in_path, files, episode, min_filesize, src_backend=None):
         """发现待处理文件列表，返回 (bluray_disk_dir, file_list). 支持远程源（src_backend 非空）。"""
@@ -895,14 +999,15 @@ class FileTransferService:
                 anchor_ref = bool(
                     media and getattr(media, "anchor_provider", "") and getattr(media, "anchor_external_id", "")
                 )
-                douban_ref = media_ref.startswith("DB:")
+                parsed_media_ref = parse_media_ref(media_ref)
+                legacy_ref = bool(parsed_media_ref)
                 if (
                     not media
-                    or (not media.provider_data and not profile_ref and not douban_ref and not anchor_ref)
+                    or (not media.provider_data and not profile_ref and not legacy_ref and not anchor_ref)
                     or not media.get_title_string()
                     or media.get_title_string().strip().isdigit()
                     or len(media.get_title_string().strip()) < 2
-                    or (not profile_ref and not douban_ref and not anchor_ref and not media_ref.isdigit())
+                    or (not profile_ref and not legacy_ref and not anchor_ref and not media_ref)
                 ):
                     fc, ac, am = self._handle_unrecognized_file(
                         file_item,

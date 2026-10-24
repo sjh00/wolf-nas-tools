@@ -251,7 +251,19 @@ class SearchResultProcessor:
         """过滤掉已完成下载历史中存在的资源（失败/进行中的任务不阻塞）"""
         filtered = []
         for media_item in media_list:
-            if media_item.tmdb_id:
+            ref = media_item.get_media_ref()
+            if ref is not None and ref.provider != "tmdb":
+                season_episode = media_item.get_season_episode_string()
+                is_done = getattr(self._download_repo, "is_completed_by_identity", None)
+                if is_done and is_done(
+                    identity_id=getattr(media_item, "identity_id", None),
+                    anchor_provider=ref.provider,
+                    anchor_external_id=ref.external_id,
+                    season_episode=season_episode,
+                ):
+                    log.info(f"[Searcher]{media_item.title} {season_episode} 已存在完成下载，跳过下载")
+                    continue
+            elif media_item.tmdb_id:
                 season_episode = media_item.get_season_episode_string()
                 if self._download_repo.is_completed_by_tmdb(media_item.tmdb_id, season_episode):
                     log.info(f"[Searcher]{media_item.title} {season_episode} 已存在完成下载，跳过下载")

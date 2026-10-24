@@ -71,7 +71,8 @@ def subscribe_add(
     permissions = set(getattr(user, "permissions", []) or [])
     allow_private = bool(user and (getattr(user, "is_superadmin", False) or "metadata:private:view" in permissions))
     descriptor = getattr(metadata_registry.get_provider(provider), "descriptor", None) if provider else None
-    if getattr(descriptor, "visibility", "public") == "private" and not allow_private:
+    private_profile = profile == "adult" or str(getattr(descriptor, "search_mode", "")).upper() == "ADULT"
+    if (getattr(descriptor, "visibility", "public") == "private" or private_profile) and not allow_private:
         return ToolResult(success=False, error="当前用户无 metadata:private:view 权限")
 
     # 只给来源没给 detail id 时，先用元数据搜索解析到具体 provider ref

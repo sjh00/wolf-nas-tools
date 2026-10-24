@@ -330,6 +330,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         progress_helper=ProgressTracker(),
         event_bus=event_bus,
         intent_resolver=intent_resolver,
+        metadata_service=metadata_service,
     )
     web_search_service = WebSearchService(
         search_fn=make_web_search_fn(search_orchestrator, SystemConfigService()),
@@ -525,6 +526,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         filetransfer=filetransfer_service,
         sync_service=sync_service,
         poster_resolver=_history_poster_resolver,
+        metadata_service=metadata_service,
     )
     library_rename_service = LibraryRenameService(
         rename_repo=LibraryRenameRepositoryAdapter(),

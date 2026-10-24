@@ -602,7 +602,8 @@ class MessageSearchService:
 
     def _add_rss(self, in_from, media_info, user_id=None, state="D", user_name=None, bound_user_id=None):
         """添加订阅（bound_user_id 为数据归属用户）"""
-        mediaid = f"DB:{media_info.douban_id}" if media_info.douban_id else media_info.tmdb_id
+        ref = media_info.get_media_ref()
+        mediaid = f"{ref.provider}:{ref.external_id}" if ref else None
         code, msg, media_info = self._subscribe_service.add_rss_subscribe(
             mtype=media_info.type,
             name=media_info.title,
@@ -610,6 +611,8 @@ class MessageSearchService:
             channel="auto",
             season=media_info.begin_season,
             mediaid=mediaid,
+            metadata_ref=mediaid,
+            content_profile=media_info.content_profile,
             state=state,
             rss_sites=media_info.rss_sites,
             search_sites=media_info.search_sites,

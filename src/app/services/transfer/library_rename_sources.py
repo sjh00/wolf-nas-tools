@@ -82,10 +82,10 @@ def from_cache(row: dict[str, Any], backend: StorageBackend, path: str) -> Resol
         title=row.get("TITLE") or None,
         year=row.get("YEAR") or None,
         tmdb_id=_to_int(row.get("TMDBID")),
-        content_profile=raw.get("content_profile") or "default",
-        anchor_provider=raw.get("anchor_provider"),
-        anchor_external_id=raw.get("anchor_external_id"),
-        identity_id=raw.get("identity_id"),
+        content_profile=row.get("CONTENT_PROFILE") or raw.get("content_profile") or "default",
+        anchor_provider=row.get("ANCHOR_PROVIDER") or raw.get("anchor_provider"),
+        anchor_external_id=row.get("ANCHOR_EXTERNAL_ID") or raw.get("anchor_external_id"),
+        identity_id=row.get("IDENTITY_ID") or raw.get("identity_id"),
     )
     _apply_range(meta, row.get("SEASON"), row.get("EPISODE"))
     meta.total_episodes = int(row.get("SEASON_EPISODE_COUNT") or 0) or meta.total_episodes
