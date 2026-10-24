@@ -5,6 +5,7 @@ from app.agent.tools.context import ToolContext
 from app.domain.enums import SearchType
 from app.domain.mediatypes import MediaType
 from app.media.metadata.registry import registry as metadata_registry
+from app.services.subscription_intent import resolve_subscription
 
 
 def _normalize_profile(provider: str, content_profile: str | None) -> str:
@@ -69,7 +70,8 @@ def subscribe_add(
     user = ctx.user_context(user_id)
     permissions = set(getattr(user, "permissions", []) or [])
     allow_private = bool(user and (getattr(user, "is_superadmin", False) or "metadata:private:view" in permissions))
-    if profile != "default" and not allow_private:
+    descriptor = getattr(metadata_registry.get_provider(provider), "descriptor", None) if provider else None
+    if getattr(descriptor, "visibility", "public") == "private" and not allow_private:
         return ToolResult(success=False, error="当前用户无 metadata:private:view 权限")
 
     # 只给来源没给 detail id 时，先用元数据搜索解析到具体 provider ref
@@ -97,20 +99,18 @@ def subscribe_add(
             return ToolResult(success=False, error=f"{provider} 搜索结果缺少 external_id")
         ref = f"{provider}:{external_id}"
 
-    # 普通 TMDB/豆瓣/Bangumi 走旧 ID；插件来源用 provider 锚点，既区分来源也保留番号搜索
-    if provider == "tmdb":
-        ref = ""
-        mediaid = external_id or None
-    elif provider in {"douban", "bangumi"}:
-        mediaid = f"{'DB' if provider == 'douban' else 'BG'}:{external_id}"
-        ref = ""
-    else:
-        mediaid = ref if ref else (f"{provider}:{external_id}" if provider and external_id else external_id or None)
-    keyword = content_id or (title if profile != "default" else None)
-    policy = metadata_policy or (f"provider_only:{profile}" if profile != "default" else None)
-
+    intent = resolve_subscription(
+        provider,
+        external_id,
+        title,
+        content_profile=content_profile,
+        metadata_policy=metadata_policy,
+    )
+    if intent is None:
+        return ToolResult(success=False, error=f"未注册的元数据来源: {provider}")
+    keyword = content_id or intent.keyword
     code, msg, _ = ctx.subscribe_service.add_rss_subscribe(
-        mtype=mtype,
+        mtype=intent.media_type or mtype,
         name=title,
         year=str(year) if year else None,
         channel="auto",
@@ -118,12 +118,12 @@ def subscribe_add(
         state="R",
         in_from=SearchType.API,
         user_id=int(user_id) if user_id and str(user_id).isdigit() else None,
-        metadata_ref=ref or None,
-        metadata_policy=policy,
-        content_profile=profile,
+        metadata_ref=intent.metadata_ref,
+        metadata_policy=intent.metadata_policy,
+        content_profile=intent.content_profile,
         keyword=keyword,
-        mediaid=mediaid,
-        allow_private=allow_private,
+        mediaid=intent.mediaid,
+        allow_private=intent.allow_private or allow_private,
         permissions=permissions,
     )
     if code == 0:
