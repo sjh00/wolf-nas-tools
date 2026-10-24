@@ -46,3 +46,42 @@ class TestPluginFrameworkServiceGetPluginPath:
         with patch("app.services.plugin_framework_service.os.path.exists", return_value=False):
             path = svc.get_plugin_path("foo")
         assert path is None
+
+
+class TestPluginFrameworkContentProfileDefaults:
+    def test_overlay_defaults_without_mutating_manifest(self):
+        profiles = [
+            {
+                "key": "custom",
+                "default_search_source": "source_a",
+                "default_detail_source": "detail_a",
+                "search_sources": [
+                    {"label": "Source A", "value": "source_a"},
+                    {"label": "Source B", "value": "source_b"},
+                ],
+            }
+        ]
+        config = {
+            "content_profile_defaults": {
+                "custom": {
+                    "default_search_source": "source_b",
+                    "default_detail_source": "detail_b",
+                }
+            }
+        }
+        merged = PluginFrameworkService._apply_content_profile_defaults(profiles, config)
+        assert merged[0]["default_search_source"] == "source_b"
+        assert merged[0]["default_detail_source"] == "detail_b"
+        assert profiles[0]["default_search_source"] == "source_a"
+
+    def test_overlay_ignores_unknown_search_source(self):
+        profiles = [
+            {
+                "key": "custom",
+                "default_search_source": "source_a",
+                "search_sources": [{"label": "Source A", "value": "source_a"}],
+            }
+        ]
+        config = {"content_profile_defaults": {"custom": {"default_search_source": "unknown"}}}
+        merged = PluginFrameworkService._apply_content_profile_defaults(profiles, config)
+        assert merged[0]["default_search_source"] == "source_a"

@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import threading
+from copy import deepcopy
 from pathlib import Path
 
 import log
@@ -212,6 +213,32 @@ class PluginFrameworkService:
             log.info(f"[PluginFrameworkService] 为角色 '{role.role_name}' 分配 {len(menu_ids)} 个插件菜单")
 
     @staticmethod
+    def _apply_content_profile_defaults(profiles: list[dict], config: dict) -> list[dict]:
+        """把插件配置里的内容画像默认值覆盖到 manifest 声明."""
+        overrides = config.get("content_profile_defaults")
+        if not isinstance(overrides, dict):
+            return profiles
+        merged = deepcopy(profiles)
+        for profile in merged:
+            key = str(profile.get("key") or "")
+            override = overrides.get(key)
+            if not key or not isinstance(override, dict):
+                continue
+            sources = {
+                str(item.get("value"))
+                for item in (profile.get("search_sources") or [])
+                if isinstance(item, dict) and item.get("value")
+            }
+            for field in ("default_search_source", "default_detail_source"):
+                value = str(override.get(field) or "").strip()
+                if not value:
+                    continue
+                if field == "default_search_source" and sources and value not in sources:
+                    continue
+                profile[field] = value
+        return merged
+
+    @staticmethod
     def _resolve_installed(orm_model) -> bool:
         """判定插件是否已安装：DB 标记为真，或（非内置且安装目录存在）。
 
@@ -235,6 +262,10 @@ class PluginFrameworkService:
         for orm_model in orm_list:
             try:
                 manifest = PluginManifest.from_dict(JsonUtils.loads(str(orm_model.MANIFEST_JSON or "{}")))
+                profiles = self._apply_content_profile_defaults(
+                    manifest.frontend.content_profiles,
+                    self.get_config(manifest.id),
+                )
                 plugins.append(
                     {
                         "id": manifest.id,
@@ -277,7 +308,7 @@ class PluginFrameworkService:
                                 {"target": s.target, "position": s.position, "component": s.component}
                                 for s in manifest.frontend.slots
                             ],
-                            "content_profiles": manifest.frontend.content_profiles,
+                            "content_profiles": profiles,
                         },
                     }
                 )
