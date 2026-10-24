@@ -29,6 +29,17 @@ class MediaImageResolver:
             return media.backdrop_path
         if media.poster_path:
             return media.poster_path
+        # 下载/搜索结果不一定写入 poster_path，兼容站点返回的 image/poster 字段。
+        for attr in ("fanart_poster", "image", "poster", "cover_url"):
+            value = getattr(media, attr, None)
+            if value:
+                return str(value)
+        provider_data = getattr(media, "provider_data", None)
+        if isinstance(provider_data, dict):
+            for key in ("poster", "image", "cover_url", "cover"):
+                value = provider_data.get(key)
+                if value:
+                    return str(value)
         return DEFAULT_TMDB_IMAGE
 
     @staticmethod

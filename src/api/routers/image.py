@@ -5,6 +5,7 @@ FastAPI 图片代理路由
 """
 
 import asyncio
+import io
 import ipaddress
 import os
 import socket
@@ -13,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from PIL import Image, ImageFilter
 from starlette.responses import FileResponse, RedirectResponse, Response
 
 import log
@@ -228,6 +230,32 @@ async def proxy_library_image(request: Request, img_url: str):
         decoded_url,
         referer=image_referer_registry.resolve(decoded_url),
     )
+
+
+@router.get("/blur", summary="图片模糊代理")
+async def proxy_blur_image(url: str, radius: int = 20):
+    """通用图片模糊代理，供插件实现 SFW 展示；不包含任何内容画像判断."""
+    _guard_image_url(url)
+    radius = max(1, min(int(radius or 20), 60))
+    cache_path = get_cache_path("blur", f"{urllib.parse.quote(url, safe='')}-{radius}")
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+        return FileResponse(cache_path, media_type="image/jpeg")
+    data = await download_image(url, referer=image_referer_registry.resolve(url))
+    if not data:
+        raise NexusError("获取图片失败", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
+
+    def _blur(payload: bytes) -> bytes:
+        image = Image.open(io.BytesIO(payload)).convert("RGB")
+        image = image.filter(ImageFilter.GaussianBlur(radius=radius))
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=88)
+        return output.getvalue()
+
+    blurred = await asyncio.to_thread(_blur, data)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as handle:
+        handle.write(blurred)
+    return Response(blurred, media_type="image/jpeg")
 
 
 @router.get("", summary="图片代理重定向")

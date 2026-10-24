@@ -13,6 +13,10 @@ import log
 from app.core.settings import settings
 from app.db.repositories.plugin_framework_repo_adapter import PluginConfigRepositoryAdapter, PluginLogRepositoryAdapter
 from app.domain.entities.plugin import PluginConfigEntity
+from app.media.message_image_policy import (
+    register_message_image_transformer,
+    unregister_message_image_transformer,
+)
 from app.media.metadata.registry import registry as metadata_registry
 from app.media.scraper.processor_registry import scraper_processor_registry
 from app.plugin_framework import api_registry
@@ -34,6 +38,7 @@ class PluginContext:
         media_service: Any = None,
         manifest_metadata: Any = None,
         filter_service: Any = None,
+        discovery_service: Any = None,
     ):
         self._plugin_id = plugin_id
         self._plugin_name = plugin_name or plugin_id
@@ -49,6 +54,7 @@ class PluginContext:
         self._media_service = media_service
         self._metadata_manifest = manifest_metadata
         self._filter_service = filter_service
+        self._discovery_service = discovery_service
         self._metadata_cleanups: list[Callable[[], None]] = []
         self._scraper_processors: list[str] = []
         self._metadata_visibility = (
@@ -361,6 +367,19 @@ class PluginContext:
         except Exception as exc:  # noqa: BLE001
             self.error(f"创建默认过滤规则组失败: {exc}")
             return 0
+
+    def clear_discovery_cache(self) -> None:
+        """插件配置改变后清空探索来源缓存."""
+        if self._discovery_service is not None:
+            self._discovery_service.clear_cache()
+
+    def register_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
+        """注册通知图片改写器；插件卸载时由插件自行清理引用."""
+        register_message_image_transformer(transformer)
+
+    def unregister_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
+        """移除通知图片改写器."""
+        unregister_message_image_transformer(transformer)
 
     def register_public_webhook(self, path: str, handler: Callable[[dict], object]) -> None:
         """注册插件公开回调（免鉴权），供飞书/Telegram 等外部平台 webhook 回调：
