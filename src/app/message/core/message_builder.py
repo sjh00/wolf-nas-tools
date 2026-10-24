@@ -331,7 +331,7 @@ class MessageBuilder:
         return subscription
 
     def send_download_fail_message(self, item, error_msg: str) -> None:
-        subscription = self._subscription_context(item)
+        subscription = self._enrich_from_subscription(item)
         # 同一订阅/同一媒体在短时间内只通知一次，避免 1080P、4K 等
         # 多个种子连续失败时刷屏。
         failure_key = str(getattr(item, "rssid", None) or getattr(item, "tmdb_id", None) or item.get_title_string())

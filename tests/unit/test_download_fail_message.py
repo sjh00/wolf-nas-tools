@@ -107,3 +107,32 @@ def test_subscription_profile_is_propagated_to_item(builder, monkeypatch):
     assert item.content_profile == "anime"
     assert item.anchor_provider == "bangumi"
     assert item.poster_path == "https://img/anime.jpg"
+
+
+def test_fail_message_inherits_anime_profile(builder, monkeypatch):
+    from types import SimpleNamespace
+
+    subscription = SimpleNamespace(
+        content_profile="anime",
+        image="https://img/anime.jpg",
+        anchor_provider="bangumi",
+        id=9,
+        name="魔法少女",
+    )
+    monkeypatch.setattr(builder, "_subscription_context", lambda item: subscription)
+    item = _Item(
+        title="魔法少女",
+        year="2026",
+        type=MediaType.TV,
+        begin_season=1,
+        begin_episode=1,
+        site="动漫花园",
+        org_string="魔法少女 S01E01",
+        enclosure="http://site/1",
+        user_id=1,
+    )
+
+    builder.send_download_fail_message(item, "下载设置无效")
+
+    assert item.content_profile == "anime"
+    assert item.poster_path == "https://img/anime.jpg"
