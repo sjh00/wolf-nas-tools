@@ -189,7 +189,9 @@ class BaseSearchStrategy:
 
             media_info = None
             try:
-                is_external = self._is_external_ref(tmdbid)
+                is_external = self._is_external_ref(tmdbid) or bool(
+                    rss_info.get("anchor_provider") and str(rss_info.get("anchor_provider")) != "tmdb"
+                )
                 media_info = self._get_media_info(
                     tmdbid,
                     name_val,
