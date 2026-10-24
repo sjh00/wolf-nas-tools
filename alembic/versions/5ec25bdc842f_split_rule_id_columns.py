@@ -67,6 +67,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     if not has_table("SITE_BRUSH_TASK"):
         return
+    if op.get_bind().dialect.name == "sqlite":
+        _downgrade_sqlite()
+        return
     existing = {fk["name"] for fk in sa.inspect(op.get_bind()).get_foreign_keys("SITE_BRUSH_TASK")}
     names = [
         n
@@ -91,3 +94,39 @@ def downgrade() -> None:
         op.drop_column("SITE_BRUSH_TASK", "REMOVE_RULE_ID")
     if has_column("SITE_BRUSH_TASK", "RSS_RULE_ID"):
         op.drop_column("SITE_BRUSH_TASK", "RSS_RULE_ID")
+
+
+def _downgrade_sqlite() -> None:
+    """SQLite 不能直接 drop 带外键的列，重建表并保留除规则列外的数据."""
+    inspector = sa.inspect(op.get_bind())
+    if "SITE_BRUSH_TASK" not in inspector.get_table_names():
+        return
+    drop_columns = {"RSS_RULE_ID", "REMOVE_RULE_ID", "STOP_RULE_ID"}
+    columns = [
+        sa.Column(
+            column["name"],
+            column["type"],
+            primary_key=bool(column.get("primary_key")),
+            nullable=bool(column.get("nullable", True)),
+            server_default=column.get("default"),
+        )
+        for column in inspector.get_columns("SITE_BRUSH_TASK")
+        if column["name"] not in drop_columns
+    ]
+    tmp_name = "SITE_BRUSH_TASK_MIGRATION_TMP"
+    op.create_table(tmp_name, *columns)
+    names = ", ".join(f'"{column.name}"' for column in columns)
+    op.execute(f'INSERT INTO "{tmp_name}" ({names}) SELECT {names} FROM "SITE_BRUSH_TASK"')
+    op.drop_table("SITE_BRUSH_TASK")
+    op.rename_table(tmp_name, "SITE_BRUSH_TASK")
+    for index in inspector.get_indexes("SITE_BRUSH_TASK"):
+        index_columns = [column for column in (index.get("column_names") or []) if column]
+        if set(index_columns) & drop_columns or not index_columns:
+            continue
+        if index.get("name"):
+            op.create_index(
+                index["name"],
+                "SITE_BRUSH_TASK",
+                index_columns,
+                unique=bool(index.get("unique")),
+            )
