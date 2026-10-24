@@ -1010,6 +1010,7 @@ def metadata_lookup(
     external_id: str,
     media_type: str | None = None,
     scope: str = "default",
+    allow_missing: bool = False,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MetadataService = Depends(get_metadata_service),
 ):
@@ -1026,7 +1027,9 @@ def metadata_lookup(
         allow_private=allow_private,
         permissions=permissions,
     )
-    return success(data=data) if data is not None else fail(msg="未找到元数据")
+    if data is None:
+        return success(data=None) if allow_missing else fail(msg="未找到元数据")
+    return success(data=data)
 
 
 @router.get("/metadata/metrics", response_model=CommonResponse, summary="元数据链路指标")
