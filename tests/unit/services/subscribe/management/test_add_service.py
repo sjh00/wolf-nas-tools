@@ -303,7 +303,7 @@ def test_provider_ref_subscribes_bangumi_tv():
     inserted_kw = svc._tv_repo.insert.call_args.kwargs
     assert inserted_kw["anchor_provider"] == "bangumi"
     assert inserted_kw["anchor_external_id"] == "456"
-    assert inserted_kw["media_info"].type == MediaType.TV
+    assert inserted_kw["media_info"].type == MediaType.ANIME
     svc._movie_repo.insert.assert_not_called()
 
 

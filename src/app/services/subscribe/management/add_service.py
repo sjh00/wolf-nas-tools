@@ -135,9 +135,9 @@ class SubscribeAddService:
             if posters:
                 poster = posters[0].get("url")
         resolved_type = media_type or MediaType.from_string(str(record.get("media_type") or ""))
-        if resolved_type == MediaType.ANIME:
-            resolved_type = MediaType.TV
-        if resolved_type not in (MediaType.MOVIE, MediaType.TV):
+        if content_profile == "anime" or str(record.get("media_type") or "").lower() == "anime":
+            resolved_type = MediaType.ANIME
+        if resolved_type not in (MediaType.MOVIE, MediaType.TV, MediaType.ANIME):
             resolved_type = MediaType.MOVIE
         media_info = meta_info(title=title, mtype=resolved_type)
         media_info.title = title

@@ -267,7 +267,11 @@ class SubscribeQueryService:
                 "release_date": note_info.get("release_date"),
                 "vote": note_info.get("vote"),
                 "keyword": keyword,
-                "type": _resolve_subscribe_type(note_info.get("media_type"), tmdbid),
+                "type": (
+                    "anime"
+                    if rss_tv.CONTENT_PROFILE == "anime" or anchor_provider == "bangumi"
+                    else _resolve_subscribe_type(note_info.get("media_type"), tmdbid)
+                ),
                 "add_date": rss_tv.ADD_DATE,
             }
         return ret_dict
