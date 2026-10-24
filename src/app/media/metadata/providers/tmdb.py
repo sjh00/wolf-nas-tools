@@ -79,6 +79,14 @@ def tmdb_detail_to_record(
         refs.append(ProviderRef(provider="imdb", external_id=str(info["imdb_id"]), media_type=media_type))
     if info.get("external_ids", {}).get("wikidata_id"):
         refs.append(ProviderRef(provider="wikidata", external_id=str(info["external_ids"]["wikidata_id"])))
+    if info.get("external_ids", {}).get("tvdb_id"):
+        refs.append(
+            ProviderRef(
+                provider="tvdb",
+                external_id=str(info["external_ids"]["tvdb_id"]),
+                media_type=media_type,
+            )
+        )
 
     images = _images(info, image_url)
     vote_average = info.get("vote_average")
@@ -201,6 +209,8 @@ class TmdbProvider:
     descriptor = ProviderDescriptor(
         provider_key="tmdb",
         display_name="TMDB",
+        subscription_id_format="{id}",
+        default_media_type=MediaType.MOVIE,
         detail_url_template="https://www.themoviedb.org/{media_type}/{external_id}",
         capabilities=frozenset(
             {

@@ -168,6 +168,7 @@ class MediaConfig(BaseModel):
     media_default_path: str = ""
     default_rmt_mode: str = "link"
     tmdb_language: str = "zh"
+    metadata_default_policy: str = "tmdb_primary"
     episode_mapping_enabled: bool = True
 
 

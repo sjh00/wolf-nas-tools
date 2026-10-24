@@ -39,6 +39,7 @@ from app.infrastructure.queue.memory_queue import MemoryMessageQueue
 from app.infrastructure.thread import ThreadExecutor
 from app.media import MediaService
 from app.media import meta_info as meta_info_fn
+from app.media.metadata.parsing import ParserChain
 from app.media.parser import RegexParser
 from app.message import Message
 from app.schemas.media import TransferMediaDTO
@@ -416,16 +417,78 @@ class FileTransferService:
             if not provider_data:
                 provider_data, media_type, dl_season, dl_episode = self._lookup_download_record(in_path)
 
-            medias = self.media.get_media_info_on_files(
-                file_list, provider_data, media_type, season, episode[0], backend=src_backend
-            )
+            # 先用插件 ParserProfile 短路识别，避免成人文件先走一次 TMDB。
+            policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
+            parser_chain = ParserChain()
+            profile_medias = {}
+            unprofiled_files = []
+            primary_medias = {}
+            for _path in file_list:
+                parsed_profile = None
+                try:
+                    parsed_profile = parser_chain.extract(os.path.basename(_path))
+                except Exception:
+                    parsed_profile = None
+                if parsed_profile is None or not getattr(parsed_profile, "content_profile", None):
+                    # 普通媒体：非 TMDB 主源先按策略识别，命中则完全跳过 TMDB。
+                    if self._metadata_service is not None and not policy.startswith("tmdb_"):
+                        try:
+                            candidate = meta_info_fn(os.path.basename(_path))
+                            if self._metadata_service.identify_anchor(candidate, policy=policy):
+                                primary_medias[_path] = candidate
+                                continue
+                        except Exception as exc:  # noqa: BLE001
+                            log.debug(f"[Rmt]主源预识别失败: {exc}")
+                    unprofiled_files.append(_path)
+                    continue
+                parsed_code = getattr(parsed_profile, "anchor_external_id", "") or getattr(
+                    parsed_profile, "content_id", ""
+                )
+                _info = meta_info_fn(
+                    str(parsed_code or os.path.splitext(os.path.basename(_path))[0]),
+                    mtype=getattr(parsed_profile, "type", None) or MediaType.MOVIE,
+                )
+                _info.org_string = os.path.basename(_path)
+                _info.content_profile = parsed_profile.content_profile
+                _info.anchor_provider = getattr(parsed_profile, "anchor_provider", "") or ""
+                _info.anchor_external_id = str(parsed_code or "")
+                if parsed_code:
+                    _info.title = str(parsed_code)
+                profile_medias[_path] = _info
+
+            medias = {**primary_medias, **profile_medias}
+            if unprofiled_files:
+                identified = self.media.get_media_info_on_files(
+                    unprofiled_files,
+                    provider_data,
+                    media_type,
+                    season,
+                    episode[0],
+                    backend=src_backend,
+                )
+                if identified:
+                    medias.update(identified)
             if not medias:
                 return self._finish_transfer(False, "搜索媒体信息出错")
+
             for _path, _info in medias.items():
                 if not getattr(_info, "org_string", ""):
                     _info.org_string = os.path.basename(_path)
                 if not getattr(_info, "title", ""):
                     _info.title = os.path.splitext(os.path.basename(_path))[0]
+                if self._metadata_service is not None:
+                    try:
+                        self._metadata_service.identify_anchor(_info, policy=policy)
+                        _snapshot = self._metadata_service.compose_for_media(
+                            _info,
+                            policy=policy,
+                            with_episodes=True,
+                            persist=True,
+                        )
+                        if _snapshot is not None:
+                            _info.snapshot = _snapshot
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug(f"[Rmt]主源识别失败: {exc}")
 
             # 订阅/下载历史已知季集时兜底：文件名解析失败的动漫单集用订阅记录的集号补齐，
             # 避免"无法从文件名中识别出集数"导致订阅下载的剧集无法入库

@@ -76,6 +76,10 @@ class ProviderDescriptor(BaseModel):
     timeout_seconds: int = 30
     circuit_failures: int = 3
     circuit_cooldown_seconds: int = 60
+    subscription_id_format: str = ""
+    subscription_ref: bool = False
+    default_media_type: MediaType | None = None
+    default_content_profile: str = "default"
 
 
 class ImageAsset(BaseModel):

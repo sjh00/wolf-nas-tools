@@ -62,9 +62,15 @@ class ImageDownloader:
         try:
             log.info(f"[Scraper]正在下载{itype}图片：{url} ...")
             with _IMAGE_DOWNLOAD_SEMAPHORE:
-                r = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings())).get(
-                    url=url, raise_exception=True
-                )
+                headers = {}
+                if "doubanio.com" in url or "douban.com" in url:
+                    headers["Referer"] = "https://movie.douban.com/"
+                elif "bgm.tv" in url:
+                    headers["Referer"] = "https://bangumi.tv/"
+                kwargs = {"url": url, "raise_exception": True}
+                if headers:
+                    kwargs["headers"] = headers
+                r = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings())).get(**kwargs)
             if r:
                 resolved_path = self._resolve_extension(image_path, r.headers.get("content-type", ""))
                 if self._dst_backend:

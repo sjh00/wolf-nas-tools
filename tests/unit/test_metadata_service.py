@@ -537,3 +537,88 @@ def test_compose_for_media_adds_anchor_ref_for_douban_primary():
         ("tmdb", "278"),
         ("douban", "2"),
     }
+
+
+def test_system_default_policy_uses_explicit_override():
+    svc = MetadataService(system_default_policy="douban_primary", register_builtins=False)
+    assert svc.system_default_policy == "douban_primary"
+
+
+def test_system_default_policy_reads_current_settings(monkeypatch):
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings.media, "metadata_default_policy", "bangumi_primary")
+    svc = MetadataService(register_builtins=False)
+    assert svc.system_default_policy == "bangumi_primary"
+
+
+def test_identify_anchor_follows_policy(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.domain.mediatypes import MediaType
+
+    svc = MetadataService(register_builtins=False)
+    calls = []
+
+    def fake_search(**kwargs):
+        calls.append(kwargs["provider"])
+        if kwargs["provider"] == "douban":
+            return [{"title": "测试电影", "year": "2024", "ref": {"provider": "douban", "external_id": "123"}}]
+        return []
+
+    monkeypatch.setattr(svc, "search", fake_search)
+    media = SimpleNamespace(title="测试电影", year="2024", type=MediaType.MOVIE, content_profile="default")
+    assert svc.identify_anchor(media, policy="douban_primary") is True
+    assert media.anchor_provider == "douban"
+    assert media.anchor_external_id == "123"
+    assert calls == ["douban"]
+
+
+def test_identify_anchor_falls_back_when_primary_misses(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.domain.mediatypes import MediaType
+
+    svc = MetadataService(register_builtins=False)
+
+    def fake_search(**kwargs):
+        if kwargs["provider"] == "bangumi":
+            return [{"title": "测试动画", "year": "2024", "ref": {"provider": "bangumi", "external_id": "456"}}]
+        return []
+
+    monkeypatch.setattr(svc, "search", fake_search)
+    media = SimpleNamespace(title="测试动画", year="2024", type=MediaType.ANIME, content_profile="default")
+    assert svc.identify_anchor(media, policy="douban_primary") is True
+    assert media.anchor_provider == "bangumi"
+    assert media.anchor_external_id == "456"
+
+
+def test_identify_anchor_singleflight(monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    from app.domain.mediatypes import MediaType
+
+    svc = MetadataService(register_builtins=False)
+    call_count = 0
+    count_lock = threading.Lock()
+
+    def fake_search(**kwargs):
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+        time.sleep(0.1)
+        return [{"title": "并发测试", "year": "2024", "ref": {"provider": "douban", "external_id": "789"}}]
+
+    monkeypatch.setattr(svc, "search", fake_search)
+    media_items = [
+        SimpleNamespace(title="并发测试", year="2024", type=MediaType.MOVIE, content_profile="default")
+        for _ in range(6)
+    ]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda item: svc.identify_anchor(item, policy="douban_primary"), media_items))
+    assert all(results)
+    assert call_count == 1
+    assert all(item.anchor_external_id == "789" for item in media_items)

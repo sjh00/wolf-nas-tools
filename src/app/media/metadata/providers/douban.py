@@ -62,10 +62,14 @@ def douban_detail_to_record(
     douban_id = str(external_id or info.get("id") or "")
     year = str(info.get("year") or "") or None
 
+    refs = [ProviderRef(provider="douban", external_id=douban_id, media_type=media_type)]
+    imdb_id = str(info.get("imdb") or "").strip()
+    if imdb_id.startswith("tt"):
+        refs.append(ProviderRef(provider="imdb", external_id=imdb_id, media_type=media_type))
     return ProviderRecord(
         provider="douban",
         external_id=douban_id,
-        refs=[ProviderRef(provider="douban", external_id=douban_id, media_type=media_type)],
+        refs=refs,
         media_type=media_type,
         content_profile=content_profile,
         locale=locale,
@@ -182,6 +186,8 @@ class DoubanProvider:
     descriptor = ProviderDescriptor(
         provider_key="douban",
         display_name="豆瓣",
+        subscription_id_format="DB:{id}",
+        default_media_type=MediaType.MOVIE,
         detail_url_template="https://movie.douban.com/subject/{external_id}",
         capabilities=frozenset(
             {
