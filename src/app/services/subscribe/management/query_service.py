@@ -359,11 +359,17 @@ class SubscribeQueryService:
         tmdbid: str | None = None,
         user: UserContext | None = None,
     ) -> Any:
-        """删除订阅（user 非空且非超管时仅可删除自己的订阅）"""
+        """删除订阅（user 非空且非超管时仅可删除自己的订阅）.
+
+        有 rssid 时只按 rssid 删除，避免插件标题/搜索标题与订阅名不一致导致删不掉。
+        """
+        if rssid is not None:
+            if mtype == MediaType.MOVIE:
+                return self._movie_repo.delete(rssid=rssid, user=user)
+            return self._tv_repo.delete(rssid=rssid, user=user)
         if mtype == MediaType.MOVIE:
-            return self._movie_repo.delete(title=title, year=year, rssid=rssid, tmdbid=tmdbid, user=user)
-        else:
-            return self._tv_repo.delete(title=title, season=season, rssid=rssid, tmdbid=tmdbid, user=user)
+            return self._movie_repo.delete(title=title, year=year, rssid=None, tmdbid=tmdbid, user=user)
+        return self._tv_repo.delete(title=title, season=season, rssid=None, tmdbid=tmdbid, user=user)
 
     def get_history_id(self, mtype, title, year=None, tmdbid=None):
         """查询已完成的订阅历史 ID（用于"订阅完成"标识）."""
