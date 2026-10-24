@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base
+from app.db.models import SEARCHRESULTINFO, Base
 from app.db.repositories.search_repository import SearchRepository
 from app.db.session import SessionManager
 from app.domain.mediatypes import MediaType
@@ -28,6 +28,12 @@ def _make_media_item(index: int, page_url: str | None = None, site: str = "site-
     item.get_backdrop_image.return_value = ""
     item.get_poster_image.return_value = ""
     item.tmdb_id = ""
+    item.identity_id = None
+    item.anchor_provider = None
+    item.anchor_external_id = None
+    item.content_profile = "default"
+    item.metadata_policy = None
+    item.naming_profile = None
     item.overview = ""
     item.resource_pix = ""
     item.resource_type = ""
@@ -80,6 +86,28 @@ class TestInsertSearchResults:
 
         rows = repo.get_search_results(session_id=session_id)
         assert len(rows) == 1
+
+    def test_insert_persists_metadata_scope(self, repo):
+        session_id = "sess-scope"
+        item = _make_media_item(1)
+        item.tmdb_id = "1399"
+        item.identity_id = "01IDENTITY"
+        item.anchor_provider = "tmdb"
+        item.anchor_external_id = "1399"
+        item.content_profile = "default"
+        item.metadata_policy = "tmdb_primary"
+        item.naming_profile = "default"
+
+        repo.insert_search_results([item], ident_flag=True, session_id=session_id)
+
+        with repo.session() as db:
+            row = db.query(SEARCHRESULTINFO).filter(SEARCHRESULTINFO.SEARCH_SESSION_ID == session_id).one()
+            assert row.IDENTITY_ID == "01IDENTITY"
+            assert row.ANCHOR_PROVIDER == "tmdb"
+            assert row.ANCHOR_EXTERNAL_ID == "1399"
+            assert row.CONTENT_PROFILE == "default"
+            assert row.METADATA_POLICY == "tmdb_primary"
+            assert row.NAMING_PROFILE == "default"
 
     def test_replace_previous_session_results(self, repo):
         session_id = "sess-replace"

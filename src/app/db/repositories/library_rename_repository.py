@@ -11,6 +11,7 @@ from app.db.models import (
     TRANSFERHISTORY,
 )
 from app.db.repositories.base_repository import BaseRepository
+from app.media.metadata.policy import ANCHOR_POLICY
 from app.utils.json_utils import JsonUtils
 
 
@@ -254,6 +255,12 @@ class LibraryRenameRepository(BaseRepository):
             "TITLE": str(data.get("title") or ""),
             "YEAR": str(data.get("year") or ""),
             "TMDBID": str(data.get("tmdbid") or ""),
+            "IDENTITY_ID": data.get("identity_id"),
+            "ANCHOR_PROVIDER": data.get("anchor_provider"),
+            "ANCHOR_EXTERNAL_ID": data.get("anchor_external_id"),
+            "CONTENT_PROFILE": data.get("content_profile") or "default",
+            "METADATA_POLICY": data.get("metadata_policy") or ANCHOR_POLICY.get(str(data.get("anchor_provider") or "")),
+            "NAMING_PROFILE": data.get("naming_profile"),
             "SEASON": str(data.get("season") or ""),
             "EPISODE": str(data.get("episode") or ""),
             "SEASON_EPISODE_COUNT": data.get("season_episode_count"),

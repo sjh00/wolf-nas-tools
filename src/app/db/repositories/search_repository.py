@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from app.db.models import SEARCHRESULTINFO
 from app.db.repositories.base_repository import BaseRepository
 from app.domain.mediatypes import MediaType
+from app.media.metadata.policy import ANCHOR_POLICY
 from app.utils.json_utils import JsonUtils
 
 
@@ -85,6 +86,13 @@ class SearchRepository(BaseRepository):
                     "IMAGE": (media_item.get_backdrop_image(default=False, original=True) or ""),
                     "POSTER": (media_item.get_poster_image() or ""),
                     "TMDBID": media_item.tmdb_id or "",
+                    "IDENTITY_ID": getattr(media_item, "identity_id", None) or "",
+                    "ANCHOR_PROVIDER": getattr(media_item, "anchor_provider", None) or "",
+                    "ANCHOR_EXTERNAL_ID": getattr(media_item, "anchor_external_id", None) or "",
+                    "CONTENT_PROFILE": getattr(media_item, "content_profile", None) or "default",
+                    "METADATA_POLICY": getattr(media_item, "metadata_policy", None)
+                    or ANCHOR_POLICY.get(str(getattr(media_item, "anchor_provider", "") or ""), ""),
+                    "NAMING_PROFILE": getattr(media_item, "naming_profile", None) or "",
                     "OVERVIEW": media_item.overview or "",
                     "RES_TYPE": JsonUtils.dumps(
                         {
@@ -168,6 +176,12 @@ class SearchRepository(BaseRepository):
                 SIZE=stmt.inserted.SIZE,
                 SEEDERS=stmt.inserted.SEEDERS,
                 PEERS=stmt.inserted.PEERS,
+                IDENTITY_ID=stmt.inserted.IDENTITY_ID,
+                ANCHOR_PROVIDER=stmt.inserted.ANCHOR_PROVIDER,
+                ANCHOR_EXTERNAL_ID=stmt.inserted.ANCHOR_EXTERNAL_ID,
+                CONTENT_PROFILE=stmt.inserted.CONTENT_PROFILE,
+                METADATA_POLICY=stmt.inserted.METADATA_POLICY,
+                NAMING_PROFILE=stmt.inserted.NAMING_PROFILE,
             )
         if dialect == "postgresql":
             stmt = pg_insert(SEARCHRESULTINFO).values(mappings)
@@ -181,6 +195,12 @@ class SearchRepository(BaseRepository):
                 "SIZE": stmt.excluded.SIZE,
                 "SEEDERS": stmt.excluded.SEEDERS,
                 "PEERS": stmt.excluded.PEERS,
+                "IDENTITY_ID": stmt.excluded.IDENTITY_ID,
+                "ANCHOR_PROVIDER": stmt.excluded.ANCHOR_PROVIDER,
+                "ANCHOR_EXTERNAL_ID": stmt.excluded.ANCHOR_EXTERNAL_ID,
+                "CONTENT_PROFILE": stmt.excluded.CONTENT_PROFILE,
+                "METADATA_POLICY": stmt.excluded.METADATA_POLICY,
+                "NAMING_PROFILE": stmt.excluded.NAMING_PROFILE,
             },
         )
 

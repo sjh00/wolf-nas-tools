@@ -26,6 +26,10 @@ class MEDIASYNCITEMS(BaseMedia):
     PATH: Mapped[str] = mapped_column(String(255))
     NOTE: Mapped[str] = mapped_column(Text)
     JSON: Mapped[str] = mapped_column(Text)
+    IDENTITY_ID: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class MEDIASYNCSTATISTIC(BaseMedia):

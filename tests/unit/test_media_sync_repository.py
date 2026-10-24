@@ -48,6 +48,9 @@ class TestMediaSyncTypeCoercion:
         assert item is not None
         assert item.TMDBID == "157336"
         assert item.YEAR == "2014"
+        assert item.ANCHOR_PROVIDER == "tmdb"
+        assert item.ANCHOR_EXTERNAL_ID == "157336"
+        assert item.CONTENT_PROFILE == "default"
 
     def test_query_item_with_int_year_and_tmdbid_matches(self, repo):
         repo.insert_item(

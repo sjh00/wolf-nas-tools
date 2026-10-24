@@ -18,6 +18,57 @@ class MediaRef:
     media_type: MediaType | None = None
 
 
+def normalize_identity_key(value: Any) -> str:
+    """归一化订阅/缺失季集使用的媒体键.
+
+    兼容历史数字 TMDB ID、``TMDB:``/``DB:``/``BG:`` 前缀，以及新的
+    ``provider:external_id`` 和 ``id:<identity_id>`` 形式。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if upper.startswith("DB:"):
+        return f"douban:{text[3:]}"
+    if upper.startswith("BG:"):
+        return f"bangumi:{text[3:]}"
+    if upper.startswith("TMDB:"):
+        return f"tmdb:{text[5:]}"
+    if text.startswith("id:"):
+        return text
+    if ":" in text:
+        provider, external = text.split(":", 1)
+        return f"{provider.strip().lower()}:{external.strip()}"
+    if text.isdigit():
+        return f"tmdb:{text}"
+    return text
+
+
+def media_identity_key(media: Any) -> str:
+    """返回媒体对象的稳定匹配键；优先 identity_id，其次 anchor。"""
+    if media is None:
+        return ""
+    identity_id = getattr(media, "identity_id", None)
+    if isinstance(identity_id, str) and identity_id.strip():
+        return f"id:{identity_id.strip()}"
+    get_ref = getattr(media, "get_media_ref", None)
+    ref = get_ref() if callable(get_ref) else None
+    if isinstance(ref, MediaRef) and ref.provider and ref.external_id:
+        return normalize_identity_key(f"{ref.provider}:{ref.external_id}")
+    provider = getattr(media, "anchor_provider", None)
+    external = getattr(media, "anchor_external_id", None)
+    if isinstance(provider, str) and provider.strip() and isinstance(external, str) and external.strip():
+        return normalize_identity_key(f"{provider}:{external}")
+    tmdb_id = getattr(media, "tmdb_id", None)
+    if isinstance(tmdb_id, (str, int)):
+        return normalize_identity_key(tmdb_id)
+    return ""
+
+
+def identity_keys_match(left: Any, right: Any) -> bool:
+    return bool(normalize_identity_key(left)) and normalize_identity_key(left) == normalize_identity_key(right)
+
+
 @dataclass
 class MediaSubject:
     """供 Composer 使用的最小媒体主体，替代 SimpleNamespace/MediaInfo 鸭子类型."""

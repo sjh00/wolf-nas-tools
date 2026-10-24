@@ -28,6 +28,13 @@ class MediaSyncRepository(BaseRepository):
         tmdb_id = str(iteminfo.get("tmdbid") or "") if iteminfo.get("tmdbid") is not None else ""
         imdb_id = str(iteminfo.get("imdbid") or "") if iteminfo.get("imdbid") is not None else ""
         year = str(iteminfo.get("year") or "") if iteminfo.get("year") is not None else ""
+        anchor_provider = str(iteminfo.get("anchor_provider") or "").strip()
+        anchor_external_id = str(iteminfo.get("anchor_external_id") or "").strip()
+        if not anchor_provider:
+            if tmdb_id:
+                anchor_provider, anchor_external_id = "tmdb", tmdb_id
+            elif imdb_id:
+                anchor_provider, anchor_external_id = "imdb", imdb_id
 
         with self.session() as db:
             db.query(MEDIASYNCITEMS).filter(
@@ -48,6 +55,10 @@ class MediaSyncRepository(BaseRepository):
                 PATH=iteminfo.get("path") or "",
                 NOTE=iteminfo.get("note") or "",
                 JSON=JsonUtils.dumps(seasoninfo) if seasoninfo is not None else "",
+                IDENTITY_ID=iteminfo.get("identity_id") or None,
+                ANCHOR_PROVIDER=anchor_provider or None,
+                ANCHOR_EXTERNAL_ID=anchor_external_id or None,
+                CONTENT_PROFILE=iteminfo.get("content_profile") or "default",
             )
             db.add(new_item)
             db.commit()

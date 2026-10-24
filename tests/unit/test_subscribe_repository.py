@@ -127,6 +127,27 @@ class TestUpdateRssTvLackAdvancesCurrentEp:
             assert row.LACK == 18
             assert row.CURRENT_EP == 31
 
+    def test_episode_rows_copy_subscription_scope(self):
+        from app.db.models.subscribe import SubscribeTvEpisodes
+
+        mgr = self._setup_repo()
+        with mgr.session_scope() as db:
+            row = db.query(SubscribeTvs).filter(SubscribeTvs.ID == 1).first()
+            assert row is not None
+            row.IDENTITY_ID = "01IDENTITY"
+            row.ANCHOR_PROVIDER = "tmdb"
+            row.ANCHOR_EXTERNAL_ID = "223564"
+            row.CONTENT_PROFILE = "default"
+        repo = SubscribeRepository()
+        repo.update_rss_tv_episodes(1, [3, 4])
+        with mgr.session_scope() as db:
+            ep = db.query(SubscribeTvEpisodes).filter(SubscribeTvEpisodes.RSSID == 1).first()
+            assert ep is not None
+            assert ep.EPISODES == "3,4"
+            assert ep.IDENTITY_ID == "01IDENTITY"
+            assert ep.ANCHOR_PROVIDER == "tmdb"
+            assert ep.ANCHOR_EXTERNAL_ID == "223564"
+
     def test_empty_missing_keeps_current_ep(self):
         mgr = self._setup_repo()
         repo = SubscribeRepository()
@@ -250,6 +271,9 @@ class TestSubscribeHistoryNullFields:
             assert row.SEASON == ""
             assert row.TOTAL == 0
             assert row.START == 0
+            assert row.ANCHOR_PROVIDER == "tmdb"
+            assert row.ANCHOR_EXTERNAL_ID == "1391021"
+            assert row.METADATA_POLICY == "tmdb_primary"
 
     def test_upsert_movie_history_none_season(self):
         from app.db.models.subscribe import SubscribeHistory
@@ -272,3 +296,44 @@ class TestSubscribeHistoryNullFields:
             row = db.query(SubscribeHistory).first()
             assert row is not None
             assert row.SEASON == ""
+            assert row.TOTAL == 0
+            assert row.START == 0
+            assert row.ANCHOR_PROVIDER == "tmdb"
+            assert row.ANCHOR_EXTERNAL_ID == "1541125"
+
+
+class TestRssTorrentScope:
+    def test_insert_rss_torrent_persists_scope(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db.models.base import Base
+        from app.db.models.subscribe import SubscribeTorrents
+        from app.db.session import SessionManager
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        mgr = SessionManager()
+        mgr._engine = engine
+        mgr._factory = sessionmaker(bind=engine, expire_on_commit=False)
+        SubscribeRepository._session_manager = mgr
+        repo = SubscribeRepository()
+        repo.insert_rss_torrent(
+            "torrent",
+            "magnet:?xt=urn:btih:abc",
+            "movie",
+            "电影",
+            "2024",
+            "",
+            "",
+            identity_id="01IDENTITY",
+            anchor_provider="tmdb",
+            anchor_external_id="100",
+            content_profile="default",
+        )
+        with mgr.session_scope() as db:
+            row = db.query(SubscribeTorrents).first()
+            assert row is not None
+            assert row.IDENTITY_ID == "01IDENTITY"
+            assert row.ANCHOR_PROVIDER == "tmdb"
+            assert row.ANCHOR_EXTERNAL_ID == "100"

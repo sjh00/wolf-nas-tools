@@ -12,6 +12,7 @@ from app.domain.mediatypes import MediaType
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.category_matcher import get_category
 from app.media.image_resolver import MediaImageResolver
+from app.media.message_image_policy import transform_message_image
 from app.utils import StringUtils
 
 
@@ -612,7 +613,14 @@ class MediaInfo(BaseModel):
         external = str(getattr(self, "anchor_external_id", "") or "")
         if provider and external:
             return MediaRef(provider=provider, external_id=external, media_type=self.type)
-        raw = str(self.tmdb_id or "")
+        raw = str(self.tmdb_id or "").strip()
+        upper = raw.upper()
+        if upper.startswith("DB:") and raw[3:]:
+            return MediaRef(provider="douban", external_id=raw[3:], media_type=self.type)
+        if upper.startswith("BG:") and raw[3:]:
+            return MediaRef(provider="bangumi", external_id=raw[3:], media_type=self.type)
+        if upper.startswith("TMDB:") and raw[5:]:
+            return MediaRef(provider="tmdb", external_id=raw[5:], media_type=self.type)
         if raw.isdigit():
             return MediaRef(provider="tmdb", external_id=raw, media_type=self.type)
         if self.douban_id:
@@ -620,49 +628,47 @@ class MediaInfo(BaseModel):
         return None
 
     def get_detail_url(self, provider: str | None = None) -> str:
-        """返回详情页；默认跟随 anchor，而不是无条件跳 TMDB."""
-        target = (provider or self.anchor_provider or "").strip().lower()
-        if not target:
-            target = "douban" if self.douban_id else ("tmdb" if str(self.tmdb_id or "").isdigit() else "")
+        """返回详情页；默认跟随统一锚点，而不是无条件跳 TMDB."""
+        ref = self.get_media_ref()
+        target = (provider or self.anchor_provider or (ref.provider if ref else "")).strip().lower()
         if target == "douban":
-            return self.get_douban_detail_url()
+            douban_id = self.douban_id or (ref.external_id if ref and ref.provider == "douban" else "")
+            return f"https://movie.douban.com/subject/{douban_id}" if douban_id else ""
         if target == "tmdb":
             raw_id = str(self.tmdb_id or "")
+            if ref and ref.provider == "tmdb":
+                raw_id = str(ref.external_id or "")
             if not raw_id.isdigit():
                 return ""
             base = "movie" if self.type == MediaType.MOVIE else "tv"
             return f"https://www.themoviedb.org/{base}/{raw_id}"
-        if target == "bangumi" and self.anchor_external_id:
-            return f"https://bgm.tv/subject/{self.anchor_external_id}"
+        if target == "bangumi":
+            external = self.anchor_external_id or (ref.external_id if ref and ref.provider == "bangumi" else "")
+            return f"https://bgm.tv/subject/{external}" if external else ""
         return ""
 
     def get_detail_links(self) -> list[dict[str, str]]:
-        """按 provider 返回可用详情链接，供前端并列展示."""
+        """按统一 refs 返回可用详情链接，供前端并列展示."""
         links: list[dict[str, str]] = []
-        if self.douban_id:
-            links.append(
-                {
-                    "provider": "douban",
-                    "label": "豆瓣",
-                    "url": self.get_douban_detail_url(),
-                }
-            )
-        if str(self.tmdb_id or "").isdigit():
-            links.append(
-                {
-                    "provider": "tmdb",
-                    "label": "TMDB",
-                    "url": self.get_detail_url("tmdb"),
-                }
-            )
-        if self.anchor_provider == "bangumi" and self.anchor_external_id:
-            links.append(
-                {
-                    "provider": "bangumi",
-                    "label": "Bangumi",
-                    "url": self.get_detail_url("bangumi"),
-                }
-            )
+        seen: set[str] = set()
+        labels = {"douban": "豆瓣", "tmdb": "TMDB", "bangumi": "Bangumi"}
+        candidates = [
+            self.get_media_ref(),
+            MediaRef(provider="tmdb", external_id=str(self.tmdb_id), media_type=self.type)
+            if str(self.tmdb_id or "").isdigit()
+            else None,
+            MediaRef(provider="douban", external_id=str(self.douban_id), media_type=self.type)
+            if self.douban_id
+            else None,
+        ]
+        for ref in candidates:
+            if ref is None or ref.provider in seen:
+                continue
+            url = self.get_detail_url(ref.provider)
+            if not url:
+                continue
+            seen.add(ref.provider)
+            links.append({"provider": ref.provider, "label": labels.get(ref.provider, ref.provider), "url": url})
         return links
 
     def get_douban_detail_url(self) -> str:
@@ -674,7 +680,11 @@ class MediaInfo(BaseModel):
         return MediaImageResolver.get_backdrop_image(self, default=default, original=original)
 
     def get_message_image(self):
-        return MediaImageResolver.get_message_image(self)
+        image = MediaImageResolver.get_message_image(self)
+        return transform_message_image(
+            str(getattr(self, "content_profile", "") or ""),
+            str(image or ""),
+        )
 
     def get_poster_image(self, original=False):
         return MediaImageResolver.get_poster_image(self, original=original)
