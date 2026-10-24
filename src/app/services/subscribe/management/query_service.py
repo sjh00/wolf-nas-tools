@@ -114,6 +114,8 @@ class SubscribeQueryService:
             save_path = rss_movie.SAVE_PATH
             fuzzy_match = rss_movie.FUZZY_MATCH == 1
             keyword = rss_movie.KEYWORD
+            if keyword and str(keyword).startswith("content_id:"):
+                keyword = str(keyword).split(":", 1)[1]
             if desc and desc.find("{") != -1:
                 desc = parse_rss_desc(desc)
                 rss_sites = desc.get("rss_sites")
@@ -205,6 +207,8 @@ class SubscribeQueryService:
             current_ep = rss_tv.CURRENT_EP
             fuzzy_match = rss_tv.FUZZY_MATCH == 1
             keyword = rss_tv.KEYWORD
+            if keyword and str(keyword).startswith("content_id:"):
+                keyword = str(keyword).split(":", 1)[1]
             if desc and desc.find("{") != -1:
                 desc = parse_rss_desc(desc)
                 rss_sites = desc.get("rss_sites")
