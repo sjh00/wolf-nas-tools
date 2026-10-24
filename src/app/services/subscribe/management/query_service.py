@@ -135,6 +135,8 @@ class SubscribeQueryService:
             anchor_provider, anchor_external_id = _normalized_anchor(
                 rss_movie.ANCHOR_PROVIDER, rss_movie.ANCHOR_EXTERNAL_ID
             )
+            if not keyword and anchor_external_id and rss_movie.CONTENT_PROFILE not in (None, "", "default"):
+                keyword = anchor_external_id
             ret_dict[str(rss_movie.ID)] = {
                 "id": rss_movie.ID,
                 "user_id": rss_movie.USER_ID,
