@@ -5,6 +5,7 @@
 
 import os
 import re
+import time
 
 import log
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
@@ -13,6 +14,7 @@ from app.domain.enums import SearchType, channel_key
 from app.domain.interfaces.chat import ChatPort
 from app.domain.mediatypes import MediaType
 from app.media import meta_info
+from app.media.metadata.registry import registry as metadata_registry
 from app.media.service import MediaService
 from app.message import Message
 from app.message.formatter import dialect_for_channel, format_agent_message
@@ -21,6 +23,7 @@ from app.services.indexer_service import IndexerService
 from app.services.search_pagination import SearchPaginationManager
 from app.services.search_service import Searcher
 from app.services.subscribe_service import SubscribeService
+from app.services.subscription_intent import resolve_subscription
 from app.services.web.utils import search_media_infos
 from app.sites.engine import SiteEngine
 from app.sites.site_cache import SiteCache
@@ -42,6 +45,7 @@ class MessageSearchService:
         media_service: MediaService,
         agent_service: ChatPort,
         message: Message,
+        metadata_service=None,
     ):
         self._downloader = downloader
         self._searcher = searcher
@@ -52,7 +56,9 @@ class MessageSearchService:
         self._media_service = media_service
         self._chat_port = agent_service
         self._message = message
+        self._metadata_service = metadata_service
         self._pagination = SearchPaginationManager(message=message)
+        self._pending_subscriptions: dict[str, dict] = {}
 
     def handle(
         self,
@@ -75,7 +81,7 @@ class MessageSearchService:
 
         # 数字选择
         if input_str.isdigit() and int(input_str) < 10:
-            self._handle_selection(int(input_str), in_from, user_id, user_name, bound_user_id)
+            self._handle_selection(int(input_str), in_from, user_id, user_name, bound_user_id, user_permissions)
             return
 
         # 文本输入
@@ -101,8 +107,31 @@ class MessageSearchService:
         user_id: str,
         user_name: str | None = None,
         bound_user_id: int | None = None,
+        user_permissions: list[str] | None = None,
     ):
         """处理数字选择"""
+        pending = self._pending_subscriptions.get(user_id)
+        if pending:
+            if time.monotonic() - pending["created"] > 300:
+                self._pending_subscriptions.pop(user_id, None)
+            else:
+                hits = pending["hits"]
+                if choose < 1 or choose > len(hits):
+                    self._message.send_channel_msg(channel=in_from, title="输入有误！", user_id=user_id)
+                    return
+                hit = hits[choose - 1]
+                ref = hit.get("ref") or {}
+                self._pending_subscriptions.pop(user_id, None)
+                self._add_metadata_subscription(
+                    in_from,
+                    pending["provider"],
+                    str(ref.get("external_id") or ""),
+                    str(hit.get("title") or pending["query"]),
+                    user_id,
+                    bound_user_id=bound_user_id,
+                    permissions=pending.get("permissions") or user_permissions,
+                )
+                return
         # 优先从分页缓存选择
         if self._pagination.has_page(user_id):
             self._select_from_pagination(choose, in_from, user_id, user_name, bound_user_id=bound_user_id)
@@ -169,6 +198,158 @@ class MessageSearchService:
         self._downloader.download(media_info=media_info, in_from=in_from, user_name=user_name, user_id=bound_user_id)
         self._pagination.clear_media_cache(user_id)
 
+    _METADATA_ALIASES = {
+        "tmdb": "tmdb",
+        "豆瓣": "douban",
+        "douban": "douban",
+        "bangumi": "bangumi",
+        "bgm": "bangumi",
+        "番组": "bangumi",
+    }
+
+    def _parse_metadata_subscription(self, text: str):
+        """解析订阅语法：订阅 <provider> <标题> 或 <provider>:<id> [名称]。"""
+        match = re.match(r"^(?:订阅|/rss)[:：\s]+([^\s:：]+)(?:\s*[:：]\s*(\S+)(?:\s+(.+))?|\s+(.+))?$", text)
+        if not match:
+            return None
+        raw_provider = match.group(1).strip()
+        provider = self._METADATA_ALIASES.get(raw_provider.lower()) or self._METADATA_ALIASES.get(raw_provider)
+        if not provider and metadata_registry.get_provider(raw_provider):
+            provider = raw_provider
+        if not provider:
+            return None
+        external_id = (match.group(2) or "").strip()
+        if external_id:
+            name = (match.group(3) or external_id).strip()
+            return provider, external_id, name, True
+        title = (match.group(4) or "").strip()
+        if not title:
+            return None
+        return provider, title, title, False
+
+    def _subscribe_by_text(
+        self,
+        in_from: SearchType,
+        provider: str,
+        value: str,
+        name: str,
+        is_id: bool,
+        user_id: str,
+        bound_user_id=None,
+        permissions=None,
+    ) -> None:
+        profile = self._profile_for_provider(provider)
+        if profile != "default" and "metadata:private:view" not in set(permissions or []):
+            self._message.send_channel_msg(
+                channel=in_from, title="当前用户无 metadata:private:view 权限", user_id=user_id
+            )
+            return
+        external_id = value
+        title = name
+        media_type = MediaType.TV if profile == "anime" else MediaType.MOVIE
+        if not is_id and profile == "default":
+            if self._metadata_service is None:
+                self._message.send_channel_msg(channel=in_from, title="元数据服务未启用", user_id=user_id)
+                return
+            content_profile = profile
+            try:
+                hits = self._metadata_service.search(
+                    query=value,
+                    provider=provider,
+                    media_type=media_type,
+                    content_profile=content_profile,
+                    limit=5,
+                    allow_private=False,
+                    permissions=set(permissions or []),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._message.send_channel_msg(channel=in_from, title=f"元数据搜索失败: {exc}", user_id=user_id)
+                return
+            if not hits:
+                self._message.send_channel_msg(
+                    channel=in_from, title=f"{value} 未找到 {provider} 元数据", user_id=user_id
+                )
+                return
+            if len(hits) > 1:
+                self._pending_subscriptions[user_id] = {
+                    "created": time.monotonic(),
+                    "provider": provider,
+                    "query": value,
+                    "hits": hits,
+                    "permissions": set(permissions or []),
+                }
+                lines = []
+                for index, item in enumerate(hits[:8], start=1):
+                    year = f" ({item.get('year')})" if item.get("year") else ""
+                    lines.append(f"{index}. {item.get('title') or item.get('name') or ''}{year}")
+                self._message.send_channel_msg(
+                    channel=in_from,
+                    title="请选择订阅结果",
+                    text="\n".join(lines) + "\n\n回复序号继续",
+                    user_id=user_id,
+                )
+                return
+            ref = hits[0].get("ref") or {}
+            external_id = str(ref.get("external_id") or "").strip()
+            title = str(hits[0].get("title") or name)
+            if not external_id:
+                self._message.send_channel_msg(channel=in_from, title="元数据结果缺少外部 ID", user_id=user_id)
+                return
+        self._add_metadata_subscription(
+            in_from,
+            provider,
+            external_id,
+            title,
+            user_id,
+            bound_user_id=bound_user_id,
+            permissions=permissions,
+        )
+
+    @staticmethod
+    def _profile_for_provider(provider: str) -> str:
+        item = metadata_registry.get_provider(provider) if provider else None
+        descriptor = getattr(item, "descriptor", None)
+        profiles = {
+            str(value)
+            for value in getattr(descriptor, "content_profiles", frozenset())
+            if str(value) and str(value) != "default"
+        }
+        return sorted(profiles)[0] if profiles else "default"
+
+    def _add_metadata_subscription(
+        self,
+        in_from: SearchType,
+        provider: str,
+        external_id: str,
+        name: str,
+        user_id: str,
+        bound_user_id=None,
+        permissions=None,
+    ):
+        intent = resolve_subscription(provider, external_id, name)
+        if intent is None:
+            self._message.send_channel_msg(channel=in_from, title=f"未注册的元数据来源: {provider}", user_id=user_id)
+            return
+        code, msg, _ = self._subscribe_service.add_rss_subscribe(
+            mtype=intent.media_type,
+            name=intent.name,
+            year=None,
+            channel="auto",
+            season=None,
+            state="R",
+            in_from=in_from,
+            user_id=int(bound_user_id) if bound_user_id and str(bound_user_id).isdigit() else None,
+            metadata_ref=intent.metadata_ref,
+            metadata_policy=intent.metadata_policy,
+            content_profile=intent.content_profile,
+            keyword=intent.keyword,
+            mediaid=intent.mediaid,
+            allow_private=intent.allow_private,
+            permissions=set(permissions or []),
+        )
+        if code != 0:
+            self._message.send_channel_msg(channel=in_from, title=msg or "订阅失败", user_id=user_id)
+
     def _handle_text(
         self,
         input_str: str,
@@ -179,6 +360,20 @@ class MessageSearchService:
         bound_user_id: int | None = None,
     ):
         """处理文本输入"""
+        metadata_subscribe = self._parse_metadata_subscription(input_str)
+        if metadata_subscribe is not None:
+            provider, value, name, is_id = metadata_subscribe
+            self._subscribe_by_text(
+                in_from,
+                provider,
+                value,
+                name,
+                is_id,
+                user_id,
+                bound_user_id=bound_user_id,
+                permissions=user_permissions,
+            )
+            return
         # 判断意图
         intent = self._parse_intent(input_str)
 
