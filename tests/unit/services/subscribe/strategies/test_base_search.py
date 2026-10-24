@@ -320,3 +320,25 @@ class TestProviderRefSearch:
         media = strategy._searcher.search_one_media.call_args.kwargs["media_info"]
         assert media.keyword == "START-660"
         strategy._movie_repo.update_state.assert_called_with(title=None, year=None, rssid=1, state="R")
+
+
+def test_non_tmdb_anchor_never_queries_tmdb(strategy):
+    """JavDB/Bangumi 等来源只用自己的锚点，不借用 TMDB 识别."""
+    strategy._media_cache.get_tmdb_info = MagicMock()
+
+    result = strategy._get_media_info(
+        "123",
+        "魔法少女育成计划 restart",
+        "2026",
+        MediaType.TV,
+        anchor_provider="bangumi",
+        anchor_external_id="418229",
+        content_profile="anime",
+    )
+
+    assert result is not None
+    assert result.anchor_provider == "bangumi"
+    assert result.anchor_external_id == "418229"
+    assert result.tmdb_id == ""
+    assert not result.provider_data
+    strategy._media_cache.get_tmdb_info.assert_not_called()
