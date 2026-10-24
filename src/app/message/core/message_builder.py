@@ -356,11 +356,15 @@ class MessageBuilder:
             desc = getattr(metadata_registry.get_provider(provider), "descriptor", None) if provider else None
             source = str(getattr(desc, "display_name", "") or provider or "未知")
             subscription_line = (
-                f"订阅：{getattr(subscription, 'name', '')} (#{getattr(subscription, 'id', '')})\n来源：{source}\n"
+                f"📺 订阅：{getattr(subscription, 'name', '')} (#{getattr(subscription, 'id', '')})\n"
+                f"📡 来源：{source}\n"
             )
         text = (
-            f"标题：{title}\n{subscription_line}站点：{site}\n"
-            f"种子名称：{org_string}\n种子链接：{enclosure}\n错误信息：{error_msg}"
+            f"{subscription_line}"
+            f"🌐 站点：{site or '未知'}\n"
+            f"🎬 种子：{org_string or '未知'}\n"
+            f"🔗 链接：{enclosure or '无'}\n"
+            f"❗ 原因：{error_msg}"
         )
         owner_user_id = getattr(item, "user_id", None)
         if owner_user_id:
@@ -563,8 +567,8 @@ class MessageBuilder:
     def send_transfer_fail_message(self, path: str, count: int, text: str) -> None:
         if not path or not count:
             return
-        title = f"[{count} 个文件入库失败]"
-        text = f"源路径：{path}\n原因：{text}"
+        title = f"❌ [{count} 个文件入库失败]"
+        text = f"📁 源路径：{path}\n❗ 原因：{text}"
         # 失败/人工介入类事件定向给超级管理员（ADR-021 5.6），不再广播给所有用户
         self._send_admin_msg(title, text, url="unidentification")
         for client in self._client_manager.active_clients:

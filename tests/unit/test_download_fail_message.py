@@ -50,7 +50,7 @@ class TestDownloadFailMessage:
         assert owner_id == 1
         assert "少女怪兽焦糖味" in title
         assert "S01" in title and "E03" in title
-        assert "错误信息：站点返回：相同種子當天最多下載10次" in text
+        assert "❗ 原因：站点返回：相同種子當天最多下載10次" in text
         assert "M-Team" in text
 
     def test_season_pack_title_keeps_season_only(self, builder):
