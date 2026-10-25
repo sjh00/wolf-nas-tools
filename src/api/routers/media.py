@@ -794,12 +794,14 @@ def media_detail_by_ref(
         return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
     if not record:
         return fail(msg="无法获取媒体详情")
+    is_custom_profile = content_profile != "default"
     snapshot = svc.compose_for_ref(
         req.provider,
         req.external_id,
         media_type=media_type or MediaType.MOVIE,
-        content_profile=content_profile,
-        include_tmdb=True,
+        # 自定义画像直接用原 provider 详情，不再替换为聚合 provider，也不引入 TMDB。
+        content_profile="default" if is_custom_profile else content_profile,
+        include_tmdb=not is_custom_profile,
         user_id=current_user.user_id,
     )
     if not snapshot:
@@ -817,6 +819,22 @@ def media_detail_by_ref(
         )
         or poster
     )
+    if is_custom_profile:
+        # 自定义画像的 provider 记录可能包含主项目快照未映射的图片，做通用兜底。
+        record_images = record.get("images") or {}
+        if not poster:
+            poster = next(
+                (item.get("url") for item in record_images.get("poster", []) if item.get("url")),
+                "",
+            )
+        if not backdrop:
+            for key in ("background", "backdrop", "fanart"):
+                backdrop = next(
+                    (item.get("url") for item in record_images.get(key, []) if item.get("url")),
+                    "",
+                )
+                if backdrop:
+                    break
     ratings = snapshot.get("ratings") or {}
     rating = next(iter(ratings.values()), None)
     runtime = fields.get("runtime", {}).get("value") if isinstance(fields.get("runtime"), dict) else None
