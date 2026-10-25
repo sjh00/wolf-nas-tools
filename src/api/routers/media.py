@@ -281,6 +281,68 @@ def _field_value(fields: dict, name: str):
     return item.get("value") if isinstance(item, dict) else None
 
 
+def _record_detail_data(record: dict, media_type: MediaType, status: dict | None) -> dict:
+    """非默认画像直接使用 provider 记录，避免通用合成丢失私有来源图片."""
+    provider = str(record.get("provider") or "")
+    external_id = str(record.get("external_id") or "")
+
+    def image(name: str) -> str:
+        assets = (record.get("images") or {}).get(name) or []
+        return next(
+            (str(item.get("url")) for item in assets if isinstance(item, dict) and item.get("url")),
+            "",
+        )
+
+    poster = image("poster")
+    backdrop = image("background") or image("backdrop") or image("fanart") or poster
+    genres = [str(item) for item in (record.get("genres") or []) if item]
+    credits = [item for item in (record.get("credits") or []) if isinstance(item, dict)]
+    crews = [{item.get("name"): item.get("character") or "演员"} for item in credits[:12] if item.get("name")]
+    release_date = str(record.get("release_date") or "")
+    runtime = record.get("runtime")
+    runtime_text = StringUtils.str_timehours(runtime) if isinstance(runtime, int) and runtime else ""
+    facts = []
+    for label, value in (
+        ("类型", " / ".join(genres)),
+        ("发行", release_date),
+        ("片长", runtime_text),
+        ("片商", " / ".join(record.get("studios") or [])),
+        ("系列", str(record.get("series") or "")),
+    ):
+        if value:
+            facts.append({label: value})
+    return {
+        "id": external_id,
+        "mediaid": external_id,
+        "tmdbid": "",
+        "provider": provider,
+        "anchor_provider": provider,
+        "anchor_external_id": external_id,
+        "douban_id": "",
+        "title": record.get("title") or "",
+        "original_title": record.get("original_title") or "",
+        "year": record.get("year") or "",
+        "overview": record.get("overview") or "",
+        "type": media_type.value,
+        "image": poster,
+        "poster": poster,
+        "background": backdrop,
+        "backdrop": backdrop,
+        "genres": genres,
+        "runtime": runtime_text,
+        "vote": next(iter((record.get("ratings") or {}).values()), None),
+        "crews": crews,
+        "fact": facts,
+        "seasons": [],
+        "links": [],
+        "link": "",
+        "similar": [],
+        "fav": (status or {}).get("fav", "0"),
+        "rssid": (status or {}).get("rssid", ""),
+        "sub_seasons": (status or {}).get("sub_seasons", []),
+    }
+
+
 # ---------- Endpoints ----------
 
 
@@ -795,6 +857,14 @@ def media_detail_by_ref(
     if not record:
         return fail(msg="无法获取媒体详情")
     is_custom_profile = content_profile != "default"
+    if is_custom_profile:
+        status = sub_svc.get_subscribe_by_anchor(
+            str(record.get("provider") or req.provider),
+            str(record.get("external_id") or req.external_id),
+            media_type or MediaType.MOVIE,
+            user=current_user,
+        )
+        return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
     snapshot = svc.compose_for_ref(
         req.provider,
         req.external_id,
