@@ -129,7 +129,6 @@ def install_plugin(
     sha256: str | None = Form(None),
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
-    metadata_svc: MetadataService = Depends(get_metadata_service),
 ):
     """安装插件（上传 zip 包）"""
     try:
@@ -140,8 +139,8 @@ def install_plugin(
 
         manifest = svc.install(tmp_path, expected_sha256=sha256)
         os.unlink(tmp_path)
-        metadata_svc.bump_detail_cache_version()
-
+        # 详情缓存有 10 分钟 TTL；升级代码不再立即清空全部详情，
+        # 避免每次小版本更新后首次打开都重新抓取。
         return success(data={"id": manifest.id, "name": manifest.name}, message="安装成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -157,7 +156,6 @@ def uninstall_plugin(
     purge_data: bool = False,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
-    metadata_svc: MetadataService = Depends(get_metadata_service),
 ):
     """卸载插件；默认删除插件私有数据和日志."""
     if not svc.get_manifest(plugin_id):
@@ -165,7 +163,6 @@ def uninstall_plugin(
 
     try:
         svc.uninstall(plugin_id, purge_data=purge_data)
-        metadata_svc.bump_detail_cache_version()
         return success(message="卸载成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -180,7 +177,6 @@ def enable_plugin(
     plugin_id: str,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
-    metadata_svc: MetadataService = Depends(get_metadata_service),
 ):
     """启用插件"""
     if not svc.get_manifest(plugin_id):
@@ -190,7 +186,6 @@ def enable_plugin(
         # 先更新数据库和缓存状态（同步），后台线程加载插件实例
         svc.enable(plugin_id)
         threading.Thread(target=svc._do_enable, args=(plugin_id,), daemon=True).start()
-        metadata_svc.bump_detail_cache_version()
         return success(message="启用中，请稍后刷新")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -205,7 +200,6 @@ def disable_plugin(
     plugin_id: str,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
-    metadata_svc: MetadataService = Depends(get_metadata_service),
 ):
     """禁用插件"""
     if not svc.get_manifest(plugin_id):
@@ -213,7 +207,6 @@ def disable_plugin(
 
     try:
         svc.disable(plugin_id)
-        metadata_svc.bump_detail_cache_version()
         return success(message="禁用成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -228,7 +221,6 @@ def reload_plugin(
     plugin_id: str,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
-    metadata_svc: MetadataService = Depends(get_metadata_service),
 ):
     """热重载插件"""
     if not svc.get_manifest(plugin_id):
@@ -236,7 +228,6 @@ def reload_plugin(
 
     try:
         svc.reload_plugin(plugin_id)
-        metadata_svc.bump_detail_cache_version()
         return success(message="重载成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
