@@ -638,7 +638,7 @@ class MetadataService:
             and self._registry.get_provider(media_profile) is not None
             and effective_policy in (None, "", self.system_default_policy, DEFAULT_POLICY_KEY)
         ):
-            # 旧成人订阅可能仍存着系统默认 tmdb_primary；自定义画像必须回到自身 provider
+            # 旧自定义画像订阅可能仍存着系统默认 tmdb_primary；必须回到自身 provider
             effective_policy = f"provider_only:{media_profile}"
         try:
             if refs[0].provider == media_profile and media_profile != "default":
