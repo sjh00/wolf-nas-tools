@@ -31,7 +31,7 @@ class _BaseBrowserSession:
         fp_profile_id: str | None = None,
         timeout: float = 60.0,
         api_key: str | None = None,
-        persist: bool = False,
+        persist: bool = True,
     ):
         self.site_key = site_key
         self.server_url = server_url.rstrip("/")
@@ -268,7 +268,9 @@ class AsyncBrowserSession(_BaseBrowserSession):
         response.raise_for_status()
         return response.json().get("data", {})
 
-    async def close(self, delete_session: bool = True) -> None:
+    async def close(self, delete_session: bool | None = None) -> None:
+        if delete_session is None:
+            delete_session = not self._persist
         if delete_session:
             try:
                 await self._client.delete(self._session_url(f"/sessions/{self._sid}"))

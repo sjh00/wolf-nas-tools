@@ -135,7 +135,11 @@ def from_nfo(data: dict[str, Any], hint: MediaType) -> ResolvedMetadata | None:
     tmdbid = _to_int(data.get("tmdbid"))
     season = data.get("season")
     episode = data.get("episode")
-    content_id = data.get("content_id") or data.get("adult_id")
+    unique_ids = data.get("unique_ids") or {}
+    content_id = data.get("content_id") or next(
+        (value for key, value in unique_ids.items() if key not in ("tmdb", "imdb") and value),
+        None,
+    )
     if not title and not tmdbid and not content_id and not (season and episode):
         return None
     meta = MediaInfo(
