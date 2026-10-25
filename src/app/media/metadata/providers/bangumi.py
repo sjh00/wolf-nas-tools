@@ -114,6 +114,22 @@ def bangumi_item_to_record(
     )
 
 
+def _runtime_minutes(value: Any) -> int | None:
+    """Bangumi 时长可能是 HH:MM:SS 字符串或秒数，统一转分钟."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if ":" in text:
+        parts = [int(part) for part in text.split(":") if part.isdigit()]
+        if len(parts) >= 2:
+            return parts[0] * 60 + parts[1]
+        return None
+    match = re.search(r"\d+", text)
+    return int(match.group(0)) if match else None
+
+
 def _infobox_value(infobox: list[dict[str, Any]], key: str) -> Any:
     for info in infobox:
         if info.get("key") == key:
@@ -225,6 +241,12 @@ class BangumiProvider:
             number = item.get("ep") or item.get("sort")
             if number is None:
                 continue
+            duration_seconds = item.get("duration_seconds")
+            runtime = (
+                int(duration_seconds) // 60
+                if duration_seconds not in (None, "")
+                else _runtime_minutes(item.get("duration"))
+            )
             result.append(
                 EpisodeRecord(
                     season_number=season or 1,
@@ -232,7 +254,7 @@ class BangumiProvider:
                     title=item.get("name_cn") or item.get("name"),
                     overview=item.get("desc"),
                     air_date=item.get("airdate") or item.get("air_date"),
-                    runtime=item.get("duration"),
+                    runtime=runtime,
                 )
             )
         return result

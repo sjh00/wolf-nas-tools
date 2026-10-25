@@ -1,6 +1,6 @@
 """命名 Profile 扩展点.
 
-插件字段使用命名空间 key（如 ``adult.content_id``），
+插件字段使用命名空间 key（如 ``<profile>.content_id``），
 核心字段目录保持原样，旧模板不受影响。
 """
 

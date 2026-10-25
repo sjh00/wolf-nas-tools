@@ -89,8 +89,28 @@ class DiscoveryService:
         if cached is not None:
             return cached
         result = target.items(feed, max(1, page), filters or {}, None)
+        result = self._dedupe_items(result)
         self._cache_put(cache_key, result)
         return result
+
+    @staticmethod
+    def _dedupe_items(page: DiscoveryPage) -> DiscoveryPage:
+        """按内容锚点去重，合并同番号的不同版本（如 Blu-ray / 通常版）."""
+        seen: set[str] = set()
+        items = []
+        for item in page.items:
+            anchor = item.anchor_ref
+            if anchor is not None and anchor.external_id:
+                key = f"{anchor.provider}:{anchor.external_id}"
+            else:
+                key = f"{item.provider}:{item.ref.external_id or item.title}"
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+        if len(items) == len(page.items):
+            return page
+        return page.model_copy(update={"items": items})
 
     def clear_cache(self) -> None:
         with self._cache_lock:

@@ -36,7 +36,7 @@ from app.core.exceptions import (
 )
 from app.domain.mediatypes import MediaType, normalize_media_type_input
 from app.infrastructure.cache_system import TokenCache
-from app.media.metadata import ProviderRef
+from app.media.metadata import ProviderError, ProviderRef
 from app.media.metadata.naming import naming_field_catalog, naming_field_keys
 from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.common import CommonResponse
@@ -430,7 +430,7 @@ def name_test(
 ):
     if not req.name:
         return fail(code=ErrorCode.PARAM_VALIDATION_FAILED)
-    result = svc.name_test(name=req.name, subtitle=req.subtitle)
+    result = svc.name_test(name=req.name, subtitle=req.subtitle, user=current_user)
     return success(data=result)
 
 
@@ -1019,14 +1019,20 @@ def metadata_lookup(
     ref_type = MediaType.from_string(request_type) if request_type else None
     if ref_type == MediaType.UNKNOWN:
         ref_type = None
-    data = svc.lookup(
-        provider,
-        external_id,
-        media_type=ref_type,
-        scope=scope,
-        allow_private=allow_private,
-        permissions=permissions,
-    )
+    try:
+        data = svc.lookup(
+            provider,
+            external_id,
+            media_type=ref_type,
+            scope=scope,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    except ProviderError as exc:
+        # 单源 404/抓取失败不应变成 500；允许多源回退时返回空结果。
+        if allow_missing:
+            return success(data=None)
+        return fail(msg=f"元数据查询失败: {exc}")
     if data is None:
         return success(data=None) if allow_missing else fail(msg="未找到元数据")
     return success(data=data)

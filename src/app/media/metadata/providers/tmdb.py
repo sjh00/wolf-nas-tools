@@ -31,6 +31,7 @@ from ..models import (
     SeasonRecord,
     SourceTier,
 )
+from .genres import classify_media_type
 
 ImageUrlBuilder = Callable[[str | None], str | None]
 
@@ -67,6 +68,7 @@ def tmdb_detail_to_record(
     image_url: ImageUrlBuilder | None = None,
 ) -> ProviderRecord:
     """把 TMDB movie/tv detail 字典映射为规范记录."""
+    media_type, content_profile = classify_media_type(media_type, info.get("genres"), content_profile)
     tmdb_id = str(external_id or info.get("id") or "")
     release_date = info.get("release_date") or info.get("first_air_date")
     runtime = info.get("runtime")
@@ -254,24 +256,28 @@ class TmdbProvider:
             raw = self._search.search_movie_infos(query.query, query.year)
         else:
             raw = self._search.search_tv_infos(query.query, query.year)
-        return [
-            SearchHit(
-                provider="tmdb",
-                ref=ProviderRef(
+        hits: list[SearchHit] = []
+        for item in raw or []:
+            if not item.get("id"):
+                continue
+            hit_type, hit_profile = classify_media_type(media_type, item.get("genre_ids"), query.content_profile)
+            hits.append(
+                SearchHit(
                     provider="tmdb",
-                    external_id=str(item.get("id")),
-                    media_type=media_type,
-                ),
-                title=item.get("title") or item.get("name") or "",
-                year=(item.get("release_date") or item.get("first_air_date") or "")[:4] or None,
-                media_type=media_type,
-                content_profile=query.content_profile,
-                poster=ImageProxy.get_tmdbimage_url(item.get("poster_path")) if item.get("poster_path") else None,
-                score=float(item.get("popularity") or 0.0),
+                    ref=ProviderRef(
+                        provider="tmdb",
+                        external_id=str(item.get("id")),
+                        media_type=hit_type,
+                    ),
+                    title=item.get("title") or item.get("name") or "",
+                    year=(item.get("release_date") or item.get("first_air_date") or "")[:4] or None,
+                    media_type=hit_type,
+                    content_profile=hit_profile,
+                    poster=ImageProxy.get_tmdbimage_url(item.get("poster_path")) if item.get("poster_path") else None,
+                    score=float(item.get("popularity") or 0.0),
+                )
             )
-            for item in raw or []
-            if item.get("id")
-        ]
+        return hits
 
     def detail(self, ref: ProviderRef, ctx: object) -> ProviderRecord | None:
         media_type = ref.media_type or MediaType.MOVIE
