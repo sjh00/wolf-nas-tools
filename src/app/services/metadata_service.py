@@ -569,6 +569,7 @@ class MetadataService:
         max_age_seconds: int = 0,
         locked: dict[str, FieldValue] | None = None,
         user_id: int | None = None,
+        refs_override: list[ProviderRef] | None = None,
     ) -> MediaMetadata | None:
         """为现有 MediaInfo 构建快照（无 TMDB 场景的刮削入口）.
 
@@ -618,9 +619,16 @@ class MetadataService:
                 if item.provider == anchor_provider:
                     refs.insert(0, refs.pop(index))
                     break
+        if refs_override is not None:
+            refs = list(refs_override)
         media_profile = getattr(media_info, "content_profile", "default") or "default"
         anchor_external = getattr(media_info, "anchor_external_id", None)
-        if media_profile != "default" and anchor_external and self._registry.get_provider(media_profile) is not None:
+        if (
+            refs_override is None
+            and media_profile != "default"
+            and anchor_external
+            and self._registry.get_provider(media_profile) is not None
+        ):
             refs = [
                 ProviderRef(
                     provider=media_profile,
@@ -633,8 +641,11 @@ class MetadataService:
 
         anchor = anchor_provider or refs[0].provider
         effective_policy = policy
-        if (
-            media_profile != "default"
+        if refs_override and media_profile != "default":
+            effective_policy = f"provider_only:{refs[0].provider}"
+        elif (
+            refs_override is None
+            and media_profile != "default"
             and self._registry.get_provider(media_profile) is not None
             and effective_policy in (None, "", self.system_default_policy, DEFAULT_POLICY_KEY)
         ):
@@ -1071,8 +1082,13 @@ class MetadataService:
         include_tmdb: bool = True,
         max_age_seconds: int = 300,
         user_id: int | None = None,
+        refs: list[ProviderRef] | None = None,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
     ) -> dict[str, Any] | None:
-        """按外部锚点合成快照；include_tmdb=False 时纯豆瓣，不引入 TMDB."""
+        """按外部锚点合成快照；显式 refs 时保留聚合来源上下文."""
+        if refs:
+            self._check_visibility(refs, allow_private=allow_private, permissions=permissions)
         identity = self._identity_repo.find_by_ref(provider, str(external_id))
         tmdb_id = ""
         season = 0
@@ -1089,7 +1105,7 @@ class MetadataService:
                     if include_tmdb or season:
                         break
         scope = f"season={season}" if season else "default"
-        if identity is not None and max_age_seconds > 0 and user_id is None:
+        if not refs and identity is not None and max_age_seconds > 0 and user_id is None:
             cached = self._identity_repo.latest_snapshot(identity.IDENTITY_ID, scope=scope)
             if cached is not None and datetime.now() - cached.CREATED_AT <= timedelta(seconds=max_age_seconds):
                 try:
@@ -1110,6 +1126,7 @@ class MetadataService:
             content_profile=content_profile,
             with_episodes=True,
             user_id=user_id,
+            refs_override=refs,
         )
         if snapshot is None:
             return None
