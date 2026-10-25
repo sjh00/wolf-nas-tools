@@ -31,6 +31,8 @@ class MediaInfo(BaseModel):
     anchor_provider: str | None = None
     anchor_external_id: str | None = None
     identity_id: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
 
     # ---- 名称 ----
     cn_name: str | None = None
@@ -84,6 +86,8 @@ class MediaInfo(BaseModel):
     original_language: str | None = None
     original_title: str | None = None
     release_date: str | None = None
+    # 通用题材（TMDB/豆瓣/插件统一），用于电影/电视剧/动漫分类持久化
+    genres: list[str] = Field(default_factory=list)
     networks: list[str] | None = None
     runtime: int = 0
     year: str | None = None
@@ -487,6 +491,13 @@ class MediaInfo(BaseModel):
             parsed_media_type = MediaType.from_string(str(media_type))
             if parsed_media_type != MediaType.UNKNOWN:
                 media_type = parsed_media_type
+        raw_genres = info.get("genres") or []
+        self.genres = [
+            str(genre.get("name") or genre.get("id"))
+            for genre in raw_genres
+            if (hasattr(genre, "get") and (genre.get("name") or genre.get("id")))
+            or (not hasattr(genre, "get") and genre)
+        ]
         if media_type == MediaType.TV:
             genre_ids = info.get("genre_ids") or []
             # TMDB detail 返回 genres（数组）而非 genre_ids，需兼容提取
@@ -731,6 +742,8 @@ class MediaInfo(BaseModel):
             "links": self.get_detail_links(),
             "anchor_external_id": self.anchor_external_id,
             "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
             "identity_id": self.identity_id,
             "keyword": self.keyword,
             "original_language": self.original_language,

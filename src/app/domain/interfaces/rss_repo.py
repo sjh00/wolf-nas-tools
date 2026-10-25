@@ -20,7 +20,14 @@ class ISubscribeMovieRepository(Protocol):
         """查询订阅电影列表"""
         ...
 
-    def get_id(self, title: str, year: str | None = None, tmdbid: str | None = None) -> str | int | None:
+    def get_id(
+        self,
+        title: str,
+        year: str | None = None,
+        tmdbid: str | None = None,
+        user_id: int | None = None,
+        content_profile: str | None = None,
+    ) -> str | int | None:
         """获取订阅电影ID"""
         ...
 
@@ -74,7 +81,7 @@ class ISubscribeMovieRepository(Protocol):
 
     def delete(
         self, title: str | None = None, year: str | None = None, rssid: int | None = None, tmdbid: str | None = None
-    ) -> None:
+    ) -> int:
         """删除订阅电影"""
         ...
 
@@ -87,7 +94,13 @@ class ISubscribeTvRepository(Protocol):
         ...
 
     def get_id(
-        self, title: str, year: str | None = None, season: str | None = None, tmdbid: str | None = None
+        self,
+        title: str,
+        year: str | None = None,
+        season: str | None = None,
+        tmdbid: str | None = None,
+        user_id: int | None = None,
+        content_profile: str | None = None,
     ) -> str | int | None:
         """获取订阅剧集ID"""
         ...
@@ -169,7 +182,7 @@ class ISubscribeTvRepository(Protocol):
 
     def delete(
         self, title: str | None = None, season: str | None = None, rssid: int | None = None, tmdbid: str | None = None
-    ) -> None:
+    ) -> int:
         """删除订阅剧集"""
         ...
 

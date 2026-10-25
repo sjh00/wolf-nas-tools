@@ -11,22 +11,22 @@ from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
-from app.media.metadata.refs import parse_media_ref
 from app.media.metadata.registry import registry as metadata_registry
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
 
 
 def _split_provider_ref(value: Any) -> tuple[str, str] | None:
-    """拆分 `<provider>:<external_id>`，并归一化 DB/BG/TMDB 等旧前缀."""
+    """拆分 `<provider>:<external_id>`，并归一化 DB/BG/TMDB 等旧前缀.
+
+    以显式字面前缀为准；只有旧别名才映射到规范 provider key，
+    避免 registry 的 ref_prefix 映射把插件 provider 误判成 tmdb/douban。
+    """
     if value is None:
         return None
     text = str(value).strip()
     if ":" not in text:
         return None
-    parsed = parse_media_ref(text)
-    if parsed is not None:
-        return parsed
     provider, external_id = text.split(":", 1)
     provider = provider.strip().lower()
     external_id = external_id.strip()
@@ -198,6 +198,7 @@ class SubscribeAddService:
         fuzzy_match: bool = False,
         mediaid: str | None = None,
         metadata_ref: str | None = None,
+        provider: str | None = None,
         rss_sites: list[str] | str | None = None,
         search_sites: list[str] | str | None = None,
         # None = 未显式指定，新增时应用默认订阅设置的"洗版"；显式 True/False 以调用方为准
@@ -281,8 +282,10 @@ class SubscribeAddService:
         download_setting = int(str(download_setting)) if str(download_setting).replace("-", "").isdigit() else -1
         fuzzy_match = bool(fuzzy_match)
 
+        provider_ref = _split_provider_ref(metadata_ref)
+        source_provider = str(provider or (provider_ref[0] if provider_ref else "")).strip().lower() or None
+        source_ref = str(metadata_ref).strip() if metadata_ref else None
         if not fuzzy_match:
-            provider_ref = _split_provider_ref(metadata_ref)
             media_info = None
             if provider_ref:
                 descriptor = getattr(metadata_registry.get_provider(provider_ref[0]), "descriptor", None)
@@ -310,15 +313,27 @@ class SubscribeAddService:
                 if media_info is not None:
                     media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
                     mtype = media_info.type
+                    # 元数据来源判定为动漫时同步切换内容画像，避免落库成默认电视剧。
+                    if mtype == MediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
+                        content_profile = "anime"
+                        media_info.content_profile = "anime"
                     anchor_ref = _split_provider_ref(mediaid)
                     if anchor_ref:
                         media_info.anchor_provider = anchor_ref[0]
                         media_info.anchor_external_id = anchor_ref[1]
                     if not keyword:
-                        if str(content_profile or "").strip() not in ("", "default") and anchor_ref:
+                        # 动漫按标题搜索；只有插件内容画像（如 AV）才用番号/锚点作为关键词。
+                        profile_key = str(content_profile or "").strip()
+                        prefer_anchor = profile_key not in ("", "default", "anime")
+                        if prefer_anchor and anchor_ref:
                             keyword = anchor_ref[1]
                         else:
                             keyword = media_info.title or name or provider_ref[1]
+                    if keyword and str(keyword).startswith("content_id:"):
+                        keyword = str(keyword).split(":", 1)[1]
+                    media_info.keyword = keyword
+                    media_info.provider = source_provider
+                    media_info.metadata_ref = source_ref
             if media_info is None and mediaid:
                 media_info = self._web_utils.get_mediainfo_from_id(mtype=mtype, mediaid=mediaid)
                 if not season and media_info:
@@ -440,6 +455,8 @@ class SubscribeAddService:
                     note=gen_rss_note(media_info),
                     keyword=keyword,
                     user_id=user_id,
+                    provider=source_provider,
+                    metadata_ref=source_ref,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
             else:
@@ -472,12 +489,21 @@ class SubscribeAddService:
                     note=gen_rss_note(media_info),
                     keyword=keyword,
                     user_id=user_id,
+                    provider=source_provider,
+                    metadata_ref=source_ref,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
         else:
             media_info = meta_info(title=name, mtype=mtype)
             media_info.title = name
             media_info.type = mtype
+            if mtype == MediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
+                content_profile = "anime"
+            media_info.content_profile = content_profile or "default"
+            media_info.keyword = keyword
+            media_info.content_profile = content_profile or "default"
+            media_info.provider = source_provider
+            media_info.metadata_ref = source_ref
             if image:
                 media_info.poster_path = image
             if year:
@@ -512,6 +538,8 @@ class SubscribeAddService:
                     fuzzy_match=1,
                     keyword=keyword,
                     user_id=user_id,
+                    provider=source_provider,
+                    metadata_ref=source_ref,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
             else:
@@ -544,6 +572,8 @@ class SubscribeAddService:
                     fuzzy_match=1,
                     keyword=keyword,
                     user_id=user_id,
+                    provider=source_provider,
+                    metadata_ref=source_ref,
                 )
                 code = 0 if rssid not in (-1, 9) else rssid
 

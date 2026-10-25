@@ -59,6 +59,8 @@ class SubscribeHistoryEntity:
     anchor_provider: str | None = None
     anchor_external_id: str | None = None
     content_profile: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
     metadata_policy: str | None = None
     naming_profile: str | None = None
 
@@ -85,6 +87,8 @@ class SubscribeHistoryEntity:
             anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
             anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
             content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            provider=getattr(orm_model, "PROVIDER", None),
+            metadata_ref=getattr(orm_model, "METADATA_REF", None),
             metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
             naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
@@ -124,6 +128,8 @@ class SubscribeHistoryEntity:
             "anchor_provider": self.anchor_provider,
             "anchor_external_id": self.anchor_external_id,
             "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
             "metadata_policy": self.metadata_policy,
             "naming_profile": self.naming_profile,
         }
@@ -162,6 +168,8 @@ class SubscribeMovieEntity:
     anchor_provider: str | None = None
     anchor_external_id: str | None = None
     content_profile: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
     metadata_policy: str | None = None
     naming_profile: str | None = None
 
@@ -267,6 +275,8 @@ class SubscribeMovieEntity:
             anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
             anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
             content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            provider=getattr(orm_model, "PROVIDER", None),
+            metadata_ref=getattr(orm_model, "METADATA_REF", None),
             metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
             naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
@@ -317,6 +327,8 @@ class SubscribeMovieEntity:
             "anchor_provider": self.anchor_provider,
             "anchor_external_id": self.anchor_external_id,
             "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
             "metadata_policy": self.metadata_policy,
             "naming_profile": self.naming_profile,
         }
@@ -415,6 +427,8 @@ class SubscribeTvEntity:
     anchor_provider: str | None = None
     anchor_external_id: str | None = None
     content_profile: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
     metadata_policy: str | None = None
     naming_profile: str | None = None
 
@@ -540,6 +554,8 @@ class SubscribeTvEntity:
             anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
             anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
             content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            provider=getattr(orm_model, "PROVIDER", None),
+            metadata_ref=getattr(orm_model, "METADATA_REF", None),
             metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
             naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
@@ -595,6 +611,8 @@ class SubscribeTvEntity:
             "anchor_provider": self.anchor_provider,
             "anchor_external_id": self.anchor_external_id,
             "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
             "metadata_policy": self.metadata_policy,
             "naming_profile": self.naming_profile,
         }

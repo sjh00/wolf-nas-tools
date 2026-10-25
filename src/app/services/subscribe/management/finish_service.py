@@ -18,7 +18,10 @@ def _history_scope(row: Any) -> dict[str, Any]:
         "anchor_external_id": getattr(row, "ANCHOR_EXTERNAL_ID", None),
         "identity_id": getattr(row, "IDENTITY_ID", None),
         "content_profile": getattr(row, "CONTENT_PROFILE", None),
+        "provider": getattr(row, "PROVIDER", None),
+        "metadata_ref": getattr(row, "METADATA_REF", None),
         "metadata_policy": getattr(row, "METADATA_POLICY", None),
+        "naming_profile": getattr(row, "NAMING_PROFILE", None),
     }
 
 
@@ -145,6 +148,12 @@ class SubscribeFinishService:
         if season_str.isdigit():
             media.begin_season = int(season_str)
         media.over_edition = bool(row.OVER_EDITION)
+        media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
+        media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
+        media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
+        media.keyword = getattr(row, "KEYWORD", None)
+        media.provider = getattr(row, "PROVIDER", None)
+        media.metadata_ref = getattr(row, "METADATA_REF", None)
         media.total_episodes = int(row.TOTAL or 0)
         total = row.TOTAL or row.TOTAL_EP
         owner_user_id = getattr(row, "USER_ID", None)
@@ -202,6 +211,12 @@ class SubscribeFinishService:
         media.title = row.NAME
         media.year = row.YEAR
         media.over_edition = over_edition
+        media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
+        media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
+        media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
+        media.keyword = getattr(row, "KEYWORD", None)
+        media.provider = getattr(row, "PROVIDER", None)
+        media.metadata_ref = getattr(row, "METADATA_REF", None)
         self._event_bus.publish(
             Event(
                 event_type=SUBSCRIBE_FINISHED,

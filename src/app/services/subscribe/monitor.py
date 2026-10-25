@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from typing import TYPE_CHECKING
 
 import pytz
 
@@ -17,8 +18,10 @@ from app.services.subscribe.search_engine import SubscribeSearchEngine
 from app.services.subscribe.strategies.indexer_search import IndexerSearchStrategy
 from app.services.subscribe.strategies.queue_search import QueueSearchStrategy
 from app.services.subscribe.strategies.rss_feed import RssFeedStrategy
-from app.services.subscribe_service import SubscribeService
 from app.utils import ExceptionUtils
+
+if TYPE_CHECKING:
+    from app.services.subscribe_service import SubscribeService
 
 
 class SubscriptionMonitor:

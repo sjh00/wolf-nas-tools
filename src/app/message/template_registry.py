@@ -85,7 +85,7 @@ class MessageTemplateRegistry:
             return dict(entry[1])
 
     def label(self, content_profile: str | None) -> str:
-        """内容画像展示名，例如 adult -> AV."""
+        """返回插件内容画像的展示名."""
         profile = str(content_profile or "").strip()
         if not profile:
             return ""

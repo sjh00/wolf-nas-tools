@@ -86,16 +86,26 @@ class SubscribeUpdateService:
         rss_sites,
         search_sites,
         user,
+        content_profile=None,
+        provider=None,
+        metadata_ref=None,
+        metadata_policy=None,
+        naming_profile=None,
     ):
         title = str(name or self._existing(row, "NAME", "name", default="") or "")
         resolved_year = str(year or self._existing(row, "YEAR", "year", default="") or "")
-        provider = self._existing(row, "ANCHOR_PROVIDER", "anchor_provider")
+        anchor_provider = self._existing(row, "ANCHOR_PROVIDER", "anchor_provider")
         external = self._existing(row, "ANCHOR_EXTERNAL_ID", "anchor_external_id")
         if str(external or "").startswith("content_id:"):
-            provider = "content_id"
+            anchor_provider = "content_id"
             external = str(external).split(":", 1)[1]
-        profile = self._existing(row, "CONTENT_PROFILE", "content_profile")
+        profile = content_profile or self._existing(row, "CONTENT_PROFILE", "content_profile")
         identity_id = self._existing(row, "IDENTITY_ID", "identity_id")
+        # 参数 provider 是元数据来源；锚点 provider 独立保存，不能混用。
+        source_provider = provider or self._existing(row, "PROVIDER", "provider")
+        source_ref = metadata_ref or self._existing(row, "METADATA_REF", "metadata_ref")
+        policy = metadata_policy or self._existing(row, "METADATA_POLICY", "metadata_policy")
+        naming = naming_profile or self._existing(row, "NAMING_PROFILE", "naming_profile")
         current_keyword = str(self._existing(row, "KEYWORD", "keyword", default="") or "")
         if current_keyword.startswith("content_id:"):
             current_keyword = current_keyword.split(":", 1)[1]
@@ -108,11 +118,13 @@ class SubscribeUpdateService:
             "image": image or self._existing(row, "IMAGE", "image", default=""),
             "tmdbid": self._existing(row, "TMDBID", "tmdbid", default=""),
             "identity_id": identity_id,
-            "anchor_provider": provider,
+            "anchor_provider": anchor_provider,
             "anchor_external_id": external,
             "content_profile": profile,
-            "metadata_policy": self._existing(row, "METADATA_POLICY", "metadata_policy"),
-            "naming_profile": self._existing(row, "NAMING_PROFILE", "naming_profile"),
+            "provider": source_provider,
+            "metadata_ref": source_ref,
+            "metadata_policy": policy,
+            "naming_profile": naming,
             "over_edition": over_edition,
             "filter_restype": filter_restype,
             "filter_pix": filter_pix,
@@ -145,10 +157,13 @@ class SubscribeUpdateService:
         media_info.year = resolved_year
         media_info.type = mtype
         media_info.poster_path = values["image"]
-        media_info.anchor_provider = provider
+        media_info.anchor_provider = anchor_provider
         media_info.anchor_external_id = external
         media_info.identity_id = identity_id
         media_info.content_profile = str(profile or "default")
+        media_info.provider = source_provider
+        media_info.metadata_ref = source_ref
+        media_info.keyword = values["keyword"]
         return code, "更新成功" if code == 0 else "更新失败", media_info
 
     def update_rss_subscribe(
@@ -180,6 +195,11 @@ class SubscribeUpdateService:
         user_name: str | None = None,
         image: str | None = None,
         user: UserContext | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        content_profile: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> tuple[int, str, Any]:
         """更新电影、电视剧订阅（user 非空且非超管时仅可更新自己的订阅）"""
         if not rssid:
@@ -233,6 +253,11 @@ class SubscribeUpdateService:
                 rss_sites=rss_sites,
                 search_sites=search_sites,
                 user=user,
+                content_profile=content_profile,
+                provider=provider,
+                metadata_ref=metadata_ref,
+                metadata_policy=metadata_policy,
+                naming_profile=naming_profile,
             )
 
         media_info = None
@@ -310,6 +335,11 @@ class SubscribeUpdateService:
                     note=gen_rss_note(media_info),
                     keyword=keyword,
                     fuzzy_match=0,
+                    provider=provider,
+                    metadata_ref=metadata_ref,
+                    content_profile=content_profile,
+                    metadata_policy=metadata_policy,
+                    naming_profile=naming_profile,
                 )
             else:
                 code = self._movie_repo.update(
@@ -336,6 +366,11 @@ class SubscribeUpdateService:
                     note=gen_rss_note(media_info),
                     keyword=keyword,
                     fuzzy_match=0,
+                    provider=provider,
+                    metadata_ref=metadata_ref,
+                    content_profile=content_profile,
+                    metadata_policy=metadata_policy,
+                    naming_profile=naming_profile,
                 )
         else:
             media_info = meta_info(title=name or "", mtype=mtype)

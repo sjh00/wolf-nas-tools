@@ -1,9 +1,17 @@
 """订阅媒体类型（动漫）保真测试."""
 
-from api.routers.subscription import AddRssMediaRequest, _build_add_kwargs, _build_update_kwargs, _resolve_mtype
+from api.routers.subscription import (
+    AddRssMediaRequest,
+    _build_add_kwargs,
+    _build_update_kwargs,
+    _resolve_mtype,
+    _resolve_type_and_profile,
+)
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType
-from app.services.subscribe.management.query_service import _resolve_subscribe_type
+from app.media.metadata.providers.genres import classify_media_type, is_anime_genre
+from app.media.models import MediaInfo
+from app.services.subscribe.management.query_service import _resolve_subscribe_type, _source_label
 from app.services.subscribe.management.utils import gen_rss_note
 from app.utils import JsonUtils
 
@@ -26,6 +34,63 @@ class TestRouterMediaType:
     def test_build_update_kwargs_keeps_anime(self):
         req = AddRssMediaRequest(rssid=1, name="克雷瓦提斯", year="2025", type="anime")
         assert _build_update_kwargs(req)["mtype"] == MediaType.ANIME
+
+    def test_non_default_profile_uses_movie_carrier(self):
+        mtype, profile = _resolve_type_and_profile("legacy-plugin-type", "adult")
+        assert mtype == MediaType.MOVIE
+        assert profile == "adult"
+
+    def test_plugin_profile_defaults_to_movie_carrier(self):
+        mtype, profile = _resolve_type_and_profile("adult", "adult")
+        assert mtype == MediaType.MOVIE
+        assert profile == "adult"
+
+    def test_build_kwargs_carry_provider_and_profile(self):
+        req = AddRssMediaRequest(
+            name="SSIS-001",
+            type="legacy-plugin-type",
+            content_profile="adult",
+            provider="javdb",
+            metadata_ref="javdb:AbCdEf",
+            mediaid="content_id:SSIS-001",
+        )
+        add = _build_add_kwargs(req)
+        assert add["mtype"] == MediaType.MOVIE
+        assert add["content_profile"] == "adult"
+        assert add["provider"] == "javdb"
+        assert add["metadata_ref"] == "javdb:AbCdEf"
+        update = _build_update_kwargs(AddRssMediaRequest(rssid=1, **req.model_dump(exclude={"rssid"})))
+        assert update["content_profile"] == "adult"
+        assert update["provider"] == "javdb"
+
+
+class TestGenericAnimeClassification:
+    def test_tmdb_and_douban_genres(self):
+        assert is_anime_genre([{"id": 16, "name": "Animation"}])
+        assert is_anime_genre(["动画", "动作"])
+        assert not is_anime_genre(["剧情"])
+        assert classify_media_type(MediaType.TV, ["动画"]) == (MediaType.ANIME, "anime")
+        assert classify_media_type(MediaType.TV, ["剧情"]) == (MediaType.TV, "default")
+        # 电影保持电影，不因为动画题材被塞进电视剧表
+        assert classify_media_type(MediaType.MOVIE, ["动画"]) == (MediaType.MOVIE, "default")
+
+    def test_note_genres_resolve_anime_without_tmdb(self):
+        assert _resolve_subscribe_type("tv", None, ["动画"]) == MediaType.ANIME.value
+        assert _resolve_subscribe_type("tv", None, ["剧情"]) == MediaType.TV.value
+
+    def test_gen_rss_note_persists_genres(self):
+        media = MediaInfo(type=MediaType.ANIME, title="测试番剧", genres=["动画"])
+        note = JsonUtils.loads(gen_rss_note(media))
+        assert note["media_type"] == "anime"
+        assert note["genres"] == ["动画"]
+
+
+class TestSourceLabel:
+    def test_content_id_anchor_falls_back_to_metadata_provider(self):
+        assert _source_label("content_id", None, "javdb:AbCdEf").lower() == "javdb"
+
+    def test_missing_provider_uses_plugin_label(self):
+        assert _source_label("content_id") == "插件"
 
 
 class TestNoteMediaType:
