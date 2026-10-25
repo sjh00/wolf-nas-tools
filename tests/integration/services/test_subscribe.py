@@ -337,7 +337,9 @@ class TestSubscribeCalendarService:
             subscribe=subscribe, media_info_service=MagicMock(), rss_task_service=MagicMock()
         )
         result = svc.get_movie_items()
-        assert result == [{"id": "123", "rssid": "1"}]
+        assert len(result) == 1
+        assert result[0]["id"] == "123"
+        assert result[0]["rssid"] == "1"
 
     def test_get_movie_items_skips_no_tmdbid(self):
         subscribe = MagicMock()
@@ -372,8 +374,8 @@ class TestSubscribeCalendarService:
 
     def test_get_events(self):
         media_service = MagicMock()
-        media_service.get_movie_calendar.return_value = {"id": 1}
-        media_service.get_tv_calendar.return_value = [{"id": 2}]
+        media_service.get_movie_calendar.return_value = {"id": 1, "start": "2026-01-01"}
+        media_service.get_tv_calendar.return_value = [{"id": 2, "start": "2026-01-02"}]
         subscribe = MagicMock()
         subscribe.get_subscribe_movies.return_value = {"1": {"tmdbid": "123", "id": "1"}}
         subscribe.get_subscribe_tvs.return_value = {"1": {"tmdbid": "456", "id": "2", "season": "S01"}}
@@ -382,8 +384,7 @@ class TestSubscribeCalendarService:
         svc = SubscribeCalendarService(media_info_service=media_service, subscribe=subscribe, rss_task_service=rss_task)
         result = svc.get_events()
         assert len(result) == 2
-        assert result[0] == {"id": 1}
-        assert result[1] == {"id": 2}
+        assert [item["id"] for item in result] == [1, 2]
 
     def test_get_events_skips_empty(self):
         media_service = MagicMock()

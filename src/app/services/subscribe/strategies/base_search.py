@@ -189,8 +189,11 @@ class BaseSearchStrategy:
 
             media_info = None
             try:
-                is_external = self._is_external_ref(tmdbid) or bool(
-                    rss_info.get("anchor_provider") and str(rss_info.get("anchor_provider")) != "tmdb"
+                is_external = (
+                    self._is_external_ref(tmdbid)
+                    or bool(rss_info.get("anchor_provider") and str(rss_info.get("anchor_provider")) != "tmdb")
+                    or bool(rss_info.get("anchor_external_id"))
+                    or str(rss_info.get("content_profile") or "default") not in ("", "default")
                 )
                 media_info = self._get_media_info(
                     tmdbid,
@@ -573,9 +576,9 @@ class BaseSearchStrategy:
             media_info.title = name or media_info.title
             media_info.cn_name = name or media_info.cn_name
             media_info.year = year or media_info.year
-            # 除 AV 外，非 TMDB 来源仍可用 TMDB 补充海报、简介等；但不参与错误判定。
+            # 核心画像（default/anime）可用 TMDB 补充海报/简介；插件画像由插件负责。
             raw_tmdb = str(tmdbid or "").strip()
-            if raw_tmdb.isdigit() and str(content_profile or "").strip().lower() != "adult":
+            if raw_tmdb.isdigit() and str(content_profile or "").strip().lower() in ("", "default", "anime"):
                 media_info.tmdb_id = raw_tmdb
                 media_info.provider_data = self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=raw_tmdb) or {}
         elif self._is_external_ref(tmdbid):

@@ -188,19 +188,34 @@ def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
         info = payload.media_info or {}
         if info.get("type") != MediaType.MOVIE.value:
             return
+        profile = str(info.get("content_profile") or "default")
+        anchor_provider = str(info.get("anchor_provider") or "").strip()
+        anchor_external = str(info.get("anchor_external_id") or "").strip()
         tmdb = str(info.get("tmdb_id") or info.get("id") or info.get("orgid") or "")
-        if not tmdb:
+        if not tmdb and profile == "default" and not (anchor_provider and anchor_external):
             return
         media = MediaInfo(type=MediaType.MOVIE, tmdb_id=tmdb)
         media.title = info.get("title") or ""
         media.year = info.get("year") or ""
         media.overview = info.get("overview") or ""
-        if not subscribe_service.media_exists(media):
+        # TMDB 只用于普通电影入库判定；插件内容画像以订阅锚点/转移事件为准。
+        if tmdb and profile == "default" and not subscribe_service.media_exists(media):
             return
         seen: set = set()
         for sub in SubscribeMovieRepositoryAdapter().get_all():
             sid = getattr(sub, "id", None)
-            if not sid or sid in seen or str(getattr(sub, "tmdb_id", "")) != tmdb:
+            if not sid or sid in seen:
+                continue
+            row_tmdb = str(getattr(sub, "tmdb_id", "") or "")
+            row_provider = str(getattr(sub, "provider", "") or getattr(sub, "anchor_provider", "") or "")
+            row_external = str(getattr(sub, "anchor_external_id", "") or "")
+            matched = bool(tmdb) and row_tmdb == tmdb
+            if not matched and anchor_provider and anchor_external:
+                matched = row_external == anchor_external and row_provider in (
+                    anchor_provider,
+                    str(getattr(sub, "anchor_provider", "") or ""),
+                )
+            if not matched:
                 continue
             seen.add(sid)
             subscribe_service.finalize_movie_by_rssid(sid)

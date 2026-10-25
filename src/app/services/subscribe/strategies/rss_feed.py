@@ -342,7 +342,12 @@ class RssFeedStrategy:
                             self.media.get_tmdb_info(mtype=media_info.type, tmdbid=media_info.tmdb_id)
                         )
                     if not media_info.provider_data:
-                        continue
+                        # 插件内容画像/非 TMDB 锚点不依赖 TMDB provider_data；
+                        # 命中订阅后继续走下载，避免 AV/插件订阅被静默跳过。
+                        profile = str(match_info.get("content_profile") or "default")
+                        anchor_provider = str(match_info.get("anchor_provider") or "")
+                        if profile in ("", "default") and anchor_provider in ("", "tmdb"):
+                            continue
 
                     if not match_info.get("over_edition"):
                         if media_info.type == MediaType.MOVIE:

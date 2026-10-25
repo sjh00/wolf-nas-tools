@@ -39,6 +39,37 @@ def _type_label(media_info, profile: str) -> str:
     return media_info.type.display_name
 
 
+def _source_provider(item) -> str:
+    """消息中的来源展示：优先真实 provider，回退 provider key，最后回退锚点。"""
+    provider = str(getattr(item, "provider", "") or getattr(item, "anchor_provider", "") or "").strip()
+    metadata_ref = str(getattr(item, "metadata_ref", "") or "").strip()
+    if (not provider or provider == "content_id") and ":" in metadata_ref:
+        provider = metadata_ref.split(":", 1)[0].strip()
+    if not provider:
+        return ""
+    desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+    return str(getattr(desc, "display_name", "") or provider)
+
+
+def _message_variables(item, *, source_provider: str | None = None) -> dict[str, Any]:
+    """订阅通知统一变量：来源、关键词与过滤条件，供插件模板消费。"""
+    profile = str(getattr(item, "content_profile", "") or "default")
+    source = source_provider if source_provider is not None else _source_provider(item)
+    return {
+        "content_profile": profile,
+        "profile_label": message_template_registry.label(profile) or (profile if profile != "default" else ""),
+        "source_provider": source,
+        "keyword": str(getattr(item, "keyword", "") or ""),
+        "filter_restype": str(getattr(item, "filter_restype", "") or ""),
+        "filter_pix": str(getattr(item, "filter_pix", "") or ""),
+        "filter_team": str(getattr(item, "filter_team", "") or ""),
+        "filter_rule": getattr(item, "filter_rule", None),
+        "filter_include": str(getattr(item, "filter_include", "") or ""),
+        "filter_exclude": str(getattr(item, "filter_exclude", "") or ""),
+        "filter_free": bool(getattr(item, "filter_free", False)),
+    }
+
+
 class MessageBuilder:
     """负责各类业务场景的消息内容构建和发送."""
 
@@ -138,8 +169,7 @@ class MessageBuilder:
             "star_string": can_item.get_star_string() if hasattr(can_item, "get_star_string") else "",
             "title_ep_string": can_item.get_title_ep_string() if hasattr(can_item, "get_title_ep_string") else "",
             "title_string": can_item.get_title_string() if hasattr(can_item, "get_title_string") else "",
-            "content_profile": str(getattr(can_item, "content_profile", "") or "default"),
-            "source_provider": str(getattr(can_item, "anchor_provider", "") or ""),
+            **_message_variables(can_item),
         }
         # 归属用户的下载事件：定向推送（Web + 绑定渠道），不广播全局外部渠道（ADR-021 5.6）
         owner_user_id = getattr(can_item, "user_id", None)
@@ -195,8 +225,7 @@ class MessageBuilder:
             "in_from": StringUtils.resolve_in_from_display(in_from),
             "exist_filenum": exist_filenum,
             "category_flag": category_flag,
-            "content_profile": str(getattr(media_info, "content_profile", "") or "default"),
-            "source_provider": str(getattr(media_info, "anchor_provider", "") or ""),
+            **_message_variables(media_info),
         }
         # 归属用户的入库事件：定向推送（ADR-021 5.6）
         owner_user_id = getattr(media_info, "user_id", None)
@@ -259,8 +288,7 @@ class MessageBuilder:
                 "season_episode": item_info.get_season_episode_string()
                 if hasattr(item_info, "get_season_episode_string")
                 else "",
-                "content_profile": str(getattr(item_info, "content_profile", "") or "default"),
-                "source_provider": str(getattr(item_info, "anchor_provider", "") or ""),
+                **_message_variables(item_info),
             }
             # 归属用户的入库事件：定向推送（ADR-021 5.6）
             owner_user_id = getattr(item_info, "user_id", None)
@@ -319,12 +347,22 @@ class MessageBuilder:
             image = str(getattr(subscription, "image", "") or "")
             if image:
                 item.poster_path = image
+        provider = str(getattr(subscription, "provider", "") or "")
         if not str(getattr(item, "anchor_provider", "") or ""):
-            provider = str(getattr(subscription, "anchor_provider", "") or "")
-            if provider:
-                item.anchor_provider = provider
+            anchor = str(getattr(subscription, "anchor_provider", "") or "")
+            if anchor:
+                item.anchor_provider = anchor
+        if provider:
+            item.provider = provider
+        metadata_ref = str(getattr(subscription, "metadata_ref", "") or "")
+        if metadata_ref:
+            item.metadata_ref = metadata_ref
         if not getattr(item, "rssid", None):
             item.rssid = getattr(subscription, "id", None)
+        if not str(getattr(item, "keyword", "") or ""):
+            keyword = str(getattr(subscription, "keyword", "") or "")
+            if keyword:
+                item.keyword = keyword
         profile = str(getattr(subscription, "content_profile", "") or "")
         if profile:
             # 订阅画像优先于搜索条目的临时画像，避免普通番剧被按 AV 规则处理。
@@ -350,15 +388,14 @@ class MessageBuilder:
         enclosure = getattr(item, "enclosure", "") or ""
         subscription_line = ""
         if subscription is not None:
-            provider = str(getattr(subscription, "anchor_provider", "") or "")
-            if not provider and str(getattr(subscription, "content_profile", "") or "") not in ("", "default"):
-                provider = "插件"
-            desc = getattr(metadata_registry.get_provider(provider), "descriptor", None) if provider else None
-            source = str(getattr(desc, "display_name", "") or provider or "未知")
+            source = _source_provider(subscription) or "未知"
+            keyword = str(getattr(subscription, "keyword", "") or "").strip()
             subscription_line = (
                 f"📺 订阅：{getattr(subscription, 'name', '')} (#{getattr(subscription, 'id', '')})\n"
                 f"📡 来源：{source}\n"
             )
+            if keyword:
+                subscription_line += f"🔢 关键词：{keyword}\n"
         text = (
             f"{subscription_line}"
             f"🌐 站点：{site or '未知'}\n"
@@ -377,8 +414,7 @@ class MessageBuilder:
                 variables={
                     "item": item,
                     "error_msg": error_msg,
-                    "content_profile": str(getattr(item, "content_profile", "") or "default"),
-                    "source_provider": str(getattr(item, "anchor_provider", "") or ""),
+                    **_message_variables(item),
                     "subscription": subscription,
                 },
                 template_engine=self._template_engine,
@@ -391,8 +427,7 @@ class MessageBuilder:
                 variables = {
                     "item": item,
                     "error_msg": error_msg,
-                    "content_profile": str(getattr(item, "content_profile", "") or "default"),
-                    "source_provider": str(getattr(item, "anchor_provider", "") or ""),
+                    **_message_variables(item),
                     "subscription": subscription,
                 }
                 self._dispatcher.sendmsg(
@@ -412,8 +447,11 @@ class MessageBuilder:
         else:
             msg_title = f"📌 {media_info.get_title_string()} {media_info.get_season_string()} 已添加订阅"
         profile = str(getattr(media_info, "content_profile", "") or "default")
-        source = str(getattr(media_info, "anchor_provider", "") or "")
+        source = _source_provider(media_info)
+        keyword = str(getattr(media_info, "keyword", "") or "").strip()
         msg_str = f"📺 类型：{_type_label(media_info, profile)}"
+        if keyword:
+            msg_str = f"{msg_str}\n🔢 关键词：{keyword}"
         if source:
             msg_str = f"{msg_str}\n📡 来源：{source}"
         if media_info.vote_average:
@@ -424,8 +462,7 @@ class MessageBuilder:
         variables = {
             "media_info": media_info,
             "in_from": StringUtils.resolve_in_from_display(in_from),
-            "content_profile": profile,
-            "source_provider": source,
+            **_message_variables(media_info, source_provider=source),
         }
         # 归属用户的订阅事件：定向推送给该用户（Web + 绑定渠道），不广播到全局外部渠道（ADR-021 5.6）
         owner_user_id = getattr(media_info, "user_id", None)
@@ -466,8 +503,11 @@ class MessageBuilder:
             msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
         else:
             msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成订阅"
-        source = str(getattr(media_info, "anchor_provider", "") or "")
+        source = _source_provider(media_info)
+        keyword = str(getattr(media_info, "keyword", "") or "").strip()
         msg_str = f"📺 类型：{_type_label(media_info, profile)}"
+        if keyword:
+            msg_str = f"{msg_str}\n🔢 关键词：{keyword}"
         if source:
             msg_str = f"{msg_str}\n📡 来源：{source}"
         if media_info.vote_average:
@@ -475,8 +515,7 @@ class MessageBuilder:
         variables = {
             "media_info": media_info,
             "over_edition": media_info.over_edition if hasattr(media_info, "over_edition") else False,
-            "content_profile": profile,
-            "source_provider": source,
+            **_message_variables(media_info, source_provider=source),
         }
         # 归属用户的订阅完成事件：定向推送（ADR-021 5.6）
         if owner_user_id:

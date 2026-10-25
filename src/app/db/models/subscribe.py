@@ -34,6 +34,8 @@ class SubscribeHistory(Base):
     ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
     CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    METADATA_REF: Mapped[str | None] = mapped_column(String(512), nullable=True)
     METADATA_POLICY: Mapped[str | None] = mapped_column(String(64), nullable=True)
     NAMING_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -86,6 +88,8 @@ class SubscribeMovies(Base):
     ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
     CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    METADATA_REF: Mapped[str | None] = mapped_column(String(512), nullable=True)
     METADATA_POLICY: Mapped[str | None] = mapped_column(String(64), nullable=True)
     NAMING_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -162,6 +166,8 @@ class SubscribeTvs(Base):
     ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
     CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    METADATA_REF: Mapped[str | None] = mapped_column(String(512), nullable=True)
     METADATA_POLICY: Mapped[str | None] = mapped_column(String(64), nullable=True)
     NAMING_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -183,3 +189,5 @@ class SubscribeTvEpisodes(Base):
     ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
     CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    METADATA_REF: Mapped[str | None] = mapped_column(String(512), nullable=True)

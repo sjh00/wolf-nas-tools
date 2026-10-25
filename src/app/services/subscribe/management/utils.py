@@ -22,6 +22,8 @@ def gen_rss_note(media: Any) -> str:
         "vote": media.vote_average,
         # 订阅媒体类型（movie/tv/anime）：动漫需与电视剧区分，避免入库到电视剧库
         "media_type": str(getattr(media, "type", "") or ""),
+        # 通用题材：非 TMDB 来源也能据此判断动漫分类
+        "genres": list(getattr(media, "genres", []) or []),
     }
     return JsonUtils.dumps(note, separators=(", ", ": "))
 

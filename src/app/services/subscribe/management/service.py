@@ -188,7 +188,11 @@ class SubscribeService:
                 media = MediaInfo(type=MediaType.MOVIE, tmdb_id=str(getattr(mv, "tmdb_id", "") or ""))
                 media.title = getattr(mv, "name", "") or ""
                 media.year = getattr(mv, "year", "") or ""
-                if self.media_exists(media):
+                profile = str(getattr(mv, "content_profile", "") or "default")
+                if profile != "default":
+                    # 插件内容画像不依赖 TMDB；进入 COMPLETED 即视为转移登记完成。
+                    self.finalize_movie_by_rssid(mv.id)
+                elif self.media_exists(media):
                     self.finalize_movie_by_rssid(mv.id)
                 elif self._pending_stale(getattr(mv, "tmdb_id", ""), cutoff):
                     self.update_rss_state(MediaType.MOVIE, mv.id, SubscribeState.RUNNING.value)
@@ -271,8 +275,25 @@ class SubscribeService:
     def get_history_id(self, mtype, title, year=None, tmdbid=None):
         return self._query_svc.get_history_id(mtype, title, year, tmdbid)
 
-    def get_subscribe_id(self, mtype, title, year=None, season=None, tmdbid=None):
-        return self._query_svc.get_subscribe_id(mtype, title, year, season, tmdbid)
+    def get_subscribe_id(
+        self,
+        mtype,
+        title,
+        year=None,
+        season=None,
+        tmdbid=None,
+        user_id=None,
+        content_profile=None,
+    ):
+        return self._query_svc.get_subscribe_id(
+            mtype,
+            title,
+            year,
+            season,
+            tmdbid,
+            user_id=user_id,
+            content_profile=content_profile,
+        )
 
     def refresh_rss_metainfo(self):
         return self._refresh_svc.refresh_rss_metainfo(self.get_subscribe_movies, self.get_subscribe_tvs)
