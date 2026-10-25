@@ -130,8 +130,8 @@ class DiscoveryService:
             return page
 
     def _cache_put(self, key: str, page: DiscoveryPage) -> None:
-        # 空页通常是站点挑战/瞬时失败，不缓存，否则 5 分钟内一直显示无内容。
-        if not self._cache_ttl or not page.items:
+        # 空页/错误页通常是站点挑战或瞬时失败，不缓存，避免一直显示无内容。
+        if not self._cache_ttl or not page.items or page.error:
             return
         with self._cache_lock:
             self._cache[key] = (datetime.now(), page)

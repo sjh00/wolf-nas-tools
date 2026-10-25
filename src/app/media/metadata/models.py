@@ -278,6 +278,8 @@ class DiscoveryPage(BaseModel):
     page: int = 1
     has_more: bool = False
     facets: dict[str, list[FacetValue]] = Field(default_factory=dict)
+    error: str | None = None
+    retryable: bool = False
 
 
 class Detection(BaseModel):
