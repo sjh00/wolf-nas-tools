@@ -854,9 +854,21 @@ def media_detail_by_ref(
         )
     except Exception:  # noqa: BLE001 - 上游抓取/熔断返回明确错误
         return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
+    is_custom_profile = content_profile != "default"
+    if not record and is_custom_profile:
+        # 源 provider 使用 slug 或临时失效时，回退到该内容画像的聚合 provider。
+        try:
+            record = svc.lookup(
+                content_profile,
+                req.external_id,
+                media_type=media_type,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+        except Exception:  # noqa: BLE001 - 聚合回退失败按原错误处理
+            record = None
     if not record:
         return fail(msg="无法获取媒体详情")
-    is_custom_profile = content_profile != "default"
     if is_custom_profile:
         status = sub_svc.get_subscribe_by_anchor(
             str(record.get("provider") or req.provider),
