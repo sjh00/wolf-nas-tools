@@ -236,6 +236,7 @@ class MediaDetailByRefRequest(BaseModel):
     external_id: str
     media_type: str | None = None
     content_profile: str = "default"
+    content_id: str | None = None
 
 
 class FieldOverrideRequest(BaseModel):
@@ -855,6 +856,20 @@ def media_detail_by_ref(
     except Exception:  # noqa: BLE001 - 上游抓取/熔断返回明确错误
         return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
     is_custom_profile = content_profile != "default"
+    if is_custom_profile and req.content_id:
+        # 前端已知道内容编号时，优先按编号取聚合详情，避免来源 slug 失效。
+        try:
+            aggregate = svc.lookup(
+                content_profile,
+                req.content_id,
+                media_type=media_type,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+            if aggregate:
+                record = aggregate
+        except Exception:  # noqa: BLE001, S110 - 聚合失败继续用来源记录
+            pass
     if not record and is_custom_profile:
         # 源 provider 使用 slug 或临时失效时，回退到该内容画像的聚合 provider。
         try:
@@ -870,6 +885,29 @@ def media_detail_by_ref(
     if not record:
         return fail(msg="无法获取媒体详情")
     if is_custom_profile:
+        content_id = str((record.get("extra") or {}).get("adult.content_id") or "")
+        if not content_id:
+            content_id = next(
+                (
+                    str(ref.get("external_id") or "")
+                    for ref in record.get("refs") or []
+                    if ref.get("provider") == "content_id"
+                ),
+                "",
+            )
+        if content_id and req.provider != content_profile:
+            try:
+                aggregate = svc.lookup(
+                    content_profile,
+                    content_id,
+                    media_type=media_type,
+                    allow_private=allow_private,
+                    permissions=permissions,
+                )
+                if aggregate:
+                    record = aggregate
+            except Exception:  # noqa: BLE001, S110 - 聚合失败保留来源记录
+                pass
         status = sub_svc.get_subscribe_by_anchor(
             str(record.get("provider") or req.provider),
             str(record.get("external_id") or req.external_id),
