@@ -869,12 +869,21 @@ def media_detail_by_ref(
         req.provider,
         req.external_id,
         media_type=media_type or MediaType.MOVIE,
-        # 自定义画像直接用原 provider 详情，不再替换为聚合 provider，也不引入 TMDB。
-        content_profile="default" if is_custom_profile else content_profile,
-        include_tmdb=not is_custom_profile,
+        content_profile=content_profile,
+        include_tmdb=True,
         user_id=current_user.user_id,
+        allow_private=allow_private,
+        permissions=permissions,
     )
     if not snapshot:
+        if is_custom_profile:
+            status = sub_svc.get_subscribe_by_anchor(
+                str(record.get("provider") or req.provider),
+                str(record.get("external_id") or req.external_id),
+                media_type or MediaType.MOVIE,
+                user=current_user,
+            )
+            return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
         return fail(msg="无法获取媒体详情")
     fields = snapshot.get("fields") or {}
     images = snapshot.get("images") or {}
