@@ -1319,12 +1319,15 @@ class MetadataService:
         allow_private: bool = False,
         permissions: set[str] | None = None,
         probe_health: bool = True,
+        provider_key: str | None = None,
     ) -> list[dict[str, Any]]:
         self._ensure_builtin()
         runtime = {item["provider"]: item for item in self._orchestrator.runtime_snapshot()}
         visible = []
         for provider in self._registry.list_providers():
             descriptor = provider.descriptor
+            if provider_key and descriptor.provider_key != provider_key:
+                continue
             if descriptor.visibility == "private":
                 required = descriptor.required_permission or "metadata:private:view"
                 if not allow_private or (

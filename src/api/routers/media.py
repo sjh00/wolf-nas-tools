@@ -1049,6 +1049,7 @@ def metadata_metrics(
 @router.get("/providers", response_model=CommonResponse, summary="元数据 provider 能力与健康状态")
 def metadata_providers(
     include_health: bool = Query(True),
+    provider: str | None = Query(None),
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MetadataService = Depends(get_metadata_service),
 ):
@@ -1058,6 +1059,7 @@ def metadata_providers(
             allow_private=allow_private,
             permissions=permissions,
             probe_health=include_health,
+            provider_key=provider,
         )
     )
 
