@@ -782,13 +782,16 @@ def media_detail_by_ref(
     media_type = MediaType.from_string(request_type) if request_type else None
     if media_type == MediaType.UNKNOWN:
         media_type = None
-    record = svc.lookup(
-        req.provider,
-        req.external_id,
-        media_type=media_type,
-        allow_private=allow_private,
-        permissions=permissions,
-    )
+    try:
+        record = svc.lookup(
+            req.provider,
+            req.external_id,
+            media_type=media_type,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    except Exception:  # noqa: BLE001 - 上游抓取/熔断返回明确错误
+        return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
     if not record:
         return fail(msg="无法获取媒体详情")
     snapshot = svc.compose_for_ref(
