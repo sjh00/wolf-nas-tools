@@ -419,7 +419,7 @@ class FileTransferService:
             if not provider_data:
                 provider_data, media_type, dl_season, dl_episode = self._lookup_download_record(in_path)
 
-            # 先用插件 ParserProfile 短路识别，避免成人文件先走一次 TMDB。
+            # 先用插件 ParserProfile 短路识别，避免已识别文件再走一次 TMDB。
             policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
             parser_chain = ParserChain()
             profile_medias = {}

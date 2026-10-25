@@ -111,7 +111,7 @@ class SubscribeAddService:
         media_type: MediaType | None = None,
         season: int | None = None,
     ):
-        """用插件 provider 的详情构造 MediaInfo（成人等内容不走 TMDB 查询）."""
+        """用插件 provider 的详情构造 MediaInfo，自定义画像不走 TMDB 查询."""
         if self._metadata_service is None:
             return None
         try:
