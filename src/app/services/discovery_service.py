@@ -7,6 +7,8 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any
 
+from loguru import logger
+
 from app.core.exceptions import ValidationError
 from app.media.metadata.models import DiscoveryPage
 from app.media.metadata.providers.discovery import BangumiDiscovery, DoubanDiscovery, TmdbDiscovery
@@ -88,7 +90,16 @@ class DiscoveryService:
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
-        result = target.items(feed, max(1, page), filters or {}, None)
+        try:
+            result = target.items(feed, max(1, page), filters or {}, None)
+        except Exception as exc:  # noqa: BLE001 - 插件抓取失败返回可重试错误页
+            logger.warning(f"[Discovery] {provider}/{feed} 抓取失败: {exc}")
+            return DiscoveryPage(
+                items=[],
+                page=max(1, page),
+                error=str(exc)[:300] or "内容抓取失败",
+                retryable=True,
+            )
         result = self._dedupe_items(result)
         self._cache_put(cache_key, result)
         return result
