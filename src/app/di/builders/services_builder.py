@@ -358,6 +358,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         subscribe=subscribe_service,
         media_server=media_server,
         douban=douban,
+        metadata_service=metadata_service,
     )
 
     download_service = DownloadService(
@@ -497,6 +498,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         media_info_service=media_info_service,
         subscribe=subscribe_service,
         rss_task_service=rss_task_service,
+        metadata_service=metadata_service,
     )
     subscribe_history_service = SubscribeHistoryService(
         history_repo=SubscribeHistoryRepositoryAdapter(),
