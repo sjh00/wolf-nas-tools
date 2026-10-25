@@ -1251,7 +1251,7 @@ class MetadataService:
         if not owner:
             # 后续请求等待同一次抓取，不再各自开浏览器。
             try:
-                return future.result(timeout=90)
+                return future.result(timeout=25)
             except Exception:  # noqa: BLE001 - 原请求失败时返回缺失
                 return None
         runtime = self._orchestrator.runtime_for(target.descriptor)

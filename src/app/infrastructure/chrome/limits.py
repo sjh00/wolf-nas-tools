@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from app.core.settings import settings
 
-_DEFAULT_LIMIT = 2
+_DEFAULT_LIMIT = 4
 
 
 def _resolve_limit() -> int:
