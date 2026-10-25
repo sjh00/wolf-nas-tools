@@ -1,4 +1,6 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, wait
+from difflib import SequenceMatcher
 from typing import Any
 
 import cn2an
@@ -10,12 +12,42 @@ from app.domain.media_utils import check_media_exists
 from app.domain.mediatypes import MediaType
 from app.infrastructure.image_proxy import ImageProxy
 from app.media import MediaService, meta_info
+from app.media.metadata.parsing import ParserChain
 from app.mediaserver import MediaServer
+from app.schemas.auth import UserContext
 from app.schemas.media import MediaInfoResultDTO, SeasonEpisodesResultDTO
 from app.services.subscribe_service import SubscribeService as Subscribe
 from app.services.web import mediainfo_dict
 from app.services.web.utils import get_mediainfo_from_id, search_media_infos
 from app.utils import StringUtils
+
+_KNOWN_REF_RE = re.compile(r"(?i)\b([a-z][a-z0-9_]{1,31}):([A-Za-z0-9._-]{1,64})")
+_CONTENT_CODE_RE = re.compile(r"\b([A-Za-z]{2,10}-\d{2,5})\b")
+_EPISODE_RE = re.compile(r"(?i)(S\d{1,2}\s*E\d{1,4}|第\s*\d+\s*[集话話]|(?:^|[\s._])\d{1,3}\s*(?:\[|\(|$))")
+
+
+def _normalize_title(value: str | None) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _title_match_strength(query: str | None, title: str | None) -> float:
+    """标题相关性：完全一致/前缀扩展为高分，CM/预告/纯数字尾缀降级."""
+    left = _normalize_title(query)
+    right = _normalize_title(title)
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    if right.startswith(left) or left.startswith(right):
+        shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+        extra = longer[len(shorter) :]
+        if extra and (
+            extra.isdigit()
+            or any(token in extra for token in ("cm", "pv", "trailer", "预告", "特典", "spinoff", "spin-off"))
+        ):
+            return 0.45
+        return 0.9
+    return SequenceMatcher(None, left, right).ratio()
 
 
 class MediaInfoService:
@@ -30,11 +62,13 @@ class MediaInfoService:
         subscribe: Subscribe,
         media_server: MediaServer,
         douban,
+        metadata_service=None,
     ):
         self._media = media_service
         self._subscribe = subscribe
         self._media_server = media_server
         self._douban = douban
+        self._metadata_service = metadata_service
 
     def get_season_episodes(self, tmdbid, title, year, season) -> SeasonEpisodesResultDTO:
         """查询 TMDB 剧集情况并检查媒体服务器存在状态"""
@@ -198,14 +232,347 @@ class MediaInfoService:
             mtype = None
         return self._media.get_person_medias(personid=personid, mtype=mtype, page=page)
 
-    def name_test(self, name, subtitle) -> dict:
-        """名称识别测试"""
-        # cache=False：避免命中媒体缓存而返回首次缓存的资源信息，
-        # 应始终反映当前输入的资源解析（org_string/发布组/音视频等）
+    def name_test(self, name, subtitle, user: UserContext | None = None) -> dict:
+        """名称识别测试（插件 ParserProfile 优先 + 本地解析 + 多数据源匹配）."""
+        # 插件解析器优先：插件声明的内容画像由插件自己识别，不依赖宿主标题解析。
+        parsed = ParserChain().extract(name, subtitle or "")
+        type_labels = {"movie": "电影", "tv": "剧集", "anime": "动漫"}
+        if parsed is not None:
+            code = str(getattr(parsed, "anchor_external_id", "") or "")
+            display = getattr(parsed, "title_cn", None) or getattr(parsed, "title_en", None) or code or name
+            result: dict[str, Any] = {
+                "name": display,
+                "cn_name": getattr(parsed, "title_cn", None) or display,
+                "title": getattr(parsed, "title_en", None) or display,
+                "type": type_labels.get(str(getattr(parsed, "type", "")), ""),
+                "org_string": name,
+                "content_profile": getattr(parsed, "content_profile", "") or "",
+                "anchor_provider": getattr(parsed, "anchor_provider", None),
+                "anchor_external_id": code or None,
+                "confidence": getattr(parsed, "confidence", None),
+            }
+            query = code or display
+            matches, preferred = self._identify_matches(
+                name,
+                parsed,
+                user,
+                query=query,
+                parsed_profile=getattr(parsed, "content_profile", None),
+            )
+            best = next((item for item in matches if item.get("preferred")), matches[0] if matches else None)
+            if best:
+                result.update(
+                    {
+                        "name": best.get("title") or display,
+                        "cn_name": best.get("title") or display,
+                        "title": best.get("title") or display,
+                        "year": best.get("year") or "",
+                        "source_label": best.get("source_label") or "",
+                        "image": best.get("poster") or "",
+                        "metadata_ref": f"{best.get('provider')}:{best.get('external_id')}",
+                        "tmdbid": best.get("external_id") if best.get("provider") == "tmdb" else None,
+                    }
+                )
+            result["matches"] = matches
+            result["preferred_source"] = preferred
+            return result
+
+        # 非插件解析器覆盖的名称，继续走宿主本地解析。
         media_info = self._media.get_media_info(title=name, subtitle=subtitle, cache=False)
-        if not media_info:
-            return {"name": "无法识别"}
-        return mediainfo_dict(media_info)
+        result = mediainfo_dict(media_info) if media_info else {"name": "无法识别"}
+        matches, preferred = self._identify_matches(name, media_info, user)
+        if matches and not result.get("image"):
+            result["image"] = next(
+                (item.get("poster") for item in matches if item.get("poster")),
+                "",
+            )
+        result["matches"] = matches
+        result["preferred_source"] = preferred
+        return result
+
+    def _identify_matches(
+        self,
+        name: str,
+        media_info,
+        user: UserContext | None,
+        *,
+        query: str | None = None,
+        parsed_profile: str | None = None,
+    ):
+        """并行查询所有可用元数据源；优先来源排序."""
+        metadata_service = self._metadata_service
+        if metadata_service is None:
+            return [], None
+        allow_private = bool(user and user.has_permission("metadata:private:view"))
+        permissions = set(user.permissions) if user else None
+        providers = metadata_service.list_providers(
+            allow_private=allow_private, permissions=permissions, probe_health=False
+        )
+        searchable = [
+            item for item in providers if any("search" in str(cap).lower() for cap in item.get("capabilities", []))
+        ]
+        # 普通名称不要查内容画像不匹配的插件源，避免无关结果和慢请求。
+        wanted_profile = parsed_profile or (
+            "anime" if getattr(media_info, "type", None) == MediaType.ANIME else "default"
+        )
+        searchable = [
+            item
+            for item in searchable
+            if not item.get("content_profiles") or wanted_profile in item["content_profiles"]
+        ]
+        provider_order = {item["provider"]: idx for idx, item in enumerate(searchable)}
+        provider_labels = {item["provider"]: item.get("name") or item["provider"] for item in providers}
+
+        code_match = _CONTENT_CODE_RE.search(name or "")
+        code = code_match.group(1).upper() if code_match else ""
+        detail_provider = None
+        if code and parsed_profile:
+            candidates = [
+                item
+                for item in providers
+                if parsed_profile in (item.get("content_profiles") or [])
+                and any("detail" in str(cap).lower() for cap in item.get("capabilities", []))
+            ]
+            detail_provider = next(
+                (item for item in candidates if item["provider"] == parsed_profile),
+                candidates[0] if candidates else None,
+            )
+        preferred = None
+        preferred_external = ""
+        preferred_image = ""
+        reason = ""
+        ref_match = _KNOWN_REF_RE.search(name or "")
+        if ref_match and ref_match.group(1).lower() in provider_order:
+            preferred = ref_match.group(1).lower()
+            preferred_external = ref_match.group(2)
+            reason = "输入指定来源"
+        elif media_info is not None and getattr(media_info, "tmdb_id", None):
+            preferred = "tmdb" if "tmdb" in provider_order else None
+            preferred_external = str(getattr(media_info, "tmdb_id", "") or "")
+            reason = "本地识别命中 TMDB"
+        else:
+            target = _normalize_title(
+                (query or "")
+                or (getattr(media_info, "cn_name", None) or getattr(media_info, "title", None))
+                or (getattr(media_info, "title_cn", None) or getattr(media_info, "title_en", None))
+                if media_info is not None
+                else (query or name)
+            )
+            if target:
+                try:
+                    subs = [
+                        *self._subscribe.get_subscribe_movies(user=user).values(),
+                        *self._subscribe.get_subscribe_tvs(user=user).values(),
+                    ]
+                except Exception:  # noqa: BLE001 - 订阅匹配失败不影响识别
+                    subs = []
+                for sub in subs:
+                    sub_title = _normalize_title(sub.get("name"))
+                    if not sub_title or (target not in sub_title and sub_title not in target):
+                        continue
+                    metadata_ref = str(sub.get("metadata_ref") or "")
+                    candidate = metadata_ref.split(":", 1)[0] if ":" in metadata_ref else ""
+                    candidate_external = metadata_ref.split(":", 1)[1] if ":" in metadata_ref else ""
+                    if candidate in ("", "content_id"):
+                        candidate = str(sub.get("anchor_provider") or "")
+                        candidate_external = str(sub.get("anchor_external_id") or "")
+                    if candidate in provider_order:
+                        preferred = candidate
+                        preferred_external = candidate_external
+                        preferred_image = str(sub.get("image") or "")
+                        reason = "命中已有订阅来源"
+                        break
+
+        parsed_type = getattr(media_info, "type", MediaType.UNKNOWN) if media_info is not None else MediaType.UNKNOWN
+        if not isinstance(parsed_type, MediaType):
+            parsed_type = MediaType.from_string(str(parsed_type))
+        if parsed_type not in (MediaType.MOVIE, MediaType.TV, MediaType.ANIME):
+            parsed_type = MediaType.TV if _EPISODE_RE.search(name or "") else MediaType.MOVIE
+        if parsed_type == MediaType.TV:
+            media_type = MediaType.TV
+        elif parsed_type == MediaType.ANIME:
+            media_type = MediaType.ANIME
+        else:
+            media_type = MediaType.MOVIE
+        profile = parsed_profile or ("anime" if parsed_type == MediaType.ANIME else "default")
+        title = query or (
+            (
+                getattr(media_info, "cn_name", None)
+                or getattr(media_info, "title", None)
+                or getattr(media_info, "title_cn", None)
+                or getattr(media_info, "title_en", None)
+                or name
+            )
+            if media_info is not None
+            else name
+        )
+
+        def search_one(item):
+            key = item["provider"]
+            try:
+                return key, metadata_service.search(
+                    query=str(title),
+                    provider=key,
+                    media_type=media_type,
+                    content_profile=profile,
+                    limit=10 if code else 3,
+                    allow_private=allow_private,
+                    permissions=permissions,
+                )
+            except Exception:  # noqa: BLE001 - 单源失败不影响其他源
+                return key, []
+
+        def detail_one(item):
+            if item is None:
+                return None
+            try:
+                return metadata_service.lookup(
+                    item["provider"],
+                    code,
+                    media_type=media_type,
+                    scope="release",
+                    allow_private=allow_private,
+                    content_profile=profile,
+                    permissions=permissions,
+                )
+            except Exception:  # noqa: BLE001 - 聚合详情失败不影响搜索结果
+                return None
+
+        matches = []
+        detail_record = None
+        if searchable or detail_provider:
+            executor = ThreadPoolExecutor(max_workers=min(9, len(searchable) + 1))
+            search_futures = [executor.submit(search_one, item) for item in searchable]
+            detail_future = executor.submit(detail_one, detail_provider) if detail_provider else None
+            all_futures = [*search_futures, *([detail_future] if detail_future else [])]
+            done, pending = wait(all_futures, timeout=10.0 if detail_provider else 8.0)
+            executor.shutdown(wait=False, cancel_futures=True)
+            if detail_future is not None and detail_future in done:
+                detail_record = detail_future.result()
+            for future in done:
+                if future is detail_future:
+                    continue
+                try:
+                    key, hits = future.result()
+                except Exception:  # noqa: BLE001
+                    continue
+                for hit in hits or []:
+                    ref = hit.get("ref") or {}
+                    provider = str(hit.get("provider") or ref.get("provider") or key)
+                    external_id = str(ref.get("external_id") or "")
+                    if not external_id:
+                        continue
+                    matches.append(
+                        {
+                            "provider": provider,
+                            "source_label": provider_labels.get(provider, provider),
+                            "external_id": external_id,
+                            "title": hit.get("title") or "",
+                            "year": hit.get("year") or "",
+                            "media_type": str(hit.get("media_type") or media_type.value),
+                            "content_profile": hit.get("content_profile") or profile,
+                            "poster": hit.get("poster") or "",
+                            "score": float(hit.get("score") or 0.0),
+                            "preferred": provider == preferred
+                            and (not preferred_external or external_id == preferred_external),
+                            "code_match": bool(
+                                code
+                                and (
+                                    external_id.upper() == code or str(hit.get("title") or "").upper().startswith(code)
+                                )
+                            ),
+                        }
+                    )
+        if detail_record:
+            record_title = str(detail_record.get("title") or "")
+            release = str(detail_record.get("release_date") or "")
+            images = detail_record.get("images") or {}
+            poster_list = images.get("poster") or []
+            poster = str(poster_list[0].get("url") or "") if poster_list else ""
+            for ref in detail_record.get("refs") or []:
+                ref_provider = str(ref.get("provider") or "")
+                ref_external = str(ref.get("external_id") or code)
+                if not ref_provider or ref_provider in ("content_id", profile):
+                    continue
+                matches.append(
+                    {
+                        "provider": ref_provider,
+                        "source_label": provider_labels.get(ref_provider, ref_provider.upper()),
+                        "external_id": ref_external,
+                        "title": record_title,
+                        "year": release[:4] if len(release) >= 4 else "",
+                        "media_type": "movie",
+                        "content_profile": profile,
+                        "poster": poster,
+                        "score": 100.0,
+                        "preferred": ref_provider == preferred
+                        and (not preferred_external or ref_external == preferred_external),
+                        "code_match": True,
+                    }
+                )
+        deduped = {}
+        for match in matches:
+            key = match["provider"]
+            existing = deduped.get(key)
+            if existing is None or match["score"] > existing["score"]:
+                deduped[key] = match
+        # 优先来源的本地化标题可以不同；其余候选必须与查询标题/编号强相关。
+        if preferred and not any(match["provider"] == preferred for match in deduped.values()):
+            preferred = None
+            reason = ""
+        match_target = code or _normalize_title(
+            (query or "")
+            or (getattr(media_info, "cn_name", None) if media_info is not None else None)
+            or (getattr(media_info, "title", None) if media_info is not None else None)
+            or (getattr(media_info, "title_cn", None) if media_info is not None else None)
+            or (getattr(media_info, "title_en", None) if media_info is not None else None)
+            or name
+        )
+        filtered = []
+        for match in deduped.values():
+            if code:
+                if match.get("code_match"):
+                    filtered.append(match)
+                continue
+            if match.get("preferred") or _title_match_strength(match_target, match.get("title")) >= 0.82:
+                filtered.append(match)
+        matches = list(filtered)
+        global_poster = next(
+            (str(item.get("poster") or "") for item in matches if item.get("poster")),
+            "",
+        )
+        poster_fallback = preferred_image or global_poster
+        if poster_fallback:
+            for item in matches:
+                if not item.get("poster"):
+                    item["poster"] = poster_fallback
+        if preferred and not any(item["preferred"] for item in matches):
+            same_provider = [item for item in matches if item["provider"] == preferred]
+            if same_provider:
+                same_provider[0]["preferred"] = True
+        if preferred is None:
+            code_hit = next((item for item in matches if item.get("code_match")), None)
+            if code_hit is not None:
+                preferred = code_hit["provider"]
+                reason = "内容标识精确匹配"
+                for item in matches:
+                    item["preferred"] = item["provider"] == preferred
+        matches = sorted(
+            matches,
+            key=lambda item: (
+                not item["preferred"],
+                not item.get("code_match", False),
+                -item["score"],
+                provider_order.get(item["provider"], 999),
+                item["title"],
+            ),
+        )[:12]
+        preferred_source = (
+            {"provider": preferred, "label": provider_labels.get(preferred, preferred), "reason": reason}
+            if preferred
+            else None
+        )
+        return matches, preferred_source
 
     def search_media_infos(self, keyword, source, page) -> list[dict]:
         """搜索媒体词条"""

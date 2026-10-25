@@ -30,6 +30,7 @@ from ..models import (
     SeasonRecord,
     SourceTier,
 )
+from .genres import classify_media_type
 
 
 class _EpisodeScraperLike(Protocol):
@@ -59,6 +60,8 @@ def douban_detail_to_record(
     episodes: Sequence[EpisodeRecord] | None = None,
 ) -> ProviderRecord:
     """把豆瓣 frodo detail 字典映射为规范记录."""
+    genres = list(info.get("genres") or [])
+    media_type, content_profile = classify_media_type(media_type, genres, content_profile)
     douban_id = str(external_id or info.get("id") or "")
     year = str(info.get("year") or "") or None
 
@@ -82,7 +85,7 @@ def douban_detail_to_record(
         overview=info.get("intro") or None,
         countries=list(info.get("countries") or []),
         spoken_languages=list(info.get("languages") or []),
-        genres=list(info.get("genres") or []),
+        genres=genres,
         ratings=_rating(info),
         images=_images(info),
         credits=_credits(info),

@@ -9,7 +9,7 @@ import difflib
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -21,6 +21,7 @@ from app.db.repositories.media_identity_repository import MediaIdentityRepositor
 from app.db.repositories.person_identity_repository import PersonIdentityRepository
 from app.domain.media_ref import MediaSubject
 from app.domain.mediatypes import MediaType
+from app.infrastructure.cache_system import get_cache_manager
 from app.media.metadata import (
     DEFAULT_POLICY_KEY,
     FieldValue,
@@ -179,6 +180,13 @@ class MetadataService:
         self._system_default_policy = system_default_policy
         self._builtin_lock = threading.Lock()
         self._builtin_ready = not register_builtins
+        # 同一条目详情并发去重：详情页反复刷新时只允许一个浏览器抓取。
+        self._inflight_lock = threading.Lock()
+        self._inflight: dict[str, Future[Any]] = {}
+        self._detail_cache = get_cache_manager().get_or_create(
+            "metadata_detail", cache_type="tiered", maxsize=500, ttl=600
+        )
+        self._detail_version_lock = threading.Lock()
         self._anchor_cache: dict[tuple, tuple[float, str, str]] = {}
         self._anchor_locks: dict[tuple, threading.Lock] = {}
         self._anchor_locks_guard = threading.Lock()
@@ -1023,7 +1031,9 @@ class MetadataService:
             descriptor = item.descriptor
             if descriptor.visibility == "private":
                 required = descriptor.required_permission or "metadata:private:view"
-                if not allow_private or (permissions is not None and required not in permissions):
+                if not allow_private or (
+                    permissions is not None and "*" not in permissions and required not in permissions
+                ):
                     continue
             runtime = self._orchestrator.runtime_for(descriptor)
             try:
@@ -1174,6 +1184,41 @@ class MetadataService:
                 break
         return result
 
+    def episodes(
+        self,
+        provider: str,
+        external_id: str,
+        season: int = 1,
+        *,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
+    ) -> list[dict]:
+        """获取非 TMDB 来源的分集（含播出日期），供订阅日历使用."""
+        self._ensure_builtin()
+        target = self._registry.get_provider(provider)
+        if target is None:
+            return []
+        ref = ProviderRef(
+            provider=provider,
+            external_id=str(external_id),
+            media_type=target.descriptor.default_media_type or MediaType.TV,
+            scope="default",
+        )
+        self._check_visibility([ref], allow_private=allow_private, permissions=permissions)
+        runtime = self._orchestrator.runtime_for(target.descriptor)
+        try:
+            runtime.acquire()
+            records = target.episodes(ref, int(season or 1), None)
+        except Exception as exc:  # noqa: BLE001 - 单个来源分集失败不阻断日历
+            try:
+                runtime.record_failure()
+            except Exception:  # noqa: BLE001, S110 - 运行时状态失败忽略
+                pass
+            log.warn(f"[Metadata]分集获取失败 {provider}:{external_id}: {exc}")
+            return []
+        runtime.record_success()
+        return [record.model_dump(mode="json") for record in records]
+
     def lookup(
         self,
         provider: str,
@@ -1191,18 +1236,82 @@ class MetadataService:
         target = self._registry.get_provider(provider)
         if target is None:
             return None
+        version = self._detail_cache_version()
+        cache_key = f"v{version}:{provider}:{external_id}:{scope}"
+        cached = self._detail_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        key = f"{provider}:{external_id}:{scope}"
+        with self._inflight_lock:
+            future = self._inflight.get(key)
+            owner = future is None
+            if owner:
+                future = Future()
+                self._inflight[key] = future
+        if not owner:
+            # 后续请求等待同一次抓取，不再各自开浏览器。
+            try:
+                return future.result(timeout=90)
+            except Exception:  # noqa: BLE001 - 原请求失败时返回缺失
+                return None
         runtime = self._orchestrator.runtime_for(target.descriptor)
         try:
             runtime.acquire()
             record = target.detail(ref, None)
+            runtime.record_success()
+            data = record.model_dump(mode="json") if record is not None else None
+            if isinstance(data, dict) and self._has_detail_payload(data):
+                self._detail_cache.set(cache_key, data, ttl=600)
+            else:
+                self._detail_cache.delete(cache_key)
+            future.set_result(data)
+            return data
         except ProviderError:
             runtime.record_failure()
+            future.set_exception(ProviderError(provider, "详情获取失败"))
             raise
-        except Exception:
+        except Exception as exc:
             runtime.record_failure()
-            raise
-        runtime.record_success()
-        return record.model_dump(mode="json") if record is not None else None
+            # 插件可能抛自己的 FetchError；统一包装为 ProviderError，避免冒成 500。
+            error = ProviderError(provider, str(exc))
+            future.set_exception(error)
+            raise error from exc
+        finally:
+            with self._inflight_lock:
+                if self._inflight.get(key) is future:
+                    self._inflight.pop(key, None)
+
+    def _detail_cache_version(self) -> int:
+        with self._detail_version_lock:
+            raw = self._detail_cache.get("__version__")
+            try:
+                version = int(str(raw)) if raw is not None else 2
+            except (TypeError, ValueError):
+                version = 2
+                self._detail_cache.set("__version__", version)
+            return version
+
+    def bump_detail_cache_version(self) -> int:
+        """插件配置/优先级/版本变更时递增，旧详情缓存立即失效."""
+        with self._detail_version_lock:
+            raw = self._detail_cache.get("__version__")
+            try:
+                current = int(str(raw)) if raw is not None else 2
+            except (TypeError, ValueError):
+                current = 2
+            version = current + 1
+            self._detail_cache.set("__version__", version)
+            return version
+
+    @staticmethod
+    def _has_detail_payload(data: dict[str, Any]) -> bool:
+        """只有包含实际元数据的结果才进入缓存，避免缓存空详情."""
+        return bool(
+            data.get("overview")
+            or data.get("genres")
+            or data.get("credits")
+            or (data.get("images") or {}).get("poster")
+        )
 
     def list_providers(
         self,
@@ -1218,7 +1327,9 @@ class MetadataService:
             descriptor = provider.descriptor
             if descriptor.visibility == "private":
                 required = descriptor.required_permission or "metadata:private:view"
-                if not allow_private or (permissions is not None and required not in permissions):
+                if not allow_private or (
+                    permissions is not None and "*" not in permissions and required not in permissions
+                ):
                     continue
             visible.append(provider)
 
@@ -1317,5 +1428,5 @@ class MetadataService:
             if not allow_private:
                 raise ValidationError(f"无权访问私有来源: {ref.provider}")
             required = getattr(provider.descriptor, "required_permission", "") or "metadata:private:view"
-            if permissions is not None and required not in permissions:
+            if permissions is not None and "*" not in permissions and required not in permissions:
                 raise ValidationError(f"缺少权限 {required}")
