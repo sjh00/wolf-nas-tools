@@ -293,6 +293,14 @@ class PluginContext:
         self._apply_required_permission(provider)
         metadata_registry.register_discovery_provider(provider, plugin_id=self._plugin_id, declared_key=key)
 
+    def unregister_metadata_provider(self, key: str) -> None:
+        """注销本插件注册的元数据 provider."""
+        metadata_registry.unregister_provider(key, plugin_id=self._plugin_id)
+
+    def unregister_discovery_provider(self, key: str) -> None:
+        """注销本插件注册的探索来源."""
+        metadata_registry.unregister_discovery_provider(key, plugin_id=self._plugin_id)
+
     def register_metadata_profile(self, kind: str, key: str, profile: Any) -> None:
         """注册 content/match/parser/naming/nfo 扩展."""
         field = {

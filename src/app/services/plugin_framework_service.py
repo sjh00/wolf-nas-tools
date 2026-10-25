@@ -73,6 +73,10 @@ class PluginFrameworkService:
             plugin_parent = self._ensure_plugin_parent(manifest)
             if not plugin_parent:
                 log.warn("[PluginFrameworkService] Plugin 父菜单不存在，跳过默认插件菜单同步")
+            else:
+                # 新插件父菜单刚创建时尚未分配给任何角色；先挂到拥有“插件中心”的角色，
+                # 否则后续子菜单授权找不到父菜单，侧边栏就不会出现插件菜单组。
+                self._assign_new_plugin_parent_to_roles(plugin_parent)
 
         assignments: dict[int, tuple[object, list[int]]] = {}
         for idx, route in enumerate(routes):
@@ -189,6 +193,27 @@ class PluginFrameworkService:
                 removed += 1
         if removed:
             log.info(f"[PluginFrameworkService] 共删除 {removed} 个插件菜单")
+
+    def _assign_new_plugin_parent_to_roles(self, plugin_parent) -> None:
+        """把新建的插件父菜单分配给已拥有根“插件中心”菜单的角色."""
+        root_menu = self._get_plugin_parent_menu()
+        if not root_menu:
+            return
+        assigned = 0
+        for role in self._role_repo.get_all_roles(status=1):
+            if not role.menus:
+                continue
+            has_root = any(m.get("menu_code") == root_menu.menu_code or m.get("id") == root_menu.id for m in role.menus)
+            if not has_root:
+                continue
+            current_ids = {int(mid) for m in role.menus if (mid := m.get("id")) is not None}
+            if plugin_parent.id in current_ids:
+                continue
+            current_ids.add(plugin_parent.id)
+            self._role_repo.assign_menus_to_role(role.id, list(current_ids))
+            assigned += 1
+        if assigned:
+            log.info(f"[PluginFrameworkService] 为 {assigned} 个角色分配插件父菜单: {plugin_parent.menu_code}")
 
     def _assign_menus_to_authorized_roles(self, menu_ids: list[int], parent_menu=None) -> None:
         """将菜单分配给已拥有父菜单权限的角色."""
