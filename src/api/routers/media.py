@@ -1147,6 +1147,21 @@ def metadata_lookup(
         return fail(msg=f"元数据查询失败: {exc}")
     if data is None:
         return success(data=None) if allow_missing else fail(msg="未找到元数据")
+    if isinstance(data, dict):
+        images = data.get("images") or {}
+        if not data.get("poster"):
+            data["poster"] = next(
+                (item.get("url") for item in images.get("poster", []) if item.get("url")),
+                "",
+            )
+        if not data.get("backdrop"):
+            for image_type in ("background", "backdrop", "fanart"):
+                data["backdrop"] = next(
+                    (item.get("url") for item in images.get(image_type, []) if item.get("url")),
+                    "",
+                )
+                if data["backdrop"]:
+                    break
     return success(data=data)
 
 
