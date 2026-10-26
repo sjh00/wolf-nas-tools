@@ -310,7 +310,10 @@ class Emby(_IMediaClient):
         """
         if not self._host or not self._apikey:
             return []
-        req_url = f"{self._host}emby/System/ActivityLog/Entries?api_key={self._apikey}&"
+        req_url = (
+            f"{self._host}emby/System/ActivityLog/Entries?api_key={self._apikey}"
+            f"&Limit={num}&SortBy=DateCreated&SortOrder=Descending"
+        )
         ret_array = []
         try:
             res = HttpClient().get(req_url)
@@ -318,13 +321,23 @@ class Emby(_IMediaClient):
                 ret_json = res.json()
                 items = ret_json.get("Items")
                 for item in items:
-                    if item.get("Type") == "AuthenticationSucceeded":
+                    item_type = str(item.get("Type") or "")
+                    if item_type in ("AuthenticationSucceeded", "SessionStarted", "user.authenticated"):
                         event_type = "LG"
                         event_date = SystemUtils.get_local_time(item.get("Date"))
-                        event_str = "{}, {}".format(item.get("Name"), item.get("ShortOverview"))
+                        event_str = ", ".join(
+                            str(part) for part in (item.get("Name"), item.get("ShortOverview")) if part
+                        )
                         activity = {"type": event_type, "event": event_str, "date": event_date}
                         ret_array.append(activity)
-                    if item.get("Type") in ["VideoPlayback", "VideoPlaybackStopped"]:
+                    if item_type in (
+                        "VideoPlayback",
+                        "VideoPlaybackStopped",
+                        "PlaybackStart",
+                        "PlaybackStop",
+                        "playback.start",
+                        "playback.stop",
+                    ):
                         event_type = "PL"
                         event_date = SystemUtils.get_local_time(item.get("Date"))
                         event_str = item.get("Name")
@@ -340,6 +353,7 @@ class Emby(_IMediaClient):
             ExceptionUtils.exception_traceback(e)
             log.error(f"[{self.client_name}]连接System/ActivityLog/Entries出错：" + str(e))
             return []
+        ret_array = sorted(ret_array, key=lambda item: str(item.get("date") or ""), reverse=True)
         return ret_array[:num]
 
     def get_medias_count(self):
