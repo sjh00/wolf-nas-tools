@@ -99,6 +99,28 @@ class TestRedisTokenBucketBackend:
             backend = RedisTokenBucketBackend()
             assert backend.acquire("test_key", rate=1.0, burst=1, tokens=1, timeout=0)
 
+    def test_redis_evalsha_failure_allows_and_reloads_script(self):
+        with patch("app.infrastructure.rate_limiter.backends.RedisStore") as mock_cls:
+            mock_store = MagicMock()
+            mock_store.is_available.return_value = True
+            mock_store.script_load.return_value = "abc123"
+            mock_store.evalsha.return_value = None
+            mock_cls.return_value = mock_store
+
+            backend = RedisTokenBucketBackend()
+            assert backend.acquire("test_key", rate=1.0, burst=1, tokens=1, timeout=0)
+            assert backend._script_sha is None
+
+        with patch("app.infrastructure.rate_limiter.backends.RedisStore") as mock_cls:
+            mock_store = MagicMock()
+            mock_store.is_available.return_value = True
+            mock_store.script_load.return_value = "abc123"
+            mock_store.evalsha.return_value = 0
+            mock_cls.return_value = mock_store
+
+            backend = RedisTokenBucketBackend()
+            assert not backend.acquire("test_key", rate=1.0, burst=1, tokens=1, timeout=0)
+
 
 class TestRateLimitEngine:
     def test_acquire_token_bucket(self):
