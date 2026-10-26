@@ -242,6 +242,11 @@ class RedisTokenBucketBackend(RateLimitBackend):
                     self._script_sha = self._load_script()
                 if self._script_sha:
                     result = self._redis.evalsha(self._script_sha, 1, key, rate, burst, tokens, now_ms)
+                    if result is None:
+                        # Redis 重启/脚本缓存失效等异常被 RedisStore 吞掉后返回 None。
+                        # 不能当成“超限”，否则会全站 fail-closed；下次请求重新加载脚本。
+                        self._script_sha = None
+                        return True
                     return bool(result)
                 return True
             except Exception as e:
