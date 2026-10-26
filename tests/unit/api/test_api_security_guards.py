@@ -6,9 +6,9 @@ import pytest
 
 from api.routers.image import _guard_image_url, _is_blocked_ip
 from api.routers.rbac import _assert_role_assignment_allowed
-from api.routers.system import _is_sensitive_key, _mask_sensitive, _strip_masked
+from api.routers.system import _config_for_user, _is_sensitive_key, _mask_sensitive, _strip_masked
 from app.core.exceptions import NexusError, PermissionDenied
-from app.schemas.auth import SUPERADMIN_ROLE_CODE
+from app.schemas.auth import SUPERADMIN_ROLE_CODE, UserContext
 
 
 class TestImageSSRF:
@@ -55,6 +55,39 @@ class TestConfigMasking:
 
     def test_strip_masked_dict(self):
         assert _strip_masked({"app": {"jwt_secret": "******", "keep": "1"}}) == {"app": {"keep": "1"}}
+
+    def test_viewer_gets_masked_config(self):
+        flat = {"app.rmt_tmdbkey": "tmdb-key", "app.tmdb_rate": "40/10s"}
+        user = UserContext(user_id=1, username="viewer", level=1, permissions=["setting:view"])
+        result = _config_for_user(dict(flat), user)
+        assert result["app.rmt_tmdbkey"] == "******"
+        assert result["app.tmdb_rate"] == "40/10s"
+
+    def test_editor_gets_real_config(self):
+        flat = {
+            "app.rmt_tmdbkey": "tmdb-key",
+            "laboratory.chrome_admin_token": "chrome-key",
+        }
+        user = UserContext(
+            user_id=1,
+            username="editor",
+            level=0,
+            permissions=["setting:view", "setting:update"],
+        )
+        result = _config_for_user(dict(flat), user)
+        assert result["app.rmt_tmdbkey"] == "tmdb-key"
+        assert result["laboratory.chrome_admin_token"] == "chrome-key"
+
+    def test_superadmin_gets_real_config(self):
+        flat = {"app.rmt_tmdbkey": "tmdb-key"}
+        user = UserContext(
+            user_id=1,
+            username="admin",
+            level=0,
+            permissions=[],
+            role_codes=[SUPERADMIN_ROLE_CODE],
+        )
+        assert _config_for_user(dict(flat), user)["app.rmt_tmdbkey"] == "tmdb-key"
 
 
 class TestRbacPrivilegeGuard:
