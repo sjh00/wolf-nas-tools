@@ -5,6 +5,8 @@ import mimetypes
 import os
 import threading
 
+from PIL import Image
+
 import log
 from app.infrastructure.http import HttpClientError
 from app.infrastructure.http.client import HttpClient
@@ -73,11 +75,21 @@ class ImageDownloader:
                 r = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings())).get(**kwargs)
             if r:
                 resolved_path = self._resolve_extension(image_path, r.headers.get("content-type", ""))
+                content = r.content
+                if itype == "poster" and not resolved_path.lower().endswith((".jpg", ".jpeg")):
+                    try:
+                        with Image.open(io.BytesIO(content)) as source:
+                            buffer = io.BytesIO()
+                            source.convert("RGB").save(buffer, format="JPEG", quality=92)
+                        content = buffer.getvalue()
+                        resolved_path = os.path.splitext(resolved_path)[0] + ".jpg"
+                    except Exception:  # noqa: BLE001, S110 - 转换失败保留原格式
+                        pass
                 if self._dst_backend:
-                    self._dst_backend.write_stream(resolved_path, io.BytesIO(r.content), len(r.content))
+                    self._dst_backend.write_stream(resolved_path, io.BytesIO(content), len(content))
                 else:
                     with open(file=resolved_path, mode="wb") as img:
-                        img.write(r.content)
+                        img.write(content)
                 log.info(f"[Scraper]{itype}图片已保存：{resolved_path}")
                 return True
             log.info(f"[Scraper]{itype}图片下载失败，请检查网络连通性")
