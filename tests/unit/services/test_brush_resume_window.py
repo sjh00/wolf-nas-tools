@@ -32,6 +32,7 @@ def _run(lc, taskinfo):
         False,
         {"name": "站"},
         {"h1": "https://x/details"},
+        {"h1": "free_end"},
     )
 
 
