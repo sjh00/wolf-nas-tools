@@ -2,7 +2,7 @@
   "manifest_version": "1.0",
   "id": "doubanrank",
   "name": "豆瓣榜单订阅",
-  "version": "1.0",
+  "version": "1.1.0",
   "author": "linyuan0213",
   "author_url": "https://github.com/linyuan0213",
   "description": "监控豆瓣热门榜单，自动添加订阅。",
@@ -39,6 +39,14 @@
           "label": "开启豆瓣榜单订阅",
           "default": false,
           "help": "开启后自动监控豆瓣榜单变化"
+        },
+        {
+          "key": "server_id",
+          "type": "select",
+          "label": "目标媒体服务器",
+          "source": "media_servers",
+          "default": "",
+          "help": "用于检查媒体是否已入库，留空按画像路由或默认实例"
         },
         {
           "key": "cron",

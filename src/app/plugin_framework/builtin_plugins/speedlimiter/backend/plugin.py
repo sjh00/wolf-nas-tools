@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from app.infrastructure.security import SecurityChecker
+from app.plugin_framework.builtin_plugins._ms_common.mediaserver_lifecycle import resolve_plugin_server_ids
 from app.plugin_framework.context import PluginContext
 
 
@@ -128,48 +129,49 @@ class SpeedLimiterPlugin:
         if not self._limit_enabled:
             return
 
-        mediaserver_type = self._mediaserver.get_type()
-        if server_type == "emby" and mediaserver_type == "emby":
+        server_ids = resolve_plugin_server_ids(self._mediaserver, self._get_config())
+        server_types = {self._mediaserver.get_type(server_id) for server_id in server_ids}
+        if server_type == "emby" and "emby" in server_types:
             if data.get("Event") in ["playback.start", "playback.stop"]:
                 self._check_playing_sessions(time_check=False, message=data.get("Title", ""))
-        elif server_type == "jellyfin" and mediaserver_type == "jellyfin":
+        elif server_type == "jellyfin" and "jellyfin" in server_types:
             if data.get("NotificationType") in ["PlaybackStart", "PlaybackStop"]:
                 self._check_playing_sessions(time_check=False)
-        elif server_type == "plex" and mediaserver_type == "plex":
+        elif server_type == "plex" and "plex" in server_types:
             if data.get("event") in ["media.play", "media.stop"]:
                 time.sleep(3)
                 self._check_playing_sessions(time_check=False)
 
     def _check_playing_sessions(self, time_check=True, message=""):
-        mediaserver_type = self._mediaserver.get_type()
-        playing_sessions = self._mediaserver.get_playing_sessions() or []
+        server_ids = resolve_plugin_server_ids(self._mediaserver, self._get_config())
         total_bit_rate = 0
-
-        if mediaserver_type == "emby":
-            for session in playing_sessions:
-                if (
-                    not SecurityChecker.allow_access(self._unlimited_ips, session.get("RemoteEndPoint"))
-                    and session.get("NowPlayingItem", {}).get("MediaType") == "Video"
-                ):
-                    total_bit_rate += int(session.get("NowPlayingItem", {}).get("Bitrate") or 0)
-        elif mediaserver_type == "jellyfin":
-            for session in playing_sessions:
-                if (
-                    not SecurityChecker.allow_access(self._unlimited_ips, session.get("RemoteEndPoint"))
-                    and session.get("NowPlayingItem", {}).get("MediaType") == "Video"
-                ):
-                    media_streams = session.get("NowPlayingItem", {}).get("MediaStreams") or []
-                    for media_stream in media_streams:
-                        total_bit_rate += int(media_stream.get("BitRate") or 0)
-        elif mediaserver_type == "plex":
-            for session in playing_sessions:
-                if (
-                    not SecurityChecker.allow_access(self._unlimited_ips, session.get("address"))
-                    and session.get("type") == "Video"
-                ):
-                    total_bit_rate += int(session.get("bitrate") or 0)
-        else:
-            return
+        mediaserver_type = ""
+        for server_id in server_ids:
+            mediaserver_type = self._mediaserver.get_type(server_id)
+            playing_sessions = self._mediaserver.get_playing_sessions(server_id=server_id) or []
+            if mediaserver_type == "emby":
+                for session in playing_sessions:
+                    if (
+                        not SecurityChecker.allow_access(self._unlimited_ips, session.get("RemoteEndPoint"))
+                        and session.get("NowPlayingItem", {}).get("MediaType") == "Video"
+                    ):
+                        total_bit_rate += int(session.get("NowPlayingItem", {}).get("Bitrate") or 0)
+            elif mediaserver_type == "jellyfin":
+                for session in playing_sessions:
+                    if (
+                        not SecurityChecker.allow_access(self._unlimited_ips, session.get("RemoteEndPoint"))
+                        and session.get("NowPlayingItem", {}).get("MediaType") == "Video"
+                    ):
+                        media_streams = session.get("NowPlayingItem", {}).get("MediaStreams") or []
+                        for media_stream in media_streams:
+                            total_bit_rate += int(media_stream.get("BitRate") or 0)
+            elif mediaserver_type == "plex":
+                for session in playing_sessions:
+                    if (
+                        not SecurityChecker.allow_access(self._unlimited_ips, session.get("address"))
+                        and session.get("type") == "Video"
+                    ):
+                        total_bit_rate += int(session.get("bitrate") or 0)
 
         _playing_flag = bool(total_bit_rate)
 

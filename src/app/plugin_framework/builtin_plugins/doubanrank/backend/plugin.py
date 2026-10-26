@@ -14,6 +14,7 @@ from app.domain.enums import SearchType
 from app.domain.mediatypes import MediaType
 from app.infrastructure.http.client import HttpClient
 from app.mediaserver.media_server import MediaServer
+from app.plugin_framework.builtin_plugins._ms_common.mediaserver_lifecycle import resolve_plugin_server_id
 from app.plugin_framework.context import PluginContext
 from app.services.rss_processor import RssHelper
 from app.services.subscribe_service import SubscribeService
@@ -190,6 +191,11 @@ class DoubanRankPlugin:
                         year=media_info.year,
                         tmdbid=media_info.tmdb_id,
                         season=media_info.get_season_seq(),
+                        server_id=resolve_plugin_server_id(
+                            self._mediaserver,
+                            self._get_config(),
+                            content_profile=media_info.content_profile,
+                        ),
                     )
                     if item_id:
                         self.ctx.info(f"媒体服务器已存在：{media_info.get_title_string()}")

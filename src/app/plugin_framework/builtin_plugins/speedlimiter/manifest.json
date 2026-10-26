@@ -2,7 +2,7 @@
   "manifest_version": "1.0",
   "id": "speedlimiter",
   "name": "下载器限速",
-  "version": "1.0",
+  "version": "1.2.0",
   "author": "linyuan0213",
   "author_url": "https://github.com/linyuan0213",
   "description": "媒体服务器播放状态改变时，根据设置对下载器进行限速。",
@@ -28,6 +28,14 @@
     "settings": {
       "component": "SettingsPage",
       "fields": [
+        {
+          "key": "server_ids",
+          "type": "multi_select",
+          "label": "目标媒体服务器（可多选）",
+          "source": "media_servers",
+          "default": [],
+          "help": "同时监控多个实例并汇总播放带宽，留空使用默认实例"
+        },
         {
           "key": "upload_limit",
           "type": "number",
