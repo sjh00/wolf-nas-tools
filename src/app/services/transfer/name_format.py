@@ -9,6 +9,7 @@
 示例::
 
     "{title} ({year})/{title} - {season_episode}"
+    "Season {season:02d}/{title} - S{season:02d}E{episode:03d}"
     "{en_title: {en_title} ({year})}"   # en_title 为空时整个消失
     "{season_episode: - {season_episode}}"  # 无季集时不残留 " - "
 """
@@ -39,8 +40,8 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("imdbid", "IMDB ID", "IMDB 编号", "both", False),
     ("media_type", "媒体类型", "movie / tv / anime", "both", False),
     ("category", "分类", "分类名称", "both", False),
-    ("season", "季号", "季数（电影为空）", "tv", False),
-    ("episode", "集号", "集数（电影为空；单季超 99 集时补 3 位）", "tv", False),
+    ("season", "季号", "季数（电影为空；可用 {season:02d} 固定补两位）", "tv", False),
+    ("episode", "集号", "集数（电影为空；可用 {episode:03d} 固定补三位）", "tv", False),
     ("episode_title", "集标题", "集标题，需媒体服务取 TMDB", "tv", True),
     ("season_episode", "季集", "如 S08E07（单季超 99 集时为 S08E007）", "tv", False),
     ("part", "分集", "分集部分标识", "both", False),
@@ -50,6 +51,8 @@ FIELD_CATALOG = [dict(zip(("key", "label", "desc", "applies", "requires_ms"), f)
 NAME_FORMAT_FIELDS = frozenset(f["key"] for f in FIELD_CATALOG)
 
 _KEY_RE = re.compile(r"\{([A-Za-z0-9_]+)")
+_PAD_SPEC_RE = re.compile(r"^0[0-9]+d?\}")
+_PAD_TOKEN_RE = re.compile(r"\{([A-Za-z0-9_]+):0([0-9]+)d?\}")
 
 
 def _find_conds(fmt: str) -> list[tuple[int, int, str, str]]:
@@ -66,6 +69,12 @@ def _find_conds(fmt: str) -> list[tuple[int, int, str, str]]:
             continue
         end_key = m.end()
         if end_key < n and fmt[end_key] == ":":
+            # Python 数字格式说明符，例如 {episode:03d}。
+            # 它不是可选片段，留给 render() 做固定宽度补零。
+            if _PAD_SPEC_RE.match(fmt[end_key + 1 :]):
+                close = fmt.find("}", end_key + 1)
+                i = close + 1 if close != -1 else n
+                continue
             # {key: ... } 条件段，用括号深度匹配闭合
             depth = 1
             k = end_key + 1
@@ -128,6 +137,19 @@ def render(fmt: str, fmt_dict: dict) -> str:
             except (KeyError, ValueError):
                 inner = payload
             out = out[:start] + inner + out[end:]
+
+    def replace_padding(match: re.Match[str]) -> str:
+        key, width_text = match.group(1), match.group(2)
+        value = fmt_dict.get(key)
+        if value is None or value == "" or value == "\t":
+            return "" if value != "\t" else "\t"
+        return re.sub(
+            r"\d+",
+            lambda number: number.group(0).zfill(int(width_text)),
+            str(value),
+        )
+
+    out = _PAD_TOKEN_RE.sub(replace_padding, out)
     try:
         out = out.format(**fmt_dict)
     except (KeyError, ValueError):
