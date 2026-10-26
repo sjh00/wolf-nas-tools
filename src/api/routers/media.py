@@ -1,4 +1,3 @@
-import contextlib
 import os
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -81,6 +80,7 @@ class GetSeasonEpisodesRequest(BaseModel):
     title: str | None = None
     year: str | None = None
     season: int | None = None
+    content_profile: str | None = None
 
 
 class GetTvSeasonListRequest(BaseModel):
@@ -182,6 +182,24 @@ class PersonMediasRequest(BaseModel):
 
 class StartMediasyncRequest(BaseModel):
     librarys: list[str] | None = None
+    server_id: int | None = None
+
+
+class LibraryTargetRequest(BaseModel):
+    server_id: int | None = None
+
+
+class RefreshLibraryRequest(LibraryTargetRequest):
+    items: list[dict] | None = None
+
+
+class SaveLibraryRouteRequest(BaseModel):
+    content_profile: str = ""
+    target_path: str | None = None
+    server_id: int
+    library_id: str | None = None
+    enabled: bool = True
+    note: str = ""
 
 
 class TvCalendarRequest(BaseModel):
@@ -369,7 +387,13 @@ def get_season_episodes(
     if not req.tmdbid:
         return fail(msg="TMDBID为空")
     season = 1 if req.season is None else req.season
-    result = svc.get_season_episodes(tmdbid=req.tmdbid, title=req.title, year=req.year, season=season)
+    result = svc.get_season_episodes(
+        tmdbid=req.tmdbid,
+        title=req.title,
+        year=req.year,
+        season=season,
+        content_profile=req.content_profile,
+    )
     return success(data=result.episodes)
 
 
@@ -515,8 +539,72 @@ def start_mediasync(
     current_user=Depends(require_permission("library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    svc.start_sync(librarys=req.librarys or [])
+    svc.start_sync(librarys=req.librarys or [], server_id=req.server_id)
     return success()
+
+
+@router.post("/library/libraries", response_model=CommonResponse, summary="获取指定实例的媒体库")
+def get_media_libraries(
+    req: LibraryTargetRequest,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    try:
+        return success(data=svc.get_libraries(req.server_id))
+    except Exception as err:  # noqa: BLE001
+        log.debug(f"[MediaLibrary]获取实例媒体库失败: {err}")
+        return fail(msg="无法连接媒体服务器，请检查实例配置")
+
+
+@router.post("/library/refresh", response_model=CommonResponse, summary="刷新指定媒体服务器")
+def refresh_library(
+    req: RefreshLibraryRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    svc.refresh_library(server_id=req.server_id, items=req.items)
+    return success()
+
+
+@router.post("/library/routes", response_model=CommonResponse, summary="获取媒体库画像路由")
+def get_library_routes(
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    return success(data=svc.get_routes())
+
+
+@router.post("/library/routes/save", response_model=CommonResponse, summary="保存媒体库画像路由")
+def save_library_route(
+    req: SaveLibraryRouteRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    try:
+        return success(data=svc.save_route(req.model_dump()))
+    except ValueError as err:
+        return fail(msg=str(err))
+
+
+@router.post("/library/routes/update", response_model=CommonResponse, summary="更新媒体库画像路由")
+def update_library_route(
+    req: dict,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    try:
+        return success(data=svc.save_route(req, route_id=int(req.get("id") or 0)))
+    except ValueError as err:
+        return fail(msg=str(err))
+
+
+@router.post("/library/routes/delete", response_model=CommonResponse, summary="删除媒体库画像路由")
+def delete_library_route(
+    req: dict,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    return success(data=svc.delete_route(int(req.get("id") or 0)))
 
 
 @router.post("/calendar/tv", response_model=CommonResponse, summary="获取电视剧日历")
@@ -619,12 +707,21 @@ def delete_all_downloaded(
     return success(data={"count": count})
 
 
-@router.post("/library/count", response_model=CommonResponse, summary="获取媒体库统计")
-def get_library_mediacount(
+@router.post("/library/servers", response_model=CommonResponse, summary="获取媒体服务器实例")
+def get_library_servers(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    result = svc.get_media_count()
+    return success(data=svc.get_servers())
+
+
+@router.post("/library/count", response_model=CommonResponse, summary="获取媒体库统计")
+def get_library_mediacount(
+    server_id: int | None = None,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    result = svc.get_media_count(server_id)
     if result:
         return success(data=result)
     return fail(code=ErrorCode.MEDIA_SERVER_ERROR, msg="媒体库服务器连接失败")
@@ -656,83 +753,87 @@ def get_library_spacesize(
 
 @router.post("/library/home", response_model=CommonResponse, summary="获取媒体库首页")
 def get_library_home(
+    req: LibraryTargetRequest | None = None,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    # 6 项数据均为独立的媒体服务器请求，并发获取以降低整体耗时
-    def _media_counts():
+    servers = svc.get_servers()
+    requested_id = req.server_id if req else None
+    if requested_id is not None:
+        if requested_id not in {item["id"] for item in servers}:
+            return fail(msg="媒体服务器不存在或未启用")
+        servers = [item for item in servers if item["id"] == requested_id]
+
+    def _section(server: dict) -> dict:
+        server_id = server["id"]
+
+        def _safe(call, fallback):
+            try:
+                return call()
+            except Exception as err:  # noqa: BLE001
+                log.debug(f"[MediaLibrary]{server['name']} 获取数据失败: {err}")
+                return fallback
+
+        def _with_server(items):
+            return [{**item, "server_id": server_id, "server_name": server["name"]} for item in items if item]
+
+        counts = _safe(lambda: svc.get_media_count(server_id), None)
+        libraries = _safe(lambda: svc.get_libraries(server_id), [])
+        resumes = _safe(lambda: svc.get_resume(server_id=server_id), [])
+        latests = _safe(lambda: svc.get_latest(server_id=server_id), [])
+        activity = _safe(lambda: svc.get_play_history(server_id), [])
+        sync_state = _safe(lambda: svc.get_sync_state(server_id), "未同步")
+        return {
+            "server": server,
+            "server_id": server_id,
+            "server_name": server["name"],
+            "server_success": counts is not None,
+            "media_counts": counts or {},
+            "sync_state": sync_state,
+            "librarys": _with_server(libraries or []),
+            "resumes": _with_server(resumes or []),
+            "latests": _with_server(latests or []),
+            "activitys": _with_server(activity or []),
+        }
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(servers)))) as executor:
+        sections = list(executor.map(_section, servers))
+
+    def _number(section: dict, key: str) -> int:
         try:
-            return svc.get_media_count() or None
-        except Exception as e:  # noqa: BLE001
-            log.debug(f"[MediaLibrary]获取媒体数量失败: {e}")
-            return None
+            return int(str(section["media_counts"].get(key, 0) or 0).replace(",", ""))
+        except (TypeError, ValueError):
+            return 0
 
-    def _activity():
-        with contextlib.suppress(Exception):
-            return svc.get_play_history() or []
-        return []
-
-    def _spaces():
-        try:
-            space_info = svc.get_space_info()
-            return {
-                "UsedPercent": space_info.used_percent,
-                "FreeSpace": space_info.free_space,
-                "UsedSpace": space_info.used_space,
-                "TotalSpace": space_info.total_space,
-            }
-        except Exception as e:  # noqa: BLE001
-            log.debug(f"[MediaLibrary]获取空间信息失败: {e}")
-            return {}
-
-    def _libraries():
-        with contextlib.suppress(Exception):
-            return svc.get_libraries() or []
-        return []
-
-    def _resumes():
-        with contextlib.suppress(Exception):
-            return svc.get_resume() or []
-        return []
-
-    def _latests():
-        with contextlib.suppress(Exception):
-            return svc.get_latest() or []
-        return []
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        f_counts = executor.submit(_media_counts)
-        f_activity = executor.submit(_activity)
-        f_spaces = executor.submit(_spaces)
-        f_libraries = executor.submit(_libraries)
-        f_resumes = executor.submit(_resumes)
-        f_latests = executor.submit(_latests)
-
-        counts_result = f_counts.result()
-        server_success = counts_result is not None
-        media_counts = counts_result or {}
-        activity = f_activity.result()
-        library_spaces = f_spaces.result()
-        libraries = f_libraries.result()
-        resumes = f_resumes.result()
-        latests = f_latests.result()
-
+    count_keys = ("Movie", "Series", "Music", "Episodes", "User")
+    totals = {key: sum(_number(section, key) for section in sections) for key in count_keys}
+    try:
+        space_info = svc.get_space_info()
+        library_spaces = {
+            "UsedPercent": space_info.used_percent,
+            "FreeSpace": space_info.free_space,
+            "UsedSpace": space_info.used_space,
+            "TotalSpace": space_info.total_space,
+        }
+    except Exception as err:  # noqa: BLE001
+        log.debug(f"[MediaLibrary]获取空间信息失败: {err}")
+        library_spaces = {}
     return success(
         data={
-            "server_success": server_success,
-            "media_counts": {
-                "Movie": media_counts.get("Movie", 0),
-                "Series": media_counts.get("Series", 0),
-                "Music": media_counts.get("Music", 0),
-                "Episodes": media_counts.get("Episodes", 0),
-                "User": media_counts.get("User", 0),
-            },
-            "user_count": media_counts.get("User", 0),
-            "activitys": activity,
+            "server_success": any(section["server_success"] for section in sections),
+            "servers": svc.get_servers(),
+            "sections": sections,
+            "media_counts": totals,
+            "user_count": totals["User"],
+            "activitys": sorted(
+                [item for section in sections for item in section["activitys"]],
+                key=lambda item: str(item.get("date") or ""),
+                reverse=True,
+            )[:30],
             "library_spaces": library_spaces,
-            "librarys": libraries,
-            "resumes": resumes,
-            "latests": latests,
+            "librarys": [item for section in sections for item in section["librarys"]],
+            "resumes": [item for section in sections for item in section["resumes"]],
+            "latests": [item for section in sections for item in section["latests"]],
         }
     )
 

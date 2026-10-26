@@ -63,8 +63,12 @@ class LibraryRefreshPlugin:
         if not event_data:
             event_data = {}
 
+        media_info = event_data.get("media_info") if event_data else None
+        profile = media_info.get("content_profile") if media_info else None
+        target_path = event_data.get("target_path") or event_data.get("dest")
+        server_id = self._mediaserver.resolve_server_id(None, profile, target_path)
         if self._mediaserver:
-            mediaserver_type_obj = self._mediaserver.get_type()
+            mediaserver_type_obj = self._mediaserver.get_type(server_id)
             # get_type 返回字符串或枚举（不同客户端实现不一），统一转为字符串
             mediaserver_type = (
                 mediaserver_type_obj.value
@@ -73,7 +77,6 @@ class LibraryRefreshPlugin:
             )
         else:
             mediaserver_type = ""
-        media_info = event_data.get("media_info") if event_data else None
         if media_info:
             title = media_info.get("title")
             year = media_info.get("year")
@@ -86,6 +89,7 @@ class LibraryRefreshPlugin:
                         "year": year,
                         "type": media_info.get("type"),
                         "category": media_info.get("category"),
+                        "content_profile": media_info.get("content_profile"),
                         "target_path": event_data.get("dest"),
                         "file_path": event_data.get("target_path"),
                     }
@@ -93,4 +97,4 @@ class LibraryRefreshPlugin:
             )
         else:
             self.ctx.info(f"媒体服务器 {mediaserver_type} 刷新整库 ...")
-            self._mediaserver.refresh_root_library()
+            self._mediaserver.refresh_root_library(server_id=server_id)

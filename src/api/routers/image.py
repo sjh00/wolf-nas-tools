@@ -208,7 +208,7 @@ async def proxy_bgm_image(img_path: str):
 
 
 @router.get("/library/{img_url:path}", summary="代理媒体库图片")
-async def proxy_library_image(request: Request, img_url: str):
+async def proxy_library_image(request: Request, img_url: str, server_id: int | None = None):
     """代理媒体库内网图片"""
     decoded_url = urllib.parse.unquote(img_url)
     # 重新附加查询参数（如 Plex 的 X-Plex-Token）
@@ -219,7 +219,7 @@ async def proxy_library_image(request: Request, img_url: str):
     cache_path = get_cache_path("library", decoded_url)
     if "/v/api/v1/sys/img/" in decoded_url:
         ms = request.app.state.context.media_server
-        return await _serve_image(cache_path, decoded_url, downloader=lambda u: ms.download_image(u))
+        return await _serve_image(cache_path, decoded_url, downloader=lambda u: ms.download_image(u, server_id))
     # 已配置媒体服务器的内网地址为合法来源，放行；其余外部地址仍做 SSRF 校验
     decoded_host = urllib.parse.urlparse(decoded_url).hostname or ""
     if _is_allowed_library_host(decoded_host):

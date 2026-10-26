@@ -336,12 +336,18 @@ class LibraryRenameExecutor:
                         "title": snapshot.get("title") or "",
                         "year": snapshot.get("year") or "",
                         "type": snapshot.get("type") or "",
+                        "content_profile": snapshot.get("content_profile") or "default",
+                        "target_path": path,
                     }
                 )
         if not items:
             return
         try:
-            self._media_server.refresh_library_by_items(items)
+            grouped: dict[str, list[dict]] = {}
+            for item in items:
+                grouped.setdefault(item.get("content_profile") or "default", []).append(item)
+            for profile, profile_items in grouped.items():
+                self._media_server.refresh_library_by_items(profile_items, content_profile=profile)
         except Exception as e:  # noqa: BLE001
             log.warn(f"[LibraryRename]刷新媒体服务器失败: {e}")
 

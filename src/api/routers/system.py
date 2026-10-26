@@ -548,6 +548,30 @@ def save_mediaserver_config(
     return fail(msg=result.msg)
 
 
+@router.post("/mediaservers/delete", response_model=CommonResponse, summary="删除媒体服务器实例")
+def delete_mediaserver(
+    req: dict,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+    svc=Depends(get_media_server_config_service),
+):
+    result = svc.delete_config(int(req.get("id") or 0))
+    if result.success:
+        return success()
+    return fail(msg=result.msg)
+
+
+@router.post("/mediaservers/default", response_model=CommonResponse, summary="设置默认媒体服务器")
+def set_default_mediaserver(
+    req: dict,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+    svc=Depends(get_media_server_config_service),
+):
+    result = svc.set_default(int(req.get("id") or 0))
+    if result.success:
+        return success()
+    return fail(msg=result.msg)
+
+
 @router.post("/scheduler/run", response_model=CommonResponse, summary="运行定时任务")
 def sch(
     req: SchedulerRequest,

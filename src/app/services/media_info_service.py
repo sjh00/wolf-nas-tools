@@ -70,8 +70,8 @@ class MediaInfoService:
         self._douban = douban
         self._metadata_service = metadata_service
 
-    def get_season_episodes(self, tmdbid, title, year, season) -> SeasonEpisodesResultDTO:
-        """查询 TMDB 剧集情况并检查媒体服务器存在状态"""
+    def get_season_episodes(self, tmdbid, title, year, season, content_profile=None) -> SeasonEpisodesResultDTO:
+        """查询剧集情况并按目标媒体库检查存在状态"""
         episodes = self._media.get_tmdb_season_episodes(tmdbid=tmdbid, season=season)
         for episode in episodes:
             episode.update(
@@ -84,6 +84,7 @@ class MediaInfoService:
                             tmdbid=tmdbid,
                             season=season,
                             episode=episode.get("episode_number"),
+                            content_profile=content_profile,
                         )
                     )
                 }
@@ -743,6 +744,7 @@ class MediaInfoService:
                         year=media_info.year,
                         tmdbid=media_info.tmdb_id,
                         season=season.get("season_number"),
+                        content_profile=media_info.content_profile,
                     )
                     season.update({"state": bool(exists)})
                 except (ServiceError, RepositoryError, DomainError):

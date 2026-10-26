@@ -221,6 +221,7 @@ class MediaServerEntity:
     type: str
     config: str
     enabled: bool
+    is_default: bool = False
 
     @classmethod
     def from_orm(cls, orm_model) -> Optional["MediaServerEntity"]:
@@ -229,9 +230,10 @@ class MediaServerEntity:
         return cls(
             id=orm_model.ID,
             name=orm_model.NAME or "",
-            type=orm_model.TYPE or "",
+            type=orm_model.TYPE or orm_model.NAME or "",
             config=orm_model.CONFIG or "",
             enabled=bool(orm_model.ENABLED),
+            is_default=bool(orm_model.IS_DEFAULT),
         )
 
     _ORM_FIELD_MAP = {}
@@ -251,6 +253,7 @@ class MediaServerEntity:
             "type": self.type,
             "config": self.config,
             "enabled": self.enabled,
+            "is_default": self.is_default,
         }
 
 

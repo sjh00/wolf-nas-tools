@@ -5,6 +5,8 @@
 
 import time
 
+from sqlalchemy import or_
+
 from app.db.models import MEDIASYNCITEMS, MEDIASYNCSTATISTIC
 from app.db.repositories.base_repository import BaseRepository
 from app.utils.json_utils import JsonUtils
@@ -16,7 +18,9 @@ class MediaSyncRepository(BaseRepository):
     处理 MEDIASYNCITEMS 和 MEDIASYNCSTATISTIC 的数据库操作
     """
 
-    def insert_item(self, server_type: str, iteminfo: dict, seasoninfo: list | None = None) -> bool:
+    def insert_item(
+        self, server_type: str, iteminfo: dict, seasoninfo: list | None = None, server_id: int | None = None
+    ) -> bool:
         """
         插入/更新媒体同步项目
         id 类字段统一转 str：MEDIASYNC_ITEMS 对应列为 varchar，PostgreSQL 不允许隐式转换
@@ -37,13 +41,17 @@ class MediaSyncRepository(BaseRepository):
                 anchor_provider, anchor_external_id = "imdb", imdb_id
 
         with self.session() as db:
-            db.query(MEDIASYNCITEMS).filter(
+            query = db.query(MEDIASYNCITEMS).filter(
                 MEDIASYNCITEMS.SERVER == server_type,
                 MEDIASYNCITEMS.ITEM_ID == item_id,
-            ).delete()
+            )
+            if server_id is not None:
+                query = query.filter(MEDIASYNCITEMS.SERVER_ID == int(server_id))
+            query.delete()
 
             new_item = MEDIASYNCITEMS(
                 SERVER=server_type,
+                SERVER_ID=server_id,
                 LIBRARY=iteminfo.get("library") or "",
                 ITEM_ID=item_id,
                 ITEM_TYPE=iteminfo.get("type") or "",
@@ -64,12 +72,16 @@ class MediaSyncRepository(BaseRepository):
             db.commit()
             return True
 
-    def empty_items(self, server_type: str | None = None, library: str | None = None) -> bool:
+    def empty_items(
+        self, server_type: str | None = None, library: str | None = None, server_id: int | None = None
+    ) -> bool:
         """
         清空媒体同步项目
         """
         with self.session() as db:
             query = db.query(MEDIASYNCITEMS)
+            if server_id is not None:
+                query = query.filter(MEDIASYNCITEMS.SERVER_ID == int(server_id))
             if server_type and library:
                 query = query.filter(
                     MEDIASYNCITEMS.SERVER == server_type,
@@ -81,7 +93,9 @@ class MediaSyncRepository(BaseRepository):
             db.commit()
             return True
 
-    def save_statistics(self, server_type: str, total_count: int, movie_count: int, tv_count: int) -> bool:
+    def save_statistics(
+        self, server_type: str, total_count: int, movie_count: int, tv_count: int, server_id: int | None = None
+    ) -> bool:
         """
         保存媒体同步统计
         """
@@ -89,10 +103,14 @@ class MediaSyncRepository(BaseRepository):
             return False
 
         with self.session() as db:
-            db.query(MEDIASYNCSTATISTIC).filter(MEDIASYNCSTATISTIC.SERVER == server_type).delete()
+            query = db.query(MEDIASYNCSTATISTIC).filter(MEDIASYNCSTATISTIC.SERVER == server_type)
+            if server_id is not None:
+                query = query.filter(MEDIASYNCSTATISTIC.SERVER_ID == int(server_id))
+            query.delete()
 
             new_stat = MEDIASYNCSTATISTIC(
                 SERVER=server_type,
+                SERVER_ID=server_id,
                 TOTAL_COUNT=str(total_count),
                 MOVIE_COUNT=str(movie_count),
                 TV_COUNT=str(tv_count),
@@ -102,7 +120,14 @@ class MediaSyncRepository(BaseRepository):
             db.commit()
             return True
 
-    def query_item(self, server_type: str, title: str, year: str | None = None, tmdbid: str | None = None):
+    def query_item(
+        self,
+        server_type: str,
+        title: str,
+        year: str | None = None,
+        tmdbid: str | None = None,
+        server_id: int | None = None,
+    ):
         """
         查询媒体同步项目
         列 TMDBID/YEAR 为 varchar：入参统一转 str，避免 PostgreSQL 下 varchar = integer 报错
@@ -116,6 +141,10 @@ class MediaSyncRepository(BaseRepository):
 
         with self.session() as db:
             query = db.query(MEDIASYNCITEMS).filter(MEDIASYNCITEMS.SERVER == server_type)
+            if server_id is not None:
+                query = query.filter(
+                    or_(MEDIASYNCITEMS.SERVER_ID == int(server_id), MEDIASYNCITEMS.SERVER_ID.is_(None))
+                )
 
             if tmdbid:
                 item = query.filter(MEDIASYNCITEMS.TMDBID == tmdbid).first()
@@ -132,11 +161,15 @@ class MediaSyncRepository(BaseRepository):
 
             return item
 
-    def get_statistics(self, server_type: str):
-        """
-        获取媒体同步统计
-        """
+    def get_statistics(self, server_type: str, server_id: int | None = None):
+        """获取指定实例的媒体同步统计。"""
         if not server_type:
             return None
         with self.session() as db:
-            return db.query(MEDIASYNCSTATISTIC).filter(MEDIASYNCSTATISTIC.SERVER == server_type).first()
+            query = db.query(MEDIASYNCSTATISTIC).filter(MEDIASYNCSTATISTIC.SERVER == server_type)
+            if server_id is not None:
+                item = query.filter(MEDIASYNCSTATISTIC.SERVER_ID == int(server_id)).first()
+                if item:
+                    return item
+                return query.filter(MEDIASYNCSTATISTIC.SERVER_ID.is_(None)).first()
+            return query.first()
