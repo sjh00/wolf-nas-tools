@@ -8,6 +8,7 @@ import os
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.domain.mediatypes import MediaType
 from app.mediaserver.media_server import MediaServer
+from app.plugin_framework.builtin_plugins._ms_common.mediaserver_lifecycle import resolve_plugin_server_id
 from app.plugin_framework.context import PluginContext
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.utils import SystemUtils
@@ -49,9 +50,6 @@ class MovieLikePlugin:
         if dir_name:
             update_favtype(dir_name)
 
-        if self._mediaserver.get_type() != "emby":
-            return
-
         action_type = event_data.get("Event")
         if action_type != "item.rate":
             return
@@ -61,6 +59,10 @@ class MovieLikePlugin:
 
         item_path = event_data.get("Item", {}).get("Path")
         if not item_path:
+            return
+
+        server_id = resolve_plugin_server_id(self._mediaserver, {}, target_path=item_path)
+        if self._mediaserver.get_type(server_id) != "emby":
             return
 
         local_path = config.get("local_path")
