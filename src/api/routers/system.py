@@ -700,6 +700,13 @@ def _strip_masked(value):
     return value
 
 
+def _config_for_user(flat: dict, user: UserContext) -> dict:
+    """按权限返回配置：只读用户脱敏，可修改配置的用户回显真实密钥。"""
+    if user.is_superadmin or user.has_permission("setting:update"):
+        return flat
+    return _mask_sensitive(flat)
+
+
 @router.post("/config", response_model=CommonResponse, summary="设置系统配置")
 def set_system_config(
     req: SystemConfigRequest,
@@ -726,7 +733,7 @@ def get_all_config(
     http_proxy = proxies.get("http") if isinstance(proxies, dict) else None
     if http_proxy:
         flat["app.proxies"] = http_proxy.removeprefix("http://")
-    return success(data=_mask_sensitive(flat))
+    return success(data=_config_for_user(flat, current_user))
 
 
 @router.post("/config/scraper", response_model=CommonResponse, summary="获取刮削配置")
