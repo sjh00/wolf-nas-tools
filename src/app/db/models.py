@@ -41,7 +41,6 @@ from app.db.models import (
     DOWNLOADSETTING,
     # 索引器
     INDEXERSTATISTICS,
-    # 媒体同步
     MEDIASYNCITEMS,
     MEDIASYNCSTATISTIC,
     # 消息
@@ -74,6 +73,8 @@ from app.db.models import (
     BaseMedia,
     # RSS
     CustomRssSource,
+    # 媒体同步
+    MediaLibraryRoute,
     SubscribeHistory,
     SubscribeMovies,
     SubscribeTorrents,
@@ -130,6 +131,7 @@ __all__ = [
     "TORRENTREMOVETASK",
     "USERRSSTASKHISTORY",
     # 媒体同步
+    "MediaLibraryRoute",
     "MEDIASYNCITEMS",
     "MEDIASYNCSTATISTIC",
     # 搜索

@@ -308,6 +308,9 @@ class MediaServerRepositoryAdapter(IMediaServerRepository):
     def delete(self, sid: int) -> None:
         self._repo.delete_media_server(sid)
 
+    def delete_media_server(self, sid: int) -> None:
+        self._repo.delete_media_server(sid)
+
     # 兼容旧 ConfigRepository 方法
     def get_media_servers(self, sid: int | None = None) -> list[MEDIASERVER]:
         return self._repo.get_media_servers(sid)
@@ -316,12 +319,22 @@ class MediaServerRepositoryAdapter(IMediaServerRepository):
         return self._repo.get_media_server_by_name(name)
 
     def update_media_server(
-        self, sid: int | None, name: str, enabled: int, config: str, is_default: int = 0, note: str | None = None
+        self,
+        sid: int | None,
+        name: str,
+        enabled: int,
+        config: str,
+        is_default: int = 0,
+        note: str | None = None,
+        server_type: str | None = None,
     ) -> None:
-        self._repo.update_media_server(sid, name, enabled, config, is_default, note)
+        self._repo.update_media_server(sid, name, enabled, config, is_default, note, server_type)
 
     def set_default_media_server(self, name: str) -> None:
         self._repo.set_default_media_server(name)
+
+    def set_default_media_server_id(self, sid: int) -> None:
+        self._repo.set_default_media_server_id(sid)
 
     def get_default_media_server(self) -> MEDIASERVER | None:
         return self._repo.get_default_media_server()

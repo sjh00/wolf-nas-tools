@@ -120,6 +120,7 @@ class MEDIASERVER(Base):
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
     NAME: Mapped[str] = mapped_column(String(255), index=True)
+    TYPE: Mapped[str] = mapped_column(String(32), default="", server_default="")
     ENABLED: Mapped[int] = mapped_column(Integer)
     CONFIG: Mapped[str] = mapped_column(Text)
     IS_DEFAULT: Mapped[int] = mapped_column(Integer)

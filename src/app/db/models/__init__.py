@@ -81,6 +81,7 @@ from app.db.models.media_identity import (
 )
 
 # 媒体同步模型
+from app.db.models.media_library_route import MediaLibraryRoute
 from app.db.models.media_sync import (
     MEDIASYNCITEMS,
     MEDIASYNCSTATISTIC,
@@ -242,6 +243,7 @@ __all__ = [
     "LIBRARYRENAMEITEM",
     "LIBRARYMEDIAMETADATA",
     # 媒体同步
+    "MediaLibraryRoute",
     "MEDIASYNCITEMS",
     "MEDIASYNCSTATISTIC",
     # 搜索

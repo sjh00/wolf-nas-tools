@@ -774,7 +774,14 @@ class ConfigRepository(BaseRepository):
             return db.query(MEDIASERVER).filter(MEDIASERVER.NAME == name).first()
 
     def update_media_server(
-        self, sid: int | None, name: str, enabled: int, config: str, is_default: int = 0, note: str | None = None
+        self,
+        sid: int | None,
+        name: str,
+        enabled: int,
+        config: str,
+        is_default: int = 0,
+        note: str | None = None,
+        server_type: str | None = None,
     ) -> None:
         """
         更新或插入媒体服务器配置
@@ -794,6 +801,7 @@ class ConfigRepository(BaseRepository):
                     db.query(MEDIASERVER).filter(MEDIASERVER.ID == int(sid)).update(
                         {
                             "NAME": name,
+                            "TYPE": server_type or name,
                             "ENABLED": int(enabled),
                             "CONFIG": config,
                             "IS_DEFAULT": int(is_default),
@@ -804,6 +812,7 @@ class ConfigRepository(BaseRepository):
             db.add(
                 MEDIASERVER(
                     NAME=name,
+                    TYPE=server_type or name,
                     ENABLED=int(enabled),
                     CONFIG=config,
                     IS_DEFAULT=int(is_default),
@@ -834,6 +843,12 @@ class ConfigRepository(BaseRepository):
             db.query(MEDIASERVER).update({"IS_DEFAULT": 0})
             if name:
                 db.query(MEDIASERVER).filter(MEDIASERVER.NAME == name).update({"IS_DEFAULT": 1})
+
+    def set_default_media_server_id(self, sid: int) -> None:
+        """按实例 ID 设置默认媒体服务器。"""
+        with self.session() as db:
+            db.query(MEDIASERVER).update({"IS_DEFAULT": 0})
+            db.query(MEDIASERVER).filter(MEDIASERVER.ID == int(sid)).update({"IS_DEFAULT": 1})
 
     def get_default_media_server(self) -> MEDIASERVER | None:
         """

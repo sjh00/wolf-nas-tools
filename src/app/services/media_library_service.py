@@ -1,3 +1,5 @@
+from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
+from app.domain.entities.media_library_route import MediaLibraryRouteEntity
 from app.domain.enums import SystemConfigKey
 from app.infrastructure.cache_system import TokenCache
 from app.mediaserver import MediaServer
@@ -18,16 +20,18 @@ class MediaLibraryService:
         system_config,
         thread_executor,
         media_config_service,
+        route_repo=None,
     ):
         self._media_server = media_server
         self._filetransfer = filetransfer
         self._system_config = system_config
         self._thread_executor = thread_executor
         self._media_config_service = media_config_service
+        self._route_repo = route_repo or MediaLibraryRouteRepositoryAdapter()
 
-    def get_sync_state(self) -> str:
-        """获取同步状态文本"""
-        status = self._media_server.get_mediasync_status()
+    def get_sync_state(self, server_id: int | None = None) -> str:
+        """获取指定实例同步状态文本"""
+        status = self._media_server.get_mediasync_status(server_id)
         if not status:
             return "未同步"
         return "电影：{}，电视剧：{}，同步时间：{}".format(
@@ -36,16 +40,30 @@ class MediaLibraryService:
             status.get("time"),
         )
 
-    def start_sync(self, librarys: list):
-        """开始媒体库同步"""
-        TokenCache.delete("index")
-        self._system_config.set(key=SystemConfigKey.SyncLibrary, value=librarys)
-        self._thread_executor.submit(self._media_server.sync_mediaserver)
+    def get_servers(self) -> list[dict]:
+        return self._media_server.get_server_options()
 
-    def get_media_count(self) -> dict | None:
-        """获取媒体库统计"""
-        media_counts = self._media_server.get_medias_count()
-        user_count = self._media_server.get_user_count()
+    def start_sync(self, librarys: list, server_id: int | None = None):
+        """开始指定实例的媒体库同步。"""
+        TokenCache.delete("index")
+        if server_id is None:
+            self._system_config.set(key=SystemConfigKey.SyncLibrary, value=librarys)
+            self._thread_executor.submit(self._media_server.sync_mediaserver)
+            return
+        if not librarys:
+            raise ValueError("请选择需要同步的媒体库")
+        self._thread_executor.submit(self._media_server.sync_mediaserver, server_id, librarys)
+
+    def refresh_library(self, server_id: int | None = None, items: list | None = None):
+        """刷新指定实例，可按项目刷新或刷新整库。"""
+        if items:
+            return self._media_server.refresh_library_by_items(items, server_id=server_id)
+        return self._media_server.refresh_root_library(server_id=server_id)
+
+    def get_media_count(self, server_id: int | None = None) -> dict | None:
+        """获取指定实例媒体库统计"""
+        media_counts = self._media_server.get_medias_count(server_id)
+        user_count = self._media_server.get_user_count(server_id)
         if media_counts:
             return {
                 "Movie": "{:,}".format(media_counts.get("MovieCount")),
@@ -56,21 +74,70 @@ class MediaLibraryService:
             }
         return None
 
-    def get_play_history(self) -> list:
-        """获取播放记录"""
-        return self._media_server.get_activity_log(30)
+    def get_play_history(self, server_id: int | None = None) -> list:
+        """获取指定实例播放记录"""
+        return self._media_server.get_activity_log(30, server_id=server_id)
 
-    def get_libraries(self):
-        """获取媒体库列表（代理）"""
-        return self._media_server.get_libraries()
+    def get_libraries(self, server_id: int | None = None):
+        """获取指定实例媒体库列表"""
+        return self._media_server.get_libraries(server_id)
 
-    def get_resume(self, num=12):
-        """获取继续观看（代理）"""
-        return self._media_server.get_resume(num=num)
+    def get_resume(self, num=12, server_id: int | None = None):
+        """获取指定实例继续观看"""
+        return self._media_server.get_resume(num=num, server_id=server_id)
 
-    def get_latest(self, num=20):
-        """获取最新入库（代理）"""
-        return self._media_server.get_latest(num=num)
+    def get_latest(self, num=20, server_id: int | None = None):
+        """获取指定实例最新入库"""
+        return self._media_server.get_latest(num=num, server_id=server_id)
+
+    def get_routes(self) -> list[dict]:
+        servers = {item["id"]: item["name"] for item in self.get_servers()}
+        return [
+            {
+                "id": route.id,
+                "content_profile": route.content_profile,
+                "target_path": route.target_path,
+                "server_id": route.server_id,
+                "server_name": servers.get(route.server_id, f"实例 {route.server_id}"),
+                "library_id": route.library_id,
+                "enabled": route.enabled,
+                "note": route.note,
+            }
+            for route in self._route_repo.list()
+        ]
+
+    def save_route(self, data: dict, route_id: int | None = None) -> dict:
+        profile = str(data.get("content_profile") or "").strip()
+        target_path = str(data.get("target_path") or "").strip()
+        server_id = int(data.get("server_id") or 0)
+        if not profile and not target_path:
+            raise ValueError("请填写目标目录或内容画像")
+        if not server_id:
+            raise ValueError("目标媒体服务器不能为空")
+        if server_id not in {item["id"] for item in self.get_servers()}:
+            raise ValueError("目标媒体服务器不存在或未启用")
+        entity = MediaLibraryRouteEntity(
+            id=route_id or 0,
+            content_profile=profile,
+            target_path=target_path,
+            server_id=server_id,
+            library_id=str(data.get("library_id") or "").strip() or None,
+            enabled=bool(data.get("enabled", True)),
+            note=str(data.get("note") or ""),
+        )
+        saved = self._route_repo.upsert(entity)
+        self._media_server.refresh()
+        return {
+            "id": saved.id,
+            "content_profile": saved.content_profile,
+            "target_path": saved.target_path,
+            "server_id": saved.server_id,
+        }
+
+    def delete_route(self, route_id: int) -> bool:
+        deleted = self._route_repo.delete(route_id)
+        self._media_server.refresh()
+        return deleted
 
     def get_space_info(self) -> LibrarySpaceDTO:
         """获取媒体库存储空间"""

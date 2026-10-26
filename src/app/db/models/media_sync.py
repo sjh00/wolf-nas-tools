@@ -15,6 +15,7 @@ class MEDIASYNCITEMS(BaseMedia):
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
     SERVER: Mapped[str] = mapped_column(String(255))
+    SERVER_ID: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     LIBRARY: Mapped[str] = mapped_column(String(255))
     ITEM_ID: Mapped[str] = mapped_column(String(255), index=True)
     ITEM_TYPE: Mapped[str] = mapped_column(String(255))
@@ -37,6 +38,7 @@ class MEDIASYNCSTATISTIC(BaseMedia):
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
     SERVER: Mapped[str] = mapped_column(String(255), index=True)
+    SERVER_ID: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     TOTAL_COUNT: Mapped[str] = mapped_column(String(255))
     MOVIE_COUNT: Mapped[str] = mapped_column(String(255))
     TV_COUNT: Mapped[str] = mapped_column(String(255))
