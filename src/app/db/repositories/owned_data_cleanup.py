@@ -17,6 +17,7 @@ from app.db.models import (
     SubscribeTvs,
 )
 from app.db.models.config import CONFIGUSERRSS
+from app.db.models.custom_rss import CustomRssSource
 from app.db.models.download import DOWNLOADHISTORY
 from app.db.models.plugin import USERRSSTASKHISTORY
 from app.db.models.search import SEARCHRESULTINFO
@@ -40,6 +41,7 @@ class OwnedDataCleaner(BaseRepository):
             db.query(SubscribeHistory).filter(SubscribeHistory.USER_ID == user_id).delete()
             db.query(SubscribeTvEpisodes).filter(SubscribeTvEpisodes.USER_ID == user_id).delete()
             db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.USER_ID == user_id).delete()
+            db.query(CustomRssSource).filter(CustomRssSource.USER_ID == user_id).delete()
             db.query(RBACUserSite).filter(RBACUserSite.USER_ID == user_id).delete()
             db.query(RBACUserChannel).filter(RBACUserChannel.USER_ID == user_id).delete()
             # 搜索结果属临时数据，直接删除

@@ -41,6 +41,9 @@ from app.db.models.config import (
     MEDIASERVER,
 )
 
+# 自定义 RSS 源模型
+from app.db.models.custom_rss import CustomRssSource
+
 # 分布式锁模型
 from app.db.models.distributed_lock import (
     DISTRIBUTEDLOCK,
@@ -201,6 +204,7 @@ __all__ = [
     # 消息
     "MESSAGECLIENT",
     # RSS
+    "CustomRssSource",
     "SubscribeHistory",
     "SubscribeMovies",
     "SubscribeTorrents",

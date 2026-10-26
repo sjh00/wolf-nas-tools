@@ -22,6 +22,7 @@ from app.domain.mediatypes import MediaType
 from app.media.service import MediaService
 from app.message import Message
 from app.services.downloader_core import DownloaderCore
+from app.services.rss_automation.custom_source_service import CustomRssSourceService
 from app.services.rss_processor import RssHelper
 from app.services.subscribe.management.service import SubscribeService
 from app.services.subscribe.matcher import SubscribeMatcher
@@ -50,6 +51,7 @@ class RssFeedStrategy:
         coordinator=None,
         system_config=None,
         site_grant_service=None,
+        custom_rss: CustomRssSourceService | None = None,
     ):
         self.media = media
         self.sites = sites
@@ -64,6 +66,7 @@ class RssFeedStrategy:
         self._coordinator = coordinator
         self._system_config = system_config
         self._site_grant_service = site_grant_service
+        self._custom_rss = custom_rss
         # 站点授权缓存：一轮轮询内按归属用户复用，避免逐订阅查库
         self._grant_cache: dict[int, dict | None] = {}
 
@@ -88,6 +91,19 @@ class RssFeedStrategy:
             else:
                 log.info(f"[RssFeedStrategy] 订阅 {info.get('name')}(用户{owner}) 未授权站点 {site_name}，本轮跳过")
         return filtered
+
+    def _filter_subscriptions_for_item(self, subs: dict, item: dict) -> dict:
+        """自定义 RSS 是私有来源，只允许归属用户的订阅消费。"""
+        if not item.get("custom_rss"):
+            return self._filter_subscriptions_by_site_grant(subs, item["site_name"])
+        owner = item.get("owner_user_id")
+        if owner is None:
+            return {}
+        return {
+            key: info
+            for key, info in subs.items()
+            if info.get("user_id") is not None and str(info.get("user_id")) == str(owner)
+        }
 
     def set_coordinator(self, coordinator) -> None:
         """设置下载协调器（用于 SubscriptionMonitor 注入）."""
@@ -124,6 +140,8 @@ class RssFeedStrategy:
         if self.subscribe is None:
             return
         rss_sites_info = self.sites.get_sites(rss=True, public=True)
+        if self._custom_rss is not None:
+            rss_sites_info = [*rss_sites_info, *self._custom_rss.poll_sites()]
         if not rss_sites_info:
             return
 
@@ -182,7 +200,11 @@ class RssFeedStrategy:
             if not site_info:
                 continue
             site_name = site_info.get("name")
-            if check_sites and site_name not in check_sites:
+            custom_rss = bool(site_info.get("custom_rss"))
+            if custom_rss:
+                if site_name not in check_sites:
+                    continue
+            elif check_sites and site_name not in check_sites:
                 continue
             rss_url = site_info.get("rssurl")
             if not rss_url:
@@ -191,8 +213,11 @@ class RssFeedStrategy:
             site_id = site_info.get("id")
             site_order = 100 - int(site_info.get("pri") or 0)
 
-            log.info(f"[RssFeedStrategy] 正在处理：{site_name}")
-            rss_articles = self.rsshelper.parse_rssxml(url=rss_url)
+            log.info(f"[RssFeedStrategy] 正在处理：{site_info.get('display_name') or site_name}")
+            if custom_rss and self._custom_rss is not None:
+                rss_articles = self._custom_rss.poll_articles(site_info["source_id"])
+            else:
+                rss_articles = self.rsshelper.parse_rssxml(url=rss_url)
             if rss_articles is None:
                 log.error(f"[RssFeedStrategy] 站点 {site_name} RSS 链接已过期，请重新获取！")
                 self.message.send_site_message(title="[RSS 链接过期提醒]", text=f"站点：{site_name}\n链接：{rss_url}")
@@ -203,6 +228,9 @@ class RssFeedStrategy:
 
             log.info(f"[RssFeedStrategy] {site_name} 获取数据：{len(rss_articles)}")
             for article in rss_articles:
+                if custom_rss and not article.get("enclosure"):
+                    log.info(f"[RssFeedStrategy] {article.get('title')} 缺少下载地址，跳过")
+                    continue
                 all_articles.append(
                     {
                         "article": article,
@@ -217,6 +245,8 @@ class RssFeedStrategy:
                         "site_parse": site_info.get("parse"),
                         "site_proxy": site_info.get("proxy"),
                         "site_filter_rule": site_info.get("rule"),
+                        "custom_rss": custom_rss,
+                        "owner_user_id": site_info.get("owner_user_id"),
                     }
                 )
 
@@ -310,8 +340,8 @@ class RssFeedStrategy:
 
                 match_flag, match_msg, match_info = self.matcher.match(
                     media_info=media_info,
-                    rss_movies=self._filter_subscriptions_by_site_grant(rss_movies, site_name),
-                    rss_tvs=self._filter_subscriptions_by_site_grant(rss_tvs, site_name),
+                    rss_movies=self._filter_subscriptions_for_item(rss_movies, item),
+                    rss_tvs=self._filter_subscriptions_for_item(rss_tvs, item),
                     site_id=site_id,
                     site_filter_rule=item["site_filter_rule"],
                     site_cookie=item["site_cookie"],

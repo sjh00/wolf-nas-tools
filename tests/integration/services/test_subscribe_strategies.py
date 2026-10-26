@@ -394,3 +394,58 @@ class TestRssFeedStrategy:
         sys_config.get.side_effect = RuntimeError("db error")
         strategy._system_config = sys_config
         assert strategy._get_default_rss_sites(MediaType.TV) == []
+
+    def test_custom_rss_only_allows_owner_subscriptions(self):
+        strategy = self._make_strategy()
+        subs = {
+            1: {"name": "所有者订阅", "user_id": 7},
+            2: {"name": "其他用户订阅", "user_id": 8},
+            3: {"name": "系统订阅", "user_id": None},
+        }
+        item = {"custom_rss": True, "owner_user_id": 7, "site_name": "custom_rss:3"}
+        assert list(strategy._filter_subscriptions_for_item(subs, item)) == [1]
+
+    def test_selected_custom_rss_is_polled(self):
+        strategy = self._make_strategy()
+        strategy_any = cast(Any, strategy)
+        custom = MagicMock()
+        custom.poll_sites.return_value = [
+            {
+                "id": -3,
+                "source_id": 3,
+                "name": "custom_rss:3",
+                "rssurl": "https://example.com/feed",
+                "custom_rss": True,
+                "owner_user_id": 7,
+            }
+        ]
+        custom.poll_articles.return_value = [{"title": "Example", "enclosure": "magnet:?xt=abc"}]
+        strategy._custom_rss = custom
+        strategy_any.sites.get_sites.return_value = []
+        strategy_any.subscribe.get_subscribe_movies.return_value = {
+            1: {"name": "Example", "rss_sites": ["custom_rss:3"], "user_id": 7}
+        }
+        strategy_any.subscribe.get_subscribe_tvs.return_value = {}
+        strategy_any.media.identify_batch.return_value = [None]
+
+        strategy._do_rss_poll()
+
+        custom.poll_articles.assert_called_once_with(3)
+
+    def test_unselected_custom_rss_is_not_polled(self):
+        strategy = self._make_strategy()
+        strategy_any = cast(Any, strategy)
+        custom = MagicMock()
+        custom.poll_sites.return_value = [
+            {"name": "custom_rss:3", "rssurl": "https://example.com/feed", "custom_rss": True}
+        ]
+        strategy._custom_rss = custom
+        strategy_any.sites.get_sites.return_value = []
+        strategy_any.subscribe.get_subscribe_movies.return_value = {
+            1: {"name": "Example", "rss_sites": ["siteA"], "user_id": 7}
+        }
+        strategy_any.subscribe.get_subscribe_tvs.return_value = {}
+
+        strategy._do_rss_poll()
+
+        custom.poll_articles.assert_not_called()

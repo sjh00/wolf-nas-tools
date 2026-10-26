@@ -20,6 +20,7 @@ from api.deps import (
 )
 from app.core.error_codes import ErrorCode
 from app.core.system_config import SystemConfig
+from app.domain.entities.custom_rss import custom_rss_id
 from app.domain.enums import SystemConfigKey
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType, normalize_media_type_input
@@ -295,18 +296,26 @@ def _check_site_grants(app_context, user: UserContext, kwargs: dict) -> list[str
 
     返回未授权站点名列表（空列表=通过）。open 策略或 superadmin 直接通过。
     """
-    grant_service = getattr(app_context, "site_grant_service", None)
-    if grant_service is None:
-        return []
-    visible = grant_service.get_visible_sites(user)
-    if visible is None:
-        return []
     denied: list[str] = []
+    custom_service = getattr(app_context, "custom_rss_service", None)
     for site in kwargs.get("rss_sites") or []:
-        if not grant_service.is_site_name_allowed(visible, site, usage="rss"):
+        if custom_rss_id(site) is not None and (custom_service is None or not custom_service.can_use_ref(user, site)):
             denied.append(site)
     for site in kwargs.get("search_sites") or []:
-        if not grant_service.is_site_name_allowed(visible, site, usage="search"):
+        if custom_rss_id(site) is not None:
+            denied.append(site)
+
+    grant_service = getattr(app_context, "site_grant_service", None)
+    if grant_service is None:
+        return denied
+    visible = grant_service.get_visible_sites(user)
+    if visible is None:
+        return denied
+    for site in kwargs.get("rss_sites") or []:
+        if custom_rss_id(site) is None and not grant_service.is_site_name_allowed(visible, site, usage="rss"):
+            denied.append(site)
+    for site in kwargs.get("search_sites") or []:
+        if custom_rss_id(site) is None and not grant_service.is_site_name_allowed(visible, site, usage="search"):
             denied.append(site)
     return denied
 

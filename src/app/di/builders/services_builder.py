@@ -70,6 +70,7 @@ from app.services.metadata_service import MetadataService
 from app.services.plugin_framework_service import PluginFrameworkService
 from app.services.plugin_market_service import PluginMarketService
 from app.services.rbac.service import RBACService
+from app.services.rss_automation.custom_source_service import CustomRssSourceService
 from app.services.rss_automation.task_service import RssTaskService
 from app.services.rss_automation.userrss_service import UserRssService
 from app.services.rss_processor import RssHelper
@@ -351,6 +352,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     # 消息定向发送按用户绑定渠道路由
     message.set_channel_binding_service(channel_binding_service)
     user_rss_service = UserRssService(rss_checker=rss_task_service)
+    custom_rss_service = CustomRssSourceService()
 
     douban = DouBan()
     media_info_service = MediaInfoService(
@@ -616,6 +618,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         subscribe_history_service=subscribe_history_service,
         words_service=words_service,
         user_rss_service=user_rss_service,
+        custom_rss_service=custom_rss_service,
         site_grant_service=site_grant_service,
         channel_binding_service=channel_binding_service,
     )

@@ -11,7 +11,7 @@ from api.routers import site as site_router
 from app.schemas.auth import UserContext
 
 
-def _client(grants, indexers, rss_sites, user=None):
+def _client(grants, indexers, rss_sites, user=None, custom_sites=None):
     app = FastAPI()
     app.include_router(site_router.router, prefix="/api/site")
     ctx = SimpleNamespace(
@@ -20,6 +20,9 @@ def _client(grants, indexers, rss_sites, user=None):
     )
     ctx.site_grant_service.get_visible_sites.return_value = grants
     ctx.indexer_service.indexer.get_indexers_with_source.return_value = indexers
+    if custom_sites is not None:
+        ctx.custom_rss_service = MagicMock()
+        ctx.custom_rss_service.visible_sites.return_value = custom_sites
     site_svc = MagicMock()
     site_svc.get_sites.return_value = [{"name": n} for n in rss_sites]
 
@@ -70,6 +73,22 @@ class TestVisibleSitesCapability:
         by_name = {d["name"]: d["permissions"] for d in data}
         assert by_name["siteA"] == ["rss", "search"]
         assert by_name["siteB"] == ["search"]
+
+    def test_custom_rss_site_is_included_with_stable_ref(self):
+        user = UserContext(user_id=2, username="u", level=100, permissions=[], role_codes=["user"])
+        custom = [
+            {
+                "id": "custom_rss:3",
+                "name": "我的 RSS",
+                "value": "custom_rss:3",
+                "source": "custom_rss",
+                "builtin": False,
+                "permissions": ["rss"],
+            }
+        ]
+        c = _client(grants=None, indexers=[], rss_sites=[], user=user, custom_sites=custom)
+        data = c.get("/api/site/sites/visible").json()["data"]
+        assert data == custom
 
 
 class TestIndexIdAllowed:
