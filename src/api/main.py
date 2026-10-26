@@ -20,6 +20,7 @@ from api.routers import (
     browser_fingerprint,
     brush,
     chat,
+    custom_rss,
     download,
     filter,
     image,
@@ -228,6 +229,7 @@ app.include_router(scheduler.router, prefix="/api/scheduler", tags=["scheduler"]
 app.include_router(plugin_framework.router, prefix="/api/plugin-framework", tags=["plugin-framework"])
 app.include_router(plugin_market.router, prefix="/api/plugin/market", tags=["plugin-market"])
 app.include_router(rss_automation.router, prefix="/api/rss-automation", tags=["rss-automation"])
+app.include_router(custom_rss.router, prefix="/api/site", tags=["custom-rss"])
 app.include_router(words.router, prefix="/api/words", tags=["words"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(library_rename.router, prefix="/api/media", tags=["media-library-rename"])

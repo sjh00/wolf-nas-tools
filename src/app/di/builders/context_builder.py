@@ -97,6 +97,7 @@ def build_app_context() -> AppContext:
         subscribe_history_service=services.subscribe_history_service,
         words_service=services.words_service,
         user_rss_service=services.user_rss_service,
+        custom_rss_service=services.custom_rss_service,
         site_grant_service=services.site_grant_service,
         channel_binding_service=services.channel_binding_service,
         subscription_monitor=coordinators.subscription_monitor,

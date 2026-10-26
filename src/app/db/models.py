@@ -73,6 +73,7 @@ from app.db.models import (
     Base,
     BaseMedia,
     # RSS
+    CustomRssSource,
     SubscribeHistory,
     SubscribeMovies,
     SubscribeTorrents,
@@ -103,6 +104,7 @@ __all__ = [
     # 消息
     "MESSAGECLIENT",
     # RSS
+    "CustomRssSource",
     "SubscribeHistory",
     "SubscribeMovies",
     "SubscribeTorrents",

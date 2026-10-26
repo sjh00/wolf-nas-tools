@@ -6,6 +6,7 @@ from typing import Any
 
 import log
 from app.core.constants import ANIME_GENREIDS
+from app.domain.entities.custom_rss import custom_rss_id
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system.caches import TMDBCache
 from app.media.metadata.registry import registry as metadata_registry
@@ -195,7 +196,9 @@ class SubscribeQueryService:
                 note_info = parse_rss_desc(note)
             else:
                 note_info = {}
-            rss_sites = [site for site in (rss_sites or []) if site in rss_sites_valid]
+            rss_sites = [
+                site for site in (rss_sites or []) if site in rss_sites_valid or custom_rss_id(site) is not None
+            ]
             search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
             anchor_provider, anchor_external_id = _normalized_anchor(
                 rss_movie.ANCHOR_PROVIDER, rss_movie.ANCHOR_EXTERNAL_ID
@@ -303,7 +306,9 @@ class SubscribeQueryService:
                 note_info = parse_rss_desc(note)
             else:
                 note_info = {}
-            rss_sites = [site for site in (rss_sites or []) if site in rss_sites_valid]
+            rss_sites = [
+                site for site in (rss_sites or []) if site in rss_sites_valid or custom_rss_id(site) is not None
+            ]
             search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
             anchor_provider, anchor_external_id = _normalized_anchor(rss_tv.ANCHOR_PROVIDER, rss_tv.ANCHOR_EXTERNAL_ID)
             resolved_type = (

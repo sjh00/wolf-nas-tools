@@ -576,13 +576,17 @@ def get_visible_sites(
 
     if visible is None:
         # 不过滤：superadmin 或 open 策略
-        return success(data=[{**item, "permissions": _permissions(item["name"], None)} for item in indexers])
-    sites = []
-    for item in indexers:
-        grants: set[str] = set()
-        for key in (f"{item['source']}:{item['name']}", f"{item['source']}:*", item["name"]):
-            grants |= visible.get(key, set())
-        perms = _permissions(item["name"], grants)
-        if perms:
-            sites.append({**item, "permissions": perms})
+        sites = [{**item, "permissions": _permissions(item["name"], None)} for item in indexers]
+    else:
+        sites = []
+        for item in indexers:
+            grants: set[str] = set()
+            for key in (f"{item['source']}:{item['name']}", f"{item['source']}:*", item["name"]):
+                grants |= visible.get(key, set())
+            perms = _permissions(item["name"], grants)
+            if perms:
+                sites.append({**item, "permissions": perms})
+    custom_rss_service = getattr(app_context, "custom_rss_service", None)
+    if custom_rss_service is not None:
+        sites.extend(custom_rss_service.visible_sites(current_user))
     return success(data=sites)
