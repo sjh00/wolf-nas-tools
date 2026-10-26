@@ -141,12 +141,19 @@ class TestCheckRemoveRule:
         need, _ = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is False
 
-    def test_freestatus_free_rule_triggers_when_free_expired(self):
+    def test_freestatus_alone_never_triggers_delete(self):
         rule = {"freestatus": "FREE", "mode": "or"}
-        params = {"torrent_attr": {"free": False}}
+        params = {"torrent_attr": {"free": False}, "is_completed": True}
+        need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
+        assert need is False
+        assert dtype == BrushDeleteType.NOTDELETE
+
+    def test_freestatus_guard_with_ratio_triggers_after_free_end(self):
+        rule = {"freestatus": "FREE", "ratio": "lt#5", "mode": "or"}
+        params = {"torrent_attr": {"free": False}, "ratio": 2.5, "is_completed": True}
         need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is True
-        assert dtype == BrushDeleteType.FREESTATUS
+        assert dtype == BrushDeleteType.RATIO
 
     def test_freestatus_free_rule_not_triggers_when_still_free(self):
         rule = {"freestatus": "FREE", "mode": "or"}
@@ -154,12 +161,12 @@ class TestCheckRemoveRule:
         need, _ = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is False
 
-    def test_freestatus_switch_triggers_when_free_expired(self):
-        # 前端开关存值 'Y'：免费到期（非免费）才删
-        rule = {"freestatus": "Y", "mode": "or"}
-        need, dtype = BrushRuleEngine.check_remove_rule(rule, {"torrent_attr": {"free": False}})
-        assert need is True
-        assert dtype == BrushDeleteType.FREESTATUS
+    def test_freestatus_guard_blocks_delete_while_still_free(self):
+        rule = {"freestatus": "Y", "ratio": "lt#5", "mode": "or"}
+        params = {"torrent_attr": {"free": True}, "ratio": 2.5, "is_completed": True}
+        need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
+        assert need is False
+        assert dtype == BrushDeleteType.NOTDELETE
 
     def test_freestatus_switch_not_triggers_when_still_free(self):
         rule = {"freestatus": "Y", "mode": "or"}
@@ -173,12 +180,12 @@ class TestCheckRemoveRule:
         need, _ = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is False
 
-    def test_freestatus_normal_rule_triggers_when_not_free(self):
-        rule = {"freestatus": "NORMAL", "mode": "or"}
-        params = {"torrent_attr": {"free": False}}
+    def test_freestatus_guard_does_not_block_other_rules_for_downloading(self):
+        rule = {"freestatus": "NORMAL", "ratio": "lt#5", "mode": "or"}
+        params = {"torrent_attr": {"free": True}, "ratio": 2.5, "is_completed": False}
         need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is True
-        assert dtype == BrushDeleteType.FREESTATUS
+        assert dtype == BrushDeleteType.RATIO
 
     def test_hr_rule_triggers_when_is_hr(self):
         rule = {"hr": "HR", "mode": "or"}
@@ -431,6 +438,19 @@ class TestCheckStopRule:
         stop_rule = {"stopfree": "Y"}
         need, _ = BrushRuleEngine.check_stop_rule(stop_rule, {"free": True})
         assert need is False
+
+    def test_stopfree_does_not_stop_completed_torrent(self):
+        need, stype = BrushRuleEngine.check_stop_rule({"stopfree": "Y"}, {"free": False, "is_completed": True})
+        assert need is False
+        assert stype == BrushStopType.NOTSTOP
+
+    def test_completed_torrent_still_obeys_ratio_rule(self):
+        need, stype = BrushRuleEngine.check_stop_rule(
+            {"stopfree": "Y", "ratio": "gt#1"},
+            {"free": False, "is_completed": True, "ratio": 2.5},
+        )
+        assert need is True
+        assert stype == BrushStopType.RATIO
 
     def test_first_triggering_rule_wins(self):
         stop_rule = {"ratio": "lt#5.0", "seedtime": "gt#1"}

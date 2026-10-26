@@ -340,6 +340,14 @@ class BrushRepository(BaseRepository):
             ]
             db.query(SITEBRUSHTORRENTS).filter(or_(*conditions)).update({"DOWNLOAD_ID": "0"}, synchronize_session=False)
 
+    def update_brushtask_torrent_pause_reason(self, brush_id: int, download_id: str, reason: str) -> None:
+        """记录系统暂停原因，仅 free_end 种子允许自动恢复。"""
+        with self.session() as db:
+            db.query(SITEBRUSHTORRENTS).filter(
+                cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == int(brush_id),
+                SITEBRUSHTORRENTS.DOWNLOAD_ID == download_id,
+            ).update({"PAUSE_REASON": reason or ""}, synchronize_session=False)
+
     def delete_brushtask_torrent(self, brush_id: int | None, download_id: str | None) -> None:
         """
         删除刷流种子记录
