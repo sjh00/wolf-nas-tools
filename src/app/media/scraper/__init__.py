@@ -654,7 +654,8 @@ class Scraper:
                 provider, external_id = "tmdb", raw
         media_type = getattr(media_info, "type", None) or MediaType.MOVIE
         policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
-        if self._metadata_service is not None:
+        if self._metadata_service is not None and not provider:
+            # 下载历史/订阅已经给出明确锚点时，不能被标题识别覆盖。
             self._metadata_service.identify_anchor(media_info, policy=policy)
         anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
         anchor_external = str(getattr(media_info, "anchor_external_id", "") or "")
