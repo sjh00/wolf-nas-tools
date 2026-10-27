@@ -89,7 +89,15 @@ class MessageBuilder:
         self._messagecenter = messagecenter
         self._template_engine = template_engine
 
-    def _send_admin_msg(self, title: str, text: str, url: str | None = None, image: str | None = None) -> bool:
+    def _send_admin_msg(
+        self,
+        title: str,
+        text: str,
+        url: str | None = None,
+        image: str | None = None,
+        msg_type: str | None = None,
+        variables: dict | None = None,
+    ) -> bool:
         """系统/人工介入类事件定向推送给超级管理员（Web + 其绑定渠道）.
 
         返回是否有管理员被通知；无管理员时退化为全局系统消息。
@@ -101,10 +109,19 @@ class MessageBuilder:
             admin_ids = []
         if not admin_ids:
             if self._messagecenter:
-                self._messagecenter.insert_system_message(title=title, content=text)
+                self._insert_system_message(msg_type, variables, title, text)
             return False
         for uid in admin_ids:
-            self._dispatcher.send_user_msg(uid, title, text, image=image, url=url)
+            self._dispatcher.send_user_msg(
+                uid,
+                title,
+                text,
+                image=image,
+                url=url,
+                msg_type=msg_type,
+                variables=variables,
+                template_engine=self._template_engine,
+            )
         return True
 
     def send_download_message(self, in_from, can_item, download_setting_name=None, downloader_name=None) -> None:
@@ -195,8 +212,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_text)
+        self._insert_system_message("download_start", variables, msg_title, msg_text)
         for client in self._client_manager.active_clients:
             if "download_start" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -209,6 +225,12 @@ class MessageBuilder:
                     variables=variables,
                     template_engine=self._template_engine,
                 )
+
+    def _insert_system_message(self, msg_type, variables, title, text):
+        if self._messagecenter is None:
+            return
+        title, text = self._render_system_message(msg_type, variables, title, text)
+        self._messagecenter.insert_system_message(title=title, content=text)
 
     def _render_system_message(self, msg_type, variables, title, text):
         """Web 系统消息同样应用插件/渠道模板，避免退化为手写纯文本."""
@@ -263,9 +285,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            web_title, web_text = self._render_system_message("transfer_finished", variables, msg_title, msg_str)
-            self._messagecenter.insert_system_message(title=web_title, content=web_text)
+        self._insert_system_message("transfer_finished", variables, msg_title, msg_str)
         for client in self._client_manager.active_clients:
             if "transfer_finished" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -327,9 +347,7 @@ class MessageBuilder:
                     template_engine=self._template_engine,
                 )
                 continue
-            if self._messagecenter:
-                web_title, web_text = self._render_system_message("transfer_finished", variables, msg_title, msg_str)
-                self._messagecenter.insert_system_message(title=web_title, content=web_text)
+            self._insert_system_message("transfer_finished", variables, msg_title, msg_str)
             for client in self._client_manager.active_clients:
                 if "transfer_finished" in (client.get("switches") or ""):
                     self._dispatcher.sendmsg(
@@ -459,15 +477,21 @@ class MessageBuilder:
             )
             return
         # 无归属的失败事件 → 定向超级管理员
-        self._send_admin_msg(title, text, image=item.get_message_image())
+        variables = {
+            "item": item,
+            "error_msg": error_msg,
+            **_message_variables(item),
+            "subscription": subscription,
+        }
+        self._send_admin_msg(
+            title,
+            text,
+            image=item.get_message_image(),
+            msg_type="download_fail",
+            variables=variables,
+        )
         for client in self._client_manager.active_clients:
             if "download_fail" in (client.get("switches") or ""):
-                variables = {
-                    "item": item,
-                    "error_msg": error_msg,
-                    **_message_variables(item),
-                    "subscription": subscription,
-                }
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -516,8 +540,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+        self._insert_system_message("rss_added", variables, msg_title, msg_str)
         for client in self._client_manager.active_clients:
             if "rss_added" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -568,8 +591,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+        self._insert_system_message("rss_finished", variables, msg_title, msg_str)
         for client in self._client_manager.active_clients:
             if "rss_finished" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -588,11 +610,10 @@ class MessageBuilder:
             return
         title = "📊 站点签到"
         text = "\n".join(msgs)
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"msgs": msgs}
+        self._insert_system_message("site_signin", variables, title, text)
         for client in self._client_manager.active_clients:
             if "site_signin" in (client.get("switches") or ""):
-                variables = {"msgs": msgs}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -608,11 +629,10 @@ class MessageBuilder:
         title = f"📬 {title}"
         if not text:
             text = ""
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("site_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if "site_message" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -629,11 +649,10 @@ class MessageBuilder:
         title = f"🩺 {title}"
         if not text:
             text = ""
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("site_parse_health", variables, title, text)
         for client in self._client_manager.active_clients:
             if "site_parse_health" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -649,10 +668,16 @@ class MessageBuilder:
         title = f"❌ [{count} 个文件入库失败]"
         text = f"📁 源路径：{path}\n❗ 原因：{text}"
         # 失败/人工介入类事件定向给超级管理员（ADR-021 5.6），不再广播给所有用户
-        self._send_admin_msg(title, text, url="unidentification")
+        variables = {"path": path, "count": count, "text": text}
+        self._send_admin_msg(
+            title,
+            text,
+            url="unidentification",
+            msg_type="transfer_fail",
+            variables=variables,
+        )
         for client in self._client_manager.active_clients:
             if "transfer_fail" in (client.get("switches") or ""):
-                variables = {"path": path, "count": count, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -667,11 +692,10 @@ class MessageBuilder:
         if not title or not text:
             return
         title = f"🗑️ {title}"
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("auto_remove_torrents", variables, title, text)
         for client in self._client_manager.active_clients:
             if "auto_remove_torrents" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -686,11 +710,10 @@ class MessageBuilder:
         if not title or not text:
             return
         title = f"🗑️ {title}"
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("brushtask_remove", variables, title, text)
         for client in self._client_manager.active_clients:
             if "brushtask_remove" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -705,11 +728,10 @@ class MessageBuilder:
         if not title or not text:
             return
         title = f"🌊 {title}"
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("brushtask_added", variables, title, text)
         for client in self._client_manager.active_clients:
             if "brushtask_added" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -724,11 +746,10 @@ class MessageBuilder:
         if not title or not text:
             return
         title = f"⏸️ {title}"
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("brushtask_pause", variables, title, text)
         for client in self._client_manager.active_clients:
             if "brushtask_pause" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -789,19 +810,18 @@ class MessageBuilder:
         if not image_url:
             image_url = _webhook_images.get(channel)
         message_content = "\n".join(message_texts)
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=message_title, content=message_content)
         url = event_info.get("play_url") or ""
+        variables = {
+            "event_info": event_info,
+            "channel": channel,
+            "message_title": message_title,
+            "message_content": message_content,
+            "image_url": image_url,
+            "url": url,
+        }
+        self._insert_system_message("mediaserver_message", variables, message_title, message_content)
         for client in self._client_manager.active_clients:
             if "mediaserver_message" in (client.get("switches") or ""):
-                variables = {
-                    "event_info": event_info,
-                    "channel": channel,
-                    "message_title": message_title,
-                    "message_content": message_content,
-                    "image_url": image_url,
-                    "url": url,
-                }
                 self._dispatcher.sendmsg(
                     client=client,
                     title=message_title,
@@ -818,11 +838,10 @@ class MessageBuilder:
     ) -> None:
         if not title:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text, "url": url, "image": image}
+        self._insert_system_message("custom_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if "custom_message" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text, "url": url, "image": image}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -839,11 +858,10 @@ class MessageBuilder:
             return
         if not clients:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text, "image": image}
+        self._insert_system_message("custom_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if str(client.get("id")) in clients:
-                variables = {"title": title, "text": text, "image": image}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -859,11 +877,10 @@ class MessageBuilder:
             return
         title = "站点数据统计"
         text = "\n".join(msgs)
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"msgs": msgs, "title": title, "text": text}
+        self._insert_system_message("ptrefresh_date_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if "ptrefresh_date_message" in (client.get("switches") or ""):
-                variables = {"msgs": msgs, "title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
