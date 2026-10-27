@@ -40,13 +40,6 @@ class MediaImageResolver:
                 value = provider_data.get(key)
                 if value:
                     return str(value)
-        profile = str(getattr(media, "content_profile", "") or "default")
-        if profile != "default":
-            # 非默认画像只有存在 TMDB 身份时才允许使用 TMDB 默认图。
-            tmdb_id = str(getattr(media, "tmdb_id", "") or "")
-            provider_id = str(provider_data.get("id") or "") if isinstance(provider_data, dict) else ""
-            if not (tmdb_id.isdigit() or provider_id.isdigit()):
-                return ""
         return DEFAULT_TMDB_IMAGE
 
     @staticmethod
