@@ -139,13 +139,13 @@ def _fill_nulls(table: str, columns: list[str]) -> None:
         if name not in existing:
             continue
         column_type = existing[name]["type"]
+        template = 'UPDATE "{0}" SET "{1}" = {2} WHERE "{1}" IS NULL'
         if isinstance(column_type, (sa.Integer, sa.BigInteger, sa.SmallInteger, sa.Float, sa.Numeric)):
-            value = 0
+            op.execute(sa.text(template.format(table, name, ":value")).bindparams(value=0))
         elif isinstance(column_type, sa.DateTime):
-            value = sa.func.current_timestamp()
+            op.execute(sa.text(template.format(table, name, "current_timestamp")))
         else:
-            value = ""
-        op.execute(sa.text(f"UPDATE `{table}` SET `{name}` = :value WHERE `{name}` IS NULL").bindparams(value=value))
+            op.execute(sa.text(template.format(table, name, ":value")).bindparams(value=""))
 
 
 def _set_nullable(table: str, columns: list[str], nullable: bool) -> None:
