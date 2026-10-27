@@ -18,22 +18,22 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
-        UPDATE MEDIASYNC_ITEMS
-        SET SERVER_ID = COALESCE(
-            (SELECT ID FROM MEDIASERVER WHERE IS_DEFAULT = 1 LIMIT 1),
-            (SELECT ID FROM MEDIASERVER ORDER BY ID LIMIT 1)
+        UPDATE "MEDIASYNC_ITEMS"
+        SET "SERVER_ID" = COALESCE(
+            (SELECT "ID" FROM "MEDIASERVER" WHERE "IS_DEFAULT" = 1 LIMIT 1),
+            (SELECT "ID" FROM "MEDIASERVER" ORDER BY "ID" LIMIT 1)
         )
-        WHERE SERVER_ID IS NULL
+        WHERE "SERVER_ID" IS NULL
         """
     )
     op.execute(
         """
-        UPDATE MEDIASYNC_STATISTICS
-        SET SERVER_ID = COALESCE(
-            (SELECT ID FROM MEDIASERVER WHERE IS_DEFAULT = 1 LIMIT 1),
-            (SELECT ID FROM MEDIASERVER ORDER BY ID LIMIT 1)
+        UPDATE "MEDIASYNC_STATISTICS"
+        SET "SERVER_ID" = COALESCE(
+            (SELECT "ID" FROM "MEDIASERVER" WHERE "IS_DEFAULT" = 1 LIMIT 1),
+            (SELECT "ID" FROM "MEDIASERVER" ORDER BY "ID" LIMIT 1)
         )
-        WHERE SERVER_ID IS NULL
+        WHERE "SERVER_ID" IS NULL
         """
     )
 
@@ -41,15 +41,15 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         """
-        UPDATE MEDIASYNC_ITEMS
-        SET SERVER_ID = NULL
-        WHERE SERVER_ID = (SELECT ID FROM MEDIASERVER WHERE IS_DEFAULT = 1 LIMIT 1)
+        UPDATE "MEDIASYNC_ITEMS"
+        SET "SERVER_ID" = NULL
+        WHERE "SERVER_ID" = (SELECT "ID" FROM "MEDIASERVER" WHERE "IS_DEFAULT" = 1 LIMIT 1)
         """
     )
     op.execute(
         """
-        UPDATE MEDIASYNC_STATISTICS
-        SET SERVER_ID = NULL
-        WHERE SERVER_ID = (SELECT ID FROM MEDIASERVER WHERE IS_DEFAULT = 1 LIMIT 1)
+        UPDATE "MEDIASYNC_STATISTICS"
+        SET "SERVER_ID" = NULL
+        WHERE "SERVER_ID" = (SELECT "ID" FROM "MEDIASERVER" WHERE "IS_DEFAULT" = 1 LIMIT 1)
         """
     )

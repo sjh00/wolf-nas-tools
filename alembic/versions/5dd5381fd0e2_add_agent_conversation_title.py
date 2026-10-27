@@ -24,13 +24,13 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        UPDATE AGENT_CONVERSATION
-        SET TITLE = COALESCE((
-            SELECT SUBSTR(CONTENT, 1, 60)
-            FROM AGENT_MESSAGE
-            WHERE AGENT_MESSAGE.CONVERSATION_ID = AGENT_CONVERSATION.ID
-              AND AGENT_MESSAGE.ROLE = 'user'
-            ORDER BY AGENT_MESSAGE.ID
+        UPDATE "AGENT_CONVERSATION"
+        SET "TITLE" = COALESCE((
+            SELECT SUBSTR("CONTENT", 1, 60)
+            FROM "AGENT_MESSAGE"
+            WHERE "AGENT_MESSAGE"."CONVERSATION_ID" = "AGENT_CONVERSATION"."ID"
+              AND "AGENT_MESSAGE"."ROLE" = 'user'
+            ORDER BY "AGENT_MESSAGE"."ID"
             LIMIT 1
         ), '')
         """
