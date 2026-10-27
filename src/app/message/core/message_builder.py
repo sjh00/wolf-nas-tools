@@ -210,6 +210,18 @@ class MessageBuilder:
                     template_engine=self._template_engine,
                 )
 
+    def _render_system_message(self, msg_type, variables, title, text):
+        """Web 系统消息同样应用插件/渠道模板，避免退化为手写纯文本."""
+        if self._template_engine is None:
+            return title, text
+        tpl_title, tpl_text = self._template_engine.apply_client_template(
+            {},
+            msg_type,
+            variables,
+            content_profile=str((variables or {}).get("content_profile") or ""),
+        )
+        return tpl_title or title, tpl_text or text
+
     def send_transfer_movie_message(self, in_from, media_info, exist_filenum, category_flag) -> None:
         self._enrich_from_subscription(media_info)
         msg_title = f"✅ {media_info.get_title_string()} 已入库"
@@ -252,7 +264,8 @@ class MessageBuilder:
             )
             return
         if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+            web_title, web_text = self._render_system_message("transfer_finished", variables, msg_title, msg_str)
+            self._messagecenter.insert_system_message(title=web_title, content=web_text)
         for client in self._client_manager.active_clients:
             if "transfer_finished" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -315,7 +328,8 @@ class MessageBuilder:
                 )
                 continue
             if self._messagecenter:
-                self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+                web_title, web_text = self._render_system_message("transfer_finished", variables, msg_title, msg_str)
+                self._messagecenter.insert_system_message(title=web_title, content=web_text)
             for client in self._client_manager.active_clients:
                 if "transfer_finished" in (client.get("switches") or ""):
                     self._dispatcher.sendmsg(
