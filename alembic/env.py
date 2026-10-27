@@ -6,6 +6,7 @@ from alembic.script import ScriptDirectory
 import log
 from alembic import context
 from app.db.database_factory import DatabaseFactory
+from app.db.migration_guard import install_idempotent_ddl
 from app.db.models import Base
 
 # this is the Alembic Config object, which provides
@@ -147,4 +148,6 @@ def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
+    # create_all() 可能已先于迁移建好对象，装上幂等守卫避免 DuplicateTable / DuplicateColumn
+    install_idempotent_ddl()
     run_migrations_online()
