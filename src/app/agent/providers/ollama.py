@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ollama import Client
+from ollama import AsyncClient, Client
 
 import log
 from app.agent.providers.base import (
@@ -37,6 +37,7 @@ class OllamaProvider(BaseProvider):
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
         self._client = Client(host=config.api_url)
+        self._async_client = AsyncClient(host=config.api_url)
 
     def chat(
         self,
@@ -134,6 +135,52 @@ class OllamaProvider(BaseProvider):
                 args = raw_args if isinstance(raw_args, dict) else {}
                 tool_calls_final.append(ToolCall(name=fn.get("name", ""), arguments=args, id=tc.get("id", "")))
         return ChatToolResponse(content="".join(content_parts), tool_calls=tool_calls_final, native=True)
+
+    async def async_chat_with_tools_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        on_token: Any = None,
+        on_reasoning: Any = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> ChatToolResponse:
+        """原生异步流式 function calling。"""
+        msgs, tool_specs = self._build_tool_request(messages, tools, system_prompt)
+
+        async def _consume() -> ChatToolResponse:
+            stream = await LLMThrottle.call_async(
+                self._async_client.chat,
+                model=self._config.model,
+                messages=msgs,
+                tools=tool_specs,
+                options=_build_options(temperature),
+                stream=True,
+                **_reasoning_kwargs(reasoning),
+            )
+            content_parts: list[str] = []
+            tool_calls_final: list[ToolCall] = []
+            async for chunk in stream:
+                message = chunk.get("message", {})
+                content = message.get("content")
+                if content:
+                    content_parts.append(content)
+                    if on_token:
+                        on_token(content)
+                for tc in message.get("tool_calls") or []:
+                    fn = tc.get("function", {})
+                    args = fn.get("arguments")
+                    tool_calls_final.append(
+                        ToolCall(
+                            name=fn.get("name", ""),
+                            arguments=args if isinstance(args, dict) else {},
+                            id=tc.get("id", ""),
+                        )
+                    )
+            return ChatToolResponse(content="".join(content_parts), tool_calls=tool_calls_final, native=True)
+
+        return await _consume()
 
     def is_available(self) -> bool:
         try:

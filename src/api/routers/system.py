@@ -823,7 +823,7 @@ def list_agent_models(
 ):
     """查询 LLM Provider 支持的模型列表"""
 
-    if not req.api_url or not req.api_key:
+    if not req.api_url or (req.provider_name != "ollama" and not req.api_key):
         return success(data=[])
 
     try:
@@ -834,7 +834,7 @@ def list_agent_models(
     config = ProviderConfig(
         name=req.provider_name,
         api_url=req.api_url,
-        api_key=req.api_key,
+        api_key=req.api_key or "",
         model="",
     )
 

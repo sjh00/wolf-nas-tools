@@ -26,10 +26,10 @@ def kb_status(
     _: Any = Depends(require_permission("agent:view")),
     ingestor: Any = Depends(get_knowledge_ingestor),
 ):
-    """知识库状态：各命名空间块数"""
+    """知识库状态：未启用时返回静默空状态，供页面自动探测。"""
     if ingestor is None:
-        return fail(msg="Agent RAG 未启用")
-    return success(data={"namespaces": ingestor.status()})
+        return success(data={"enabled": False, "namespaces": {}})
+    return success(data={"enabled": True, "namespaces": ingestor.status()})
 
 
 @router.post("/kb/reindex")

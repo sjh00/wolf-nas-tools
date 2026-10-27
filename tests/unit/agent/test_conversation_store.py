@@ -124,6 +124,13 @@ class TestConversationStore:
         assert conv.SUMMARY.startswith("摘要(")
 
 
+class TestCheckpointPersistence:
+    def test_checkpoint_persisted_in_conversation_record(self, store, key):
+        store.save_checkpoint(key, [{"role": "user", "parts": [{"content": "你好"}]}])
+        checkpoint = store.load_checkpoint(key)
+        assert checkpoint["messages"][0]["role"] == "user"
+
+
 class TestGetOrCreateConcurrency:
     def test_concurrent_get_or_create_same_key(self, db_session):
         """并发创建同一会话不抛唯一约束冲突"""

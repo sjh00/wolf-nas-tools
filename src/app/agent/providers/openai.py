@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from openai import APIStatusError, OpenAI
+from openai import APIStatusError, AsyncOpenAI, OpenAI
 
 import log
 from app.agent.providers.base import (
@@ -42,6 +42,11 @@ class OpenAIProvider(BaseProvider):
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
         self._client = OpenAI(
+            base_url=config.api_url,
+            api_key=config.api_key,
+            timeout=config.timeout,
+        )
+        self._async_client = AsyncOpenAI(
             base_url=config.api_url,
             api_key=config.api_key,
             timeout=config.timeout,
@@ -216,6 +221,95 @@ class OpenAIProvider(BaseProvider):
         return ChatToolResponse(
             content="".join(content_parts), tool_calls=calls, reasoning="".join(reasoning_parts), native=True
         )
+
+    async def async_chat_with_tools_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        on_token: Any = None,
+        on_reasoning: Any = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> ChatToolResponse:
+        """原生异步流式工具对话。"""
+        msgs, tool_specs = self._build_tool_request(messages, tools, system_prompt)
+        kwargs: dict[str, Any] = {
+            "model": self._config.model,
+            "messages": msgs,
+            "temperature": temperature,
+            "tools": tool_specs,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        self._apply_reasoning(kwargs, reasoning)
+
+        async def _create(kw: dict[str, Any]):
+            try:
+                return await LLMThrottle.call_async(self._async_client.chat.completions.create, **kw)
+            except APIStatusError as e:
+                if (
+                    e.status_code == 400
+                    and _reasoning_rejected(e)
+                    and ("reasoning_effort" in kw or kw.get("extra_body"))
+                ):
+                    stripped = {k: v for k, v in kw.items() if k not in ("reasoning_effort", "extra_body")}
+                    self._reasoning_unsupported.add(self._config.model)
+                    return await LLMThrottle.call_async(self._async_client.chat.completions.create, **stripped)
+                raise
+
+        async def _consume() -> ChatToolResponse:
+            stream = await _create(kwargs)
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_entries: dict[int, dict[str, str]] = {}
+            usage: dict[str, int] = {}
+            async for chunk in stream:
+                if getattr(chunk, "usage", None):
+                    chunk_usage = chunk.usage
+                    usage = {
+                        "input_tokens": int(getattr(chunk_usage, "prompt_tokens", 0) or 0),
+                        "output_tokens": int(getattr(chunk_usage, "completion_tokens", 0) or 0),
+                    }
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    content_parts.append(delta.content)
+                    if on_token:
+                        on_token(delta.content)
+                r = getattr(delta, "reasoning_content", None)
+                if r:
+                    reasoning_parts.append(r)
+                    if on_reasoning:
+                        on_reasoning(r)
+                for tc in delta.tool_calls or []:
+                    entry = tool_entries.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                    if tc.id:
+                        entry["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        entry["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        entry["arguments"] += tc.function.arguments
+            calls = []
+            for idx in sorted(tool_entries):
+                entry = tool_entries[idx]
+                try:
+                    args = JsonUtils.loads(entry["arguments"] or "{}")
+                except (ValueError, TypeError):
+                    args = {}
+                calls.append(
+                    ToolCall(name=entry["name"], arguments=args if isinstance(args, dict) else {}, id=entry["id"])
+                )
+            return ChatToolResponse(
+                content="".join(content_parts),
+                tool_calls=calls,
+                reasoning="".join(reasoning_parts),
+                native=True,
+                usage=usage,
+            )
+
+        return await _consume()
 
     @staticmethod
     def _format_error(e: Exception) -> str:

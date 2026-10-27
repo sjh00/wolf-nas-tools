@@ -137,6 +137,7 @@ class AppContext:
     knowledge_ingestor: Any = None
     conversation_store: Any = None
     semantic_memory: Any = None
+    agent_runtime: Any = None
 
     # 站点授权服务（L3，默认 None 兼容未装配场景）
     site_grant_service: Any = None

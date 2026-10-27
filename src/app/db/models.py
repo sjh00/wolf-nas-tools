@@ -24,6 +24,8 @@
 
 # 从新的子模块导入所有模型，保持向后兼容
 from app.db.models import (
+    AGENTPENDINGACTION,
+    AGENTTURN,
     # 配置
     CONFIGFILTERGROUP,
     CONFIGFILTERRULES,
@@ -87,6 +89,8 @@ __all__ = [
     # 基础
     "Base",
     "BaseMedia",
+    "AGENTPENDINGACTION",
+    "AGENTTURN",
     # 配置
     "CONFIGFILTERGROUP",
     "CONFIGFILTERRULES",

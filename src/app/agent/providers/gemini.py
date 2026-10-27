@@ -11,12 +11,15 @@ with warnings.catch_warnings():
 
 import log
 from app.agent.providers.base import (
+    _TOOL_PROMPT,
     BaseEmbeddingProvider,
     BaseProvider,
+    ChatToolResponse,
     LLMThrottle,
     ProviderConfig,
     ReasoningConfig,
 )
+from app.utils.json_utils import JsonUtils
 
 # 推理强度 → thinkingBudget（token 预算；0 = 关闭思考）
 _THINKING_BUDGET = {"low": 1024, "high": 4096, "max": 16384}
@@ -90,6 +93,67 @@ class GeminiProvider(BaseProvider):
             else:
                 raise
         return resp.text
+
+    async def async_chat(
+        self,
+        messages: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        response_format: type | None = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> Any:
+        """原生异步 Gemini 对话。"""
+        contents = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt or None,
+            response_mime_type="application/json" if response_format else None,
+            temperature=temperature,
+        )
+        if reasoning and self._config.model not in self._thinking_unsupported:
+            budget = 0 if not reasoning.enabled else _THINKING_BUDGET.get(reasoning.effort, 4096)
+            config.thinking_config = types.ThinkingConfig(thinking_budget=budget)
+        try:
+            resp = await LLMThrottle.call_async(
+                self._client.aio.models.generate_content,
+                model=self._config.model,
+                contents=contents,
+                config=config,
+            )
+        except ClientError as e:
+            if e.code == 400 and config.thinking_config and "thinking" in str(e).lower():
+                config.thinking_config = None
+                self._thinking_unsupported.add(self._config.model)
+                resp = await LLMThrottle.call_async(
+                    self._client.aio.models.generate_content,
+                    model=self._config.model,
+                    contents=contents,
+                    config=config,
+                )
+            else:
+                raise
+        return resp.text
+
+    async def async_chat_with_tools_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        on_token: Any = None,
+        on_reasoning: Any = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> ChatToolResponse:
+        prompt = _TOOL_PROMPT.replace("{tools}", JsonUtils.dumps(tools, ensure_ascii=False, indent=2))
+        content = await self.async_chat(
+            messages=messages,
+            system_prompt=prompt,
+            temperature=temperature,
+            reasoning=reasoning,
+        )
+        response = self._parse_prompt_tool_response(content)
+        if on_token and response.content:
+            on_token(response.content)
+        return response
 
     def is_available(self) -> bool:
         try:

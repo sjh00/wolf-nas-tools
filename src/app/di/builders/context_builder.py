@@ -1,6 +1,7 @@
 """上下文 Builder — 组装完整 AppContext。"""
 
 import log
+from app.agent.runtime import AgentRuntime
 from app.di.builders.agent_builder import build_agent_rag
 from app.di.builders.coordinators_builder import build_coordinators
 from app.di.builders.facades_builder import build_business_facades
@@ -45,6 +46,7 @@ def build_app_context() -> AppContext:
         knowledge_ingestor=agent_rag.knowledge_ingestor,
         conversation_store=agent_rag.conversation_store,
         semantic_memory=agent_rag.semantic_memory,
+        agent_runtime=AgentRuntime(),
         downloader_core=services.downloader_core,
         download_monitor=facades.download_monitor,
         filetransfer_service=services.filetransfer_service,

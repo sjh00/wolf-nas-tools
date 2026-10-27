@@ -15,6 +15,12 @@ from app.agent.rag.models import Chunk
 from app.agent.rag.vector_store import VectorStore
 
 _MEMORY_NAMESPACE = "user_memory"
+
+
+def _namespace(user_id: str) -> str:
+    return f"user_memory:{user_id}"
+
+
 _EXTRACT_PROMPT = """你是用户偏好提取器。从以下对话中提取 1-5 条可长期记忆的用户偏好或事实。
 
 规则：
@@ -53,7 +59,7 @@ class SemanticMemory:
         chunk = Chunk(
             id=_memory_id(user_id, text),
             text=text,
-            namespace=_MEMORY_NAMESPACE,
+            namespace=_namespace(user_id),
             source=_memory_source(user_id, text),
             metadata={"user_id": user_id},
         )
@@ -61,7 +67,7 @@ class SemanticMemory:
         if vector is None:
             log.warn("[SemanticMemory]embedding 失败，记忆未写入")
             return False
-        self._store.upsert(_MEMORY_NAMESPACE, [chunk], [vector])
+        self._store.upsert(_namespace(user_id), [chunk], [vector])
         log.info(f"[SemanticMemory]记忆写入: user={user_id} {text[:40]}")
         return True
 
@@ -70,7 +76,9 @@ class SemanticMemory:
         if not query:
             return []
         vector = self._embedding.embed_query(query)
-        hits = self._store.hybrid_search(query, vector, _MEMORY_NAMESPACE, top_k or self._top_k)
+        hits = self._store.hybrid_search(query, vector, _namespace(user_id), top_k or self._top_k)
+        if not hits:
+            hits = self._store.hybrid_search(query, vector, _MEMORY_NAMESPACE, top_k or self._top_k)
         return [h.chunk.text for h in hits if h.chunk.metadata.get("user_id") == user_id and h.chunk.text.strip()]
 
     def forget(self, user_id: str, text: str) -> int:
@@ -78,7 +86,9 @@ class SemanticMemory:
         if not text.strip():
             return 0
         vector = self._embedding.embed_query(text)
-        hits = self._store.hybrid_search(text, vector, _MEMORY_NAMESPACE, 10)
+        hits = self._store.hybrid_search(text, vector, _namespace(user_id), 10)
+        if not hits:
+            hits = self._store.hybrid_search(text, vector, _MEMORY_NAMESPACE, 10)
         user_hits = [h for h in hits if h.chunk.metadata.get("user_id") == user_id]
         if not user_hits:
             return 0
@@ -91,7 +101,7 @@ class SemanticMemory:
             return len(query_tokens & mem_tokens)
 
         best = max(user_hits, key=_overlap)
-        if self._store.delete_by_source(_MEMORY_NAMESPACE, best.chunk.source):
+        if self._store.delete_by_source(best.chunk.namespace, best.chunk.source):
             return 1
         return 0
 
@@ -99,7 +109,9 @@ class SemanticMemory:
         """列出该用户全部长程记忆（供管理 UI）"""
         prefix = f"user:{user_id}:memory:"
         try:
-            rows = self._store.list_by_source_prefix(_MEMORY_NAMESPACE, prefix, limit)
+            rows = self._store.list_by_source_prefix(_namespace(user_id), prefix, limit)
+            if not rows:
+                rows = self._store.list_by_source_prefix(_MEMORY_NAMESPACE, prefix, limit)
         except NotImplementedError:
             return []
         return [{"source": r["source"], "text": r["text"]} for r in rows if r.get("text")]

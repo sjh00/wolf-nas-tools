@@ -10,6 +10,8 @@
 from app.db.models.agent_memory import (
     AGENTCONVERSATION,
     AGENTMESSAGE,
+    AGENTPENDINGACTION,
+    AGENTTURN,
     AGENTWEBMESSAGE,
 )
 from app.db.models.apikey import (
@@ -263,6 +265,8 @@ __all__ = [
     "APIKEY",
     "AGENTCONVERSATION",
     "AGENTMESSAGE",
+    "AGENTPENDINGACTION",
+    "AGENTTURN",
     "AGENTWEBMESSAGE",
     "APIKEYLOG",
     # 分布式锁
