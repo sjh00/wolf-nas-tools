@@ -10,6 +10,7 @@ from pathlib import Path
 
 import lancedb
 import pyarrow as pa
+from lancedb.index import FTS
 from lancedb.rerankers import RRFReranker
 
 import log
@@ -25,9 +26,13 @@ class LanceDBStore(VectorStore):
         self._db = lancedb.connect(path)
         self._dimension = dimension
 
+    def _table_names(self) -> list[str]:
+        # lancedb 0.40 起 table_names() 已弃用，官方替代为 list_tables()。
+        return list(self._db.list_tables().tables)
+
     def _table(self, namespace: str, dimension: int):
         name = f"kb_{namespace}"
-        if name in self._db.table_names():
+        if name in self._table_names():
             return self._db.open_table(name)
         schema = pa.schema(
             [
@@ -60,14 +65,14 @@ class LanceDBStore(VectorStore):
         ]
         table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(rows)
         try:
-            table.create_fts_index("text", replace=True)
+            table.create_index("text", config=FTS(), replace=True)
         except Exception as e:
             log.warn(f"[LanceDBStore]FTS 索引创建失败: {e}")
         return len(chunks)
 
     def delete_by_source(self, namespace: str, source: str) -> int:
         name = f"kb_{namespace}"
-        if name not in self._db.table_names():
+        if name not in self._table_names():
             return 0
         table = self._db.open_table(name)
         before = table.count_rows()
@@ -78,11 +83,12 @@ class LanceDBStore(VectorStore):
     def hybrid_search(
         self, query: str, vector: list[float] | None, namespace: str | None, top_k: int
     ) -> list[ScoredChunk]:
-        namespaces = [namespace] if namespace else [n[3:] for n in self._db.table_names() if n.startswith("kb_")]
+        table_names = self._table_names()
+        namespaces = [namespace] if namespace else [n[3:] for n in table_names if n.startswith("kb_")]
         results: list[ScoredChunk] = []
         for ns in namespaces:
             name = f"kb_{ns}"
-            if name not in self._db.table_names():
+            if name not in table_names:
                 continue
             table = self._db.open_table(name)
             try:
@@ -122,7 +128,7 @@ class LanceDBStore(VectorStore):
 
     def list_by_source_prefix(self, namespace: str, prefix: str, limit: int = 50) -> list[dict]:
         name = f"kb_{namespace}"
-        if name not in self._db.table_names():
+        if name not in self._table_names():
             return []
         table = self._db.open_table(name)
         try:
@@ -145,5 +151,6 @@ class LanceDBStore(VectorStore):
         return result[:limit]
 
     def count(self, namespace: str | None = None) -> int:
-        names = [f"kb_{namespace}"] if namespace else [n for n in self._db.table_names() if n.startswith("kb_")]
-        return sum(self._db.open_table(n).count_rows() for n in names if n in self._db.table_names())
+        table_names = self._table_names()
+        names = [f"kb_{namespace}"] if namespace else [n for n in table_names if n.startswith("kb_")]
+        return sum(self._db.open_table(n).count_rows() for n in names if n in table_names)

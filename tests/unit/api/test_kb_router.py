@@ -86,4 +86,6 @@ class TestKbRouter:
     def test_rag_disabled(self, client_no_rag):
         resp = client_no_rag.post("/api/agent/kb/status")
         assert resp.status_code == 200
-        assert resp.json()["code"] != 0
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["data"] == {"enabled": False, "namespaces": {}}
