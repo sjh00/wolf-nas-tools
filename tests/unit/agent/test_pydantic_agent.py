@@ -31,6 +31,9 @@ class _FakeSvc:
             )
         return ChatToolResponse(content="找到了《流浪地球》的资源。", tool_calls=[])
 
+    async def chat_tool_calls_async(self, messages, tools, on_token=None, on_reasoning=None):
+        return self.chat_tool_calls(messages, tools, on_token=on_token, on_reasoning=on_reasoning)
+
     def chat(self, messages, system_prompt=""):
         return "单轮回答"
 

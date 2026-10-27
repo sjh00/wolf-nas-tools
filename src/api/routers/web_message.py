@@ -66,7 +66,7 @@ def conversation(
     """返回持久化的对话历史（user/assistant），供前端刷新后恢复"""
     store = ctx.conversation_store
     if store is None:
-        return fail(msg="记忆存储未启用")
+        return success(data={"messages": []})
     sid = session_id or f"web:{user.user_id}"
     key = MemoryKey(user_id=str(user.user_id), channel="web", session_id=sid)
     return success(data={"messages": store.chat_history(key)})

@@ -76,6 +76,10 @@ class AgentService:
     def provider_name(self) -> str:
         return self._config.name if self._config else ""
 
+    @property
+    def model_name(self) -> str:
+        return self._config.model if self._config else ""
+
     def _refresh_config(self) -> None:
         """刷新配置（支持热重载）"""
         cfg = settings.get("agent") or {}
@@ -90,6 +94,7 @@ class AgentService:
                 log.info("[AgentService]Agent 已禁用，释放 Provider")
             self._provider = None
             self._fallbacks = []
+            self._config = None
             return
         self._config = get_provider()  # type: ignore[assignment]
         self._fallbacks = [self._create_provider(p) for p in get_fallback_providers()]
@@ -146,6 +151,54 @@ class AgentService:
                 last_error = e
                 log.warn(sanitize(f"[AgentService]Provider[{self._provider_display(provider)}] 调用失败: {e}"))
         raise last_error if last_error else RuntimeError("LLM service not configured")
+
+    async def _call_with_fallback_async(self, callable_fn, *args, **kwargs) -> Any:
+        """异步 Provider 故障转移链。"""
+        chain = self._provider_chain()
+        if not chain:
+            raise RuntimeError("LLM service not configured")
+        last_error: Exception | None = None
+        for idx, provider in enumerate(chain):
+            start = time.perf_counter()
+            try:
+                result = await callable_fn(provider, *args, **kwargs)
+                elapsed = round((time.perf_counter() - start) * 1000, 1)
+                self._log_usage(
+                    kind=getattr(callable_fn, "__name__", "call"),
+                    provider=self._provider_display(provider),
+                    ms=elapsed,
+                )
+                if idx > 0:
+                    log.warn(f"[AgentService]故障转移成功: 切换 {self._provider_display(provider)}")
+                return result
+            except Exception as e:
+                last_error = e
+                log.warn(sanitize(f"[AgentService]Provider[{self._provider_display(provider)}] 调用失败: {e}"))
+        raise last_error if last_error else RuntimeError("LLM service not configured")
+
+    async def chat_tool_calls_async(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        on_token: Any = None,
+        on_reasoning: Any = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> Any:
+        """原生异步工具对话（不缓存，失败自动切换备用 Provider）。"""
+        if not self.ready:
+            raise RuntimeError("LLM service not configured")
+        return await self._call_with_fallback_async(
+            lambda p, m, t, s, tmp, cb, rb, r: p.async_chat_with_tools_stream(m, t, s, tmp, cb, rb, r),
+            messages,
+            tools,
+            system_prompt,
+            temperature,
+            on_token,
+            on_reasoning,
+            self.reasoning_for(reasoning),
+        )
 
     def _log_usage(self, kind: str, provider: str, ms: float) -> None:
         """用量日志（落 loguru，可接监控）"""

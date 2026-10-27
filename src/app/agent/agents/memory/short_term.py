@@ -9,6 +9,12 @@ from app.db.repositories.agent_conversation_repository import AgentConversationR
 from app.infrastructure.cache_system import OpenAISessionCache
 
 
+def _session_title(text: str) -> str:
+    cleaned = "".join(ch for ch in text if ch not in "#*`>|").strip()
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:60] or "新对话"
+
+
 def estimate_tokens(text: str) -> int:
     """粗略 token 估算（CJK 约 1 字 1 token，英文约 4 字符 1 token，取保守值）"""
     return max(1, len(text) // 2)
@@ -57,7 +63,10 @@ class ConversationStore:
         # 先读后写：load_history 在 DB 写入前取旧历史，避免重复追加
         messages = self.load_history(key)
         conv = self._repo.get_or_create(key.user_id, key.channel, key.session_id)
+        title = _session_title(content) if role == "user" and not getattr(conv, "TITLE", "") else ""
         self._repo.append_message(conv.ID, role, content, tokens=estimate_tokens(content), tool_calls=tool_calls)
+        if title and hasattr(self._repo, "update_title"):
+            self._repo.update_title(conv.ID, title)
         messages.append({"role": role, "content": content, "tool_calls": tool_calls, "created_at": time.time()})
         self._cache.set(key.cache_key(), messages)
         self._maybe_summarize(key, conv.ID, conv.SUMMARY or "", messages)
@@ -92,10 +101,53 @@ class ConversationStore:
             tool_calls={"tool": tool, "args": args, "success": success, "result": result_note},
         )
 
+    def list_sessions(self, user_id: str, channel: str = "web") -> list[dict]:
+        """列出用户会话及最近一条消息。"""
+        sessions = []
+        for row in self._repo.list_conversations(user_id, channel):
+            latest = self._repo.get_messages_latest(row.ID, 1)
+            sessions.append(
+                {
+                    "session_id": row.SESSION_ID,
+                    "title": row.TITLE or _session_title(latest[-1].CONTENT if latest else ""),
+                    "updated_at": row.UPDATED_AT.isoformat() if row.UPDATED_AT else None,
+                    "token_usage": row.TOKEN_USAGE or 0,
+                    "preview": latest[-1].CONTENT[:160] if latest else "",
+                }
+            )
+        return sessions
+
+    def rename_session(self, session_id: str, user_id: str, channel: str, title: str) -> bool:
+        conv = self._repo.get(user_id, channel, session_id)
+        if conv is None:
+            return False
+        self._repo.update_title(conv.ID, title)
+        return True
+
+    def load_checkpoint(self, key: MemoryKey) -> dict:
+        """从同一会话记录读取 pydantic checkpoint。"""
+        conversation = self._repo.get_or_create(key.user_id, key.channel, key.session_id)
+        return self._repo.get_checkpoint(conversation.ID)
+
+    def save_checkpoint(self, key: MemoryKey, messages: list[dict]) -> None:
+        """将完整 checkpoint 与会话历史存入同一条记录。"""
+        conversation = self._repo.get_or_create(key.user_id, key.channel, key.session_id)
+        self._repo.update_checkpoint(conversation.ID, {"messages": messages})
+
+    def add_usage(self, key: MemoryKey, tokens: int) -> None:
+        conversation = self._repo.get_or_create(key.user_id, key.channel, key.session_id)
+        if hasattr(self._repo, "add_token_usage"):
+            self._repo.add_token_usage(conversation.ID, tokens)
+
     def chat_history(self, key: MemoryKey) -> list[dict]:
         """展示用对话历史：仅 user/assistant 消息（排除滚动摘要与工具轨迹备注），供前端刷新恢复"""
         return [
-            {"role": m["role"], "content": m["content"], "ts": m.get("created_at") or 0}
+            {
+                "role": m["role"],
+                "content": m["content"],
+                "ts": m.get("created_at") or 0,
+                "attachments": (m.get("tool_calls") or {}).get("attachments") or [],
+            }
             for m in self.load_history(key)
             if m["role"] in ("user", "assistant") and m.get("content")
         ]

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import re
 import time
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, TypeAdapter, create_model
-from pydantic_ai import Agent
+from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -36,12 +37,14 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import Tool
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RequestUsage, UsageLimits
 
 import log
 from app.agent.agents.memory import ConversationStore, MemoryKey, SemanticMemory, extract_facts
 from app.agent.config import get_provider
 from app.agent.providers.base import TOOL_RULES_PROMPT, ReasoningConfig
+from app.agent.providers.gateway import ProviderGateway
+from app.agent.runtime import AgentCancelledError
 from app.agent.sanitize import sanitize, sanitize_dict
 from app.core.settings import settings
 from app.utils.json_utils import JsonUtils
@@ -53,18 +56,32 @@ _TOOL_RESULT_MAX_CHARS = 20000  # 单次工具结果回传模型的最大字符�
 _CHECKPOINT_TA = TypeAdapter(list[ModelMessage])
 
 
-def _part_content(content: Any) -> str:
-    """UserPromptPart.content 可能是 str 或 list[parts]，统一转文本"""
+def _part_content(content: Any) -> Any:
+    """UserPromptPart.content 转 Provider 格式，图片保留多模态内容。"""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = []
-        for p in content:
-            if isinstance(p, str):
-                parts.append(p)
+        text_parts: list[str] = []
+        rich_parts: list[dict] = []
+        has_image = False
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+                rich_parts.append({"type": "text", "text": part})
+            elif isinstance(part, BinaryContent):
+                encoded = base64.b64encode(part.data).decode()
+                rich_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{part.media_type};base64,{encoded}"},
+                    }
+                )
+                has_image = True
             else:
-                parts.append(getattr(p, "content", "") or "")
-        return "\n".join(parts)
+                text = getattr(part, "content", "") or ""
+                text_parts.append(str(text))
+                rich_parts.append({"type": "text", "text": str(text)})
+        return rich_parts if has_image else "\n".join(text_parts)
     return str(content or "")
 
 
@@ -79,13 +96,16 @@ class NexusModel(Model):
         on_reasoning: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         reasoning: ReasoningConfig | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ):
         self._svc = svc
+        self._gateway = ProviderGateway(svc)
         self._tools = tools
         self.on_token = on_token
         self.on_reasoning = on_reasoning
         self.on_tool_call = on_tool_call
         self.reasoning = reasoning
+        self._should_cancel = should_cancel
         self._call_no = 0
 
     @property
@@ -104,18 +124,19 @@ class NexusModel(Model):
     ) -> ModelResponse:
         project_messages = self._to_project_messages(messages)
         self._call_no += 1
-        resp = await asyncio.to_thread(
-            self._svc.chat_tool_calls,
+        if self._should_cancel and self._should_cancel():
+            raise AgentCancelledError("用户取消了请求")
+        resp = await self._gateway.request(
             project_messages,
             self._tools,
-            # Agent(system_prompt=TOOL_RULES_PROMPT) 已把规则注入消息历史，这里不再重复前置
-            "",
-            0.7,
             self.on_token,
             # 仅第一步的推理实时透传（后续步骤不重复展示）
             self.on_reasoning if self._call_no == 1 else None,
-            self.reasoning,
+            self.on_tool_call,
+            should_cancel=self._should_cancel,
         )
+        if self._should_cancel and self._should_cancel():
+            raise AgentCancelledError("用户取消了请求")
         parts: list = []
         if resp.content:
             parts.append(TextPart(content=resp.content))
@@ -124,7 +145,14 @@ class NexusModel(Model):
             parts.append(ToolCallPart(tool_name=tc.name, args=tc.arguments, tool_call_id=call_id))
             if self.on_tool_call:
                 self.on_tool_call(tc.name, tc.arguments, call_id)
-        return ModelResponse(parts=parts)
+        usage = getattr(resp, "usage", None) or {}
+        return ModelResponse(
+            parts=parts,
+            usage=RequestUsage(
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+            ),
+        )
 
     @staticmethod
     def _to_project_messages(messages: list[ModelRequest | ModelResponse]) -> list[dict]:
@@ -198,6 +226,7 @@ class PydanticChatAgent:
     ):
         self._svc = svc
         self._tool_executor = tool_executor
+        self._conversation_store = memory
         self._memory = memory
         self._max_steps = max_steps
         self._long_term = long_term
@@ -338,6 +367,7 @@ class PydanticChatAgent:
         channel: str = "",
         on_reasoning: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> Agent:
         if not get_provider():
             raise RuntimeError("Agent Provider 未配置")
@@ -349,6 +379,7 @@ class PydanticChatAgent:
             on_reasoning=on_reasoning,
             on_tool_call=on_tool_call,
             reasoning=reasoning,
+            should_cancel=should_cancel,
         )
         tools = [self._make_tool(s, session_id, user_id, user_permissions, channel=channel) for s in tools_schema]
         return Agent(model=model, tools=tools, system_prompt=TOOL_RULES_PROMPT)
@@ -365,8 +396,13 @@ class PydanticChatAgent:
         user_permissions: list[str] | None = None,
         on_token: Callable[[str], None] | None = None,
         reasoning: ReasoningConfig | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+        images: list[tuple[bytes, str]] | None = None,
+        attachments_meta: list[dict] | None = None,
     ) -> str:
         """带工具调用的多步对话（事件契约与自研 ChatAgent 一致）"""
+        if should_cancel and should_cancel():
+            raise AgentCancelledError("用户取消了请求")
         if not self.ready:
             log.warn("[PydanticAgent]chat_with_tools 失败：Provider 未就绪")
             return "AI 服务未配置"
@@ -420,20 +456,47 @@ class PydanticChatAgent:
                 channel=channel,
                 on_reasoning=_collect_reasoning,
                 on_tool_call=_collect_tool_call,
+                should_cancel=should_cancel,
             )
             # 恢复会话历史：多轮对话上下文（checkpoint 持久化的 pydantic-ai 消息）
             message_history = self._load_checkpoint(session_id, user_id, channel)
+            prompt: Any = question
+            if images:
+                prompt = [
+                    question,
+                    *[BinaryContent(data=data, media_type=media_type) for data, media_type in images],
+                ]
             result = asyncio.run(
                 agent.run(
-                    question,
+                    prompt,
                     instructions=instructions or None,
                     message_history=message_history or None,
                     usage_limits=self._usage_limits(),
                 )
             )
+        except AgentCancelledError:
+            raise
         except Exception as e:
             log.error(f"[PydanticAgent]运行出错: {e}")
             return f"请求出错: {e}"
+        if should_cancel and should_cancel():
+            raise AgentCancelledError("用户取消了请求")
+
+        usage = result.usage
+        total_usage = usage.input_tokens + usage.output_tokens
+        if self._memory and total_usage:
+            self._memory.add_usage(key, total_usage)
+        if on_event:
+            on_event(
+                {
+                    "type": "usage",
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "total_tokens": usage.input_tokens + usage.output_tokens,
+                    "requests": usage.requests,
+                    "tool_calls": usage.tool_calls,
+                }
+            )
 
         # 从消息历史重建事件 + 检测确认需求（tool_call 已在模型调用时实时发出，此处仅补 tool_result）
         need_confirm = None
@@ -442,6 +505,7 @@ class PydanticChatAgent:
             for part in getattr(msg, "parts", []):
                 if isinstance(part, ToolReturnPart):
                     _result_success = True
+                    _result_summary = ""
                     try:
                         content = part.content if isinstance(part.content, str) else JsonUtils.dumps(part.content)
                         data = JsonUtils.loads(content) if isinstance(content, str) else None
@@ -449,9 +513,20 @@ class PydanticChatAgent:
                             need_confirm = {
                                 "tool": part.tool_name,
                                 "message": (data.get("message") or {}).get("message", ""),
+                                "arguments": data.get("arguments") or {},
+                                "tool_call_id": part.tool_call_id,
                             }
                         if isinstance(data, dict):
                             _result_success = bool(data.get("success", True))
+                            for field in ("summary", "error"):
+                                if isinstance(data.get(field), str) and data[field]:
+                                    _result_summary = data[field]
+                                    break
+                            message = data.get("message")
+                            if not _result_summary and isinstance(message, str):
+                                _result_summary = message
+                            elif not _result_summary and isinstance(message, dict):
+                                _result_summary = str(message.get("message") or "")
                     except Exception as e:
                         log.debug(f"[PydanticAgent]工具返回解析失败: {e}")
                     if on_event:
@@ -462,6 +537,7 @@ class PydanticChatAgent:
                                 "step": tool_call_steps.get(part.tool_call_id, 0),
                                 "tool": part.tool_name,
                                 "success": _result_success,
+                                "result_summary": sanitize(_result_summary[:500]),
                             }
                         )
                 elif isinstance(part, TextPart):
@@ -479,7 +555,12 @@ class PydanticChatAgent:
 
         # 持久化会话
         if self._memory:
-            self._memory.append(key, "user", question)
+            self._memory.append(
+                key,
+                "user",
+                question,
+                tool_calls={"attachments": attachments_meta} if attachments_meta else None,
+            )
             if final_resp:
                 self._memory.append(key, "assistant", final_resp)
 
@@ -543,6 +624,8 @@ class PydanticChatAgent:
     def clear_checkpoint(self, session_id: str, user_id: str, channel: str = "") -> None:
         """删除会话 checkpoint（随 /chat/clear、memory_clear 调用，保证“清空”真正生效）"""
         try:
+            if self._conversation_store is not None:
+                self._conversation_store.clear_session(session_id, user_id, channel)
             path = self._checkpoint_path(session_id, user_id, channel)
             if path.exists():
                 path.unlink()
@@ -556,6 +639,14 @@ class PydanticChatAgent:
         修复：agent.run 之前不加载历史导致每次都是全新会话，"可以/继续"等指代上文的话无法理解。
         """
         try:
+            key = MemoryKey(user_id=user_id or session_id, channel=channel, session_id=session_id)
+            if self._conversation_store is not None:
+                try:
+                    checkpoint = self._conversation_store.load_checkpoint(key)
+                    if checkpoint.get("messages"):
+                        return _CHECKPOINT_TA.validate_python(checkpoint["messages"])
+                except Exception as e:  # noqa: BLE001
+                    log.debug(f"[PydanticAgent]DB checkpoint 不可用，回退文件: {e}")
             path = self._checkpoint_path(session_id, user_id, channel)
             if not path.exists():
                 return []
@@ -573,9 +664,18 @@ class PydanticChatAgent:
     def _checkpoint(self, session_id: str, user_id: str, channel: str, messages: list) -> None:
         """持久化 pydantic-ai 消息历史（会话恢复/断点续跑的输入快照）"""
         try:
+            blob = [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in messages]
+            if self._conversation_store is not None:
+                try:
+                    self._conversation_store.save_checkpoint(
+                        MemoryKey(user_id=user_id or session_id, channel=channel, session_id=session_id),
+                        blob[-_CHECKPOINT_MAX:],
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    log.debug(f"[PydanticAgent]DB checkpoint 写入不可用，回退文件: {e}")
             path = self._checkpoint_path(session_id, user_id, channel)
             path.parent.mkdir(parents=True, exist_ok=True)
-            blob = [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in messages]
             path.write_text(
                 JsonUtils.dumps(
                     {"updated": time.time(), "messages": blob[-_CHECKPOINT_MAX:]},

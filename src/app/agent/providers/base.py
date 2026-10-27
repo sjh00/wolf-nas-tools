@@ -1,5 +1,6 @@
 """LLM 提供商抽象基类"""
 
+import asyncio
 import json
 import threading
 import time
@@ -103,6 +104,33 @@ class LLMThrottle:
             time.sleep(delay)
 
     @classmethod
+    async def call_async(
+        cls,
+        func,
+        *args,
+        max_retries: int = _RATE_LIMIT_RETRIES,
+        base_delay: float = _RATE_LIMIT_BASE_DELAY,
+        **kwargs,
+    ) -> Any:
+        """异步版本的并发闸门与 429 退避。"""
+        engine, limit = _get_llm_engine()
+        attempt = 0
+        while True:
+            token = engine.acquire_concurrency(cls._KEY, limit)
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if not (_is_rate_limit_error(e) and attempt < max_retries):
+                    raise
+                delay = _retry_after_seconds(e) or (base_delay * (2**attempt))
+            finally:
+                if token:
+                    engine.release_concurrency(cls._KEY, token)
+            attempt += 1
+            log.warn(f"[LLMThrottle]触发限流，{delay:.1f}s 后重试 ({attempt}/{max_retries})")
+            await asyncio.sleep(delay)
+
+    @classmethod
     def reset(cls) -> None:
         """重置缓存的并发闸门（配置变更/测试用）"""
         global _llm_engine, _llm_limit
@@ -183,6 +211,7 @@ class ChatToolResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     reasoning: str = ""
     native: bool = False
+    usage: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_tool_calls(self) -> bool:
@@ -340,6 +369,28 @@ class BaseProvider(ABC):
         if on_reasoning and resp.reasoning:
             on_reasoning(resp.reasoning)
         return resp
+
+    async def async_chat_with_tools_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        on_token: Any = None,
+        on_reasoning: Any = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> ChatToolResponse:
+        """兼容回退：没有原生异步实现的 Provider 使用线程适配。"""
+        return await asyncio.to_thread(
+            self.chat_with_tools_stream,
+            messages,
+            tools,
+            system_prompt,
+            temperature,
+            on_token,
+            on_reasoning,
+            reasoning,
+        )
 
     @abstractmethod
     def is_available(self) -> bool:

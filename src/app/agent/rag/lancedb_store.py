@@ -45,11 +45,9 @@ class LanceDBStore(VectorStore):
             return 0
         if len(chunks) != len(vectors):
             raise ValueError(f"chunks({len(chunks)}) 与 vectors({len(vectors)}) 数量不一致")
-        pairs: list[tuple[Chunk, list[float]]] = [(c, v) for c, v in zip(chunks, vectors, strict=True) if v is not None]
-        if not pairs:
-            log.warn(f"[LanceDBStore]全部 embedding 失败，跳过（lancedb 不支持纯文本入库）: {namespace}")
-            return 0
-        table = self._table(namespace, len(pairs[0][1]))
+        first_vector = next((v for v in vectors if v is not None), None)
+        dimension = len(first_vector) if first_vector is not None else self._dimension or 1
+        table = self._table(namespace, dimension)
         rows = [
             {
                 "id": c.id,
@@ -58,14 +56,14 @@ class LanceDBStore(VectorStore):
                 "metadata": json.dumps(c.metadata, ensure_ascii=False),
                 "vector": v,
             }
-            for c, v in pairs
+            for c, v in zip(chunks, vectors, strict=True)
         ]
         table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(rows)
         try:
             table.create_fts_index("text", replace=True)
         except Exception as e:
             log.warn(f"[LanceDBStore]FTS 索引创建失败: {e}")
-        return len(pairs)
+        return len(chunks)
 
     def delete_by_source(self, namespace: str, source: str) -> int:
         name = f"kb_{namespace}"
@@ -73,7 +71,8 @@ class LanceDBStore(VectorStore):
             return 0
         table = self._db.open_table(name)
         before = table.count_rows()
-        table.delete(f"source = '{source}'")
+        safe_source = str(source).replace("'", "''")
+        table.delete(f"source = '{safe_source}'")
         return before - table.count_rows()
 
     def hybrid_search(
@@ -89,6 +88,10 @@ class LanceDBStore(VectorStore):
             try:
                 if vector is None:
                     rows = table.search(query, query_type="fts").limit(top_k).to_list()
+                    if not rows:
+                        rows = [
+                            row for row in table.to_arrow().to_pylist() if str(query) in str(row.get("text") or "")
+                        ][:top_k]
                 else:
                     rows = (
                         table.search(query_type="hybrid")
@@ -112,7 +115,8 @@ class LanceDBStore(VectorStore):
                     source=r["source"],
                     metadata=json.loads(r.get("metadata") or "{}"),
                 )
-                results.append(ScoredChunk(chunk=chunk, score=float(r.get("_relevance_score", 0.0))))
+                score = r.get("_relevance_score", r.get("_score", 0.0))
+                results.append(ScoredChunk(chunk=chunk, score=float(score)))
         results.sort(key=lambda x: x.score, reverse=True)
         return results[:top_k]
 
@@ -123,7 +127,8 @@ class LanceDBStore(VectorStore):
         table = self._db.open_table(name)
         try:
             # 过滤下推到 LanceDB 扫描，避免全表物化；limit 在存储层生效
-            scan = table.to_lance().scan(filter=f"source LIKE '{prefix}%'", limit=limit)
+            safe_prefix = str(prefix).replace("'", "''")
+            scan = table.to_lance().scan(filter=f"source LIKE '{safe_prefix}%'", limit=limit)
             rows = scan.to_arrow()
         except Exception as e:
             log.warn(f"[LanceDBStore]过滤扫描失败，回退全量列举: {e}")
