@@ -11,9 +11,57 @@ from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
+from app.media.metadata import ProviderRef
 from app.media.metadata.registry import registry as metadata_registry
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
+
+
+def _provider_is_virtual(provider: str) -> bool:
+    desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+    return bool(getattr(desc, "virtual", False))
+
+
+def _is_concrete_source(value: Any) -> bool:
+    source = str(value or "").strip().lower()
+    if not source or source in {"content_id", "unknown"}:
+        return False
+    return not _provider_is_virtual(source)
+
+
+def _source_from_record(record: Any, provider: str) -> str:
+    """从插件记录中选出真实来源：显式来源 > refs > provider 本身."""
+    extra = getattr(record, "extra", None) or {}
+    if not isinstance(extra, dict):
+        extra = {}
+    value = extra.get("source_provider")
+    if _is_concrete_source(value):
+        return str(value).strip().lower()
+    for ref in getattr(record, "refs", None) or []:
+        value = getattr(ref, "provider", None)
+        if _is_concrete_source(value):
+            return str(value).strip().lower()
+    return provider if _is_concrete_source(provider) else ""
+
+
+def _resolve_provider_poster(provider: str, external_id: str, media_type: Any) -> tuple[str, str]:
+    """从插件元数据解析真实海报和真实来源；失败时不使用 TMDB 占位图。"""
+    obj = metadata_registry.get_provider(provider)
+    detail = getattr(obj, "detail", None)
+    if obj is None or not callable(detail):
+        return "", ""
+    try:
+        record = detail(ProviderRef(provider=provider, external_id=external_id, media_type=media_type), None)
+    except Exception:  # noqa: BLE001
+        return "", ""
+    if record is None:
+        return "", ""
+    posters = (getattr(record, "images", None) or {}).get("poster") or []
+    poster = str(getattr(posters[0], "url", "") or "") if posters else ""
+    source = _source_from_record(record, provider)
+    if not source and posters:
+        source = str(getattr(posters[0], "provider", "") or "")
+    return poster, source
 
 
 def _split_provider_ref(value: Any) -> tuple[str, str] | None:
@@ -298,6 +346,18 @@ class SubscribeAddService:
                     media_info.year = year or media_info.year
                     media_info.type = mtype
                     media_info.content_profile = content_profile or "default"
+                    if image:
+                        media_info.poster_path = image
+                    # 只有缺海报时才同步抓详情；已有海报直接落库，避免聚合详情阻塞订阅。
+                    if not media_info.poster_path:
+                        poster, real_source = _resolve_provider_poster(provider_ref[0], provider_ref[1], mtype)
+                        if poster:
+                            media_info.poster_path = poster
+                        if real_source:
+                            media_info.provider_data = {
+                                **(getattr(media_info, "provider_data", None) or {}),
+                                "source_provider": real_source,
+                            }
                 else:
                     media_info = self._provider_media_info(
                         provider_ref[0],

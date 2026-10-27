@@ -24,6 +24,11 @@ def gen_rss_note(media: Any) -> str:
         "media_type": str(getattr(media, "type", "") or ""),
         # 通用题材：非 TMDB 来源也能据此判断动漫分类
         "genres": list(getattr(media, "genres", []) or []),
+        "source_provider": (
+            (getattr(media, "provider_data", None) or {}).get("source_provider")
+            if isinstance(getattr(media, "provider_data", None), dict)
+            else ""
+        ),
     }
     return JsonUtils.dumps(note, separators=(", ", ": "))
 

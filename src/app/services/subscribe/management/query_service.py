@@ -86,8 +86,13 @@ _REF_PREFIX_ALIASES = {
 }
 
 
-def _source_label(provider: str, raw_id: str | None = None, metadata_ref: str | None = None) -> str:
-    """来源展示名：优先真实 provider，其次从 metadata_ref / anchor 中解析。"""
+def _source_label(
+    provider: str,
+    raw_id: str | None = None,
+    metadata_ref: str | None = None,
+    source_provider: str | None = None,
+) -> str:
+    """来源展示名：优先真实订阅来源，虚拟元数据 provider 不作为来源。"""
     value = str(provider or "").strip().lower()
     ref = str(metadata_ref or raw_id or "").strip()
     if (not value or value == "content_id") and ref and ":" in ref:
@@ -97,6 +102,12 @@ def _source_label(provider: str, raw_id: str | None = None, metadata_ref: str | 
         return "插件"
     item = metadata_registry.get_provider(value) if value else None
     desc = getattr(item, "descriptor", None)
+    if getattr(desc, "virtual", False) and source_provider:
+        real = metadata_registry.get_provider(str(source_provider).strip().lower())
+        real_desc = getattr(real, "descriptor", None)
+        return str(getattr(real_desc, "display_name", "") or source_provider)
+    if getattr(desc, "virtual", False):
+        return "未知来源"
     return str(getattr(desc, "display_name", "") or value or "未知")
 
 
@@ -221,6 +232,7 @@ class SubscribeQueryService:
                     getattr(rss_movie, "PROVIDER", None) or anchor_provider or "",
                     rss_movie.TMDBID,
                     getattr(rss_movie, "METADATA_REF", None),
+                    note_info.get("source_provider"),
                 ),
                 "content_profile": rss_movie.CONTENT_PROFILE,
                 "metadata_policy": rss_movie.METADATA_POLICY,
@@ -343,6 +355,7 @@ class SubscribeQueryService:
                     getattr(rss_tv, "PROVIDER", None) or anchor_provider or "",
                     rss_tv.TMDBID,
                     getattr(rss_tv, "METADATA_REF", None),
+                    note_info.get("source_provider"),
                 ),
                 "content_profile": effective_profile,
                 "metadata_policy": rss_tv.METADATA_POLICY,

@@ -15,6 +15,7 @@ from app.schemas.auth import SUPERADMIN_ROLE_CODE
 from app.services.subscription_context import resolve_subscription_context
 from app.services.web import WebUtils
 from app.utils import StringUtils
+from app.utils.json_utils import JsonUtils
 
 _FAIL_NOTIFY_INTERVAL = 600
 _fail_notify_cache: dict[str, float] = {}
@@ -40,14 +41,23 @@ def _type_label(media_info, profile: str) -> str:
 
 
 def _source_provider(item) -> str:
-    """消息中的来源展示：优先真实 provider，回退 provider key，最后回退锚点。"""
+    """消息中的来源展示：优先真实 provider，聚合源回退到订阅备注的真实来源。"""
     provider = str(getattr(item, "provider", "") or getattr(item, "anchor_provider", "") or "").strip()
     metadata_ref = str(getattr(item, "metadata_ref", "") or "").strip()
     if (not provider or provider == "content_id") and ":" in metadata_ref:
         provider = metadata_ref.split(":", 1)[0].strip()
+    desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+    provider_data = getattr(item, "provider_data", None)
+    if isinstance(provider_data, dict):
+        real_source = str(provider_data.get("source_provider") or "").strip()
+        reusable = not provider or provider == "content_id" or desc is None
+        if real_source and (reusable or getattr(desc, "virtual", False)):
+            provider = real_source
+            desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
     if not provider:
         return ""
-    desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+    if getattr(desc, "virtual", False):
+        return "未知来源"
     return str(getattr(desc, "display_name", "") or provider)
 
 
@@ -347,6 +357,20 @@ class MessageBuilder:
             image = str(getattr(subscription, "image", "") or "")
             if image:
                 item.poster_path = image
+        desc = str(getattr(subscription, "desc", "") or "")
+        note = JsonUtils.loads(desc) if desc and JsonUtils.is_valid_json(desc) else {}
+        if not isinstance(note, dict):
+            note = {}
+        if not str(getattr(item, "poster_path", "") or ""):
+            note_poster = str(note.get("poster") or "")
+            if note_poster:
+                item.poster_path = note_poster
+        real_source = str(note.get("source_provider") or "").strip()
+        if real_source:
+            item.provider_data = {
+                **(getattr(item, "provider_data", None) or {}),
+                "source_provider": real_source,
+            }
         provider = str(getattr(subscription, "provider", "") or "")
         if not str(getattr(item, "anchor_provider", "") or ""):
             anchor = str(getattr(subscription, "anchor_provider", "") or "")
