@@ -315,6 +315,12 @@ class FnOS(_IMediaClient):
         """
         return
 
+    def refresh_library(self, item_id):
+        """按媒体库 GUID 刷新。"""
+        if not self._fnos:
+            return False
+        return self._fnos.refresh_library(item_id)
+
     def refresh_root_library(self):
         """
         通知Plex刷新整个媒体库
@@ -329,12 +335,14 @@ class FnOS(_IMediaClient):
         return status
 
     def refresh_library_by_items(self, items):
-        """
-        按路径刷新媒体库，暂不支持，使用全量刷新
-        """
+        """优先按媒体库 GUID 刷新，未指定时全量刷新。"""
         if not self._fnos:
             return False
-        self.refresh_root_library()
+        for library_id in {str(item["library_id"]) for item in items if item.get("library_id")}:
+            self.refresh_library(library_id)
+        if any(not item.get("library_id") for item in items):
+            self.refresh_root_library()
+        return True
 
     def get_libraries(self):
         """

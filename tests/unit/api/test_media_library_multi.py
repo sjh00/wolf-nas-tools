@@ -12,6 +12,7 @@ from api.routers.media import (
     refresh_library,
     start_mediasync,
 )
+from app.services.media_library_service import MediaLibraryService
 
 
 class _Service:
@@ -44,6 +45,30 @@ class _Service:
     def get_sync_state(self, server_id):
         return f"实例 {server_id} 已同步"
 
+    def get_home_data(self, requested_id=None):
+        manager = MagicMock()
+        manager.get_server_options.side_effect = self.get_servers
+        manager.get_medias_count.side_effect = lambda server_id: {
+            "MovieCount": 3 if server_id == 1 else 5,
+            "SeriesCount": 2,
+            "EpisodeCount": 0,
+            "SongCount": 0,
+        }
+        manager.get_user_count.return_value = 1
+        manager.get_libraries.side_effect = self.get_libraries
+        manager.get_resume.side_effect = self.get_resume
+        manager.get_latest.side_effect = self.get_latest
+        manager.get_activity_log.side_effect = lambda limit, server_id: self.get_play_history(server_id)
+        manager.get_mediasync_status.side_effect = lambda server_id: {
+            "movie_count": 1,
+            "tv_count": 1,
+            "time": "2026-01-01 00:00:00",
+        }
+        filetransfer = MagicMock()
+        filetransfer.get_default_local_path.return_value = "/tmp"
+        service = MediaLibraryService(manager, filetransfer, MagicMock(), MagicMock(), MagicMock())
+        return service.get_home_data(requested_id)
+
     def get_space_info(self):
         return SimpleNamespace(used_percent=50, free_space="50G", used_space="50G", total_space="100G")
 
@@ -56,7 +81,7 @@ def test_home_returns_independent_sections_and_legacy_aggregates():
     assert data["media_counts"]["Series"] == 4
     assert data["sections"][1]["server_name"] == "成人 Emby"
     assert data["sections"][1]["librarys"][0]["server_id"] == 2
-    assert data["sections"][1]["sync_state"] == "实例 2 已同步"
+    assert data["sections"][1]["sync_state"].startswith("电影")
     assert data["activitys"][0]["id"] == "activity-2"
 
 

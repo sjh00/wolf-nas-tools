@@ -73,10 +73,8 @@ class MediaServer:
         self._servers: dict[int, Any] = {}
 
     def _refresh(self):
-        """重置服务器实例，下次访问 server property 时重新构建"""
-        self._server = None
-        self._server_type = None
-        self._servers.clear()
+        """重置服务器实例，下次访问时重新构建。"""
+        self.refresh()
 
     def refresh(self) -> None:
         """配置热重载：清除服务器类型与实例缓存，下次访问按新配置重建。"""
@@ -102,43 +100,52 @@ class MediaServer:
         return self.__build_class(ctype=ctype, conf=conf)
 
     def _get_client(self, server_id: int | None = None):
-        """按实例 ID 获取客户端；未指定时使用默认实例。"""
+        """按实例 ID 获取客户端；客户端初始化在锁外执行。"""
+        conf = {}
+        target_id = server_id or 0
         with server_lock:
-            if self._server is not None and server_id is None:
-                return self._server
-            if self.config_repo is None:
-                return None
             if self._server is not None:
                 if server_id is None:
                     return self._server
-                default = self.config_repo.get_default_media_server()
+                default = self.config_repo.get_default_media_server() if self.config_repo else None
                 if default and int(default.ID) == int(server_id):
                     return self._server
+            if self.config_repo is None:
+                return None
             if server_id is None:
                 row = self.config_repo.get_default_media_server()
-                if row is None:
-                    if self._server_type is None:
-                        self._server_type = settings.get("media").get("media_server") or "emby"
-                    if self._server is None:
-                        self._server = self.__get_server(self._server_type)
-                    return self._server
             else:
                 rows = self.config_repo.get_media_servers(int(server_id))
                 row = rows[0] if rows else None
-                if row is None or not row.ENABLED:
-                    return None
-            server_id = int(row.ID)
-            if server_id not in self._servers:
+            if row is not None and not row.ENABLED:
+                return None
+            if row is None:
+                if self._server is not None:
+                    return self._server
+                server_type = self._server_type or settings.get("media").get("media_server") or "emby"
+            else:
+                target_id = int(row.ID)
+                if target_id in self._servers:
+                    return self._servers[target_id]
+                server_type = row.TYPE or row.NAME
                 try:
                     conf = JsonUtils.loads(row.CONFIG) if row.CONFIG else {}
                 except Exception:
                     conf = {}
-                server_type = row.TYPE or row.NAME
-                self._servers[server_id] = self.__get_server(server_type, conf)
+
+        # 客户端初始化可能包含网络请求，不能在全局锁内执行
+        client = self.__get_server(server_type, conf if row is not None else None)
+        with server_lock:
+            if row is None:
+                if self._server is None:
+                    self._server = client
+                self._server_type = server_type
+                return self._server
+            client = self._servers.setdefault(target_id, client)
             default = self.config_repo.get_default_media_server()
             if default and int(default.ID) == server_id:
-                self._server_type = row.TYPE or row.NAME
-            return self._servers[server_id]
+                self._server_type = server_type
+            return client
 
     def get_server_options(self) -> list[dict]:
         """返回启用实例摘要，不包含连接密钥。"""
@@ -157,6 +164,24 @@ class MediaServer:
             if row.ENABLED
         ]
 
+    def resolve_route(self, content_profile: str | None = None, target_path: str | None = None, routes=None):
+        """解析目录/画像路由，保留 server_id 和 library_id 完整目标。"""
+        route_repo = getattr(self, "route_repo", None)
+        if target_path and route_repo:
+            candidates = []
+            for route in route_repo.list() if routes is None else routes:
+                if not route.enabled or not route.target_path:
+                    continue
+                if route.content_profile and route.content_profile != (content_profile or ""):
+                    continue
+                if PathUtils.is_path_in_path(route.target_path, target_path):
+                    candidates.append(route)
+            if candidates:
+                return max(candidates, key=lambda route: len(route.target_path.replace("\\", "/")))
+        if content_profile and route_repo:
+            return route_repo.get_profile(content_profile)
+        return None
+
     def resolve_server_id(
         self,
         server_id: int | None = None,
@@ -165,23 +190,9 @@ class MediaServer:
     ) -> int | None:
         if server_id is not None:
             return int(server_id)
-        route_repo = getattr(self, "route_repo", None)
-        if target_path and route_repo:
-            candidates = []
-            for route in route_repo.list():
-                if not route.enabled or not route.target_path:
-                    continue
-                if route.content_profile and route.content_profile != (content_profile or ""):
-                    continue
-                if PathUtils.is_path_in_path(route.target_path, target_path):
-                    candidates.append(route)
-            if candidates:
-                best = max(candidates, key=lambda route: len(route.target_path.replace("\\", "/")))
-                return int(best.server_id)
-        if content_profile and route_repo:
-            route = route_repo.get_profile(content_profile)
-            if route:
-                return int(route.server_id)
+        route = self.resolve_route(content_profile, target_path)
+        if route:
+            return int(route.server_id)
         default = self.config_repo.get_default_media_server() if self.config_repo else None
         return int(default.ID) if default else None
 
@@ -205,10 +216,14 @@ class MediaServer:
         client = self._get_client(server_id)
         return client.get_medias_count() if client else None
 
-    def refresh_root_library(self, server_id: int | None = None):
-        """刷新指定实例的整个媒体库。"""
+    def refresh_root_library(self, server_id: int | None = None, library_id: str | None = None):
+        """刷新指定实例，支持按媒体库 ID 定向刷新。"""
         client = self._get_client(server_id)
-        return client.refresh_root_library() if client else None
+        if not client:
+            return None
+        if library_id and hasattr(client, "refresh_library"):
+            return client.refresh_library(library_id)
+        return client.refresh_root_library()
 
     def get_episode_image_by_id(self, item_id, season_id, episode_id):
         """
@@ -282,13 +297,19 @@ class MediaServer:
             return
         if server_id is not None:
             return self._refresh_items_for_instance(items, server_id)
-        grouped: dict[int | None, list[dict]] = {}
+        grouped: dict[tuple[int | None, str | None], list[dict]] = {}
+        routes = self.route_repo.list() if getattr(self, "route_repo", None) else None
         for item in items:
             profile = content_profile or item.get("content_profile")
             target_path = item.get("target_path") or item.get("file_path")
-            target_id = self.resolve_server_id(None, profile, target_path)
-            grouped.setdefault(target_id, []).append(item)
-        for target_id, group_items in grouped.items():
+            route = self.resolve_route(profile, target_path, routes=routes)
+            target_id = int(route.server_id) if route else self.resolve_server_id()
+            library_id = route.library_id if route else None
+            grouped.setdefault((target_id, library_id), []).append(item)
+        for (target_id, library_id), group_items in grouped.items():
+            if library_id:
+                for item in group_items:
+                    item.setdefault("library_id", library_id)
             self._refresh_items_for_instance(group_items, target_id)
 
     def _refresh_items_for_instance(self, items, server_id: int | None):
@@ -338,8 +359,8 @@ class MediaServer:
         rows = self.config_repo.get_media_servers(server_id) if self.config_repo and server_id else []
         server_type = (rows[0].TYPE or rows[0].NAME) if rows else self._server_type
 
-        # 锁按服务器实例隔离，不同实例可以分别同步
-        dist_lock = get_lock_manager().create_lock(f"mediaserver:sync:{server_id}", ttl_seconds=3600)
+        # 进度任务为全局 MediaSync，同步串行执行，避免不同实例互相覆盖进度
+        dist_lock = get_lock_manager().create_lock("mediaserver:sync", ttl_seconds=3600)
         acquired = dist_lock.acquire()
         if not acquired:
             log.info("[MediaServer]媒体库同步正在其他实例执行，跳过")
@@ -359,18 +380,20 @@ class MediaServer:
                     log.warn("[MediaServer]未选择需要同步的媒体库，跳过本次同步（不清空登记薄）")
                     self.progress.end(ProgressKey.MediaSync)
                     return
-                # 清空登记薄
-                self.mediadb.empty(server_type=server_type, server_id=server_id)
 
             # 汇总统计
             medias_count = self.get_medias_count(server_id)
             if not medias_count:
+                self.progress.end(ProgressKey.MediaSync)
                 return
+            libraries = self.get_libraries(server_id)
+            # 确认实例可读取后再清理旧登记，避免连接失败导致数据丢失
+            self.mediadb.empty(server_type=server_type, server_id=server_id)
             total_media_count = medias_count.get("MovieCount") + medias_count.get("SeriesCount")
             total_count = 0
             movie_count = 0
             tv_count = 0
-            for library in self.get_libraries(server_id):
+            for library in libraries:
                 if str(library.get("id")) not in librarys:
                     continue
                 # 获取媒体库所有项目

@@ -85,7 +85,7 @@ class LibraryRenamePlanner:
         self._movie_fields = set(parse_fields(movie_fmt))
         self._tv_fields = set(parse_fields(tv_fmt))
         self._category_names = self._load_categories()
-        self._metadata.prepare(scope.use_mediaserver_metadata)
+        self._metadata.prepare(scope.use_mediaserver_metadata, server_id=scope.server_id)
         return {
             "movie_name_format": movie_fmt,
             "tv_name_format": tv_fmt,

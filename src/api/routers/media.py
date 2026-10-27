@@ -1,6 +1,5 @@
 import os
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -757,85 +756,10 @@ def get_library_home(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    servers = svc.get_servers()
     requested_id = req.server_id if req else None
-    if requested_id is not None:
-        if requested_id not in {item["id"] for item in servers}:
-            return fail(msg="媒体服务器不存在或未启用")
-        servers = [item for item in servers if item["id"] == requested_id]
-
-    def _section(server: dict) -> dict:
-        server_id = server["id"]
-
-        def _safe(call, fallback):
-            try:
-                return call()
-            except Exception as err:  # noqa: BLE001
-                log.debug(f"[MediaLibrary]{server['name']} 获取数据失败: {err}")
-                return fallback
-
-        def _with_server(items):
-            return [{**item, "server_id": server_id, "server_name": server["name"]} for item in items if item]
-
-        counts = _safe(lambda: svc.get_media_count(server_id), None)
-        libraries = _safe(lambda: svc.get_libraries(server_id), [])
-        resumes = _safe(lambda: svc.get_resume(server_id=server_id), [])
-        latests = _safe(lambda: svc.get_latest(server_id=server_id), [])
-        activity = _safe(lambda: svc.get_play_history(server_id), [])
-        sync_state = _safe(lambda: svc.get_sync_state(server_id), "未同步")
-        return {
-            "server": server,
-            "server_id": server_id,
-            "server_name": server["name"],
-            "server_success": counts is not None,
-            "media_counts": counts or {},
-            "sync_state": sync_state,
-            "librarys": _with_server(libraries or []),
-            "resumes": _with_server(resumes or []),
-            "latests": _with_server(latests or []),
-            "activitys": _with_server(activity or []),
-        }
-
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(servers)))) as executor:
-        sections = list(executor.map(_section, servers))
-
-    def _number(section: dict, key: str) -> int:
-        try:
-            return int(str(section["media_counts"].get(key, 0) or 0).replace(",", ""))
-        except (TypeError, ValueError):
-            return 0
-
-    count_keys = ("Movie", "Series", "Music", "Episodes", "User")
-    totals = {key: sum(_number(section, key) for section in sections) for key in count_keys}
-    try:
-        space_info = svc.get_space_info()
-        library_spaces = {
-            "UsedPercent": space_info.used_percent,
-            "FreeSpace": space_info.free_space,
-            "UsedSpace": space_info.used_space,
-            "TotalSpace": space_info.total_space,
-        }
-    except Exception as err:  # noqa: BLE001
-        log.debug(f"[MediaLibrary]获取空间信息失败: {err}")
-        library_spaces = {}
-    return success(
-        data={
-            "server_success": any(section["server_success"] for section in sections),
-            "servers": svc.get_servers(),
-            "sections": sections,
-            "media_counts": totals,
-            "user_count": totals["User"],
-            "activitys": sorted(
-                [item for section in sections for item in section["activitys"]],
-                key=lambda item: str(item.get("date") or ""),
-                reverse=True,
-            )[:30],
-            "library_spaces": library_spaces,
-            "librarys": [item for section in sections for item in section["librarys"]],
-            "resumes": [item for section in sections for item in section["resumes"]],
-            "latests": [item for section in sections for item in section["latests"]],
-        }
-    )
+    if requested_id is not None and requested_id not in {item["id"] for item in svc.get_servers()}:
+        return fail(msg="媒体服务器不存在或未启用")
+    return success(data=svc.get_home_data(requested_id))
 
 
 @router.post("/recommend", response_model=CommonResponse, summary="获取推荐")
