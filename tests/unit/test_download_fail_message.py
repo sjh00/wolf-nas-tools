@@ -1,12 +1,13 @@
 """下载失败通知：标题季集与错误信息明确性测试."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.domain.mediatypes import MediaType
 from app.media.models import MediaInfo
-from app.message.core.message_builder import MessageBuilder, _fail_notify_cache
+from app.message.core.message_builder import MessageBuilder, _fail_notify_cache, _source_provider
 
 
 class _Item(MediaInfo):
@@ -137,3 +138,23 @@ def test_fail_message_inherits_anime_profile(builder, monkeypatch):
 
     assert item.content_profile == "anime"
     assert item.poster_path == "https://img/anime.jpg"
+
+
+def test_subscription_note_backfills_poster_and_source(builder, monkeypatch):
+    subscription = SimpleNamespace(
+        content_profile="default",
+        image="",
+        anchor_provider="content_id",
+        provider="aggregate",
+        metadata_ref="aggregate:ABC-123",
+        desc='{"poster": "https://img/abc123.jpg", "source_provider": "javdb"}',
+        id=9,
+    )
+    monkeypatch.setattr(builder, "_subscription_context", lambda item: subscription)
+    item = _Item(title="ABC-123", type=MediaType.MOVIE, content_profile="default")
+
+    builder._enrich_from_subscription(item)
+
+    assert item.poster_path == "https://img/abc123.jpg"
+    assert item.provider_data["source_provider"] == "javdb"
+    assert _source_provider(item) == "javdb"
