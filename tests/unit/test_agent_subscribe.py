@@ -27,6 +27,22 @@ def _register_adult_provider():
     registry.unregister_provider("javdb", plugin_id="test")
 
 
+class _AggregateProvider:
+    descriptor = ProviderDescriptor(
+        provider_key="aggregate",
+        display_name="Aggregate",
+        content_profiles=frozenset({"default"}),
+        virtual=True,
+    )
+
+
+@pytest.fixture
+def aggregate_provider():
+    registry.register_provider(_AggregateProvider(), plugin_id="test-aggregate")
+    yield
+    registry.unregister_provider("aggregate", plugin_id="test-aggregate")
+
+
 class _FakeSubscribeService:
     def __init__(self):
         self.kwargs: dict = {}
@@ -160,3 +176,63 @@ def test_web_search_uses_profile_default_sites():
     _apply_default_sites(filter_args, MediaType.MOVIE, _Config(), "adult")
 
     assert filter_args["site"] == ["M-Team"]
+
+
+def test_agent_subscribe_aggregate_resolves_real_provider_and_poster(aggregate_provider):
+    service = _FakeSubscribeService()
+
+    class _Metadata:
+        def search(self, **kwargs):
+            return [
+                {
+                    "provider": "javdb",
+                    "title": "ABC-123 测试标题",
+                    "poster": "https://img.example/abc123.jpg",
+                    "ref": {"provider": "javdb", "external_id": "AbCdEf"},
+                }
+            ]
+
+    ctx = _FakeContext(service, ["metadata:private:view"], _Metadata())
+
+    result = subscribe_add(
+        cast(ToolContext, ctx),
+        "ABC-123",
+        provider="aggregate",
+        external_id="ABC-123",
+        content_id="ABC-123",
+    )
+
+    assert result.success
+    assert service.kwargs["metadata_ref"] == "javdb:AbCdEf"
+    assert service.kwargs["image"] == "https://img.example/abc123.jpg"
+    data = cast(dict, result.data)
+    assert data["provider"] == "javdb"
+
+
+def test_agent_subscribe_aggregate_without_exact_match_is_rejected(aggregate_provider):
+    service = _FakeSubscribeService()
+
+    class _Metadata:
+        def search(self, **kwargs):
+            return [
+                {
+                    "provider": "javdb",
+                    "title": "ABC-124 其他内容",
+                    "poster": "https://img.example/abc124.jpg",
+                    "ref": {"provider": "javdb", "external_id": "XyZ789"},
+                }
+            ]
+
+    ctx = _FakeContext(service, ["metadata:private:view"], _Metadata())
+
+    result = subscribe_add(
+        cast(ToolContext, ctx),
+        "ABC-123",
+        provider="aggregate",
+        external_id="ABC-123",
+        content_id="ABC-123",
+    )
+
+    assert not result.success
+    assert "未找到 ABC-123" in result.error
+    assert service.kwargs == {}
