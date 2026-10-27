@@ -37,6 +37,16 @@ def _new_ulid() -> str:
     return "".join(reversed(chars))
 
 
+def _next_ref_id(connection, refs: sa.Table) -> int:
+    """显式给出 MEDIA_EXTERNAL_REF 主键。
+
+    该表可能由应用启动时的 create_all 建出（模型用 Sequence("ID") 作为 Python 侧默认，
+    表上没有服务端自增），迁移里的 Core 裸插入不会带序列，必须在插入时自己给 ID。
+    """
+    current = connection.execute(sa.select(sa.func.coalesce(sa.func.max(refs.c.ID), 0))).scalar()
+    return int(current or 0) + 1
+
+
 def _identity(raw: str):
     value = str(raw or "").strip()
     upper = value.upper()
@@ -122,6 +132,7 @@ def upgrade() -> None:
                 )
                 connection.execute(
                     refs.insert().values(
+                        ID=_next_ref_id(connection, refs),
                         IDENTITY_ID=identity_id,
                         PROVIDER=provider,
                         EXTERNAL_ID=external,
