@@ -59,6 +59,9 @@ class DatabaseFactory:
     DEFAULT_SCHEDULER_MAX_OVERFLOW = 10
     DEFAULT_SCHEDULER_POOL_TIMEOUT = 15
 
+    # PostgreSQL 连接标识（pg_stat_activity.application_name）
+    PG_APPLICATION_NAME = "nexus_media"
+
     @staticmethod
     def get_database_url(
         db_type: str | None = None,
@@ -131,6 +134,7 @@ class DatabaseFactory:
             # SQLite 数据库文件会在首次连接时自动创建
             return
 
+        engine: Engine | None = None
         try:
             if db_type == DatabaseFactory.MYSQL:
                 # 获取连接参数（不指定数据库）
@@ -150,8 +154,6 @@ class DatabaseFactory:
                             f"CREATE DATABASE IF NOT EXISTS {database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                         )
                     )
-
-                engine.dispose()
 
             elif db_type == DatabaseFactory.POSTGRESQL:
                 # 获取连接参数（不指定数据库）
@@ -174,11 +176,13 @@ class DatabaseFactory:
                         # 创建数据库
                         conn.execute(text(f"CREATE DATABASE {database}"))
 
-                engine.dispose()
-
         except (OSError, ValueError) as e:
             # 记录错误但不抛出，让后续连接尝试决定最终成败
             log.warn(f"[DatabaseFactory]自动创建数据库 {database} 失败: {e}")
+        finally:
+            # 异常路径也必须释放，否则每次建库检查都会残留一条到 postgres 库的连接（占用 max_connections）
+            if engine is not None:
+                engine.dispose()
 
     @staticmethod
     def create_engine(db_type: str | None = None, db_path: str | None = None, **kwargs) -> Engine:
@@ -240,6 +244,11 @@ class DatabaseFactory:
             )
             engine_kwargs["pool_recycle"] = kwargs.get("pool_recycle", 1800)
             engine_kwargs["pool_pre_ping"] = True
+            if db_type == DatabaseFactory.POSTGRESQL:
+                # 标明连接归属，便于在 pg_stat_activity 中区分主池/调度池/临时引擎
+                engine_kwargs["connect_args"] = {
+                    "application_name": kwargs.get("application_name") or DatabaseFactory.PG_APPLICATION_NAME
+                }
 
         engine = create_engine(url, **engine_kwargs)
 

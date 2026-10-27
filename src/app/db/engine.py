@@ -66,6 +66,7 @@ def _init_scheduler_engine():
                     pool_timeout=DatabaseFactory._get_int_config(
                         "scheduler_pool_timeout", DatabaseFactory.DEFAULT_SCHEDULER_POOL_TIMEOUT
                     ),
+                    application_name=f"{DatabaseFactory.PG_APPLICATION_NAME}-scheduler",
                 )
                 _SchedulerSessionFactory = sessionmaker(
                     bind=_SchedulerEngine,
