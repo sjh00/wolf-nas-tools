@@ -39,6 +39,52 @@ def _filter_profile(items: dict, content_profile: str | None) -> dict:
     }
 
 
+def _code_key(value: str) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _resolve_aggregate_ref(
+    ctx: ToolContext,
+    provider: str,
+    title: str,
+    external_id: str,
+    content_id: str,
+    mtype: MediaType,
+    profile: str,
+    allow_private: bool,
+    permissions: set[str],
+) -> tuple[str, str, str]:
+    """把虚拟聚合来源解析成具体 provider，并带回真实海报；找不到时保持原值."""
+    metadata = getattr(ctx, "metadata_service", None)
+    if metadata is None:
+        return provider, external_id, ""
+    query = content_id or external_id or title
+    try:
+        hits = metadata.search(
+            query=query,
+            provider=provider or None,
+            media_type=mtype,
+            content_profile=profile,
+            limit=10,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    except Exception:  # noqa: BLE001 - 搜索失败不阻断订阅
+        return provider, external_id, ""
+    target = _code_key(query)
+    for hit in hits or []:
+        ref = hit.get("ref") or {}
+        hit_provider = str(ref.get("provider") or hit.get("provider") or "").strip()
+        hit_external = str(ref.get("external_id") or "").strip()
+        if not hit_provider or not hit_external or hit_provider == "content_id":
+            continue
+        hit_title = _code_key(str(hit.get("title") or ""))
+        if target and target not in hit_title:
+            continue
+        return hit_provider, hit_external, str(hit.get("poster") or "")
+    return provider, external_id, ""
+
+
 def subscribe_add(
     ctx: ToolContext,
     title: str,
@@ -74,6 +120,31 @@ def subscribe_add(
     private_profile = profile not in ("", "default", "anime")
     if (getattr(descriptor, "visibility", "public") == "private" or private_profile) and not allow_private:
         return ToolResult(success=False, error="当前用户无 metadata:private:view 权限")
+
+    # 聚合 Provider 只负责元数据合成，不应作为订阅来源落库：
+    # 先按番号解析到真实 provider，并带回海报供通知/列表使用。
+    poster = ""
+    is_virtual = bool(getattr(descriptor, "virtual", False))
+    if is_virtual:
+        requested_provider = provider
+        provider, external_id, poster = _resolve_aggregate_ref(
+            ctx,
+            provider,
+            title,
+            external_id,
+            content_id,
+            mtype,
+            profile,
+            allow_private,
+            permissions,
+        )
+        if provider == requested_provider:
+            return ToolResult(
+                success=False,
+                error=f"未找到 {content_id or title} 的真实元数据来源，未创建订阅",
+            )
+        if provider and external_id:
+            ref = f"{provider}:{external_id}"
 
     # 只给来源没给 detail id 时，先用元数据搜索解析到具体 provider ref
     if provider and not external_id and not ref:
@@ -124,6 +195,7 @@ def subscribe_add(
         content_profile=intent.content_profile,
         keyword=keyword,
         mediaid=intent.mediaid,
+        image=poster or None,
         allow_private=intent.allow_private or allow_private,
         permissions=permissions,
     )
@@ -134,6 +206,7 @@ def subscribe_add(
                 "title": title,
                 "content_profile": profile,
                 "provider": provider or None,
+                "image": poster or None,
                 "message": msg or "订阅成功",
             },
         )
