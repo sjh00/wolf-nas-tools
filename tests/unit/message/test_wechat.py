@@ -8,7 +8,8 @@ import struct
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.message.client.wechat import WeChat
+from app.message.client.wechat import WeChat, _build_menu_buttons
+from app.message.commands import COMMANDS
 
 
 def _make_encrypted_echostr(echostr: str, corpid: str, encoding_aes_key: str) -> str:
@@ -236,38 +237,10 @@ class TestWeChatMenuPluginOverflow:
     """菜单插件命令按 管理→同步→下载 填入各组空位（每组上限 5）"""
 
     def _build_menu(self, commands, plugin_cmds):
-        from app.message.commands import WECHAT_MENU, WECHAT_PLUGIN_GROUP
-
-        group_subs = {}
-        for group in WECHAT_MENU:
-            subs = []
-            for cmd in group["commands"]:
-                name = commands.get(cmd, cmd)
-                if name:
-                    subs.append({"type": "click", "name": name, "key": cmd.lstrip("/")})
-            group_subs[group["name"]] = subs
-        group_priority = [WECHAT_PLUGIN_GROUP] + [
-            g["name"] for g in reversed(WECHAT_MENU) if g["name"] != WECHAT_PLUGIN_GROUP
-        ]
-        plugin_items = [
-            {"type": "click", "name": info.get("desc", cmd), "key": cmd.lstrip("/")}
-            for cmd, info in plugin_cmds.items()
-        ]
-        for group_name in group_priority:
-            subs = group_subs.get(group_name, [])
-            while plugin_items and len(subs) < 5:
-                subs.append(plugin_items.pop(0))
-        buttons = [
-            {"name": group["name"], "sub_button": group_subs[group["name"]]}
-            for group in WECHAT_MENU
-            if group_subs.get(group["name"])
-        ]
-        return buttons, plugin_items
+        return _build_menu_buttons(commands, plugin_cmds), []
 
     def test_plugin_commands_not_dropped(self):
         """管理组满员时插件命令应溢出到其他组空位而不是被丢弃"""
-        from app.message.commands import COMMANDS
-
         buttons, leftover = self._build_menu(
             dict(COMMANDS),
             {"/signin": {"desc": "站点签到"}, "/cookiecloud": {"desc": "立即同步 CookieCloud"}},
@@ -281,9 +254,19 @@ class TestWeChatMenuPluginOverflow:
 
     def test_group_name_lookup_matches_menu(self):
         """菜单按钮的 key 均为无斜杠格式"""
-        from app.message.commands import COMMANDS
-
         buttons, _ = self._build_menu(dict(COMMANDS), {})
         for b in buttons:
             for s in b["sub_button"]:
                 assert not s["key"].startswith("/")
+
+    def test_menu_names_fit_wechat_byte_limits(self):
+        """菜单名称按 UTF-8 字节截断，避免企业微信 40058."""
+        buttons, _ = self._build_menu(
+            dict(COMMANDS),
+            {"/long": {"desc": "这是一个非常长的插件命令描述" * 5}},
+        )
+        for button in buttons:
+            assert len(button["name"].encode("utf-8")) <= 16
+            for sub in button["sub_button"]:
+                assert len(sub["name"].encode("utf-8")) <= 40
+        assert any(sub["name"].endswith("…") for button in buttons for sub in button["sub_button"])

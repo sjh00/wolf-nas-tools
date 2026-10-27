@@ -18,6 +18,64 @@ from app.utils import ExceptionUtils
 from app.utils.json_utils import JsonUtils
 
 _menu_lock = Lock()
+_WECHAT_SUB_MENU_NAME_MAX_BYTES = 40
+
+
+def _truncate_menu_name(name: str, max_bytes: int) -> str:
+    """按 UTF-8 字节截断菜单名，避免企业微信 40058."""
+    text = str(name or "").strip()
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    suffix = "…"
+    budget = max_bytes - len(suffix.encode("utf-8"))
+    chars: list[str] = []
+    size = 0
+    for char in text:
+        char_size = len(char.encode("utf-8"))
+        if size + char_size > budget:
+            break
+        chars.append(char)
+        size += char_size
+    return "".join(chars).rstrip() + suffix
+
+
+def _build_menu_buttons(commands: dict, plugin_cmds: dict) -> list[dict]:
+    """构建企业微信菜单，名称按接口字节上限截断."""
+    group_subs: dict[str, list[dict]] = {}
+    for group in WECHAT_MENU:
+        subs = []
+        for cmd in group["commands"]:
+            name = commands.get(cmd, cmd)
+            if not name:
+                continue
+            subs.append(
+                {
+                    "type": "click",
+                    "name": _truncate_menu_name(name, _WECHAT_SUB_MENU_NAME_MAX_BYTES),
+                    "key": cmd.lstrip("/"),
+                }
+            )
+        group_subs[group["name"]] = subs
+    group_priority = [WECHAT_PLUGIN_GROUP] + [
+        group["name"] for group in reversed(WECHAT_MENU) if group["name"] != WECHAT_PLUGIN_GROUP
+    ]
+    plugin_items = [
+        {
+            "type": "click",
+            "name": _truncate_menu_name(info.get("desc", cmd), _WECHAT_SUB_MENU_NAME_MAX_BYTES),
+            "key": cmd.lstrip("/"),
+        }
+        for cmd, info in plugin_cmds.items()
+    ]
+    for group_name in group_priority:
+        subs = group_subs.get(group_name, [])
+        while plugin_items and len(subs) < 5:
+            subs.append(plugin_items.pop(0))
+    return [
+        {"name": _truncate_menu_name(group["name"], 16), "sub_button": group_subs[group["name"]]}
+        for group in WECHAT_MENU
+        if group_subs.get(group["name"])
+    ]
 
 
 class WeChat(_IMessageClient):
@@ -350,40 +408,14 @@ class WeChat(_IMessageClient):
                 message = self._message
                 commands = message.get_commands() if message else {}
                 plugin_cmds = message.get_plugin_commands() if message else {}
-                # 先填内置命令
-                group_subs = {}
-                for group in WECHAT_MENU:
-                    subs = []
-                    for cmd in group["commands"]:
-                        name = commands.get(cmd, cmd)
-                        if not name:
-                            continue
-                        subs.append({"type": "click", "name": name, "key": cmd.lstrip("/")})
-                    group_subs[group["name"]] = subs
-                # 插件命令按 管理 → 同步 → 下载 顺序填入各组空位（每组上限 5 个）
-                group_priority = [WECHAT_PLUGIN_GROUP] + [
-                    g["name"] for g in reversed(WECHAT_MENU) if g["name"] != WECHAT_PLUGIN_GROUP
-                ]
-                plugin_items = [
-                    {"type": "click", "name": info.get("desc", cmd), "key": cmd.lstrip("/")}
-                    for cmd, info in plugin_cmds.items()
-                ]
-                for group_name in group_priority:
-                    subs = group_subs.get(group_name, [])
-                    while plugin_items and len(subs) < 5:
-                        subs.append(plugin_items.pop(0))
-                buttons = []
-                for group in WECHAT_MENU:
-                    subs = group_subs.get(group["name"], [])
-                    if subs:
-                        buttons.append({"name": group["name"], "sub_button": subs})
+                buttons = _build_menu_buttons(commands, plugin_cmds)
                 if not buttons:
                     return
                 log.info(f"[WeChat]正在创建菜单：{JsonUtils.dumps(buttons, ensure_ascii=False)}")
                 data = JsonUtils.dumps({"button": buttons}, ensure_ascii=False).encode("utf-8")
                 headers = {"content-type": "application/json"}
                 menu_url = self._menu_url % (token, self.agent_id)
-                log.info(f"[WeChat]菜单请求URL: {menu_url}")
+                log.info(f"[WeChat]菜单请求: {self._menu_url.split('?')[0]}")
                 res = HttpClient(config=HttpClientConfig(default_headers=headers)).post(menu_url, data=data)
                 body = res.json()
                 if body.get("errcode") == 0:
