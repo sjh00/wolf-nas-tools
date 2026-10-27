@@ -61,6 +61,7 @@ def _history_scope(
     metadata_policy: str | None = None,
     provider: str | None = None,
     metadata_ref: str | None = None,
+    naming_profile: str | None = None,
 ) -> dict[str, str | None]:
     metadata_provider = str(provider or "").strip() or None
     provider = str(anchor_provider or "").strip()
@@ -82,6 +83,7 @@ def _history_scope(
             "PROVIDER": metadata_provider,
             "METADATA_REF": metadata_ref,
             "METADATA_POLICY": metadata_policy,
+            "NAMING_PROFILE": naming_profile,
         }
     profile = content_profile or ("anime" if provider == "bangumi" else "default")
     return {
@@ -92,6 +94,7 @@ def _history_scope(
         "PROVIDER": metadata_provider,
         "METADATA_REF": metadata_ref,
         "METADATA_POLICY": metadata_policy or ANCHOR_POLICY.get(provider),
+        "NAMING_PROFILE": naming_profile,
     }
 
 
@@ -1258,6 +1261,7 @@ class SubscribeRepository(BaseRepository):
         provider: str | None = None,
         metadata_ref: str | None = None,
         metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         """
         登记RSS历史（user_id 为归属用户）
@@ -1276,6 +1280,7 @@ class SubscribeRepository(BaseRepository):
             provider=provider,
             metadata_ref=metadata_ref,
             metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
         with self.session() as db:
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
@@ -1321,6 +1326,7 @@ class SubscribeRepository(BaseRepository):
         provider: str | None = None,
         metadata_ref: str | None = None,
         metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         """
         登记或更新RSS历史：按媒体维度去重，同一 TMDB ID + 季的记录只保留一条
@@ -1339,6 +1345,7 @@ class SubscribeRepository(BaseRepository):
             provider=provider,
             metadata_ref=metadata_ref,
             metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
         with self.session() as db:
             # 防御：同一 rssid 已完成过则跳过
