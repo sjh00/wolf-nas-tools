@@ -1347,6 +1347,19 @@ class FileTransferService:
         finally:
             lock.release()
 
+    def _source_transferred_path(self, source_full_path: str, dst_backend=None) -> str:
+        """同一源文件已有成功转移记录且目标仍存在时返回目标路径."""
+        if not source_full_path:
+            return ""
+        try:
+            row = self._history.get_by_source(os.path.normpath(source_full_path))
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Rmt]源文件转移记录查询失败: {e}")
+            return ""
+        if not row or not self._history_dest_exists(row, dst_backend):
+            return ""
+        return os.path.join(str(row.dest_path), str(row.dest_filename))
+
     def _do_transfer_file(
         self,
         file_item,
@@ -1361,6 +1374,21 @@ class FileTransferService:
         src_backend=None,
         dst_backend=None,
     ):
+        # 源文件级去重：同一个文件已成功转移且目标仍存在时跳过，多版本文件互不影响。
+        if not udf_flag:
+            transferred_path = self._source_transferred_path(reg_path, dst_backend)
+            if transferred_path:
+                log.warn(f"[Rmt]文件已转移，跳过重复转移：{reg_path} -> {transferred_path}")
+                return (
+                    0,
+                    0,
+                    alert_messages,
+                    1,
+                    transferred_path,
+                    transferred_path,
+                    os.path.dirname(transferred_path),
+                )
+
         dir_exist_flag, ret_dir_path, file_exist_flag, ret_file_path = self._existence.is_media_exists(
             dist_path, media, dst_backend
         )

@@ -131,3 +131,58 @@ def test_file_dedup_skips_when_dest_exists(tmp_path):
 
     cast(Any, svc._engine).transfer.assert_not_called()
     cast(Any, svc._history).insert_transfer_blacklist.assert_called_once()
+
+
+def _source_dedupe_svc(tmp_path, dest_exists: bool = True):
+    src = tmp_path / "src" / "ABC-123-C.mkv"
+    src.parent.mkdir(exist_ok=True)
+    src.write_bytes(b"x")
+    dest_dir = tmp_path / "lib" / "ABC" / "ABC-123"
+    dest = dest_dir / "ABC-123-C.mp4"
+    if dest_exists:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"y")
+
+    svc = FileTransferService.__new__(FileTransferService)
+    svc._history = MagicMock()
+    svc._existence = MagicMock()
+    svc._engine = MagicMock()
+    svc._history.get_by_source.return_value = SimpleNamespace(
+        dest_path=str(dest_dir),
+        dest_filename=dest.name,
+    )
+    media = SimpleNamespace(type=MediaType.MOVIE)
+    return svc, src, media
+
+
+def test_same_source_file_skips_when_transfer_dest_exists(tmp_path):
+    svc, src, media = _source_dedupe_svc(tmp_path)
+
+    result = svc._do_transfer_file(
+        str(src),
+        media,
+        str(tmp_path / "lib"),
+        None,
+        "link",
+        str(src),
+        str(tmp_path / "lib"),
+        False,
+        [],
+    )
+
+    assert result[3] == 1
+    cast(Any, svc._engine).transfer.assert_not_called()
+    cast(Any, svc._existence).is_media_exists.assert_not_called()
+
+
+def test_same_source_file_rechecks_when_transfer_dest_missing(tmp_path):
+    svc, src, media = _source_dedupe_svc(tmp_path, dest_exists=False)
+
+    assert svc._source_transferred_path(str(src)) == ""
+
+
+def test_different_source_file_is_not_deduplicated(tmp_path):
+    svc, src, _media = _source_dedupe_svc(tmp_path)
+    cast(Any, svc._history).get_by_source.return_value = None
+
+    assert svc._source_transferred_path(str(src)) == ""
