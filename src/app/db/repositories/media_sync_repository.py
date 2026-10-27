@@ -5,8 +5,6 @@
 
 import time
 
-from sqlalchemy import or_
-
 from app.db.models import MEDIASYNCITEMS, MEDIASYNCSTATISTIC
 from app.db.repositories.base_repository import BaseRepository
 from app.utils.json_utils import JsonUtils
@@ -142,9 +140,7 @@ class MediaSyncRepository(BaseRepository):
         with self.session() as db:
             query = db.query(MEDIASYNCITEMS).filter(MEDIASYNCITEMS.SERVER == server_type)
             if server_id is not None:
-                query = query.filter(
-                    or_(MEDIASYNCITEMS.SERVER_ID == int(server_id), MEDIASYNCITEMS.SERVER_ID.is_(None))
-                )
+                query = query.filter(MEDIASYNCITEMS.SERVER_ID == int(server_id))
 
             if tmdbid:
                 item = query.filter(MEDIASYNCITEMS.TMDBID == tmdbid).first()
@@ -168,8 +164,5 @@ class MediaSyncRepository(BaseRepository):
         with self.session() as db:
             query = db.query(MEDIASYNCSTATISTIC).filter(MEDIASYNCSTATISTIC.SERVER == server_type)
             if server_id is not None:
-                item = query.filter(MEDIASYNCSTATISTIC.SERVER_ID == int(server_id)).first()
-                if item:
-                    return item
-                return query.filter(MEDIASYNCSTATISTIC.SERVER_ID.is_(None)).first()
+                return query.filter(MEDIASYNCSTATISTIC.SERVER_ID == int(server_id)).first()
             return query.first()

@@ -539,6 +539,21 @@ class Jellyfin(_IMediaClient):
                 return self.get_nt_image_url(url=image_url, remote=True)
             return image_url
 
+    def refresh_library(self, item_id):
+        """按媒体库 Item ID 刷新。"""
+        if not self._host or not self._apikey:
+            return False
+        req_url = f"{self._host}Items/{item_id}/Refresh?Recursive=true&api_key={self._apikey}"
+        try:
+            res = HttpClient().post(req_url, headers=self._auth_headers())
+            return bool(res)
+        except (InfrastructureError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]连接Items/Refresh出错：" + str(e))
+            return False
+
     def refresh_root_library(self):
         """
         通知Jellyfin刷新整个媒体库
@@ -560,16 +575,14 @@ class Jellyfin(_IMediaClient):
             return False
 
     def refresh_library_by_items(self, items):
-        """
-        按类型、名称、年份来刷新媒体库，Jellyfin没有刷单个项目的API，这里直接刷新整个库
-        :param items: 已识别的需要刷新媒体库的媒体信息列表
-        """
-        # 没找到单项目刷新的对应的API，先按全库刷新
+        """优先按媒体库 ID 刷新，未指定时刷新整个库。"""
         if not items:
             return False
-        if not self._host or not self._apikey:
-            return False
-        return self.refresh_root_library()
+        for library_id in {str(item["library_id"]) for item in items if item.get("library_id")}:
+            self.refresh_library(library_id)
+        if any(not item.get("library_id") for item in items):
+            self.refresh_root_library()
+        return True
 
     def get_libraries(self):
         """

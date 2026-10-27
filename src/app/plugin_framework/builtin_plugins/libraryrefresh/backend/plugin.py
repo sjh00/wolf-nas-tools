@@ -66,7 +66,9 @@ class LibraryRefreshPlugin:
         media_info = event_data.get("media_info") if event_data else None
         profile = media_info.get("content_profile") if media_info else None
         target_path = event_data.get("target_path") or event_data.get("dest")
-        server_id = self._mediaserver.resolve_server_id(None, profile, target_path)
+        route = self._mediaserver.resolve_route(profile, target_path)
+        server_id = int(route.server_id) if route else self._mediaserver.resolve_server_id()
+        library_id = route.library_id if route else None
         if self._mediaserver:
             mediaserver_type_obj = self._mediaserver.get_type(server_id)
             # get_type 返回字符串或枚举（不同客户端实现不一），统一转为字符串
@@ -97,4 +99,4 @@ class LibraryRefreshPlugin:
             )
         else:
             self.ctx.info(f"媒体服务器 {mediaserver_type} 刷新整库 ...")
-            self._mediaserver.refresh_root_library(server_id=server_id)
+            self._mediaserver.refresh_root_library(server_id=server_id, library_id=library_id)

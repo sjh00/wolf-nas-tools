@@ -636,6 +636,10 @@ class Emby(_IMediaClient):
             return False
         return False
 
+    def refresh_library(self, item_id):
+        """按媒体库 ID 刷新指定媒体库。"""
+        return self.__refresh_emby_library_by_id(item_id)
+
     def refresh_root_library(self):
         """
         通知Emby刷新整个媒体库
@@ -688,6 +692,8 @@ class Emby(_IMediaClient):
         根据媒体信息查询在哪个媒体库，返回要刷新的位置的ID
         :param item: 由title、year、type组成的字典
         """
+        if item.get("library_id"):
+            return str(item["library_id"])
         if not item.get("title") or not item.get("year") or not item.get("type"):
             return None
         if item.get("type") != MediaType.MOVIE.value:

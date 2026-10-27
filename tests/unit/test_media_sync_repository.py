@@ -73,3 +73,24 @@ class TestMediaSyncTypeCoercion:
 
     def test_query_item_no_match_returns_none(self, repo):
         assert repo.query_item(server_type="emby", title="不存在", tmdbid=0) is None
+
+    def test_query_item_is_strictly_scoped_to_server_instance(self, repo):
+        repo.insert_item(
+            "emby",
+            {
+                "id": "shared-id",
+                "library": "普通",
+                "type": "movie",
+                "title": "同名电影",
+                "year": 2026,
+                "tmdbid": 100,
+            },
+            server_id=1,
+        )
+        assert repo.query_item(server_type="emby", title="同名电影", server_id=1) is not None
+        assert repo.query_item(server_type="emby", title="同名电影", server_id=2) is None
+
+    def test_statistics_are_strictly_scoped_to_server_instance(self, repo):
+        repo.save_statistics("emby", total_count=10, movie_count=8, tv_count=2, server_id=1)
+        assert repo.get_statistics("emby", server_id=1) is not None
+        assert repo.get_statistics("emby", server_id=2) is None

@@ -259,6 +259,7 @@ class LibraryRenameService:
             allow_online_metadata=bool(data.get("allow_online_metadata", False)),
             reidentify_no_metadata=bool(data.get("reidentify_no_metadata", False)),
             limit=max(1, min(limit, _MAX_LIMIT)),
+            server_id=int(data["server_id"]) if data.get("server_id") else None,
         )
 
     def _validate_library_path(self, backend_id: str, path: str) -> None:

@@ -342,12 +342,21 @@ class LibraryRenameExecutor:
                 )
         if not items:
             return
+        job = self._repo.get_job(job_id) or {}
+        try:
+            scope = JsonUtils.loads(job.get("SCOPE") or "{}")
+        except Exception:  # noqa: BLE001
+            scope = {}
         try:
             grouped: dict[str, list[dict]] = {}
             for item in items:
                 grouped.setdefault(item.get("content_profile") or "default", []).append(item)
             for profile, profile_items in grouped.items():
-                self._media_server.refresh_library_by_items(profile_items, content_profile=profile)
+                self._media_server.refresh_library_by_items(
+                    profile_items,
+                    server_id=scope.get("server_id"),
+                    content_profile=profile,
+                )
         except Exception as e:  # noqa: BLE001
             log.warn(f"[LibraryRename]刷新媒体服务器失败: {e}")
 

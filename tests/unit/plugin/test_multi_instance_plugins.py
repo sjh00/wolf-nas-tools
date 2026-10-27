@@ -1,5 +1,6 @@
 """媒体服务器相关插件的多实例路由测试。"""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.plugin_framework.builtin_plugins._ms_common.mediaserver_lifecycle import resolve_plugin_server_id
@@ -12,13 +13,13 @@ def test_libraryrefresh_root_refresh_uses_directory_target():
     plugin = LibraryRefreshPlugin.__new__(LibraryRefreshPlugin)
     plugin.ctx = MagicMock()
     plugin._mediaserver = MagicMock()
-    plugin._mediaserver.resolve_server_id.return_value = 2
+    plugin._mediaserver.resolve_route.return_value = SimpleNamespace(server_id=2, library_id="4")
     plugin._mediaserver.get_type.return_value = "emby"
 
     plugin._refresh_library({"dest": "/media/adult/movie", "media_info": {}})
 
-    plugin._mediaserver.resolve_server_id.assert_called_once_with(None, None, "/media/adult/movie")
-    plugin._mediaserver.refresh_root_library.assert_called_once_with(server_id=2)
+    plugin._mediaserver.resolve_route.assert_called_once_with(None, "/media/adult/movie")
+    plugin._mediaserver.refresh_root_library.assert_called_once_with(server_id=2, library_id="4")
 
 
 def test_movielike_uses_directory_routed_server_type():

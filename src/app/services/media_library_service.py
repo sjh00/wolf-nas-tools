@@ -1,3 +1,7 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+import log
 from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
 from app.domain.entities.media_library_route import MediaLibraryRouteEntity
 from app.domain.enums import SystemConfigKey
@@ -90,6 +94,82 @@ class MediaLibraryService:
         """获取指定实例最新入库"""
         return self._media_server.get_latest(num=num, server_id=server_id)
 
+    def _get_server_section(self, server: dict) -> dict:
+        server_id = server["id"]
+
+        def _safe(call, fallback):
+            try:
+                return call()
+            except Exception as err:  # noqa: BLE001
+                log.debug(f"[MediaLibrary]{server['name']} 获取数据失败: {err}")
+                return fallback
+
+        def _with_server(items):
+            return [{**item, "server_id": server_id, "server_name": server["name"]} for item in items if item]
+
+        counts = _safe(lambda: self.get_media_count(server_id), None)
+        libraries = _safe(lambda: self.get_libraries(server_id), [])
+        resumes = _safe(lambda: self.get_resume(server_id=server_id), [])
+        latests = _safe(lambda: self.get_latest(server_id=server_id), [])
+        activity = _safe(lambda: self.get_play_history(server_id), [])
+        sync_state = _safe(lambda: self.get_sync_state(server_id), "未同步")
+        return {
+            "server": server,
+            "server_id": server_id,
+            "server_name": server["name"],
+            "server_success": counts is not None,
+            "media_counts": counts or {},
+            "sync_state": sync_state,
+            "librarys": _with_server(libraries or []),
+            "resumes": _with_server(resumes or []),
+            "latests": _with_server(latests or []),
+            "activitys": _with_server(activity or []),
+        }
+
+    def get_home_data(self, requested_id: int | None = None) -> dict:
+        """聚合并发获取各实例首页数据，单个实例失败不影响其他实例。"""
+        servers = self.get_servers()
+        if requested_id is not None:
+            servers = [item for item in servers if item["id"] == requested_id]
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(servers)))) as executor:
+            sections = list(executor.map(self._get_server_section, servers))
+
+        def _number(section: dict, key: str) -> int:
+            try:
+                return int(str(section["media_counts"].get(key, 0) or 0).replace(",", ""))
+            except (TypeError, ValueError):
+                return 0
+
+        count_keys = ("Movie", "Series", "Music", "Episodes", "User")
+        totals = {key: sum(_number(section, key) for section in sections) for key in count_keys}
+        try:
+            space_info = self.get_space_info()
+            library_spaces = {
+                "UsedPercent": space_info.used_percent,
+                "FreeSpace": space_info.free_space,
+                "UsedSpace": space_info.used_space,
+                "TotalSpace": space_info.total_space,
+            }
+        except Exception as err:  # noqa: BLE001
+            log.debug(f"[MediaLibrary]获取空间信息失败: {err}")
+            library_spaces = {}
+        return {
+            "server_success": any(section["server_success"] for section in sections),
+            "servers": self.get_servers(),
+            "sections": sections,
+            "media_counts": totals,
+            "user_count": totals["User"],
+            "activitys": sorted(
+                [item for section in sections for item in section["activitys"]],
+                key=lambda item: str(item.get("date") or ""),
+                reverse=True,
+            )[:30],
+            "library_spaces": library_spaces,
+            "librarys": [item for section in sections for item in section["librarys"]],
+            "resumes": [item for section in sections for item in section["resumes"]],
+            "latests": [item for section in sections for item in section["latests"]],
+        }
+
     def get_routes(self) -> list[dict]:
         servers = {item["id"]: item["name"] for item in self.get_servers()}
         return [
@@ -116,6 +196,15 @@ class MediaLibraryService:
             raise ValueError("目标媒体服务器不能为空")
         if server_id not in {item["id"] for item in self.get_servers()}:
             raise ValueError("目标媒体服务器不存在或未启用")
+        normalized_path = os.path.normpath(target_path).replace("\\", "/").rstrip("/") if target_path else ""
+        for route in self._route_repo.list():
+            if route.id == route_id:
+                continue
+            existing_path = (
+                os.path.normpath(route.target_path).replace("\\", "/").rstrip("/") if route.target_path else ""
+            )
+            if route.content_profile == profile and existing_path == normalized_path:
+                raise ValueError("相同目录和内容画像的路由已存在")
         entity = MediaLibraryRouteEntity(
             id=route_id or 0,
             content_profile=profile,

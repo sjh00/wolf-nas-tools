@@ -31,6 +31,7 @@ class RenameScope:
     allow_online_metadata: bool = False
     reidentify_no_metadata: bool = False
     limit: int = 5000
+    server_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +44,7 @@ class RenameScope:
             "allow_online_metadata": self.allow_online_metadata,
             "reidentify_no_metadata": self.reidentify_no_metadata,
             "limit": self.limit,
+            "server_id": self.server_id,
         }
 
 

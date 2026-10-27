@@ -21,6 +21,7 @@ class RenameScopeRequest(BaseModel):
     allow_online_metadata: bool = False
     reidentify_no_metadata: bool = False
     limit: int = 5000
+    server_id: int | None = None
 
 
 class ManualMetadataRequest(BaseModel):

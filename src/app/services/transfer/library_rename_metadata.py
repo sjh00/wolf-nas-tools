@@ -52,12 +52,12 @@ class LibraryMetadataResolver:
         self._ms_series: list[tuple[str, dict[str, Any]]] = []
         self._ms_loaded = False
 
-    def prepare(self, use_media_server: bool) -> None:
+    def prepare(self, use_media_server: bool, server_id: int | None = None) -> None:
         if not use_media_server or self._ms_loaded:
             return
         self._ms_loaded = True
         try:
-            libraries = self._media_server.get_libraries() or []
+            libraries = self._media_server.get_libraries(server_id) or []
         except Exception as e:  # noqa: BLE001
             log.warn(f"[LibraryRename]读取媒体服务器媒体库失败: {e}")
             return
@@ -66,7 +66,7 @@ class LibraryMetadataResolver:
             if not library_id:
                 continue
             try:
-                items = self._media_server.get_items(library_id) or []
+                items = self._media_server.get_items(library_id, server_id) or []
                 for item in items:
                     self._index_item(item)
             except Exception as e:  # noqa: BLE001
