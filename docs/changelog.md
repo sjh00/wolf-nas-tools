@@ -1,5 +1,12 @@
 # 版本历史
 
+## v5.0.2 (2026-10-27)
+
+### 修复
+
+- 完成订阅写入历史时补齐 naming_profile，修复 `SubscribeHistoryRepositoryAdapter.upsert()` 的 TypeError。
+- Web 消息中心所有系统通知统一使用模板，覆盖入库、下载、订阅、站点、刷流和媒体服务器事件。
+
 ## v5.0.1 (2026-10-27)
 
 ### 修复
