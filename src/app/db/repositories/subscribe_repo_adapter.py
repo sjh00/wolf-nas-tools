@@ -415,6 +415,7 @@ class SubscribeHistoryRepositoryAdapter:
         provider: str | None = None,
         metadata_ref: str | None = None,
         metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         self._repo.insert_rss_history(
             rssid,
@@ -436,6 +437,7 @@ class SubscribeHistoryRepositoryAdapter:
             provider=provider,
             metadata_ref=metadata_ref,
             metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
     def upsert(
@@ -460,6 +462,7 @@ class SubscribeHistoryRepositoryAdapter:
         provider: str | None = None,
         metadata_ref: str | None = None,
         metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         self._repo.upsert_rss_history(
             rssid,
@@ -481,6 +484,7 @@ class SubscribeHistoryRepositoryAdapter:
             provider=provider,
             metadata_ref=metadata_ref,
             metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
     def delete(self, rssid: int | None) -> None:
