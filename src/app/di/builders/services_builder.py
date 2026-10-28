@@ -20,6 +20,7 @@ from app.db.repositories.download_repo_adapter import (
 )
 from app.db.repositories.library_rename_repo_adapter import LibraryRenameRepositoryAdapter
 from app.db.repositories.media_identity_repository import MediaIdentityRepository
+from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
 from app.db.repositories.plugin_market_repository import PluginMarketRepository
 from app.db.repositories.rbac_repo_adapter import RBACMenuRepositoryAdapter, RBACRoleRepositoryAdapter
@@ -34,6 +35,7 @@ from app.db.repositories.subscribe_repo_adapter import (
     SubscribeTvEpisodeRepositoryAdapter,
     SubscribeTvRepositoryAdapter,
 )
+from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferBlacklistRepositoryAdapter
 from app.db.repositories.word_repo_adapter import CustomWordGroupRepositoryAdapter, CustomWordRepositoryAdapter
@@ -61,6 +63,7 @@ from app.services.downloader_core import DownloaderCore
 from app.services.file_index_service import FileIndexService
 from app.services.filter_service import FilterService
 from app.services.indexer_service import IndexerService
+from app.services.library_presence_service import LibraryPresenceService
 from app.services.media_config_service import MediaConfigService
 from app.services.media_file_service import MediaFileService
 from app.services.media_info_service import MediaInfoService
@@ -154,7 +157,11 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     )
 
     metadata_service = MetadataService(identity_repo=MediaIdentityRepository(), media_service=media_service)
-    discovery_service = DiscoveryService(media_service=media_service)
+    discovery_service = DiscoveryService(
+        media_service=media_service,
+        media_server=media_server,
+        library_presence_service=LibraryPresenceService(media_server=media_server),
+    )
     shared_scraper = Scraper(media_service=media_service, metadata_service=metadata_service)
     scrape_queue_service = ScrapeQueueService(scraper=shared_scraper)
 
@@ -416,6 +423,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         media_service=media_service,
         thread_executor=thread_executor,
         scraper=Scraper(media_service=media_service, metadata_service=metadata_service),
+        route_repo=MediaLibraryRouteRepositoryAdapter(),
     )
     media_library_service = MediaLibraryService(
         media_server=media_server,
@@ -531,6 +539,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         sync_service=sync_service,
         poster_resolver=_history_poster_resolver,
         metadata_service=metadata_service,
+        subscribe_repo=SubscribeRepository(),
     )
     library_rename_service = LibraryRenameService(
         rename_repo=LibraryRenameRepositoryAdapter(),

@@ -179,6 +179,7 @@ class MediaLibraryService:
                 "target_path": route.target_path,
                 "server_id": route.server_id,
                 "server_name": servers.get(route.server_id, f"实例 {route.server_id}"),
+                "backend_id": route.backend_id,
                 "library_id": route.library_id,
                 "enabled": route.enabled,
                 "note": route.note,
@@ -210,6 +211,7 @@ class MediaLibraryService:
             content_profile=profile,
             target_path=target_path,
             server_id=server_id,
+            backend_id=str(data.get("backend_id") or "local").strip() or "local",
             library_id=str(data.get("library_id") or "").strip() or None,
             enabled=bool(data.get("enabled", True)),
             note=str(data.get("note") or ""),
@@ -221,6 +223,7 @@ class MediaLibraryService:
             "content_profile": saved.content_profile,
             "target_path": saved.target_path,
             "server_id": saved.server_id,
+            "backend_id": saved.backend_id,
         }
 
     def delete_route(self, route_id: int) -> bool:

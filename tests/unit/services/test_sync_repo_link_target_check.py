@@ -35,9 +35,15 @@ def _cfg(source):
     )
 
 
+def _write_media(path):
+    """写入满足默认最小媒体大小限制的稀疏文件."""
+    with open(path, "wb") as handle:
+        handle.truncate(151 * 1024 * 1024)
+
+
 def test_target_deleted_clears_blacklist_and_resyncs(tmp_path):
     src = tmp_path / "E01.mkv"
-    src.write_bytes(b"x")
+    _write_media(src)
     svc = _engine(dest_exists=False)
 
     svc._do_transfer(str(src), cast(Any, _cfg(tmp_path)))
@@ -48,7 +54,7 @@ def test_target_deleted_clears_blacklist_and_resyncs(tmp_path):
 
 def test_target_present_skips_resync(tmp_path):
     src = tmp_path / "E01.mkv"
-    src.write_bytes(b"x")
+    _write_media(src)
     svc = _engine(dest_exists=True)
 
     svc._do_transfer(str(src), cast(Any, _cfg(tmp_path)))
