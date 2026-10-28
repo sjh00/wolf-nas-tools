@@ -24,6 +24,7 @@ class MediaLibraryRouteRepositoryAdapter:
             "CONTENT_PROFILE": entity.content_profile,
             "TARGET_PATH": entity.target_path,
             "SERVER_ID": entity.server_id,
+            "BACKEND_ID": entity.backend_id,
             "LIBRARY_ID": entity.library_id,
             "ENABLED": entity.enabled,
             "NOTE": entity.note,

@@ -10,10 +10,12 @@ from typing import Any
 from loguru import logger
 
 from app.core.exceptions import ValidationError
+from app.media.display_image_policy import transform_display_image
 from app.media.metadata.models import DiscoveryPage
 from app.media.metadata.providers.discovery import BangumiDiscovery, DoubanDiscovery, TmdbDiscovery
 from app.media.metadata.registry import MetadataRegistry
 from app.media.metadata.registry import registry as global_registry
+from app.services.library_presence_service import LibraryPresenceService
 
 
 class DiscoveryService:
@@ -24,11 +26,15 @@ class DiscoveryService:
         *,
         registry: MetadataRegistry | None = None,
         media_service: Any = None,
+        media_server: Any = None,
+        library_presence_service: LibraryPresenceService | None = None,
         register_builtins: bool = True,
         cache_ttl_seconds: int = 300,
     ) -> None:
         self._registry = registry or global_registry
         self._media_service = media_service
+        self._media_server = media_server
+        self._library_presence = library_presence_service or LibraryPresenceService(media_server=media_server)
         self._builtin_lock = threading.Lock()
         self._builtin_ready = not register_builtins
         self._cache_ttl = max(0, cache_ttl_seconds)
@@ -101,6 +107,13 @@ class DiscoveryService:
                 retryable=True,
             )
         result = self._dedupe_items(result)
+        for discovery_item in result.items:
+            profile = str(getattr(discovery_item, "content_profile", "") or "")
+            if getattr(discovery_item, "poster", None):
+                discovery_item.poster = transform_display_image(profile, str(discovery_item.poster))
+            if getattr(discovery_item, "backdrop", None):
+                discovery_item.backdrop = transform_display_image(profile, str(discovery_item.backdrop))
+        self._library_presence.annotate(result.items)
         self._cache_put(cache_key, result)
         return result
 

@@ -10,6 +10,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
+from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
 from app.domain.enums import OsType
 from app.domain.mediatypes import MediaType
 from app.events import Event
@@ -33,12 +34,14 @@ class MediaFileService:
         media_service,
         thread_executor,
         scraper,
+        route_repo=None,
     ):
         self._event_bus = event_bus
         self._storage_backend_repo = storage_backend_repo
         self._media_service = media_service
         self._thread_executor = thread_executor
         self._scraper = scraper
+        self._route_repo = route_repo or MediaLibraryRouteRepositoryAdapter()
 
     def _resolve_backend(self, backend_id: str) -> StorageBackend:
         """按 backend_id 解析存储后端，空或 local 返回本地后端"""
@@ -157,6 +160,21 @@ class MediaFileService:
             )
             if item:
                 library_paths.append(item)
+        # 内容画像媒体库路由（如 adult → /Media/adult）同样应出现在文件管理。
+        try:
+            for route in self._route_repo.list():
+                if not route.enabled or not route.target_path:
+                    continue
+                item = _make_path(
+                    route.target_path,
+                    f"{route.content_profile or 'library'} 媒体库",
+                    route.content_profile or "library",
+                    route.backend_id or "local",
+                )
+                if item:
+                    library_paths.append(item)
+        except Exception as err:  # noqa: BLE001
+            log.debug(f"[MediaFile]读取媒体库路由失败: {err}")
         library_paths = _dedupe(library_paths, seen_lib)
 
         sync_source_paths = []

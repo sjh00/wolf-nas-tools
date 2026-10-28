@@ -196,6 +196,7 @@ class SaveLibraryRouteRequest(BaseModel):
     content_profile: str = ""
     target_path: str | None = None
     server_id: int
+    backend_id: str = "local"
     library_id: str | None = None
     enabled: bool = True
     note: str = ""
@@ -669,6 +670,7 @@ def get_downloaded(
                     "season_episode": item.SE or "",
                     "date": item.DATE,
                     "site": item.SITE,
+                    "content_profile": getattr(item, "CONTENT_PROFILE", "") or "",
                     "history_id": item.ID,
                 }
                 for item in items

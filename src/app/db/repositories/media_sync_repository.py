@@ -5,6 +5,8 @@
 
 import time
 
+from sqlalchemy import and_, or_
+
 from app.db.models import MEDIASYNCITEMS, MEDIASYNCSTATISTIC
 from app.db.repositories.base_repository import BaseRepository
 from app.utils.json_utils import JsonUtils
@@ -69,6 +71,24 @@ class MediaSyncRepository(BaseRepository):
             db.add(new_item)
             db.commit()
             return True
+
+    def get_existing_anchors(self, pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+        """跨全部媒体实例查询已入库锚点，供探索页兜底标记."""
+        normalized = {(str(p or "").strip(), str(e or "").strip()) for p, e in pairs if p and e}
+        if not normalized:
+            return set()
+        conditions = [
+            and_(MEDIASYNCITEMS.ANCHOR_PROVIDER == provider, MEDIASYNCITEMS.ANCHOR_EXTERNAL_ID == external)
+            for provider, external in normalized
+        ]
+        with self.session() as db:
+            rows = (
+                db.query(MEDIASYNCITEMS.ANCHOR_PROVIDER, MEDIASYNCITEMS.ANCHOR_EXTERNAL_ID)
+                .filter(or_(*conditions))
+                .distinct()
+                .all()
+            )
+        return {(str(provider or ""), str(external or "")) for provider, external in rows}
 
     def empty_items(
         self, server_type: str | None = None, library: str | None = None, server_id: int | None = None

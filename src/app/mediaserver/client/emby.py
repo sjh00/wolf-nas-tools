@@ -438,6 +438,7 @@ class Emby(_IMediaClient):
                         ):
                             ret_movies.append(
                                 {
+                                    "id": res_item.get("Id"),
                                     "title": res_item.get("Name"),
                                     "year": str(res_item.get("ProductionYear")),
                                 }
@@ -451,6 +452,30 @@ class Emby(_IMediaClient):
             log.error(f"[{self.client_name}]连接Items出错：" + str(e))
             return None
         return []
+
+    def search_movie_keyword(self, keyword: str) -> bool:
+        """按名称/路径关键字检查电影是否存在（用于番号等非标题场景）."""
+        if not self._host or not self._apikey or not keyword:
+            return False
+        req_url = (
+            f"{self._host}emby/Items?IncludeItemTypes=Movie&Fields=Path,Name"
+            f"&StartIndex=0&Recursive=true&SearchTerm={quote(str(keyword))}&Limit=20"
+            f"&IncludeSearchTypes=false&api_key={self._apikey}"
+        )
+        try:
+            res = HttpClient().get(req_url)
+            if not res:
+                return False
+            for item in res.json().get("Items") or []:
+                text = f"{item.get('Name') or ''} {item.get('Path') or ''}".lower()
+                if keyword.lower() in text:
+                    return True
+        except (InfrastructureError, NetworkError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]关键字检查出错：" + str(e))
+        return False
 
     def get_tv_episodes(self, item_id=None, title=None, year=None, tmdbid=None, season=None):
         """
@@ -614,13 +639,18 @@ class Emby(_IMediaClient):
                 return self.get_nt_image_url(url=image_url, remote=True)
             return image_url
 
-    def __refresh_emby_library_by_id(self, item_id):
+    def __refresh_emby_library_by_id(self, item_id, replace_images: bool = False):
         """
         通知Emby刷新一个项目的媒体库
         """
         if not self._host or not self._apikey:
             return False
-        req_url = f"{self._host}emby/Items/{item_id}/Refresh?Recursive=true&api_key={self._apikey}"
+        suffix = (
+            "&MetadataRefreshMode=FullRefresh&ImageRefreshMode=FullRefresh&ReplaceAllImages=true"
+            if replace_images
+            else ""
+        )
+        req_url = f"{self._host}emby/Items/{item_id}/Refresh?Recursive=true{suffix}&api_key={self._apikey}"
         try:
             res = HttpClient().post(req_url)
             if res:
@@ -669,15 +699,26 @@ class Emby(_IMediaClient):
         """
         if not items:
             return
-        # 收集要刷新的媒体库信息
+        # 收集要刷新的媒体条目/媒体库信息
         log.info(f"[{self.client_name}]开始刷新Emby媒体库...")
         library_ids = []
+        item_ids = []
         for item in items:
             if not item:
                 continue
+            if item.get("type") == MediaType.MOVIE.value:
+                movies = self.get_movies(item.get("title"), item.get("year")) or []
+                movie_id = next((m.get("id") for m in movies if m.get("id")), None)
+                if movie_id:
+                    # 已入库电影必须刷新条目，才会重读新的 NFO/海报。
+                    if movie_id not in item_ids:
+                        item_ids.append(movie_id)
+                    continue
             library_id = self.__get_emby_library_id_by_item(item)
             if library_id and library_id not in library_ids:
                 library_ids.append(library_id)
+        for item_id in item_ids:
+            self.__refresh_emby_library_by_id(item_id, replace_images=True)
         # 开始刷新媒体库
         if "/" in library_ids:
             self.refresh_root_library()
@@ -694,7 +735,7 @@ class Emby(_IMediaClient):
         """
         if item.get("library_id"):
             return str(item["library_id"])
-        if not item.get("title") or not item.get("year") or not item.get("type"):
+        if not item.get("title") or not item.get("type"):
             return None
         if item.get("type") != MediaType.MOVIE.value:
             item_id = self.__get_emby_series_id_by_name(item.get("title"), item.get("year"))

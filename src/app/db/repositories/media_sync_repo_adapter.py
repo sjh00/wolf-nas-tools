@@ -19,6 +19,9 @@ class MediaSyncRepositoryAdapter:
             return False
         return self._repo.insert_item(server_type, iteminfo, seasoninfo, server_id)
 
+    def get_existing_anchors(self, pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+        return self._repo.get_existing_anchors(pairs)
+
     def empty(self, server_type: str | None = None, library: str | None = None, server_id: int | None = None) -> bool:
         return self._repo.empty_items(server_type, library, server_id)
 

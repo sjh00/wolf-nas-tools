@@ -467,6 +467,11 @@ class MediaServer:
             numeric_tmdb = str(tmdbid) if tmdbid and str(tmdbid).isdigit() else None
             if str(mtype).lower() == "movie":
                 result = bool(client.get_movies(title, year))
+                if not result:
+                    # 只调用客户端类显式实现的方法，避免 MagicMock/代理对象把动态属性误判为能力。
+                    keyword_search = getattr(type(client), "search_movie_keyword", None)
+                    if callable(keyword_search):
+                        result = bool(keyword_search(client, str(title)))
             else:
                 episodes = client.get_tv_episodes(title=title, year=year, tmdbid=numeric_tmdb, season=season or 1)
                 result = bool(episodes)
@@ -475,6 +480,35 @@ class MediaServer:
             result = False
         _LIVE_LIBRARY_CACHE[key] = (now + _LIVE_LIBRARY_TTL, result)
         return result
+
+    def check_library_present_any(
+        self,
+        mtype,
+        title=None,
+        year=None,
+        tmdbid=None,
+        season=None,
+        content_profile: str | None = None,
+        alternate_titles: list[str] | None = None,
+    ) -> bool:
+        """跨全部启用实例检查媒体是否已入库（多实例媒体库）."""
+        titles = [str(title or "").strip(), *[str(t or "").strip() for t in (alternate_titles or [])]]
+        titles = [item for item in dict.fromkeys(titles) if item]
+        if not titles:
+            return False
+        for server in self.get_server_options():
+            for candidate in titles:
+                if self.check_library_present(
+                    mtype,
+                    title=candidate,
+                    year=year,
+                    tmdbid=tmdbid,
+                    season=season,
+                    content_profile=content_profile,
+                    server_id=int(server["id"]),
+                ):
+                    return True
+        return False
 
     def check_item_exists(
         self,
