@@ -188,6 +188,9 @@ class BrowserSession(_BaseBrowserSession):
                 self._client.delete(self._session_url(f"/sessions/{self._sid}"))
             except Exception as e:
                 log.warn(f"[BrowserSession] 关闭会话 {self.session_id} 失败: {e}")
+        else:
+            # 持久会话保留 Cookie/clearance，但必须释放标签页，避免浏览器卡死。
+            self.close_tabs()
         self._client.close()
 
 
@@ -268,6 +271,19 @@ class AsyncBrowserSession(_BaseBrowserSession):
         response.raise_for_status()
         return response.json().get("data", {})
 
+    async def list_tabs(self) -> list[str]:
+        response = await self._client.get(self._session_url(f"/sessions/{self._sid}/tabs"))
+        response.raise_for_status()
+        data = (response.json() or {}).get("data") or {}
+        return list((data.get("tabs") if isinstance(data, dict) else data) or [])
+
+    async def close_tabs(self) -> None:
+        try:
+            for name in await self.list_tabs():
+                await self._client.delete(self._session_url(f"/sessions/{self._sid}/tabs/{quote(str(name), safe='')}"))
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[AsyncBrowserSession] 关闭标签页失败: {e}")
+
     async def close(self, delete_session: bool | None = None) -> None:
         if delete_session is None:
             delete_session = not self._persist
@@ -276,4 +292,6 @@ class AsyncBrowserSession(_BaseBrowserSession):
                 await self._client.delete(self._session_url(f"/sessions/{self._sid}"))
             except Exception as e:
                 log.warn(f"[AsyncBrowserSession] 关闭会话 {self.session_id} 失败: {e}")
+        else:
+            await self.close_tabs()
         await self._client.aclose()
