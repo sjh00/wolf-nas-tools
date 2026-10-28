@@ -22,15 +22,16 @@ def upgrade() -> None:
         "AGENT_CONVERSATION",
         sa.Column("TITLE", sa.String(length=120), nullable=False, server_default=""),
     )
+    q = op.get_bind().dialect.identifier_preparer.quote
     op.execute(
-        """
-        UPDATE "AGENT_CONVERSATION"
-        SET "TITLE" = COALESCE((
-            SELECT SUBSTR("CONTENT", 1, 60)
-            FROM "AGENT_MESSAGE"
-            WHERE "AGENT_MESSAGE"."CONVERSATION_ID" = "AGENT_CONVERSATION"."ID"
-              AND "AGENT_MESSAGE"."ROLE" = 'user'
-            ORDER BY "AGENT_MESSAGE"."ID"
+        f"""
+        UPDATE {q("AGENT_CONVERSATION")}
+        SET {q("TITLE")} = COALESCE((
+            SELECT SUBSTR({q("CONTENT")}, 1, 60)
+            FROM {q("AGENT_MESSAGE")}
+            WHERE {q("AGENT_MESSAGE")}.{q("CONVERSATION_ID")} = {q("AGENT_CONVERSATION")}.{q("ID")}
+              AND {q("AGENT_MESSAGE")}.{q("ROLE")} = 'user'
+            ORDER BY {q("AGENT_MESSAGE")}.{q("ID")}
             LIMIT 1
         ), '')
         """

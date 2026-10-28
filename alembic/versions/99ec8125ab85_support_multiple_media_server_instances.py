@@ -19,7 +19,12 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("MEDIASERVER", sa.Column("TYPE", sa.String(length=32), nullable=False, server_default=""))
-    op.execute(sa.text('UPDATE "MEDIASERVER" SET "TYPE" = "NAME" WHERE "TYPE" = :empty').bindparams(empty=""))
+    quote = op.get_bind().dialect.identifier_preparer.quote
+    op.execute(
+        sa.text(
+            f"UPDATE {quote('MEDIASERVER')} SET {quote('TYPE')} = {quote('NAME')} WHERE {quote('TYPE')} = :empty"
+        ).bindparams(empty="")
+    )
     op.add_column("MEDIASYNC_ITEMS", sa.Column("SERVER_ID", sa.Integer(), nullable=True))
     op.add_column("MEDIASYNC_STATISTICS", sa.Column("SERVER_ID", sa.Integer(), nullable=True))
     op.create_index("ix_MEDIASYNC_ITEMS_SERVER_ID", "MEDIASYNC_ITEMS", ["SERVER_ID"])
