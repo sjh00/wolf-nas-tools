@@ -9,6 +9,7 @@ import importlib.util
 import inspect
 import os
 import sys
+import types
 from typing import Any
 
 import log
@@ -96,6 +97,74 @@ class PluginSandbox:
         """获取插件根目录"""
         return self._registry.get_plugin_path(plugin_id)
 
+    @staticmethod
+    def _unique_root(plugin_id: str) -> str:
+        """每个插件使用独立顶层包，避免多个插件的 backend 包互相覆盖."""
+        return "plugin_" + "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in plugin_id)
+
+    @staticmethod
+    def _uses_absolute_backend_import(plugin_path: str, entry_root: str) -> bool:
+        """检测插件是否仍使用 backend.* 绝对导入（旧插件兼容）."""
+        root = os.path.join(plugin_path, entry_root)
+        if not os.path.isdir(root):
+            return False
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                if not name.endswith(".py"):
+                    continue
+                try:
+                    with open(os.path.join(dirpath, name), encoding="utf-8", errors="ignore") as handle:
+                        for line in handle:
+                            text = line.lstrip()
+                            if text.startswith(f"from {entry_root}") or text.startswith(f"import {entry_root}"):
+                                return True
+                except OSError:
+                    continue
+        return False
+
+    def _install_entry_root_alias(self, entry_root: str, root_dir: str) -> None:
+        """旧插件绝对导入兼容：把 backend 指向当前插件目录，隔离其它插件缓存."""
+        for key in list(sys.modules):
+            if key != entry_root and not key.startswith(entry_root + "."):
+                continue
+            module_file = getattr(sys.modules.get(key), "__file__", None) or ""
+            module_paths = getattr(sys.modules.get(key), "__path__", None) or []
+            belongs = bool(module_file and os.path.abspath(module_file).startswith(os.path.abspath(root_dir) + os.sep))
+            belongs = belongs or any(
+                os.path.abspath(str(item)).startswith(os.path.abspath(root_dir) + os.sep) for item in module_paths
+            )
+            if not belongs:
+                del sys.modules[key]
+        if entry_root not in sys.modules:
+            package = types.ModuleType(entry_root)
+            package.__path__ = [root_dir]
+            package.__package__ = entry_root
+            sys.modules[entry_root] = package
+        else:
+            sys.modules[entry_root].__path__ = [root_dir]
+
+    def _install_plugin_package(self, plugin_id: str, plugin_path: str, module_path: str) -> str:
+        """为插件创建唯一包路径，返回入口模块完整名称."""
+        unique_root = self._unique_root(plugin_id)
+        for key in list(sys.modules):
+            if key == unique_root or key.startswith(unique_root + "."):
+                del sys.modules[key]
+        root_pkg = types.ModuleType(unique_root)
+        root_pkg.__path__ = [plugin_path]
+        root_pkg.__package__ = unique_root
+        sys.modules[unique_root] = root_pkg
+
+        current_path = plugin_path
+        parts = module_path.split(".")
+        for index, part in enumerate(parts[:-1], start=1):
+            current_path = os.path.join(current_path, part)
+            name = f"{unique_root}." + ".".join(parts[:index])
+            package = types.ModuleType(name)
+            package.__path__ = [current_path]
+            package.__package__ = name
+            sys.modules[name] = package
+        return f"{unique_root}.{module_path}"
+
     def _cleanup_modules(self, plugin_id: str) -> None:
         """清理插件相关的 sys.modules 缓存"""
         module_path = self._get_module_path(plugin_id)
@@ -112,14 +181,26 @@ class PluginSandbox:
             if module_path and key.startswith(module_path + "."):
                 to_remove.append(key)
                 continue
-            # 3. 遗留兼容：plugin_{id} 前缀
-            if key.startswith(f"plugin_{plugin_id}"):
+            # 3. 唯一插件包前缀
+            if key.startswith(self._unique_root(plugin_id)):
                 to_remove.append(key)
                 continue
-            # 4. 入口顶层包（插件升级后仍可能指向旧目录）
+            # 4. 入口顶层包（仅清理指向当前插件目录的旧绝对导入缓存）
             entry_root = (module_path or "").split(".", 1)[0]
             if entry_root and (key == entry_root or key.startswith(entry_root + ".")):
-                to_remove.append(key)
+                module_file = getattr(sys.modules.get(key), "__file__", None) or ""
+                module_paths = getattr(sys.modules.get(key), "__path__", None) or []
+                belongs = bool(
+                    plugin_path
+                    and module_file
+                    and os.path.abspath(module_file).startswith(os.path.abspath(plugin_path) + os.sep)
+                )
+                belongs = belongs or any(
+                    plugin_path and os.path.abspath(str(item)).startswith(os.path.abspath(plugin_path) + os.sep)
+                    for item in module_paths
+                )
+                if belongs:
+                    to_remove.append(key)
                 continue
             # 5. 模块文件位于当前插件目录
             module_file = getattr(sys.modules.get(key), "__file__", None) or ""
@@ -185,15 +266,21 @@ class PluginSandbox:
                 log.error(f"[Sandbox] 插件入口文件不存在: {file_path}")
                 return False
 
-            # 动态加载模块
+            # 动态加载模块：每个插件使用唯一包名，避免 backend 包互相覆盖。
             if plugin_path not in sys.path:
                 sys.path.insert(0, plugin_path)
-            spec = importlib.util.spec_from_file_location(module_path, file_path)
+            entry_root = module_path.split(".", 1)[0]
+            if entry_root:
+                root_dir = os.path.join(plugin_path, entry_root)
+                if self._uses_absolute_backend_import(plugin_path, entry_root):
+                    self._install_entry_root_alias(entry_root, root_dir)
+            full_module_name = self._install_plugin_package(plugin_id, plugin_path, module_path)
+            spec = importlib.util.spec_from_file_location(full_module_name, file_path)
             if not spec or not spec.loader:
                 log.error(f"[Sandbox] 无法加载插件模块: {module_path}")
                 return False
             module = importlib.util.module_from_spec(spec)
-            sys.modules[module_path] = module
+            sys.modules[full_module_name] = module
             spec.loader.exec_module(module)
 
             plugin_class = getattr(module, class_name)
@@ -211,6 +298,7 @@ class PluginSandbox:
                 hook_system=self._hook_system,
                 site_engine=self._site_engine,
                 media_service=self._media_service,
+                metadata_service=getattr(self._app_context, "metadata_service", None),
                 manifest_metadata=manifest.backend.metadata,
                 filter_service=getattr(self._app_context, "filter_service", None),
                 discovery_service=getattr(self._app_context, "discovery_service", None),
