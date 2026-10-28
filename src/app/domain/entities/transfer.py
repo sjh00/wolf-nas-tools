@@ -27,7 +27,12 @@ class TransferHistoryEntity:
     dest_path: str
     dest_filename: str
     date: str
+    poster: str | None = None
     dst_backend: str | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
 
     @property
     def is_renamed(self) -> bool:
@@ -79,7 +84,12 @@ class TransferHistoryEntity:
             dest_path=orm_model.DEST_PATH or "",
             dest_filename=orm_model.DEST_FILENAME or "",
             date=orm_model.DATE or "",
+            poster=getattr(orm_model, "POSTER", None),
             dst_backend=getattr(orm_model, "DST_BACKEND", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -109,6 +119,11 @@ class TransferHistoryEntity:
             "dest_path": self.dest_path,
             "dest_filename": self.dest_filename,
             "date": self.date,
+            "poster": self.poster,
+            "identity_id": self.identity_id,
+            "anchor_provider": self.anchor_provider,
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
         }
 
 

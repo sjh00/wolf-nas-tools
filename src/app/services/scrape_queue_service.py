@@ -1,4 +1,4 @@
-"""异步刮削队列服务 — 将转移/同步链路中的刮削移出热路径，后台限并发执行."""
+"""刮削队列服务 — 转移完成前同步落盘，目录/整库刮削后台限并发执行."""
 
 import log
 from app.infrastructure.thread import ThreadExecutor
@@ -7,12 +7,11 @@ from app.utils import ExceptionUtils
 
 
 class ScrapeQueueService:
-    """异步刮削队列服务.
+    """刮削执行服务.
 
-    转移（数据移动）与刮削（NFO/图片/FFmpeg）解耦：
-    - submit_file_scrape / submit_folder_scrape 非阻塞提交
-    - 独立命名线程池限并发（默认 3）；图片下载另有全局信号量限速
-    - 刮削失败仅记日志，不阻塞主流程；重启丢失的任务由整库/目录刮削兜底
+    - scrape_file_now：转移发布完成事件前同步生成 NFO/图片，避免媒体库先扫描到空元数据
+    - submit_folder_scrape：目录/整库刮削仍异步限并发
+    - 图片下载另有全局信号量限速
     """
 
     def __init__(self, scraper: Scraper, max_workers: int = 3):
@@ -30,18 +29,25 @@ class ScrapeQueueService:
         """提交目录刮削任务（非阻塞）."""
         self._executor.submit(self._scrape_folder, path, dst_backend, mode)
 
-    def _scrape_file(self, media, dir_path: str, file_name: str, file_ext: str, dst_backend) -> None:
+    def scrape_file_now(self, media, dir_path: str, file_name: str, file_ext: str, dst_backend=None) -> bool:
+        """同步生成 NFO/图片，供转移在发布完成事件前确保元数据落盘."""
+        return self._scrape_file(media.model_copy(deep=True), dir_path, file_name, file_ext, dst_backend)
+
+    def _scrape_file(self, media, dir_path: str, file_name: str, file_ext: str, dst_backend, *, force=False) -> bool:
         try:
-            self._scraper.gen_scraper_files(
+            result = self._scraper.gen_scraper_files(
                 media=media,
                 dir_path=dir_path,
                 file_name=file_name,
                 file_ext=file_ext,
+                force=force,
                 dst_backend=dst_backend,
             )
+            return bool(result)
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
             log.error(f"[ScrapeQueue]单文件刮削失败 {dir_path}/{file_name}: {e}")
+            return False
 
     def _scrape_folder(self, path: str, dst_backend, mode: str) -> None:
         try:

@@ -440,10 +440,62 @@ class TestFileTransferService:
         assert "没有新文件需要处理" in msg
 
     def test_discover_files_single_media_file(self, mock_service):
-        with patch("os.path.isdir", return_value=False), patch("os.path.exists", return_value=True):
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=200 * 1024 * 1024),
+        ):
             bluray, files = mock_service._discover_files("/downloads/movie.mkv", None, (None, False), None)
         assert bluray is None
         assert files == ["/downloads/movie.mkv"]
+
+    def test_discover_files_single_small_file_skipped(self, mock_service):
+        """单个广告/样本文件低于最小限制时不得进入识别与转移."""
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=15 * 1024 * 1024),
+        ):
+            bluray, files = mock_service._discover_files("/downloads/ad.mp4", None, (None, False), None)
+        assert bluray is None
+        assert files == []
+
+    def test_discover_files_explicit_small_file_skipped(self, mock_service, tmp_path):
+        """显式文件列表也必须执行最小大小过滤，避免广告文件进入识别."""
+        small = tmp_path / "ad.mp4"
+        small.write_bytes(b"x")
+        big = tmp_path / "movie.mkv"
+        big.write_bytes(b"x" * (151 * 1024 * 1024))
+        bluray, files = mock_service._discover_files(str(tmp_path), [str(small), str(big)], (None, False), None)
+        assert bluray is None
+        assert files == [str(big)]
+
+    def test_discover_files_explicit_incomplete_dir_skipped(self, mock_service, tmp_path):
+        """显式列表中的未完成目录（.xltd）同样跳过."""
+        incomplete = tmp_path / "Movie.mp4"
+        incomplete.mkdir()
+        (incomplete / "part.xltd").write_bytes(b"x")
+        bluray, files = mock_service._discover_files(str(tmp_path), [str(incomplete)], (None, False), None)
+        assert bluray is None
+        assert files == []
+
+    def test_discover_files_xunlei_incomplete_dir(self, mock_service, tmp_path):
+        """迅雷未完成目录（媒体后缀目录 + .xltd）不得进入识别."""
+        source = tmp_path / "incomplete.mp4"
+        source.mkdir()
+        (source / "part.xltd").write_text("", encoding="utf-8")
+        (source / "ad.mp4").write_text("", encoding="utf-8")
+        bluray, files = mock_service._discover_files(str(source), None, (None, False), None)
+        assert bluray is None
+        assert files == []
+
+    def test_filter_obvious_extras_keeps_main_feature(self, mock_service):
+        files = ["/d/Movie.mkv", "/d/Movie.sample.mkv", "/d/Movie-trailer.mkv"]
+        assert mock_service._filter_obvious_extras(files) == ["/d/Movie.mkv"]
+
+    def test_filter_obvious_extras_keeps_list_when_all_are_extras(self, mock_service):
+        files = ["/d/sample.mkv", "/d/trailer.mkv"]
+        assert mock_service._filter_obvious_extras(files) == files
 
     def test_discover_files_directory(self, mock_service):
         with (

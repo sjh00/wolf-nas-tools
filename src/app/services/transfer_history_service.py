@@ -1,10 +1,13 @@
+import os
 from math import floor
 from types import SimpleNamespace
 from typing import Callable
+from urllib.parse import quote
 
 from app.core.exceptions import DomainError, RepositoryError, ServiceError  # noqa: F401
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system import get_cache_manager
+from app.media.display_image_policy import transform_display_image
 from app.schemas.media import TransferHistoryPageDTO, UnknownListPageDTO
 from app.services.filetransfer_service import FileTransferService as FileTransfer
 from app.services.sync_service import SyncService
@@ -22,6 +25,7 @@ class TransferHistoryService:
         cache_ttl: int = 30,
         poster_resolver: Callable[[str, int], str] | None = None,
         metadata_service=None,
+        subscribe_repo=None,
     ):
         self._filetransfer = filetransfer
         self._sync_service = sync_service
@@ -30,17 +34,25 @@ class TransferHistoryService:
         # (type, tmdbid) -> 海报 URL；None 表示不富化海报
         self._poster_resolver = poster_resolver
         self._metadata_service = metadata_service
+        self._subscribe_repo = subscribe_repo
         # 进程级 memo：同一身份只回源一次，跨页复用
         self._poster_memo: dict[str, str] = {}
 
     def _resolve_poster(self, history: dict) -> str:
+        local_poster = self._local_poster(history)
+        if local_poster:
+            return local_poster
+        # 新记录在转移时已固化海报，旧记录才需要按身份/快照回源。
+        stored_poster = str(history.get("POSTER") or "").strip()
+        if stored_poster:
+            return stored_poster
         identity_id = str(history.get("IDENTITY_ID") or "").strip()
         provider = str(history.get("ANCHOR_PROVIDER") or "").strip()
         external = str(history.get("ANCHOR_EXTERNAL_ID") or "").strip()
         if identity_id or (provider and external):
             key = f"id:{identity_id}" if identity_id else f"{provider}:{external}"
             if key not in self._poster_memo:
-                self._poster_memo[key] = self._snapshot_poster(history)
+                self._poster_memo[key] = self._fallback_poster(history)
             if self._poster_memo[key]:
                 return self._poster_memo[key]
         tmdbid = history.get("TMDBID")
@@ -54,6 +66,46 @@ class TransferHistoryService:
                     self._poster_memo[key] = self._poster_resolver(str(history.get("TYPE") or ""), int(tmdbid)) or ""
                 return self._poster_memo[key]
         return ""
+
+    @staticmethod
+    def _local_poster(history: dict) -> str:
+        """媒体目录内已有的 poster.jpg（本地或已挂载后端）."""
+        dest_path = str(history.get("DEST_PATH") or "")
+        if not dest_path:
+            return ""
+        local_poster = os.path.join(dest_path, "poster.jpg")
+        if os.path.isfile(local_poster):
+            return f"/img/poster?path={quote(local_poster, safe='')}"
+        return ""
+
+    def _fallback_poster(self, history: dict) -> str:
+        """缺本地海报时的统一优先级：订阅图片 → 快照/回源."""
+        subscription_poster = self._subscription_poster(history)
+        if subscription_poster:
+            return subscription_poster
+        return self._snapshot_poster(history)
+
+    def _subscription_poster(self, history: dict) -> str:
+        """按身份/锚点/标题复用电影订阅海报；非插件订阅无数据时返回空."""
+        if self._subscribe_repo is None:
+            return ""
+        history_type = str(history.get("TYPE") or "").lower()
+        if history_type and history_type != MediaType.MOVIE.value:
+            return ""
+        try:
+            hint = self._subscribe_repo.get_movie_subscription_hint(
+                history.get("ANCHOR_PROVIDER"),
+                history.get("ANCHOR_EXTERNAL_ID"),
+                history.get("TITLE"),
+                identity_id=history.get("IDENTITY_ID"),
+            )
+        except Exception:  # noqa: BLE001 - 订阅表不可用不应影响历史展示
+            return ""
+        if not hint:
+            return ""
+        if not str(history.get("CONTENT_PROFILE") or "") and hint.get("content_profile"):
+            history["CONTENT_PROFILE"] = hint["content_profile"]
+        return str(hint.get("image") or "")
 
     def _snapshot_poster(self, history: dict) -> str:
         if self._metadata_service is None:
@@ -73,6 +125,28 @@ class TransferHistoryService:
                 for item in (snapshot.images or {}).get(key) or []:
                     if getattr(item, "url", ""):
                         return str(item.url)
+            # 旧快照可能只有 refs 没有 images，按 refs 回源补海报。
+            for ref in getattr(snapshot, "refs", None) or []:
+                provider = str(getattr(ref, "provider", "") or "")
+                external_id = str(getattr(ref, "external_id", "") or "")
+                if not provider or not external_id or provider in {"content_id", "tmdb", "imdb"}:
+                    continue
+                record = self._metadata_service.lookup(
+                    provider=provider,
+                    external_id=external_id,
+                    media_type=getattr(ref, "media_type", None),
+                    scope=str(getattr(ref, "scope", "") or "default"),
+                    content_profile=history.get("CONTENT_PROFILE"),
+                    allow_private=True,
+                )
+                if record is None:
+                    continue
+                images = record.get("images") if isinstance(record, dict) else getattr(record, "images", None)
+                for key in ("poster", "thumb", "cover"):
+                    for item in (images or {}).get(key) or []:
+                        url = item.get("url") if isinstance(item, dict) else getattr(item, "url", "")
+                        if url:
+                            return str(url)
         except Exception:  # noqa: BLE001
             return ""
         return ""
@@ -108,7 +182,10 @@ class TransferHistoryService:
             history["image"] = ""
             poster = self._resolve_poster(history)
             if poster:
-                history["image"] = poster
+                history["image"] = transform_display_image(
+                    str(history.get("CONTENT_PROFILE") or ""),
+                    poster,
+                )
             historys_list.append(history)
         total_page = floor(total_count / page_num) + 1
         dto = TransferHistoryPageDTO(

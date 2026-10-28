@@ -22,6 +22,15 @@ class _Row:
     ENABLED = 1
 
 
+_MIN_MEDIA_BYTES = 150 * 1024 * 1024
+
+
+def _write_media(path, size: int = _MIN_MEDIA_BYTES + 1):
+    """写入稀疏文件，满足默认最小媒体大小限制."""
+    with open(path, "wb") as handle:
+        handle.truncate(size)
+
+
 def _history_rec(dest_path: str, dest_filename: str, source_path: str = "", source_filename: str = "", date: str = ""):
     """构造转移历史记录 stub（仅需目录目标存在性判定用到的字段）."""
     return SimpleNamespace(
@@ -144,7 +153,7 @@ class TestSyncEngine:
         src_dir = tmp_path / "src"
         src_dir.mkdir()
         f = src_dir / "movie.mkv"
-        f.write_text("x")
+        _write_media(f)
         eng.on_file_event(str(f))
         eng._transfer._execute.assert_called_once()
 
@@ -159,9 +168,40 @@ class TestSyncEngine:
         src_dir = tmp_path / "src"
         src_dir.mkdir()
         f = src_dir / "movie.mkv"
-        f.write_text("x")
+        _write_media(f)
         eng.on_file_event(str(f))
         eng._pipeline.process.assert_called_once()
+
+    def test_do_transfer_skips_incomplete_xunlei_dir(self, engine, tmp_path):
+        """迅雷未完成目录（.xltd/媒体后缀目录）不得交给转移流水线."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        incomplete = src / "incomplete.mp4"
+        incomplete.mkdir(parents=True)
+        (incomplete / "part.xltd").write_text("", encoding="utf-8")
+        (incomplete / "ad.mp4").write_bytes(b"x")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "dst")
+
+        eng._do_transfer(str(incomplete), cfg)
+
+        eng._pipeline.process.assert_not_called()
+
+    def test_do_transfer_skips_small_media_file(self, engine, tmp_path):
+        """单文件候选同样执行最小大小限制，广告小文件不得触发转移."""
+        eng, _, _ = engine
+        src = tmp_path / "src"
+        src.mkdir()
+        small = src / "ad.mp4"
+        small.write_bytes(b"x")
+        cfg = SyncPathConfig(_Row())
+        cfg.source = str(src)
+        cfg.dest = str(tmp_path / "dst")
+
+        eng._do_transfer(str(small), cfg)
+
+        eng._pipeline.process.assert_not_called()
 
     def test_do_transfer_skips_blacklisted(self, engine, tmp_path):
         """已转移过（黑名单命中）且目标仍存在的路径应跳过，避免每个扫描周期重复处理."""
@@ -189,7 +229,7 @@ class TestSyncEngine:
         eng, _, _ = engine
         src = tmp_path / "src"
         src.mkdir()
-        (src / "movie.mkv").write_text("x", encoding="utf-8")
+        _write_media(src / "movie.mkv")
         cfg = SyncPathConfig(_Row())
         cfg.source = str(src)
         cfg.dest = str(tmp_path / "dst")
@@ -206,7 +246,7 @@ class TestSyncEngine:
         src = tmp_path / "src"
         movie_dir = src / "Movie.2020"
         movie_dir.mkdir(parents=True)
-        (movie_dir / "E01.mkv").write_text("x", encoding="utf-8")
+        _write_media(movie_dir / "E01.mkv")
         cfg = SyncPathConfig(_Row())
         cfg.source = str(src)
         cfg.dest = str(tmp_path / "lib")
@@ -226,7 +266,7 @@ class TestSyncEngine:
         src = tmp_path / "src"
         movie_dir = src / "Movie.2020"
         movie_dir.mkdir(parents=True)
-        (movie_dir / "E01.mkv").write_text("x", encoding="utf-8")
+        _write_media(movie_dir / "E01.mkv")
         dest_dir = tmp_path / "lib" / "Movie"
         dest_dir.mkdir(parents=True)
         (dest_dir / "E01.mkv").write_text("y", encoding="utf-8")
@@ -247,7 +287,7 @@ class TestSyncEngine:
         movie_dir = src / "Show" / "S01"
         movie_dir.mkdir(parents=True)
         for name in ("E01.mkv", "E02.mkv"):
-            (movie_dir / name).write_text("x", encoding="utf-8")
+            _write_media(movie_dir / name)
         dest_dir = tmp_path / "lib" / "Show" / "S01"
         dest_dir.mkdir(parents=True)
         (dest_dir / "E01.mkv").write_text("y", encoding="utf-8")  # E02 的目标缺失
@@ -271,7 +311,7 @@ class TestSyncEngine:
         src = tmp_path / "src"
         movie_dir = src / "Movie.2020"
         movie_dir.mkdir(parents=True)
-        (movie_dir / "E01.mkv").write_text("x", encoding="utf-8")
+        _write_media(movie_dir / "E01.mkv")
         dest_dir = tmp_path / "lib" / "Movie"
         dest_dir.mkdir(parents=True)
         (dest_dir / "E01.mkv").write_text("y", encoding="utf-8")
@@ -295,7 +335,7 @@ class TestSyncEngine:
         movie_dir = src / "Movie.2020"
         movie_dir.mkdir(parents=True)
         file_path = movie_dir / "E01.mkv"
-        file_path.write_text("x", encoding="utf-8")
+        _write_media(file_path)
         cfg = SyncPathConfig(_Row())
         cfg.source = str(src)
         cfg.dest = str(tmp_path / "lib")
@@ -325,7 +365,7 @@ class TestSyncEngine:
         dst_root = tmp_path / "dst"
         dst_root.mkdir()
         src_file = src / "movie.mkv"
-        src_file.write_text("x", encoding="utf-8")  # 目标 dst/movie.mkv 不存在
+        _write_media(src_file)  # 目标 dst/movie.mkv 不存在
         cfg = SyncPathConfig(_Row())
         cfg.source = str(src)
         cfg.dest = str(dst_root)
@@ -344,7 +384,7 @@ class TestSyncEngine:
         dst_root = tmp_path / "dst"
         dst_root.mkdir()
         src_file = src / "movie.mkv"
-        src_file.write_text("x", encoding="utf-8")
+        _write_media(src_file)
         (dst_root / "movie.mkv").write_text("y", encoding="utf-8")  # 目标存在
         cfg = SyncPathConfig(_Row())
         cfg.source = str(src)
@@ -370,7 +410,7 @@ class TestSyncEngine:
         src_dir = tmp_path / "src"
         src_dir.mkdir()
         for name in ("a.mkv", "b.mkv", "c.mkv"):
-            (src_dir / name).write_text("x")
+            _write_media(src_dir / name)
 
         submitted = []
 
@@ -489,7 +529,7 @@ class TestSyncEngine:
         eng._monitor_ids = ["1"]
         src_dir = tmp_path / "src"
         src_dir.mkdir()
-        (src_dir / "movie.mkv").write_text("x")
+        _write_media(src_dir / "movie.mkv")
         # 模拟该文件已被事件触发处理过
         eng._synced_files[str(src_dir / "movie.mkv")] = None
         with patch("app.services.sync_engine.get_lock_manager") as mock_lock_mgr:
@@ -511,7 +551,7 @@ class TestSyncEngine:
         src_dir = tmp_path / "src"
         src_dir.mkdir()
         f = src_dir / "movie.mkv"
-        f.write_text("x")
+        _write_media(f)
 
         # 模拟 _do_link 卡住，验证文件仍在 _synced_files 中
         def slow_link(*args, **kwargs):

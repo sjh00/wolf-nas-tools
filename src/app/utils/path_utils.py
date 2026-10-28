@@ -5,8 +5,13 @@ PathUtils - 路径相关纯函数工具
 
 import os
 
+from app.core.constants import RMT_MEDIAEXT, RMT_MIN_FILESIZE
 from app.core.root_path import get_project_root
 from app.core.settings import settings
+
+# 下载器未完成临时文件后缀（迅雷 .xltd，qBittorrent/Aria2 等）
+INCOMPLETE_DOWNLOAD_SUFFIXES = (".xltd", ".part", ".!qb", ".aria2")
+_INCOMPLETE_SCAN_DEPTH = 2
 
 
 def get_config_path():
@@ -132,6 +137,45 @@ class PathUtils:
             or path.find("/.") != -1
             or path.find("/@eaDir") != -1
         )
+
+    @staticmethod
+    def has_incomplete_download_marker(path, depth: int = _INCOMPLETE_SCAN_DEPTH) -> bool:
+        """目录内是否存在下载器未完成临时文件（如迅雷 .xltd）."""
+        if not path or not os.path.isdir(path):
+            return False
+        base_depth = os.path.normpath(path).count(os.sep)
+        for root, dirs, files in os.walk(path):
+            for name in (*dirs, *files):
+                if name.lower().endswith(INCOMPLETE_DOWNLOAD_SUFFIXES):
+                    return True
+            if root.count(os.sep) - base_depth >= depth:
+                dirs[:] = []
+        return False
+
+    @staticmethod
+    def is_incomplete_media_dir(path, exts: list[str] | None = None) -> bool:
+        """是否为下载器未完成的媒体目录.
+
+        迅雷等下载器会创建与文件同名的目录（如 ``Movie.mp4/``），下载中的
+        ``.xltd`` 与广告小文件混在其中；此类目录在完成前不能进入识别/转移。
+        """
+        if not path or not os.path.isdir(path):
+            return False
+        media_exts = exts or RMT_MEDIAEXT
+        ext = os.path.splitext(os.path.normpath(path).rstrip(os.sep))[1].lower()
+        if ext in media_exts:
+            return True
+        return PathUtils.has_incomplete_download_marker(path)
+
+    @staticmethod
+    def resolve_min_filesize(value=None, default_bytes: int = RMT_MIN_FILESIZE) -> int:
+        """把配置中的 MB 数值（int/str）解析为字节；空值返回默认值."""
+        raw = str(value if value is not None else "").strip()
+        if not raw or raw == "0":
+            return default_bytes
+        if raw.isdigit():
+            return int(raw) * 1024 * 1024
+        return default_bytes
 
     @staticmethod
     def is_path_in_path(path1, path2):
