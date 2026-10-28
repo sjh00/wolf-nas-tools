@@ -11,8 +11,8 @@ from app.domain.media_ref import MediaRef
 from app.domain.mediatypes import MediaType
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.category_matcher import get_category
+from app.media.display_image_policy import transform_display_image
 from app.media.image_resolver import MediaImageResolver
-from app.media.message_image_policy import transform_message_image
 from app.utils import StringUtils
 
 
@@ -692,7 +692,7 @@ class MediaInfo(BaseModel):
 
     def get_message_image(self):
         image = MediaImageResolver.get_message_image(self)
-        return transform_message_image(
+        return transform_display_image(
             str(getattr(self, "content_profile", "") or ""),
             str(image or ""),
         )

@@ -208,3 +208,37 @@ def test_douban_primary_prefers_all_douban_fields_when_available():
     assert snapshot.images["backdrop"][0].url == "douban-backdrop"
     assert snapshot.fields["release_date"].provider == "douban"
     assert snapshot.fields["runtime"].provider == "douban"
+
+
+def test_provider_only_keeps_fused_images_and_credits():
+    """provider_only 聚合记录应完整保留标题/海报/演员，不因字段过滤丢失."""
+    fused = _record(
+        "adult",
+        title="PRWF-017 示例标题",
+        overview="简介",
+        images={
+            "poster": [ImageAsset(type="poster", url="https://img/poster.jpg")],
+            "fanart": [ImageAsset(type="fanart", url="https://img/fanart.jpg")],
+        },
+        credits=[Credit(name="小松空", role="actor")],
+        extra={"source_provider": "dmm"},
+    )
+    snapshot = MetadataComposer().compose(
+        "id-1",
+        [fused],
+        get_preset("provider_only:adult"),
+        content_profile="adult",
+        capabilities={
+            "adult": {
+                ProviderCapability.DETAIL,
+                ProviderCapability.IMAGES,
+                ProviderCapability.CREDITS,
+            }
+        },
+    )
+
+    assert snapshot.fields["title"].value == "PRWF-017 示例标题"
+    assert snapshot.primary_provider == "adult"
+    assert snapshot.images["poster"][0].url == "https://img/poster.jpg"
+    assert snapshot.images["fanart"][0].url == "https://img/fanart.jpg"
+    assert snapshot.credits[0].name == "小松空"

@@ -13,6 +13,10 @@ import log
 from app.core.settings import settings
 from app.db.repositories.plugin_framework_repo_adapter import PluginConfigRepositoryAdapter, PluginLogRepositoryAdapter
 from app.domain.entities.plugin import PluginConfigEntity
+from app.media.display_image_policy import (
+    register_display_image_transformer,
+    unregister_display_image_transformer,
+)
 from app.media.message_image_policy import (
     register_message_image_transformer,
     unregister_message_image_transformer,
@@ -36,6 +40,7 @@ class PluginContext:
         hook_system: Any = None,
         site_engine: Any = None,
         media_service: Any = None,
+        metadata_service: Any = None,
         manifest_metadata: Any = None,
         filter_service: Any = None,
         discovery_service: Any = None,
@@ -52,6 +57,7 @@ class PluginContext:
         self._hook_system = hook_system
         self._site_engine = site_engine
         self._media_service = media_service
+        self._metadata_service = metadata_service
         self._metadata_manifest = manifest_metadata
         self._filter_service = filter_service
         self._discovery_service = discovery_service
@@ -230,6 +236,11 @@ class PluginContext:
         return self._media_service
 
     @property
+    def metadata_service(self) -> Any:
+        """获取元数据快照服务"""
+        return self._metadata_service
+
+    @property
     def hook_system(self) -> Any:
         """获取钩子系统"""
         return self._hook_system
@@ -382,12 +393,20 @@ class PluginContext:
             self._discovery_service.clear_cache()
 
     def register_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
-        """注册通知图片改写器；插件卸载时由插件自行清理引用."""
+        """注册通知图片改写器（兼容旧插件）；新插件应使用展示图片转换器."""
         register_message_image_transformer(transformer)
 
     def unregister_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
         """移除通知图片改写器."""
         unregister_message_image_transformer(transformer)
+
+    def register_display_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
+        """注册展示图片改写器；探索/下载/历史/订阅/通知共用."""
+        register_display_image_transformer(transformer)
+
+    def unregister_display_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
+        """移除展示图片改写器."""
+        unregister_display_image_transformer(transformer)
 
     def register_public_webhook(self, path: str, handler: Callable[[dict], object]) -> None:
         """注册插件公开回调（免鉴权），供飞书/Telegram 等外部平台 webhook 回调：
