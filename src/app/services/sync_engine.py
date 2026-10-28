@@ -15,6 +15,7 @@ from watchdog.observers.polling import PollingObserver
 import log
 from app.core.constants import RMT_MEDIAEXT
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
+from app.core.settings import settings
 from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepositoryAdapter
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferHistoryRepositoryAdapter
@@ -345,6 +346,10 @@ class SyncEngine:
             self._transfer._blacklist.delete(path)
 
     def _do_transfer(self, event_path: str, cfg: SyncPathConfig) -> None:
+        # 下载未完成的目录（迅雷 .xltd / 以媒体后缀命名的临时目录）不进入识别与转移
+        if PathUtils.is_incomplete_media_dir(event_path):
+            log.info(f"[Sync]{event_path} 下载未完成，跳过")
+            return
         # 已转移记录（同步历史 / 转移黑名单）在目标仍存在时跳过，避免每个扫描周期重复处理；
         # 目标已被删除（直接 rm / 前端删除 / 清空媒体目录）时清理记录并重新同步（重新硬链接）。
         # 目录来源还需核对目录内文件的目标：黑名单可能只落在文件上，否则流水线会过滤掉需重建的文件。
@@ -367,15 +372,23 @@ class SyncEngine:
         if os.path.isdir(event_path):
             # 目录：仅当包含真实媒体文件时才交给转移流水线，
             # 避免空目录/仍在下载（仅 .part/.!qb）的目录每周期反复报错
-            if not PathUtils.get_dir_files(in_path=event_path, exts=RMT_MEDIAEXT):
+            min_filesize = PathUtils.resolve_min_filesize((settings.get("media") or {}).get("min_filesize"))
+            if not PathUtils.get_dir_files(in_path=event_path, exts=RMT_MEDIAEXT, filesize=min_filesize):
                 return
         else:
-            # 单个媒体文件才校验扩展名
+            # 单个媒体文件才校验扩展名，并按同一最小大小限制过滤广告/样本文件
             name = os.path.basename(event_path)
             if name.lower() != "index.bdmv":
                 ext = os.path.splitext(name)[-1].lower()
                 if ext not in RMT_MEDIAEXT:
                     return
+            min_filesize = PathUtils.resolve_min_filesize((settings.get("media") or {}).get("min_filesize"))
+            try:
+                if os.path.getsize(event_path) < min_filesize:
+                    log.info(f"[Sync]{event_path} 小于最小文件大小限制，跳过")
+                    return
+            except OSError:
+                return
         task = TransferTask(
             source_type=SourceType.DIRECTORY,
             source_id=cfg.id,

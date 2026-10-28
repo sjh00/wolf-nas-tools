@@ -66,6 +66,105 @@ class TestTransferHistoryService:
         assert result.result[0]["SYNC_MODE"] == "link"
         assert result.result[0]["RMT_MODE"] == "link"
 
+    def test_history_image_uses_local_poster(self, service, mock_filetransfer, tmp_path):
+        """本地 poster 优先；历史展示由前端套用 display 变换，不在这里套消息模糊."""
+        (tmp_path / "poster.jpg").write_bytes(b"x")
+
+        class _Anchored:
+            def as_dict(self):
+                return {
+                    "id": 1,
+                    "mode": "link",
+                    "dest_path": str(tmp_path),
+                    "dest_filename": "movie.mkv",
+                    "identity_id": "id-1",
+                    "content_profile": "custom",
+                }
+
+        mock_filetransfer.get_transfer_history.return_value = (1, [_Anchored()])
+        service._cache.clear()
+        result = service.get_transfer_history_page("", 1, 20)
+
+        image = result.result[0]["image"]
+        assert image.startswith("/img/poster?path=")
+        assert result.result[0]["CONTENT_PROFILE"] == "custom"
+
+    def test_history_image_local_poster_without_anchor(self, service, mock_filetransfer, tmp_path):
+        """旧记录没有锚点/TMDB 时仍优先使用目录内 poster.jpg."""
+        (tmp_path / "poster.jpg").write_bytes(b"x")
+
+        class _Legacy:
+            def as_dict(self):
+                return {
+                    "id": 3,
+                    "mode": "link",
+                    "dest_path": str(tmp_path),
+                    "dest_filename": "movie.mkv",
+                }
+
+        mock_filetransfer.get_transfer_history.return_value = (1, [_Legacy()])
+        service._cache.clear()
+        result = service.get_transfer_history_page("", 1, 20)
+
+        assert result.result[0]["image"].startswith("/img/poster?path=")
+
+    def test_history_image_uses_persisted_poster(self, service, mock_filetransfer):
+        """转移时固化的 POSTER 直接使用，不再回查订阅/快照."""
+
+        class _Persisted:
+            def as_dict(self):
+                return {
+                    "id": 4,
+                    "mode": "link",
+                    "poster": "https://img.example/persisted.jpg",
+                }
+
+        mock_filetransfer.get_transfer_history.return_value = (1, [_Persisted()])
+        service._cache.clear()
+        result = service.get_transfer_history_page("", 1, 20)
+
+        assert result.result[0]["image"] == "https://img.example/persisted.jpg"
+
+    def test_history_image_falls_back_to_subscription(self, mock_filetransfer, mock_sync_service):
+        """无本地 poster 时复用订阅海报，并回填内容画像."""
+        subscribe_repo = MagicMock()
+        subscribe_repo.get_movie_subscription_hint.return_value = {
+            "image": "https://img.example/poster.jpg",
+            "content_profile": "adult",
+        }
+        metadata_service = MagicMock()
+        service = TransferHistoryService(
+            filetransfer=mock_filetransfer,
+            sync_service=mock_sync_service,
+            cache_ttl=30,
+            metadata_service=metadata_service,
+            subscribe_repo=subscribe_repo,
+        )
+
+        class _Anchored:
+            def as_dict(self):
+                return {
+                    "id": 2,
+                    "mode": "link",
+                    "title": "ABC-123",
+                    "identity_id": "",
+                    "anchor_provider": "content_id",
+                    "anchor_external_id": "ABC-123",
+                    "content_profile": "",
+                }
+
+        mock_filetransfer.get_transfer_history.return_value = (1, [_Anchored()])
+        service._cache.clear()
+        result = service.get_transfer_history_page("", 1, 20)
+
+        rows = result.result or []
+        assert rows[0]["image"] == "https://img.example/poster.jpg"
+        assert rows[0]["CONTENT_PROFILE"] == "adult"
+        subscribe_repo.get_movie_subscription_hint.assert_called_once_with(
+            "content_id", "ABC-123", "ABC-123", identity_id=""
+        )
+        metadata_service.latest_snapshot_for_media.assert_not_called()
+
     def test_get_transfer_statistics(self, service, mock_filetransfer):
         mock_filetransfer.get_transfer_statistics.return_value = [
             ("movie", "2024-01-01", 5),

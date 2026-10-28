@@ -40,6 +40,7 @@ class TRANSFERHISTORY(Base):
     DEST: Mapped[str] = mapped_column(String(255))
     DEST_PATH: Mapped[str] = mapped_column(String(255))
     DEST_FILENAME: Mapped[str] = mapped_column(String(255))
+    POSTER: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     DST_BACKEND: Mapped[str | None] = mapped_column(String(64), nullable=True)
     DATE: Mapped[str] = mapped_column(String(20), index=True)
     IDENTITY_ID: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
