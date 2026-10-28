@@ -207,14 +207,12 @@ def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
             if not sid or sid in seen:
                 continue
             row_tmdb = str(getattr(sub, "tmdb_id", "") or "")
-            row_provider = str(getattr(sub, "provider", "") or getattr(sub, "anchor_provider", "") or "")
             row_external = str(getattr(sub, "anchor_external_id", "") or "")
             matched = bool(tmdb) and row_tmdb == tmdb
-            if not matched and anchor_provider and anchor_external:
-                matched = row_external == anchor_external and row_provider in (
-                    anchor_provider,
-                    str(getattr(sub, "anchor_provider", "") or ""),
-                )
+            if not matched and anchor_external and row_external == anchor_external:
+                # 转移事件的锚点可能来自 content_id，而订阅行来自具体 provider；
+                # 同一番号/锚点即可定稿，不能要求两边 provider 完全一致。
+                matched = True
             if not matched:
                 continue
             seen.add(sid)
@@ -236,7 +234,12 @@ def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
             return
         try:
             history = DownloadHistoryRepositoryAdapter().get_by_path(path)
-            if not history or not history.tmdb_id:
+            if not history:
+                return
+            history_tmdb = str(getattr(history, "tmdb_id", "") or "")
+            history_provider = str(getattr(history, "anchor_provider", "") or "")
+            history_external = str(getattr(history, "anchor_external_id", "") or "")
+            if not history_tmdb and not (history_provider and history_external):
                 return
             parsed = RegexParser().parse(str(history.season_episode or ""))
             season = str(parsed.season) if parsed and parsed.season is not None else None
@@ -251,7 +254,7 @@ def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
             tv_repo = SubscribeTvRepositoryAdapter()
             ep_repo = SubscribeTvEpisodeRepositoryAdapter()
             for sub in tv_repo.get_all():
-                if str(sub.tmdb_id) != str(history.tmdb_id):
+                if not history_tmdb or str(sub.tmdb_id) != history_tmdb:
                     continue
                 if season is not None and str(sub.season) != season:
                     continue
@@ -264,9 +267,18 @@ def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
                     if merged:
                         tv_repo.update_lack(title=None, year=None, season=None, rssid=sub.id, lack_episodes=merged)
                 reopened += 1
-            # 电影订阅：重开以便重新匹配下载
+            # 电影订阅：重开以便重新匹配下载（无 TMDB 的插件画像按锚点匹配）
             for msub in SubscribeMovieRepositoryAdapter().get_all():
-                if str(getattr(msub, "tmdb_id", "")) != str(history.tmdb_id):
+                row_tmdb = str(getattr(msub, "tmdb_id", "") or "")
+                matched = bool(history_tmdb) and row_tmdb == history_tmdb
+                if not matched and history_provider and history_external:
+                    row_external = str(getattr(msub, "anchor_external_id", "") or "")
+                    row_providers = {
+                        str(getattr(msub, "provider", "") or ""),
+                        str(getattr(msub, "anchor_provider", "") or ""),
+                    }
+                    matched = row_external == history_external and history_provider in row_providers
+                if not matched:
                     continue
                 if owner is not None and getattr(msub, "user_id", None) != owner:
                     continue

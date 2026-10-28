@@ -450,8 +450,25 @@ class TestSubscribeService:
         media.res_order = 10
         media.filter_rule = "1"
         svc = _make_subscribe_service(movie_repo=movie_repo, filter_service=filter_service)
-        with patch.object(svc, "finish_rss_subscribe") as mock_finish:
+        with (
+            patch.object(svc, "finish_rss_subscribe") as mock_finish,
+            patch.object(svc, "update_rss_state") as mock_update,
+        ):
             result = svc.update_subscribe_over_edition(MediaType.MOVIE, 1, media)
+            assert result is True
+            mock_finish.assert_not_called()
+            mock_update.assert_called_once_with(rtype=MediaType.MOVIE, rssid=1, state="C")
+
+    def test_update_subscribe_over_edition_tv_still_finishes(self):
+        tv_repo = MagicMock()
+        filter_service = MagicMock()
+        filter_service.get_rule_first_order.return_value = 5
+        media = MagicMock()
+        media.res_order = 10
+        media.filter_rule = "1"
+        svc = _make_subscribe_service(tv_repo=tv_repo, filter_service=filter_service)
+        with patch.object(svc, "finish_rss_subscribe") as mock_finish:
+            result = svc.update_subscribe_over_edition(MediaType.TV, 1, media)
             assert result is True
             mock_finish.assert_called_once()
 

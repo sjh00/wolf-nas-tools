@@ -96,7 +96,9 @@ class TestBaseSearchStrategy:
         strategy._downloader.check_exists_medias.return_value = (False, {}, None)
         with patch.object(strategy, "_get_media_info", return_value=media):
             strategy._search_movies()
-        strategy._service.finish_rss_subscribe.assert_called_once()
+        strategy._service.finish_rss_subscribe.assert_not_called()
+        # 下载登记后只标记待转移，等入库事件定稿
+        assert any(call.kwargs.get("state") == "C" for call in strategy._movie_repo.update_state.call_args_list)
 
     def test_search_movies_not_found(self, strategy):
         strategy._service.get_subscribe_movies.return_value = {"1": {"id": 1, "name": "Movie"}}

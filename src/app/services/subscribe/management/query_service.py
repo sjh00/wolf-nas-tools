@@ -9,6 +9,7 @@ from app.core.constants import ANIME_GENREIDS
 from app.domain.entities.custom_rss import custom_rss_id
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system.caches import TMDBCache
+from app.media.display_image_policy import transform_display_image
 from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.auth import UserContext
 from app.services.subscribe.management.utils import parse_rss_desc
@@ -237,7 +238,10 @@ class SubscribeQueryService:
                 "content_profile": rss_movie.CONTENT_PROFILE,
                 "metadata_policy": rss_movie.METADATA_POLICY,
                 "naming_profile": rss_movie.NAMING_PROFILE,
-                "image": rss_movie.IMAGE,
+                "image": transform_display_image(
+                    str(getattr(rss_movie, "CONTENT_PROFILE", "") or ""),
+                    str(rss_movie.IMAGE or ""),
+                ),
                 "overview": rss_movie.DESC,
                 "rss_sites": rss_sites,
                 "search_sites": search_sites,
@@ -360,7 +364,10 @@ class SubscribeQueryService:
                 "content_profile": effective_profile,
                 "metadata_policy": rss_tv.METADATA_POLICY,
                 "naming_profile": rss_tv.NAMING_PROFILE,
-                "image": rss_tv.IMAGE,
+                "image": transform_display_image(
+                    str(effective_profile or ""),
+                    str(rss_tv.IMAGE or ""),
+                ),
                 "overview": rss_tv.DESC,
                 "rss_sites": rss_sites,
                 "search_sites": search_sites,

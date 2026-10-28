@@ -10,7 +10,7 @@ import re
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Integer, cast, or_
+from sqlalchemy import Integer, and_, cast, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models import SubscribeHistory, SubscribeMovies, SubscribeTorrents, SubscribeTvEpisodes, SubscribeTvs
@@ -619,6 +619,55 @@ class SubscribeRepository(BaseRepository):
             row = query.order_by(SubscribeTvs.ID.desc()).first()
             value = row[0] if row else None
             return int(value) if value is not None else None
+
+    def get_movie_subscription_hint(
+        self,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        keyword: str | None = None,
+        identity_id: str | None = None,
+    ) -> dict:
+        """按身份/锚点/名称取订阅海报与画像，供下载、转移阶段复用."""
+        conditions = []
+        identity = str(identity_id or "").strip()
+        if identity:
+            conditions.append(SubscribeMovies.IDENTITY_ID == identity)
+        provider = str(anchor_provider or "").strip()
+        external = str(anchor_external_id or "").strip()
+        if provider and external:
+            conditions.append(
+                and_(
+                    SubscribeMovies.ANCHOR_PROVIDER == provider,
+                    SubscribeMovies.ANCHOR_EXTERNAL_ID == external,
+                )
+            )
+        text = str(keyword or "").strip()
+        if not conditions and not text:
+            return {}
+        with self.session() as db:
+            row = None
+            # 身份/锚点精确优先，避免同名不同内容串图。
+            if conditions:
+                row = db.query(SubscribeMovies).filter(or_(*conditions)).order_by(SubscribeMovies.ID.desc()).first()
+            if row is None and text:
+                row = (
+                    db.query(SubscribeMovies)
+                    .filter(or_(SubscribeMovies.NAME == text, SubscribeMovies.KEYWORD == text))
+                    .order_by(SubscribeMovies.ID.desc())
+                    .first()
+                )
+            if row is None:
+                return {}
+            return {
+                "image": row.IMAGE or "",
+                "content_profile": row.CONTENT_PROFILE or "",
+                "anchor_provider": row.ANCHOR_PROVIDER or "",
+                "anchor_external_id": row.ANCHOR_EXTERNAL_ID or "",
+                "provider": row.PROVIDER or "",
+                "metadata_ref": row.METADATA_REF or "",
+                "identity_id": row.IDENTITY_ID or "",
+                "tmdbid": row.TMDBID or "",
+            }
 
     def find_movie_owner_user_id(self, tmdbid: str | None) -> int | None:
         """按 TMDB 反查电影订阅归属用户."""

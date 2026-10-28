@@ -8,7 +8,7 @@ import os.path
 import time
 from enum import Enum
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 
 from app.db.models import SYNCHISTORY, TRANSFERBLACKLIST, TRANSFERHISTORY, TRANSFERUNKNOWN
 from app.db.repositories.base_repository import BaseRepository
@@ -132,6 +132,7 @@ class TransferRepository(BaseRepository):
                     DEST=dest,
                     DEST_PATH=dest_path,
                     DEST_FILENAME=dest_filename,
+                    POSTER=(media_info.poster or None),
                     DST_BACKEND=dst_backend or "local",
                     DATE=timestr,
                     IDENTITY_ID=getattr(media_info, "identity_id", None),
@@ -191,6 +192,44 @@ class TransferRepository(BaseRepository):
             if exact:
                 return exact
             return db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.DEST.startswith(path.rstrip("/") + "/")).all()
+
+    def get_existing_external_ids(self, external_ids: list[str]) -> set[str]:
+        """按外部 ID 跨 provider 查询转移成功记录（订阅/转移 provider 可能不同）."""
+        values = {str(item or "").strip() for item in external_ids if str(item or "").strip()}
+        if not values:
+            return set()
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY.ANCHOR_EXTERNAL_ID)
+                .filter(TRANSFERHISTORY.ANCHOR_EXTERNAL_ID.in_(sorted(values)))
+                .distinct()
+                .all()
+            )
+        return {str(item[0] or "") for item in rows if item and item[0]}
+
+    def get_existing_anchors(self, pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+        """批量查询已入库的内容锚点，供探索页标记使用."""
+        normalized = {
+            (str(provider).strip(), str(external).strip())
+            for provider, external in pairs
+            if str(provider or "").strip() and str(external or "").strip()
+        }
+        if not normalized:
+            return set()
+        conditions = [
+            and_(
+                TRANSFERHISTORY.ANCHOR_PROVIDER == provider,
+                TRANSFERHISTORY.ANCHOR_EXTERNAL_ID == external,
+            )
+            for provider, external in normalized
+        ]
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY.ANCHOR_PROVIDER, TRANSFERHISTORY.ANCHOR_EXTERNAL_ID)
+                .filter(or_(*conditions))
+                .all()
+            )
+        return {(str(provider), str(external)) for provider, external in rows}
 
     def get_transfer_info_by_id(self, logid: int | None) -> TRANSFERHISTORY | None:
         """

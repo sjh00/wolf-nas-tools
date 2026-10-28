@@ -53,6 +53,15 @@ class BaseSearchStrategy:
 
     LOCK_EXTEND_INTERVAL = 60
 
+    @staticmethod
+    def _seed_poster_from_subscription(media_info, rss_info: dict) -> None:
+        """订阅行已有海报时同步到 MediaInfo，下载/通知链路无需再回查订阅."""
+        if media_info is None:
+            return
+        image = str(rss_info.get("image") or "").strip()
+        if image and not media_info.get_poster_image():
+            media_info.poster_path = image
+
     def __init__(
         self,
         service: Any,
@@ -205,6 +214,7 @@ class BaseSearchStrategy:
                     content_profile=str(rss_info.get("content_profile") or ""),
                 )
                 if media_info is not None:
+                    self._seed_poster_from_subscription(media_info, rss_info)
                     if rss_info.get("content_profile"):
                         media_info.content_profile = str(rss_info.get("content_profile"))
                     media_info.anchor_provider = rss_info.get("anchor_provider")
@@ -275,10 +285,11 @@ class BaseSearchStrategy:
                                     title=None, year=None, rssid=rid, state=SubscribeState.RUNNING.value
                                 )
                         elif search_result or downloaded_count:
-                            # 电影无缺失集概念：本轮只要有下载成功即视为订阅完成，
-                            # 否则每轮会从下一个站点重复下载同一部电影
-                            if self._service:
-                                self._service.finish_rss_subscribe(rssid=rid, media=media_info)
+                            # 已登记下载：标记待转移，等入库事件定稿（写历史/删订阅），
+                            # 避免下载未完成或转移失败时订阅被提前删除。
+                            self._movie_repo.update_state(
+                                title=None, year=None, rssid=rid, state=SubscribeState.COMPLETED.value
+                            )
                         else:
                             self._movie_repo.update_state(
                                 title=None, year=None, rssid=rid, state=SubscribeState.RUNNING.value
@@ -361,6 +372,7 @@ class BaseSearchStrategy:
                     )
                     return
 
+                self._seed_poster_from_subscription(media_info, rss_info)
                 media_info.set_download_info(
                     download_setting=rss_info.get("download_setting"), save_path=rss_info.get("save_path")
                 )

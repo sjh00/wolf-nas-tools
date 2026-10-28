@@ -1,7 +1,8 @@
-"""电影订阅下载成功后的完成判定 — 避免同一部电影每轮换站点重复下载."""
+"""电影订阅下载成功后的完成判定 — 登记待转移，入库后再定稿."""
 
 from unittest.mock import MagicMock
 
+from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
 from app.services.subscribe.strategies.queue_search import QueueSearchStrategy
 
@@ -59,24 +60,35 @@ def _prepare(strategy, search_result, downloaded_count):
 
 
 class TestMovieSubscribeCompletion:
-    """电影下载成功即订阅完成（无缺失集概念）."""
+    """电影下载成功只登记待转移，不能提前删除订阅."""
 
-    def test_completed_when_downloaded_without_representative_result(self):
-        """本轮下载成功但无代表结果（还有其它候选）时也应完成订阅"""
-        strategy, service, _movie_repo = _make_strategy()
+    @staticmethod
+    def _assert_pending(movie_repo):
+        pending = [
+            call
+            for call in movie_repo.update_state.call_args_list
+            if call.kwargs.get("state") == SubscribeState.COMPLETED.value
+        ]
+        assert pending, "应标记为待转移(COMPLETED)"
+
+    def test_pending_when_downloaded_without_representative_result(self):
+        """本轮下载成功但无代表结果（还有其它候选）时也标记待转移"""
+        strategy, service, movie_repo = _make_strategy()
         _prepare(strategy, search_result=None, downloaded_count=1)
 
         strategy._search_movies(state="R")
 
-        service.finish_rss_subscribe.assert_called_once()
+        service.finish_rss_subscribe.assert_not_called()
+        self._assert_pending(movie_repo)
 
-    def test_completed_when_downloaded_with_result(self):
-        strategy, service, _movie_repo = _make_strategy()
+    def test_pending_when_downloaded_with_result(self):
+        strategy, service, movie_repo = _make_strategy()
         _prepare(strategy, search_result=MagicMock(), downloaded_count=1)
 
         strategy._search_movies(state="R")
 
-        service.finish_rss_subscribe.assert_called_once()
+        service.finish_rss_subscribe.assert_not_called()
+        self._assert_pending(movie_repo)
 
     def test_keeps_running_when_nothing_downloaded(self):
         strategy, service, movie_repo = _make_strategy()

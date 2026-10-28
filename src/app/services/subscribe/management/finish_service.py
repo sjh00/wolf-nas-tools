@@ -71,45 +71,62 @@ class SubscribeFinishService:
             rss = self._movie_repo.get_all(rssid=rssid)
             if not rss:
                 return
-            owner_user_id = getattr(rss[0], "USER_ID", None)
+            row = rss[0]
+            owner_user_id = getattr(row, "USER_ID", None)
+            # 删除订阅前先固化海报/画像/归属，后续通知与历史不再依赖订阅行。
+            image = str(getattr(row, "IMAGE", "") or "")
+            if image and not str(getattr(media, "poster_path", "") or ""):
+                media.poster_path = image
+            media.user_id = owner_user_id
+            current_profile = str(getattr(media, "content_profile", "") or "")
+            if not current_profile or current_profile == "default":
+                media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
             self._history_repo.upsert(
                 rssid=rssid,
                 rtype=rtype,
-                name=rss[0].NAME,
-                year=rss[0].YEAR,
-                tmdbid=rss[0].TMDBID,
-                image=media.get_poster_image(),
+                name=row.NAME,
+                year=row.YEAR,
+                tmdbid=row.TMDBID,
+                image=media.get_poster_image() or image,
                 desc=media.overview,
                 user_id=owner_user_id,
-                **_history_scope(rss[0]),
+                **_history_scope(row),
             )
             delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
         else:
             rss = self._tv_repo.get_all(rssid=rssid)
             if not rss:
                 return
+            row = rss[0]
             # TOTAL = 该季总集数（新增时由 TMDB/用户总集数写入，恒有值）；
             # TOTAL_EP 是"用户填写的总集数"可空字段，不能作为历史展示来源，
             # 否则历史卡片会显示"共 0 集"（旧行为取 TOTAL_EP + 完成时的 CURRENT_EP 相减恒为 0）
-            total = rss[0].TOTAL or rss[0].TOTAL_EP
-            over_edition = bool(rss[0].OVER_EDITION) if hasattr(rss[0], "OVER_EDITION") else False
-            owner_user_id = getattr(rss[0], "USER_ID", None)
+            total = row.TOTAL or row.TOTAL_EP
+            over_edition = bool(row.OVER_EDITION) if hasattr(row, "OVER_EDITION") else False
+            owner_user_id = getattr(row, "USER_ID", None)
+            image = str(getattr(row, "IMAGE", "") or "")
+            if image and not str(getattr(media, "poster_path", "") or ""):
+                media.poster_path = image
+            media.user_id = owner_user_id
+            current_profile = str(getattr(media, "content_profile", "") or "")
+            if not current_profile or current_profile == "default":
+                media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
             self._history_repo.upsert(
                 rssid=rssid,
                 rtype=rtype,
-                name=rss[0].NAME,
-                year=rss[0].YEAR,
-                season=rss[0].SEASON,
-                tmdbid=rss[0].TMDBID,
-                image=media.get_poster_image(),
+                name=row.NAME,
+                year=row.YEAR,
+                season=row.SEASON,
+                tmdbid=row.TMDBID,
+                image=media.get_poster_image() or image,
                 desc=media.overview,
                 total=total,
-                start=rss[0].CURRENT_EP,
+                start=row.CURRENT_EP,
                 user_id=owner_user_id,
-                **_history_scope(rss[0]),
+                **_history_scope(row),
             )
             delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
-            self._finish_sibling_tvs(rss[0], media, delete_subscribe_fn)
+            self._finish_sibling_tvs(row, media, delete_subscribe_fn)
 
         # 仅洗版订阅完成后清理下载历史（允许后续升级重下）；
         # 普通订阅保留下载历史，避免重新订阅时重复下载已完成的剧集
@@ -126,7 +143,7 @@ class SubscribeFinishService:
             f"[Subscribe]{media.type.value} {media.get_title_string()} "
             f"{media.get_season_string()} 订阅完成，删除订阅..."
         )
-        self._message.send_rss_finished_message(media_info=media, owner_user_id=getattr(rss[0], "USER_ID", None))
+        self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
 
     def finalize_tv_by_rssid(self, rssid: int | None, mtype: MediaType | None, delete_subscribe_fn) -> None:
         """转移确认后按订阅行定稿：写历史、删订阅、联动兄弟、发通知。
@@ -144,6 +161,9 @@ class SubscribeFinishService:
         media = MediaInfo(type=resolved_type, tmdb_id=str(row.TMDBID or ""))
         media.title = row.NAME
         media.year = row.YEAR
+        owner_user_id = getattr(row, "USER_ID", None)
+        media.poster_path = str(getattr(row, "IMAGE", "") or "")
+        media.user_id = owner_user_id
         season_str = str(row.SEASON).strip() if row.SEASON is not None else ""
         if season_str.isdigit():
             media.begin_season = int(season_str)
@@ -156,7 +176,6 @@ class SubscribeFinishService:
         media.metadata_ref = getattr(row, "METADATA_REF", None)
         media.total_episodes = int(row.TOTAL or 0)
         total = row.TOTAL or row.TOTAL_EP
-        owner_user_id = getattr(row, "USER_ID", None)
         self._history_repo.upsert(
             rssid=rssid,
             rtype=MediaTypeMapper.to_tmdb(resolved_type),
@@ -192,13 +211,27 @@ class SubscribeFinishService:
         row = rss[0]
         owner_user_id = getattr(row, "USER_ID", None)
         over_edition = bool(getattr(row, "OVER_EDITION", False))
+        # 删除订阅前固化通知/历史所需字段（尤其是 IMAGE 海报）。
+        image = str(getattr(row, "IMAGE", "") or "")
+        media = MediaInfo(type=MediaType.MOVIE, tmdb_id=str(row.TMDBID or ""))
+        media.title = row.NAME
+        media.year = row.YEAR
+        media.poster_path = image
+        media.user_id = owner_user_id
+        media.over_edition = over_edition
+        media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
+        media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
+        media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
+        media.keyword = getattr(row, "KEYWORD", None)
+        media.provider = getattr(row, "PROVIDER", None)
+        media.metadata_ref = getattr(row, "METADATA_REF", None)
         self._history_repo.upsert(
             rssid=rssid,
             rtype=MediaTypeMapper.to_tmdb(MediaType.MOVIE),
             name=row.NAME,
             year=row.YEAR,
             tmdbid=row.TMDBID,
-            image=row.IMAGE,
+            image=image,
             desc=row.DESC,
             user_id=owner_user_id,
             **_history_scope(row),
@@ -207,16 +240,6 @@ class SubscribeFinishService:
         # 仅洗版电影完成后清理下载历史（允许后续升级重下）
         if self._download_repo and row.TMDBID and over_edition:
             self._download_repo.delete_by_tmdb(row.TMDBID, None)
-        media = MediaInfo(type=MediaType.MOVIE, tmdb_id=str(row.TMDBID or ""))
-        media.title = row.NAME
-        media.year = row.YEAR
-        media.over_edition = over_edition
-        media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
-        media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
-        media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
-        media.keyword = getattr(row, "KEYWORD", None)
-        media.provider = getattr(row, "PROVIDER", None)
-        media.metadata_ref = getattr(row, "METADATA_REF", None)
         self._event_bus.publish(
             Event(
                 event_type=SUBSCRIBE_FINISHED,
