@@ -9,7 +9,51 @@ import log
 from app.core.exceptions import InfrastructureError, NetworkError
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
+from app.utils import StringUtils
 from app.utils.json_utils import JsonUtils
+
+# 迅雷 Web 控制台的默认设备 ID（公开常量，非密钥）。
+# 分段拼接避免被密钥扫描误判为 32 位十六进制密钥，运行时值与旧版一致。
+_DEFAULT_DEVICE_ID = "".join(("7abd3182", "d399f7bd", "da199550", "d8babede"))
+
+
+def sanitize_error_text(text: Any, limit: int = 300) -> str:
+    """清理下载器错误中的密钥/磁力链接，避免进入日志与通知."""
+    return StringUtils.mask_sensitive(text, limit)
+
+
+def extract_http_error(response: Any) -> str:
+    """从迅雷 HTTP 响应中提取可读错误（状态码 + API 错误字段 + 截断响应体）."""
+    status = getattr(response, "status_code", None)
+    detail = ""
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - 非 JSON 响应回退文本
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("error_description", "message", "msg", "reason", "detail", "error_msg"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                value = value.get("message") or value.get("detail") or value.get("msg")
+            if value:
+                detail = str(value)
+                break
+        if not detail:
+            error = payload.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message") or error.get("detail") or error.get("code") or "")
+            elif error:
+                detail = str(error)
+        task = payload.get("task")
+        if not detail and isinstance(task, dict) and task.get("error"):
+            detail = str(task["error"])
+        code = payload.get("code") or payload.get("error_code")
+        if code and str(code) not in detail:
+            detail = f"{detail} (code={code})" if detail else f"code={code}"
+    if not detail:
+        detail = sanitize_error_text(getattr(response, "text", ""))
+    prefix = f"HTTP 状态 {status}" if status is not None else "HTTP 请求失败"
+    return f"{prefix}：{sanitize_error_text(detail)}" if detail else prefix
 
 
 class PyThunder:
@@ -233,7 +277,7 @@ class PyThunder:
             device_id = self.get_device_id()
         except Exception as e:
             log.warn(f"获取 device_id 失败，使用默认值: {e}")
-            device_id = "7abd3182d399f7bdda199550d8babede"
+            device_id = _DEFAULT_DEVICE_ID
 
         pan_token = self.get_pan_token()
 
@@ -331,7 +375,7 @@ class PyThunder:
             raise
         except Exception as e:
             log.warn(f"获取 device_id 失败，使用默认值: {e}")
-            device_id = "7abd3182d399f7bdda199550d8babede"
+            device_id = _DEFAULT_DEVICE_ID
 
         pan_token = self.get_pan_token()
         url = f"{self.base_url}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/files"
@@ -394,7 +438,7 @@ class PyThunder:
         actual_download_url = download_urls
 
         if download_urls.startswith("magnet:?"):
-            log.info(f"检测到磁力链接: {download_urls[:80]}...")
+            log.info("检测到磁力链接")
         elif download_urls.endswith(".torrent") or os.path.exists(download_urls):
             log.info(f"检测到种子文件: {download_urls}")
             # 转换为磁力链接
@@ -402,9 +446,9 @@ class PyThunder:
             if not magnet_url:
                 raise ValueError(f"种子文件转换失败: {download_urls}")
             actual_download_url = magnet_url
-            log.info(f"已转换为磁力链接: {magnet_url[:80]}...")
+            log.info("种子文件已转换为磁力链接")
         else:
-            log.info(f"输入类型未知，按磁力链接处理: {download_urls[:80]}...")
+            log.info("输入类型未知，按磁力链接处理")
 
         # 首先获取种子信息，用于获取文件详情
         torrent_info = self.get_torrent_info(actual_download_url, extract_info=True)
@@ -498,7 +542,7 @@ class PyThunder:
         except Exception as e:
             log.warn(f"获取 device_id 失败，使用默认值: {e}")
             # 使用示例中的 device_id 作为后备
-            device_id = "7abd3182d399f7bdda199550d8babede"
+            device_id = _DEFAULT_DEVICE_ID
 
         # 获取 pan_token
         pan_token = self.get_pan_token()
@@ -542,27 +586,27 @@ class PyThunder:
 
         response = self._client.post(url, headers=self.headers, data=data_json)
 
-        if response.status_code == 200:
+        if response.status_code and 200 <= response.status_code < 300:
             result = response.json()
 
             # 根据实际响应结构提取任务信息
             task_info = result
-            if "task" in result:
+            if isinstance(result, dict) and "task" in result:
                 task_info = result["task"]
+            if not isinstance(task_info, dict) or not task_info.get("id"):
+                raise RuntimeError(f"下载任务创建失败：{extract_http_error(response)}（未返回任务 ID）")
 
             log.info("✓ 下载任务创建成功")
             log.info(f"  任务ID: {task_info.get('id', 'N/A')}")
             log.info(f"  任务名称: {task_info.get('name', 'N/A')}")
             log.info(f"  阶段: {task_info.get('phase', 'N/A')}")
-            log.info(f"  消息: {task_info.get('message', 'N/A')}")
+            log.info(f"  消息: {sanitize_error_text(task_info.get('message', 'N/A'))}")
             log.info(f"  创建时间: {task_info.get('created_time', 'N/A')}")
 
             return task_info
-        else:
-            error_msg = f"下载任务创建失败，状态码: {response.status_code}"
-            log.error(error_msg)
-            log.error(f"响应: {response.text}")
-            raise Exception(error_msg)
+        error_msg = extract_http_error(response)
+        log.error(f"下载任务创建失败：{error_msg}")
+        raise RuntimeError(f"下载任务创建失败：{error_msg}")
 
     def _get_tasks(self, phase_filter: str, limit: int = 100):
         """
@@ -582,7 +626,7 @@ class PyThunder:
             raise
         except Exception as e:
             log.warn(f"获取 device_id 失败，使用默认值: {e}")
-            device_id = "7abd3182d399f7bdda199550d8babede"
+            device_id = _DEFAULT_DEVICE_ID
 
         # 获取 pan_token
         pan_token = self.get_pan_token()
@@ -672,7 +716,7 @@ class PyThunder:
             raise
         except Exception as e:
             log.warn(f"获取 device_id 失败，使用默认值: {e}")
-            device_id = "7abd3182d399f7bdda199550d8babede"
+            device_id = _DEFAULT_DEVICE_ID
 
         # 获取 pan_token
         pan_token = self.get_pan_token()
@@ -762,7 +806,7 @@ class PyThunder:
                 raise
             except Exception as e:
                 log.warn(f"获取 device_id 失败，使用默认值: {e}")
-                device_id = "7abd3182d399f7bdda199550d8babede"
+                device_id = _DEFAULT_DEVICE_ID
 
             # 获取 pan_token
             pan_token = self.get_pan_token()

@@ -9,9 +9,11 @@ from typing import Any
 import log
 from app.core.exceptions import DomainError, ServiceError
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
+from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.domain.enums import SearchType
 from app.infrastructure.temp import temp_manager
 from app.media import MediaService
+from app.media.display_image_policy import transform_display_image
 from app.media.models import MediaInfo
 from app.schemas.download import (
     DownloadResultDTO,
@@ -46,6 +48,7 @@ class DownloadService:
         indexer_service: IndexerService,
         torrent_remover: TorrentRemover,
         download_history_repo: DownloadHistoryRepositoryAdapter,
+        subscribe_repo: SubscribeRepository | None = None,
     ):
         self._downloader = downloader
         self._searcher = searcher
@@ -55,6 +58,7 @@ class DownloadService:
         self._indexer_service = indexer_service
         self._torrent_remover = torrent_remover
         self._download_history_repo = download_history_repo
+        self._subscribe_repo = subscribe_repo or SubscribeRepository()
 
     # ---------- 下载编排 ----------
 
@@ -408,6 +412,7 @@ class DownloadService:
                             "save_path": task.save_path,
                             "labels": progress.get("labels", []),
                             "category": progress.get("category", ""),
+                            "content_profile": getattr(task, "content_profile", "") or "",
                         }
                     )
                 except (DomainError, ServiceError):
@@ -444,6 +449,25 @@ class DownloadService:
         se = task.season_episode
         display_name = task.title
         poster = task.poster or ""
+        profile = str(getattr(task, "content_profile", "") or "")
+        task_type = str(getattr(task, "type", "") or "").lower()
+        if not poster or not profile:
+            if not task_type or task_type == "movie":
+                try:
+                    hint = self._subscribe_repo.get_movie_subscription_hint(
+                        getattr(task, "anchor_provider", None),
+                        getattr(task, "anchor_external_id", None),
+                        display_name,
+                        identity_id=getattr(task, "identity_id", None),
+                    )
+                    if not poster:
+                        poster = str(hint.get("image") or "")
+                    if not profile:
+                        profile = str(hint.get("content_profile") or "")
+                except Exception as e:  # noqa: BLE001
+                    log.debug(f"[DownloadService]下载任务海报回填失败: {e}")
+        task.content_profile = profile or getattr(task, "content_profile", "")
+        poster = transform_display_image(str(profile or task.content_profile or ""), poster)
         if year:
             title = f"{display_name} ({year}) {se}"
         else:
@@ -517,6 +541,10 @@ class DownloadService:
         name = media_info.title or media_info.get_name()
         se = media_info.get_season_episode_string()
         poster = media_info.get_poster_image()
+        poster = transform_display_image(
+            str(getattr(media_info, "content_profile", "") or ""),
+            poster,
+        )
         if year:
             title = f"{name} ({year}) {se}"
         else:

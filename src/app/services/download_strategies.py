@@ -60,14 +60,16 @@ class MovieDownloadStrategy:
                 continue
             if not item.enclosure:
                 item.enclosure = get_download_url_callback(item.page_url)
+            site = str(getattr(item, "site", "") or "未知站点")
             _downloader_id, did, msg = download_callback(item)
             if did:
                 downloaded_names.add(movie_name)
                 if item not in return_items:
                     return_items.append(item)
+                log.info(f"[Downloader]候选下载成功: {movie_title} @ {site}")
             else:
                 mark_download_failed(item)
-                log.error(f"[Downloader]下载失败: {item.title}, 错误: {msg}")
+                log.warn(f"[Downloader]候选下载失败: {movie_title} @ {site}，继续尝试下一候选：{msg}")
         return return_items
 
 

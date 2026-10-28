@@ -14,8 +14,30 @@ import dateutil.parser
 from app.domain.mediatypes import MediaType
 from app.utils.exception_utils import ExceptionUtils
 
+_MAGNET_RE = re.compile(r"magnet:\?[^\s\"'<>]+", re.IGNORECASE)
+_SECRET_QUERY_RE = re.compile(
+    r"((?:passkey|token|api_key|apikey|auth|secret|pan_auth|password|sign)=)[^&\s\"'<>]+",
+    re.IGNORECASE,
+)
+_AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_SECRET_HEADER_RE = re.compile(
+    r"\b(authorization|proxy-authorization|cookie|set-cookie|x-auth-token|pan-auth|pan_auth)\s*:\s*[^\r\n]+",
+    re.IGNORECASE,
+)
+
 
 class StringUtils:
+    @staticmethod
+    def mask_sensitive(text, limit: int | None = None) -> str:
+        """脱敏日志/通知文本中的磁力链接、Token、Cookie 与查询密钥."""
+        value = str(text or "")
+        value = _MAGNET_RE.sub("<magnet>", value)
+        value = _SECRET_QUERY_RE.sub(r"\1***", value)
+        value = _SECRET_HEADER_RE.sub(r"\1: ***", value)
+        value = _AUTH_HEADER_RE.sub(r"\1 ***", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value[:limit] if limit else value
+
     @staticmethod
     def resolve_in_from_display(in_from) -> str:
         """
