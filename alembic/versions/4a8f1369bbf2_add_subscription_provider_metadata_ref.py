@@ -24,11 +24,21 @@ _TABLES = (
 )
 
 
+def _columns(table: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    if table not in inspector.get_table_names():
+        return set()
+    return {column["name"] for column in inspector.get_columns(table)}
+
+
 def upgrade() -> None:
     for table in _TABLES:
+        existing = _columns(table)
         with op.batch_alter_table(table) as batch_op:
-            batch_op.add_column(sa.Column("PROVIDER", sa.String(length=64), nullable=True))
-            batch_op.add_column(sa.Column("METADATA_REF", sa.String(length=512), nullable=True))
+            if "PROVIDER" not in existing:
+                batch_op.add_column(sa.Column("PROVIDER", sa.String(length=64), nullable=True))
+            if "METADATA_REF" not in existing:
+                batch_op.add_column(sa.Column("METADATA_REF", sa.String(length=512), nullable=True))
 
 
 def downgrade() -> None:

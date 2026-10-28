@@ -27,10 +27,10 @@ def upgrade() -> None:
         if {"KEYWORD", "NAME", "TMDBID"}.issubset(_column_names(table)):
             op.execute(
                 sa.text(
-                    f"UPDATE `{table}` SET `KEYWORD` = `NAME` "
-                    "WHERE `KEYWORD` IS NOT NULL AND `KEYWORD` <> '' "
-                    "AND `TMDBID` IS NOT NULL AND `KEYWORD` = `TMDBID`"
-                )
+                    f'UPDATE "{table}" SET "KEYWORD" = "NAME" '
+                    'WHERE "KEYWORD" IS NOT NULL AND "KEYWORD" <> :empty '
+                    'AND "TMDBID" IS NOT NULL AND "KEYWORD" = "TMDBID"'
+                ).bindparams(empty="")
             )
 
 
