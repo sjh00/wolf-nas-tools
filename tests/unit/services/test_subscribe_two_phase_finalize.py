@@ -17,6 +17,7 @@ from app.events.payloads import (
     MediaTransferFinishedPayload,
     TransferFailPayload,
 )
+from app.media.models import MediaInfo
 from app.services.subscribe import handlers
 from app.services.subscribe.management.finish_service import SubscribeFinishService
 from app.services.subscribe.management.service import SubscribeService
@@ -70,9 +71,45 @@ def test_finalize_movie_by_rssid_writes_history_deletes():
     svc.finalize_movie_by_rssid(7, delete)
 
     history.upsert.assert_called_once()
+    assert history.upsert.call_args.kwargs["image"] == "i"
     delete.assert_called_once_with(mtype=MediaType.MOVIE, rssid=7)
     bus.publish.assert_called_once()
     message.send_rss_finished_message.assert_called_once()
+    notified = message.send_rss_finished_message.call_args.kwargs
+    assert notified["owner_user_id"] == 3
+    assert notified["media_info"].poster_path == "i"
+    assert notified["media_info"].user_id == 3
+
+
+def test_finish_rss_subscribe_captures_poster_before_delete():
+    """完成通知必须在删除订阅前拿到 IMAGE，删除回调触发时媒体已带海报."""
+    row = SimpleNamespace(
+        NAME="M",
+        YEAR="2020",
+        TMDBID="9",
+        IMAGE="http://poster",
+        DESC="d",
+        OVER_EDITION=0,
+        USER_ID=3,
+        CONTENT_PROFILE="adult",
+    )
+    movie_repo = MagicMock()
+    movie_repo.get_all.return_value = [row]
+    message = MagicMock()
+    svc = SubscribeFinishService(movie_repo, MagicMock(), MagicMock(), message, MagicMock())
+    media = MediaInfo(type=MediaType.MOVIE, tmdb_id="9")
+    captured = {}
+
+    def _delete(**kwargs):
+        captured["poster"] = media.poster_path
+        captured["owner"] = media.user_id
+
+    svc.finish_rss_subscribe(7, media, _delete)
+
+    assert captured == {"poster": "http://poster", "owner": 3}
+    message.send_rss_finished_message.assert_called_once()
+    assert message.send_rss_finished_message.call_args.kwargs["owner_user_id"] == 3
+    assert message.send_rss_finished_message.call_args.kwargs["media_info"].content_profile == "adult"
 
 
 def test_episode_transferred_finalizes_only_when_lack_empty():
@@ -189,6 +226,43 @@ def test_transfer_fail_reopens_movie_subscription():
     svc.update_rss_state.assert_called_once_with(MediaType.MOVIE, 11, SubscribeState.RUNNING.value)
 
 
+def test_transfer_fail_reopens_movie_subscription_by_anchor():
+    """自定义画像电影无 TMDB，失败时按锚点重开订阅."""
+    svc = MagicMock()
+    handler = handlers.build_transfer_fail_reopen_handler(svc)
+    history = SimpleNamespace(
+        tmdb_id="",
+        anchor_provider="demo",
+        anchor_external_id="ABC-123",
+        season_episode="",
+        downloader="qb",
+        download_id="t3",
+    )
+    movie = SimpleNamespace(
+        id=12,
+        tmdb_id="",
+        provider="aggregate",
+        anchor_provider="demo",
+        anchor_external_id="ABC-123",
+    )
+    event = Event(event_type=TRANSFER_FAIL, payload=TransferFailPayload(path="/dl/m", count=1, reason="boom"))
+
+    with (
+        patch.object(handlers, "DownloadHistoryRepositoryAdapter") as dha,
+        patch.object(handlers, "SubscribeTvRepositoryAdapter") as tha,
+        patch.object(handlers, "SubscribeTvEpisodeRepositoryAdapter"),
+        patch.object(handlers, "SubscribeMovieRepositoryAdapter") as mra,
+        patch.object(handlers, "RegexParser") as rp,
+    ):
+        dha.return_value.get_by_path.return_value = history
+        tha.return_value.get_all.return_value = []
+        mra.return_value.get_all.return_value = [movie]
+        rp.return_value.parse.return_value = SimpleNamespace(season=None, episode=None, end_episode=None)
+        handler(event)
+
+    svc.update_rss_state.assert_called_once_with(MediaType.MOVIE, 12, SubscribeState.RUNNING.value)
+
+
 def test_movie_transfer_finished_finalizes_movie_subscription():
     svc = MagicMock()
     handler = handlers.build_movie_transfer_finalize_handler(svc)
@@ -205,6 +279,63 @@ def test_movie_transfer_finished_finalizes_movie_subscription():
     )
     with patch.object(handlers, "SubscribeMovieRepositoryAdapter") as mra:
         mra.return_value.get_all.return_value = [sub]
+        handler(event)
+
+    svc.finalize_movie_by_rssid.assert_called_once_with(11)
+
+
+def test_movie_transfer_finished_finalizes_by_anchor_when_provider_is_aggregate():
+    """虚拟聚合源订阅按锚点定稿，provider 聚合名不参与真实来源比对."""
+    svc = MagicMock()
+    handler = handlers.build_movie_transfer_finalize_handler(svc)
+    sub = SimpleNamespace(
+        id=13,
+        tmdb_id="",
+        provider="aggregate",
+        anchor_provider="demo",
+        anchor_external_id="ABC-123",
+    )
+    event = Event(
+        event_type=MEDIA_TRANSFER_FINISHED,
+        payload=MediaTransferFinishedPayload(
+            in_path=None,
+            file=None,
+            target_path=None,
+            dest=None,
+            media_info={
+                "type": MediaType.MOVIE.value,
+                "content_profile": "custom",
+                "anchor_provider": "demo",
+                "anchor_external_id": "ABC-123",
+            },
+        ),
+    )
+    with patch.object(handlers, "SubscribeMovieRepositoryAdapter") as mra:
+        mra.return_value.get_all.return_value = [sub]
+        handler(event)
+
+    svc.finalize_movie_by_rssid.assert_called_once_with(13)
+
+
+def test_movie_transfer_finished_finalizes_once_for_duplicate_rows():
+    """同一电影的重复订阅行只定稿一次，避免重复写历史/通知."""
+    svc = MagicMock()
+    handler = handlers.build_movie_transfer_finalize_handler(svc)
+    event = Event(
+        event_type=MEDIA_TRANSFER_FINISHED,
+        payload=MediaTransferFinishedPayload(
+            in_path=None,
+            file=None,
+            target_path=None,
+            dest=None,
+            media_info={"type": MediaType.MOVIE.value, "tmdb_id": "55"},
+        ),
+    )
+    with patch.object(handlers, "SubscribeMovieRepositoryAdapter") as mra:
+        mra.return_value.get_all.return_value = [
+            SimpleNamespace(id=11, tmdb_id="55"),
+            SimpleNamespace(id=11, tmdb_id="55"),
+        ]
         handler(event)
 
     svc.finalize_movie_by_rssid.assert_called_once_with(11)
@@ -325,6 +456,36 @@ def test_reconcile_reopens_stale_pending():
     reopen.assert_called_once_with(MediaType.TV, 5, SubscribeState.RUNNING.value)
 
 
+def test_reconcile_reopens_stale_movie_pending_by_anchor():
+    """无 TMDB 的自定义画像电影待转移超时后按锚点重开."""
+    import datetime
+
+    svc, _final_tv, _final_mv, reopen = _svc_for_reconcile()
+    movie = SimpleNamespace(
+        id=12,
+        name="ABC-123",
+        year="2024",
+        tmdb_id="",
+        identity_id="id-1",
+        anchor_provider="demo",
+        anchor_external_id="ABC-123",
+        content_profile="custom",
+        keyword="ABC-123",
+    )
+    svc._tv_repo.get_all.return_value = []
+    svc._movie_repo.get_all.return_value = [movie]
+    setattr(svc, "media_exists", MagicMock(return_value=False))
+    svc._download_repo = MagicMock()
+    svc._download_repo.get_by_identity.return_value = [SimpleNamespace(identity_id="id-1", date="2020-01-01 00:00:00")]
+
+    svc.reconcile_pending_transfers(now=datetime.datetime(2026, 1, 1))
+
+    svc._download_repo.get_by_identity.assert_called_once_with(
+        identity_id="id-1", anchor_provider="demo", anchor_external_id="ABC-123"
+    )
+    reopen.assert_called_once_with(MediaType.MOVIE, 12, SubscribeState.RUNNING.value)
+
+
 def test_reconcile_leaves_fresh_pending():
     import datetime
 
@@ -343,3 +504,33 @@ def test_reconcile_leaves_fresh_pending():
 
     reopen.assert_not_called()
     final_tv.assert_not_called()
+
+
+def test_reconcile_finalizes_running_movie_when_transfer_history_exists():
+    """转移成功优先于订阅 STATE；历史 R 状态也应直接定稿."""
+    import datetime
+    from unittest.mock import patch
+
+    svc, _final_tv, final_mv, reopen = _svc_for_reconcile()
+    movie = SimpleNamespace(
+        id=21,
+        name="PRWF-017",
+        year="",
+        tmdb_id="",
+        state="R",
+        identity_id="id-21",
+        anchor_provider="javdb",
+        anchor_external_id="PRWF-017",
+        content_profile="adult",
+        keyword="PRWF-017",
+    )
+    svc._tv_repo.get_all.return_value = []
+    svc._movie_repo.get_all.return_value = [movie]
+    transfer_repo = MagicMock()
+    transfer_repo.return_value.get_existing_anchors.return_value = {("javdb", "PRWF-017")}
+
+    with patch("app.services.subscribe.management.service.TransferRepository", transfer_repo):
+        svc.reconcile_pending_transfers(now=datetime.datetime(2026, 1, 1))
+
+    final_mv.assert_called_once_with(21)
+    reopen.assert_not_called()

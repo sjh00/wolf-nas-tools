@@ -7,6 +7,7 @@ from typing import Any
 
 import log
 from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAdapter
+from app.db.repositories.transfer_repository import TransferRepository
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SystemConfigKey
 from app.domain.mediatypes import MediaType
@@ -143,12 +144,32 @@ class SubscribeService:
             log.debug(f"[Subscribe]媒体入库检查失败: {e!s}")
             return False
 
-    def _pending_stale(self, tmdb_id, cutoff) -> bool:
+    def _pending_stale(
+        self,
+        tmdb_id,
+        cutoff,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+    ) -> bool:
         """该订阅最近的下载记录是否已早于 cutoff（用于判定待转移是否超时滞留）。"""
-        if not self._download_repo or not tmdb_id:
+        if not self._download_repo:
             return False
         try:
-            rows = self._download_repo.get_by_tmdb(tmdb_id) or []
+            if tmdb_id:
+                rows = self._download_repo.get_by_tmdb(tmdb_id) or []
+            elif identity_id or (anchor_provider and anchor_external_id):
+                rows = (
+                    self._download_repo.get_by_identity(
+                        identity_id=identity_id,
+                        anchor_provider=anchor_provider,
+                        anchor_external_id=anchor_external_id,
+                    )
+                    or []
+                )
+            else:
+                return False
         except Exception:  # noqa: BLE001
             return False
         if not rows:
@@ -183,22 +204,55 @@ class SubscribeService:
                     log.info(f"[Subscribe]待转移超时，重开订阅 rssid={tv.id}（{media.title}）")
             except Exception as e:  # noqa: BLE001
                 log.warn(f"[Subscribe]待转移电视剧清理失败 rssid={getattr(tv, 'id', None)}: {e!s}")
-        for mv in self._movie_repo.get_all(state=SubscribeState.COMPLETED.value) or []:
+        movies = self._movie_repo.get_all() or []
+        pairs: list[tuple[str, str]] = []
+        for mv in movies:
+            provider = str(getattr(mv, "anchor_provider", "") or "").strip()
+            external = str(getattr(mv, "anchor_external_id", "") or "").strip()
+            if provider and external:
+                pairs.append((provider, external))
+        transferred: set[tuple[str, str]] = set()
+        transferred_external: set[str] = set()
+        if pairs:
             try:
+                repo = TransferRepository()
+                transferred = repo.get_existing_anchors(list(dict.fromkeys(pairs)))
+                transferred_external = repo.get_existing_external_ids([external for _, external in pairs])
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[Subscribe]转移历史查询失败: {e!s}")
+        for mv in movies:
+            try:
+                pair = (
+                    str(getattr(mv, "anchor_provider", "") or "").strip(),
+                    str(getattr(mv, "anchor_external_id", "") or "").strip(),
+                )
+                # 转移成功即入库：不依赖媒体服务器扫描，历史订阅也能直接定稿。
+                if pair in transferred or (pair[1] and pair[1] in transferred_external):
+                    self.finalize_movie_by_rssid(mv.id)
+                    continue
+                state = getattr(mv, "state", None)
+                if state not in (None, "", SubscribeState.COMPLETED.value):
+                    continue
                 media = MediaInfo(type=MediaType.MOVIE, tmdb_id=str(getattr(mv, "tmdb_id", "") or ""))
                 media.title = getattr(mv, "name", "") or ""
                 media.year = getattr(mv, "year", "") or ""
-                profile = str(getattr(mv, "content_profile", "") or "default")
-                if profile != "default":
-                    # 插件内容画像不依赖 TMDB；进入 COMPLETED 即视为转移登记完成。
+                media.content_profile = str(getattr(mv, "content_profile", "") or "default")
+                media.anchor_provider = getattr(mv, "anchor_provider", None)
+                media.anchor_external_id = getattr(mv, "anchor_external_id", None)
+                media.keyword = getattr(mv, "keyword", None)
+                if self.media_exists(media):
                     self.finalize_movie_by_rssid(mv.id)
-                elif self.media_exists(media):
-                    self.finalize_movie_by_rssid(mv.id)
-                elif self._pending_stale(getattr(mv, "tmdb_id", ""), cutoff):
+                elif self._pending_stale(
+                    getattr(mv, "tmdb_id", ""),
+                    cutoff,
+                    identity_id=getattr(mv, "identity_id", None),
+                    anchor_provider=getattr(mv, "anchor_provider", None),
+                    anchor_external_id=getattr(mv, "anchor_external_id", None),
+                ):
                     self.update_rss_state(MediaType.MOVIE, mv.id, SubscribeState.RUNNING.value)
-                    log.info(f"[Subscribe]电影待转移超时，重开订阅 rid={mv.id}（{media.title}）")
+                    log.info(f"[Subscribe]待转移超时，重开电影订阅 rssid={mv.id}（{media.title}）")
             except Exception as e:  # noqa: BLE001
-                log.warn(f"[Subscribe]待转移电影清理失败 rid={getattr(mv, 'id', None)}: {e!s}")
+                log.warn(f"[Subscribe]待转移电影清理失败 rssid={getattr(mv, 'id', None)}: {e!s}")
 
     def get_subscription_count(self, user=None):
         return self._query_svc.get_subscription_count(user=user)
@@ -341,7 +395,11 @@ class SubscribeService:
             self._tv_repo.update_filter_order(rssid=rssid, res_order=media.res_order)
         over_edition_order = self._filter.get_rule_first_order(rulegroup=media.filter_rule)
         if int(media.res_order) >= int(over_edition_order):
-            self.finish_rss_subscribe(rssid=rssid, media=media)
+            if rtype == MediaType.MOVIE:
+                # 电影洗版同样只登记待转移，入库确认后再定稿删除订阅
+                self.update_rss_state(rtype=rtype, rssid=rssid, state=SubscribeState.COMPLETED.value)
+            else:
+                self.finish_rss_subscribe(rssid=rssid, media=media)
             return True
         else:
             self.update_rss_state(rtype=rtype, rssid=rssid, state=SubscribeState.RUNNING.value)

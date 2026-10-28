@@ -233,7 +233,7 @@ class Message:
         self._builder.send_subscribe_success_message(in_from, media_info)
 
     def send_rss_finished_message(self, media_info, owner_user_id: int | None = None) -> None:
-        self._builder.send_rss_finished_message(media_info)
+        self._builder.send_rss_finished_message(media_info, owner_user_id=owner_user_id)
 
     def send_site_signin_message(self, msgs: list) -> None:
         self._builder.send_site_signin_message(msgs)

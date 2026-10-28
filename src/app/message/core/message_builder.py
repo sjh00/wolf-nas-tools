@@ -557,9 +557,8 @@ class MessageBuilder:
     def send_rss_finished_message(self, media_info, owner_user_id: int | None = None) -> None:
         self._enrich_from_subscription(media_info)
         profile = str(getattr(media_info, "content_profile", "") or "default")
-        # 普通电影沿用历史上不推送“订阅完成”；成人电影需要独立完成通知
-        if media_info.type == MediaType.MOVIE and profile == "default":
-            return
+        if owner_user_id is None:
+            owner_user_id = getattr(media_info, "user_id", None)
         if media_info.over_edition:
             msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
         else:

@@ -98,26 +98,26 @@ def test_plugin_profile_template_override_and_fallback(engine):
     message_template_registry.register_pack(
         plugin_id,
         {
-            "adult": {
+            "custom": {
                 "rss_added": {
-                    "title": "AV 已添加：{{ media_info.get_title_string() }}",
+                    "title": "CUSTOM 已添加：{{ media_info.get_title_string() }}",
                     "text": "类型：{{ profile_label }}",
                 }
             }
         },
-        {"adult": "AV"},
+        {"custom": "CUSTOM"},
     )
     try:
         title, text = engine.apply_client_template(
             {},
             "rss_added",
             {"media_info": _item(), "in_from": "WEB"},
-            content_profile="adult",
+            content_profile="custom",
         )
-        assert "AV 已添加：少女怪兽焦糖味" in title
-        assert text == "类型：AV"
+        assert "CUSTOM 已添加：少女怪兽焦糖味" in title
+        assert text == "类型：CUSTOM"
         profiles = message_template_registry.list_profiles()
-        assert any(p["key"] == "adult" and p["label"] == "AV" for p in profiles)
+        assert any(p["key"] == "custom" and p["label"] == "CUSTOM" for p in profiles)
     finally:
         message_template_registry.unregister_plugin(plugin_id)
 
@@ -125,6 +125,81 @@ def test_plugin_profile_template_override_and_fallback(engine):
         {},
         "rss_added",
         {"media_info": _item(), "in_from": "WEB"},
-        content_profile="adult",
+        content_profile="custom",
     )
     assert "已添加订阅" in default_title
+
+
+def test_system_message_uses_plugin_template_by_content_profile(engine):
+    """Web 系统消息与外部渠道共用模板选择，插件画像不得回退到核心模板."""
+    from unittest.mock import MagicMock
+
+    from app.message.core.message_builder import MessageBuilder
+    from app.message.template_registry import message_template_registry
+
+    plugin_id = "test_web_system_template"
+    message_template_registry.register_pack(
+        plugin_id,
+        {
+            "custom": {
+                "transfer_finished": {
+                    "title": "CUSTOM 入库：{{ media_info.title }}",
+                    "text": "来源：{{ source_provider }}",
+                }
+            }
+        },
+        {"custom": "CUSTOM"},
+    )
+    try:
+        builder = MessageBuilder(MagicMock(), MagicMock(), MagicMock(), template_engine=engine)
+        title, text = builder._render_system_message(
+            "transfer_finished",
+            {"media_info": _item(), "content_profile": "custom", "source_provider": "Demo"},
+            "core title",
+            "core text",
+        )
+        assert title == "CUSTOM 入库：少女怪兽焦糖味"
+        assert text == "来源：Demo"
+    finally:
+        message_template_registry.unregister_plugin(plugin_id)
+
+
+def test_system_message_falls_back_to_core_when_profile_missing(engine):
+    from unittest.mock import MagicMock
+
+    from app.message.core.message_builder import MessageBuilder
+
+    builder = MessageBuilder(MagicMock(), MagicMock(), MagicMock(), template_engine=engine)
+    title, text = builder._render_system_message(
+        "transfer_finished",
+        {"media_info": _item(), "content_profile": "", "in_from": "RSS"},
+        "core title",
+        "core text",
+    )
+    assert title and title != "core title"
+    assert "已入库" in title
+    assert text
+
+
+def test_rss_finished_default_movie_notifies_owner(engine):
+    """普通电影完成订阅同样要发通知，并定向到 owner 使用画像模板."""
+    from unittest.mock import MagicMock, patch
+
+    from app.message.core.message_builder import MessageBuilder
+
+    item = _Item(
+        title="普通电影",
+        year="2026",
+        type=MediaType.MOVIE,
+        content_profile="default",
+        user_id=7,
+    )
+    dispatcher = MagicMock()
+    builder = MessageBuilder(MagicMock(), dispatcher, MagicMock(), template_engine=engine)
+    with patch("app.message.core.message_builder.resolve_subscription_context", return_value=None):
+        builder.send_rss_finished_message(item, owner_user_id=7)
+
+    dispatcher.send_user_msg.assert_called_once()
+    kwargs = dispatcher.send_user_msg.call_args.kwargs
+    assert kwargs["msg_type"] == "rss_finished"
+    assert kwargs["variables"]["content_profile"] == "default"

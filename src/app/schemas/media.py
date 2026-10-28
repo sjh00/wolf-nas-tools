@@ -78,6 +78,7 @@ class TransferMediaDTO:
     tmdb_id: int | str
     year: str
     season_episode: str
+    poster: str = ""
     identity_id: str | None = None
     anchor_provider: str | None = None
     anchor_external_id: str | None = None

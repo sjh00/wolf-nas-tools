@@ -638,6 +638,9 @@ class SubscribeAddService:
                 code = 0 if rssid not in (-1, 9) else rssid
 
         if code == 0:
+            # 归属信息必须先写入再发布事件/发通知，否则事件订阅方和定向通知会丢失 owner。
+            media_info.user_name = user_name
+            media_info.user_id = user_id
             self._event_bus.publish(
                 Event(
                     event_type=SUBSCRIBE_ADD,
@@ -662,12 +665,10 @@ class SubscribeAddService:
                     ),
                 ),
             )
-            if in_from:
-                media_info.user_name = user_name
-                media_info.user_id = user_id
-                self._message.send_subscribe_success_message(
-                    in_from=cast(SubscribeType, in_from), media_info=media_info
-                )
+            self._message.send_subscribe_success_message(
+                in_from=cast(SubscribeType, in_from or SubscribeType.Manual),
+                media_info=media_info,
+            )
             return code, "添加订阅成功", media_info
         elif code == 9:
             return code, "订阅已存在", media_info
