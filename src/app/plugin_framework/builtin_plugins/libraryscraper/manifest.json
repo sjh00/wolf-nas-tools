@@ -2,7 +2,7 @@
   "manifest_version": "1.0",
   "id": "libraryscraper",
   "name": "媒体库刮削",
-  "version": "1.0",
+  "version": "1.1",
   "author": "linyuan0213",
   "author_url": "https://github.com/linyuan0213",
   "description": "定时对媒体库进行刮削，补齐缺失元数据和图片。",
@@ -30,21 +30,20 @@
           "key": "cron",
           "type": "cron",
           "label": "刮削周期",
-          "default": "0 0 * * *",
-          "placeholder": "0 0 * * *",
+          "default": "0 8 * * *",
+          "placeholder": "0 8 * * *",
           "help": "支持5位cron表达式；刮削时间根据媒体库文件数量及网络状况而定"
         },
         {
           "key": "mode",
           "type": "select",
           "label": "刮削模式",
-          "default": "no_force",
+          "default": "missing",
           "options": [
-            {"label": "仅刮削缺失的元数据和图片", "value": "no_force"},
-            {"label": "覆盖所有元数据", "value": "force_nfo"},
-            {"label": "覆盖所有元数据和图片", "value": "force_all"}
+            {"label": "补充未刮削元数据", "value": "missing"},
+            {"label": "全量刮削（覆盖元数据和图片）", "value": "force_all"}
           ],
-          "help": "选择刮削模式"
+          "help": "默认只处理缺少 NFO/图片的文件；全量模式会覆盖已有元数据和图片"
         },
         {
           "key": "scraper_path",

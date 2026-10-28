@@ -15,7 +15,10 @@ class LibraryScraperPlugin:
 
     def __init__(self, ctx: PluginContext):
         self.ctx = ctx
-        self._scraper = Scraper(media_service=ctx.media_service)
+        self._scraper = Scraper(
+            media_service=ctx.media_service,
+            metadata_service=getattr(ctx, "metadata_service", None),
+        )
         self._event = Event()
 
     def _get_config(self):
@@ -23,7 +26,22 @@ class LibraryScraperPlugin:
 
     def on_enable(self):
         self.ctx.info("媒体库刮削插件已启用")
+        self._normalize_config()
         self._start_service()
+
+    def _normalize_config(self):
+        """补齐旧配置：空模式/旧 no_force 统一迁移为增量模式 missing."""
+        config = self._get_config()
+        changed = False
+        mode = str(config.get("mode") or "")
+        if mode not in ("missing", "force_all"):
+            config["mode"] = "missing"
+            changed = True
+        if not str(config.get("cron") or "").strip():
+            config["cron"] = "0 8 * * *"
+            changed = True
+        if changed:
+            self.ctx.set_all_config(config)
 
     def on_disable(self):
         self.ctx.info("媒体库刮削插件已禁用")
@@ -33,6 +51,7 @@ class LibraryScraperPlugin:
         if event == "plugin.config_changed":
             if data.get("plugin_id") == self.ctx.plugin_id:
                 self.ctx.info("配置已变更，重载服务")
+                self._normalize_config()
                 self._stop_service()
                 self._start_service()
         elif event == "media.scraped":
@@ -72,7 +91,7 @@ class LibraryScraperPlugin:
         config = self._get_config()
         scraper_path = config.get("scraper_path", [])
         exclude_path = config.get("exclude_path")
-        mode = config.get("mode", "no_force")
+        mode = config.get("mode") or "missing"
 
         if isinstance(scraper_path, str):
             scraper_path = scraper_path.split("\n")
