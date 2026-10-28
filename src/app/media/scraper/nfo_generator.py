@@ -326,12 +326,13 @@ class NfoGenerator:
             for series in snapshot.series:
                 set_node = DomUtils.add_node(doc, root, "set")
                 DomUtils.add_node(doc, set_node, "name", series)
-            for tag, value in render_nfo_extra_tags(snapshot).items():
-                if isinstance(value, list):
-                    for entry in value:
-                        DomUtils.add_node(doc, root, tag, entry)
-                elif value not in (None, ""):
-                    DomUtils.add_node(doc, root, tag, value)
+        # 插件 NFO 模板不依赖 basic 开关，只要生成了 NFO 就应用。
+        for tag, value in render_nfo_extra_tags(snapshot).items():
+            if isinstance(value, list):
+                for entry in value:
+                    DomUtils.add_node(doc, root, tag, entry)
+            elif value not in (None, ""):
+                DomUtils.add_node(doc, root, tag, value)
         if scraper_nfo.get("credits"):
             actor_images = (snapshot.extra or {}).get("actor_images") or {}
             fallback_actors = (snapshot.extra or {}).get("actor_fallback") or []

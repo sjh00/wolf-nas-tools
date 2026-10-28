@@ -675,7 +675,14 @@ class MetadataService:
             cached = self._identity_repo.latest_snapshot(identity_id, policy_key=resolved.key, scope=snapshot_scope)
             if cached is not None and datetime.now() - cached.CREATED_AT <= timedelta(seconds=max_age_seconds):
                 try:
-                    return MediaMetadata.model_validate_json(cached.PAYLOAD)
+                    cached_metadata = MediaMetadata.model_validate_json(cached.PAYLOAD)
+                    # 旧版本可能落库了没有标题/图片的空快照，不能继续复用。
+                    cached_ok = bool(cached_metadata.fields.get("title"))
+                    if cached_ok and not cached_metadata.images:
+                        cached_ok = not self._refs_support_images(refs)
+                    if cached_ok:
+                        return cached_metadata
+                    log.debug("[Metadata]旧快照缺少标题/图片，重新合成")
                 except Exception as exc:  # noqa: BLE001 - 旧快照结构不兼容时重新合成
                     log.debug(f"[Metadata]忽略旧快照: {exc}")
 
@@ -717,6 +724,14 @@ class MetadataService:
         if result.errors:
             record_degraded()
         return metadata
+
+    def _refs_support_images(self, refs: list[ProviderRef]) -> bool:
+        """判断引用中的 provider 是否本应提供图片，用于识别旧空快照."""
+        for ref in refs:
+            provider = self._registry.get_provider(ref.provider)
+            if provider is not None and ProviderCapability.IMAGES in provider.descriptor.capabilities:
+                return True
+        return False
 
     def _resolve_identity(
         self,

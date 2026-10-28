@@ -11,6 +11,7 @@
 import json
 import os
 import re
+import threading
 import time
 
 from PIL import Image
@@ -28,7 +29,7 @@ from app.infrastructure.temp import temp_manager
 from app.media.external.douban import DouBan
 from app.media.fanart import Fanart
 from app.media.metadata.images import ImageResolver
-from app.media.metadata.models import Credit, ImageAsset
+from app.media.metadata.models import Credit, ImageAsset, MediaMetadata
 from app.media.metadata.parsing import ParserChain
 from app.media.parser._metainfo import meta_info
 from app.media.service import MediaService
@@ -68,6 +69,7 @@ class Scraper:
         self._scraper_flag = False
         self._scraper_nfo = {}
         self._scraper_pic = {}
+        self._local = threading.local()
         self._rmt_mode = None
         self._temp_path = temp_manager.create_subdir("scraper")
         self._init_config()
@@ -92,6 +94,98 @@ class Scraper:
             self._scraper_nfo = scraper_conf.get("scraper_nfo") or {}
             self._scraper_pic = scraper_conf.get("scraper_pic") or {}
 
+    def _target_exists(self, path: str, dst_backend=None) -> bool:
+        if dst_backend is not None:
+            return bool(dst_backend.exists(path))
+        return os.path.exists(path)
+
+    def _read_text(self, path: str, dst_backend=None) -> str:
+        try:
+            if dst_backend is not None:
+                with dst_backend.read_stream(path) as stream:
+                    return stream.read(200_000).decode("utf-8", errors="ignore")
+            with open(path, encoding="utf-8", errors="ignore") as handle:
+                return handle.read(200_000)
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _nfo_has_metadata(text: str) -> bool:
+        """旧版 NFO 可能只有文件信息，plot/title 等核心字段为空，仍视为未刮削."""
+        for tag in ("plot", "outline", "year", "premiered", "customrating", "num", "maker", "label"):
+            match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text, re.S)
+            if match and match.group(1).strip():
+                return True
+        rating = re.search(r"<rating[^>]*>(.*?)</rating>", text, re.S)
+        return bool(rating and rating.group(1).strip() not in ("", "0"))
+
+    def _has_scraped_metadata(self, file: str, dst_backend=None) -> bool:
+        """判断单个文件是否已具备当前配置要求的 NFO 与图片，供增量刮削跳过."""
+        media_info = self._profile_media_info(file) or meta_info(os.path.basename(file))
+        media_type = getattr(media_info, "type", None) or MediaType.MOVIE
+        is_tv = media_type in {MediaType.TV, MediaType.ANIME}
+        if is_tv and media_type == MediaType.TV:
+            explicit_series = bool(
+                re.search(
+                    r"(?i)(?:^|[.\s_\-\[])(?:s\d{1,2}(?:e\d{1,3})?|season[.\s]*\d+|第\s*\d+\s*季)",
+                    os.path.basename(file),
+                )
+            )
+            if not explicit_series:
+                # 番号文件名常被误判为 TV；没有明确季集标记时按电影处理。
+                is_tv = False
+        nfo_conf = self._scraper_nfo.get("tv" if is_tv else "movie", {})
+        pic_conf = self._scraper_pic.get("tv" if is_tv else "movie", {})
+        nfo_required = any(
+            bool(nfo_conf.get(key)) for key in ("basic", "credits", "season_basic", "episode_basic", "episode_credits")
+        )
+        pic_required = any(
+            bool(pic_conf.get(key)) for key in ("poster", "fanart", "backdrop", "logo", "thumb", "episode_thumb")
+        )
+        if not nfo_required and not pic_required:
+            return True
+
+        file_dir = os.path.dirname(file)
+        parent_dir = os.path.dirname(file_dir)
+        stem = os.path.splitext(file)[0]
+        nfo_candidates = [f"{stem}.nfo"]
+        if is_tv:
+            nfo_candidates.extend([os.path.join(file_dir, "season.nfo"), os.path.join(parent_dir, "tvshow.nfo")])
+        else:
+            nfo_candidates.append(os.path.join(file_dir, "movie.nfo"))
+        if nfo_required:
+            nfo_text = ""
+            for path in nfo_candidates:
+                if self._target_exists(path, dst_backend):
+                    nfo_text = self._read_text(path, dst_backend)
+                    break
+            if not self._nfo_has_metadata(nfo_text):
+                return False
+
+        image_names = []
+        if pic_conf.get("poster") or pic_conf.get("fanart") or pic_conf.get("backdrop"):
+            image_names.extend(["poster", "fanart", "backdrop"])
+        if pic_conf.get("logo"):
+            image_names.append("logo")
+        if pic_conf.get("thumb") or pic_conf.get("episode_thumb"):
+            image_names.extend(["thumb", f"{os.path.basename(stem)}-thumb"])
+        if pic_required and image_names:
+            roots = [file_dir, parent_dir] if is_tv else [file_dir]
+            for root in roots:
+                for name in image_names:
+                    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                        if self._target_exists(os.path.join(root, f"{name}{ext}"), dst_backend):
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    continue
+                break
+            else:
+                return False
+        return True
+
     @staticmethod
     def _profile_media_info(file_path: str):
         """用插件注册的 ParserProfile 从文件名构造媒体信息."""
@@ -108,21 +202,34 @@ class Scraper:
     def folder_scraper(self, path, exclude_path=None, mode=None, dst_backend=None):
         """刮削指定文件夹或文件"""
         try:
+            self._init_config()
+            only_missing = mode in ("missing", "no_force")
             force_nfo = mode in ["force_nfo", "force_all"]
             force_pic = mode == "force_all"
+            force_refresh = mode in ("force_nfo", "force_all")
             self._downloader.set_dst_backend(dst_backend)
             files = list(MediaLibrary.get_library_files(path, exclude_path, backend=dst_backend))
             log.info(f"[Scraper]发现 {len(files)} 个待刮削文件")
             for file in files:
                 if not file:
                     continue
+                if only_missing and self._has_scraped_metadata(file, dst_backend):
+                    log.debug(f"[Scraper]跳过已完成元数据：{file}")
+                    continue
                 log.info(f"[Scraper]开始刮削媒体库文件：{file} ...")
                 mi = meta_info(os.path.basename(file))
                 profile_info = self._profile_media_info(file)
                 if profile_info is not None and self._metadata_service is not None:
-                    snapshot = self._metadata_service.compose_for_media(profile_info, with_episodes=True, persist=True)
+                    snapshot = None if force_refresh else self._metadata_service.latest_snapshot_for_media(profile_info)
+                    if snapshot is None:
+                        snapshot = self._metadata_service.compose_for_media(
+                            profile_info,
+                            with_episodes=True,
+                            persist=True,
+                            max_age_seconds=0 if force_refresh else 1800,
+                        )
                     if snapshot is not None:
-                        self.gen_snapshot_files(
+                        scraped = self.gen_snapshot_files(
                             snapshot=snapshot,
                             media=profile_info,
                             dir_path=os.path.dirname(file),
@@ -132,12 +239,14 @@ class Scraper:
                             force_pic=force_pic,
                             dst_backend=dst_backend,
                         )
-                        log.info(f"[Scraper]{file} 插件画像快照刮削完成")
-                        continue
+                        if scraped:
+                            log.info(f"[Scraper]{file} 插件画像快照刮削完成")
+                            continue
+                        log.error(f"[Scraper]{file} 插件画像快照刮削未生成完整 NFO/图片")
                     log.warn(f"[Scraper]{file} 插件画像无法合成元数据快照")
                 standard_snapshot = self._compose_standard_snapshot(file, mi)
                 if standard_snapshot is not None:
-                    self.gen_snapshot_files(
+                    scraped = self.gen_snapshot_files(
                         snapshot=standard_snapshot,
                         media=mi,
                         dir_path=os.path.dirname(file),
@@ -147,7 +256,10 @@ class Scraper:
                         force_pic=force_pic,
                         dst_backend=dst_backend,
                     )
-                    log.info(f"[Scraper]{file} 普通媒体快照刮削完成")
+                    if scraped:
+                        log.info(f"[Scraper]{file} 普通媒体快照刮削完成")
+                    else:
+                        log.error(f"[Scraper]{file} 普通媒体快照刮削未生成完整 NFO/图片")
                     continue
                 tmdbid = self._extract_tmdbid(file, mi, dst_backend)
                 if tmdbid and not force_nfo:
@@ -218,7 +330,7 @@ class Scraper:
                     if snapshot is None:
                         snapshot = metadata_service.compose_for_media(media_info, with_episodes=True, persist=True)
                     if snapshot is not None:
-                        self.gen_snapshot_files(
+                        scraped = self.gen_snapshot_files(
                             snapshot=snapshot,
                             media=media_info,
                             dir_path=os.path.dirname(file),
@@ -228,7 +340,10 @@ class Scraper:
                             force_pic=force_pic,
                             dst_backend=dst_backend,
                         )
-                        log.info(f"[Scraper]{file} 快照刮削完成")
+                        if scraped:
+                            log.info(f"[Scraper]{file} 快照刮削完成")
+                        else:
+                            log.error(f"[Scraper]{file} 快照刮削未生成完整 NFO/图片")
                         continue
                     log.warn(f"[Scraper]{file} 无法合成元数据快照")
                 if not self._legacy_tmdb_fallback:
@@ -259,7 +374,7 @@ class Scraper:
         self._init_config()
         if not self._scraper_nfo and not self._scraper_pic:
             log.warn("[Scraper]刮削配置为空，跳过快照刮削")
-            return
+            return False
         self._dst_backend = dst_backend
         self._downloader.set_dst_backend(dst_backend)
         if not getattr(snapshot, "content_profile", "") and getattr(media, "content_profile", ""):
@@ -268,6 +383,8 @@ class Scraper:
             self._scrape_movie_from_snapshot(snapshot, dir_path, file_name, force_nfo, force_pic)
         else:
             self._scrape_tv_from_snapshot(snapshot, media, dir_path, file_name, file_ext, force_nfo, force_pic)
+        target = os.path.join(dir_path, f"{file_name}{file_ext}")
+        return self._has_scraped_metadata(target, dst_backend)
 
     def _scrape_movie_from_snapshot(self, snapshot, dir_path, file_name, force_nfo, force_pic):
         scraper_movie_nfo = self._scraper_nfo.get("movie", {})
@@ -407,7 +524,7 @@ class Scraper:
         min_height,
         require_portrait=False,
     ):
-        for url in candidates:
+        for url in list(candidates)[:2]:
             if not url or url.rstrip("/").endswith("/login"):
                 continue
             try:
@@ -438,17 +555,39 @@ class Scraper:
         log.warn(f"[Scraper]图片下载失败，候选为空: {file_name}")
         return False
 
+    @staticmethod
+    def _snapshot_has_content(snapshot) -> bool:
+        """快照至少要有标题，否则生成的 NFO 为空，应重新合成."""
+        fields = getattr(snapshot, "fields", None) or {}
+        title = getattr(fields.get("title"), "value", None) if hasattr(fields, "get") else None
+        return bool(title)
+
     def _ensure_snapshot_images(self, snapshot) -> None:
+        """用快照主来源补齐图片/演职人员，优先复用聚合 provider 的合并结果."""
         if self._metadata_service is None:
             return
         need_images = not getattr(snapshot, "images", None)
         need_credits = not getattr(snapshot, "credits", None)
         if not need_images and not need_credits:
             return
-        for ref in getattr(snapshot, "refs", []) or []:
+        extra = getattr(snapshot, "extra", {}) or {}
+        preferred = [
+            str(getattr(snapshot, "primary_provider", "") or "").strip(),
+            str(extra.get("source_provider") or "").strip(),
+        ]
+        refs = list(getattr(snapshot, "refs", []) or [])
+        ordered = []
+        for provider in preferred:
+            if not provider:
+                continue
+            for ref in refs:
+                if str(getattr(ref, "provider", "") or "") == provider and ref not in ordered:
+                    ordered.append(ref)
+        ordered.extend(ref for ref in refs if ref not in ordered)
+        for ref in ordered:
             provider = str(getattr(ref, "provider", "") or "").strip()
             external_id = str(getattr(ref, "external_id", "") or "").strip()
-            if not provider or not external_id:
+            if not provider or not external_id or provider in {"content_id", "tmdb", "imdb"}:
                 continue
             record = self._metadata_service.lookup(
                 provider,
@@ -461,18 +600,22 @@ class Scraper:
                 continue
             if need_images:
                 images = record.get("images") or {}
-                snapshot.images = {
-                    kind: [ImageAsset(**item) for item in assets]
-                    for kind, assets in images.items()
-                    if isinstance(assets, list)
-                }
+                if images:
+                    snapshot.images = {
+                        kind: [ImageAsset(**item) for item in assets]
+                        for kind, assets in images.items()
+                        if isinstance(assets, list) and assets
+                    }
+                    need_images = not snapshot.images
             credits = record.get("credits") or []
-            if credits and not snapshot.credits:
+            if need_credits and credits:
                 snapshot.credits = [Credit(**item) for item in credits]
-            extra = record.get("extra") or {}
-            if extra:
-                snapshot.extra.update(extra)
-            return
+                need_credits = False
+            record_extra = record.get("extra") or {}
+            if record_extra:
+                snapshot.extra.update(record_extra)
+            if not need_images and not need_credits:
+                return
 
     def _download_snapshot_images(self, snapshot, target_dir, scraper_pic, force_pic):
         mapping = (("poster", "poster"), ("backdrop", "fanart"), ("logo", "logo"), ("thumb", "thumb"))
@@ -790,11 +933,10 @@ class Scraper:
         self._init_config()
         if not force and not self._scraper_flag:
             log.warn("[Scraper]刮削标志未启用，跳过")
-            return
+            return False
         if not self._scraper_nfo and not self._scraper_pic:
             log.warn("[Scraper]刮削配置为空，跳过")
-            return
-            return
+            return False
         self._scraper_nfo = self._scraper_nfo or {}
         self._scraper_pic = self._scraper_pic or {}
         self._dst_backend = dst_backend
@@ -806,43 +948,60 @@ class Scraper:
         )
 
         try:
-            video_path = os.path.join(dir_path, f"{file_name}{file_ext}")
-            if not os.path.exists(video_path):
-                candidates = (
-                    [
-                        os.path.join(dir_path, item)
-                        for item in os.listdir(dir_path)
-                        if item.startswith(file_name)
-                        and item.lower().endswith((".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts"))
-                    ]
-                    if os.path.isdir(dir_path)
-                    else []
+            started = time.perf_counter()
+            raw_profile = getattr(media, "content_profile", "")
+            profile = raw_profile if isinstance(raw_profile, str) else ""
+            snapshot = getattr(media, "snapshot", None)
+            if snapshot is not None and not isinstance(snapshot, MediaMetadata):
+                snapshot = None
+            if snapshot is not None and not self._snapshot_has_content(snapshot):
+                log.warn(f"[Scraper]{file_name} 现有快照缺少标题，重新合成")
+                snapshot = None
+            if snapshot is None and self._metadata_service is not None:
+                snapshot = self._metadata_service.latest_snapshot_for_media(media)
+                if not isinstance(snapshot, MediaMetadata) or not self._snapshot_has_content(snapshot):
+                    snapshot = None
+            if snapshot is None and profile not in ("", "default") and self._metadata_service is not None:
+                # 转移阶段已持久化快照；这里只对旧记录补一次，并复用近期快照。
+                snapshot = self._metadata_service.compose_for_media(
+                    media,
+                    with_episodes=True,
+                    persist=True,
+                    max_age_seconds=1800,
                 )
-                video_path = candidates[0] if candidates else ""
-            profile_media = self._profile_media_info(video_path) if video_path else None
-            if profile_media is not None and self._metadata_service is not None:
-                snapshot = self._metadata_service.compose_for_media(profile_media, with_episodes=True, persist=True)
-                if snapshot is not None:
-                    self.gen_snapshot_files(
-                        snapshot=snapshot,
-                        media=profile_media,
-                        dir_path=dir_path,
-                        file_name=file_name,
-                        file_ext=file_ext,
-                        force_nfo=force_nfo,
-                        force_pic=force_pic,
-                        dst_backend=dst_backend,
-                    )
-                    log.info(f"[Scraper]{file_name} 插件画像快照刮削完成")
-                    return
+                if not isinstance(snapshot, MediaMetadata):
+                    snapshot = None
+            if snapshot is not None:
+                ok = self.gen_snapshot_files(
+                    snapshot=snapshot,
+                    media=media,
+                    dir_path=dir_path,
+                    file_name=file_name,
+                    file_ext=file_ext,
+                    force_nfo=force_nfo,
+                    force_pic=force_pic,
+                    dst_backend=dst_backend,
+                )
+                if ok:
+                    log.info(f"[Scraper]{file_name} 快照刮削完成（复用转移快照，{time.perf_counter() - started:.2f}s）")
+                else:
+                    log.error(f"[Scraper]{file_name} 快照刮削未生成完整 NFO/图片")
+                return ok
             if media.type == MediaType.MOVIE:
                 self._scrape_movie(media, dir_path, file_name, force_nfo, force_pic)
             else:
                 self._scrape_tv(media, dir_path, file_name, file_ext, force_nfo, force_pic)
-            log.info(f"[Scraper]刮削文件生成完成：{file_name}")
+            target = os.path.join(dir_path, f"{file_name}{file_ext}")
+            ok = self._has_scraped_metadata(target, dst_backend)
+            if ok:
+                log.info(f"[Scraper]刮削文件生成完成：{file_name}")
+            else:
+                log.error(f"[Scraper]刮削文件生成不完整：{file_name}")
+            return ok
         except Exception as e:
             log.error(f"[Scraper]刮削文件生成失败：{file_name}，错误：{e}")
             ExceptionUtils.exception_traceback(e)
+            return False
 
     def _scrape_movie(self, media, dir_path, file_name, force_nfo, force_pic):
         """刮削电影元数据 — 各步骤独立容错，单步失败不影响其他刮削输出."""

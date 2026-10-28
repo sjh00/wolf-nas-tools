@@ -232,15 +232,100 @@ async def proxy_library_image(request: Request, img_url: str, server_id: int | N
     )
 
 
+_LOCAL_POSTER_NAMES = frozenset({"poster.jpg", "poster.png", "fanart.jpg", "thumb.jpg", "background.jpg"})
+_BLUR_MAX_DEPTH = 5
+
+
+def _local_poster_roots() -> tuple[str, ...]:
+    """本地海报允许的媒体库根目录（配置优先，兼容默认 /Media 挂载）."""
+    roots: list[str] = []
+    configured = str((settings.get("media") or {}).get("media_default_path") or "").strip()
+    if configured:
+        roots.append(os.path.realpath(configured))
+    for fallback in ("/Media",):
+        real = os.path.realpath(fallback)
+        if real not in roots:
+            roots.append(real)
+    return tuple(roots)
+
+
+def _safe_local_poster(path: str) -> str:
+    """校验媒体目录内的海报路径，返回 realpath；非法时返回空字符串."""
+    candidate = os.path.realpath(urllib.parse.unquote(str(path or "")))
+    if os.path.basename(candidate).lower() not in _LOCAL_POSTER_NAMES:
+        return ""
+    if not any(candidate == root or candidate.startswith(root + os.sep) for root in _local_poster_roots()):
+        return ""
+    return candidate if os.path.isfile(candidate) else ""
+
+
+@router.get("/poster", summary="本地媒体海报")
+async def local_poster(path: str):
+    """返回媒体目录内已裁剪的海报，仅允许安全的图片文件名."""
+    decoded = _safe_local_poster(path)
+    if not decoded:
+        raise NexusError("图片不存在", http_status=404)
+    return FileResponse(decoded)
+
+
+def _resolve_blur_source(url: str, depth: int = 0) -> tuple[str, str]:
+    """把嵌套的本地代理 URL 还原为可下载的远程 URL 或本地海报路径.
+
+    :return: (remote_url, local_path)；二者只会有一个非空，remote_url 也可能为空。
+    """
+    decoded = urllib.parse.unquote(str(url or ""))
+    if depth > _BLUR_MAX_DEPTH:
+        return "", ""
+    if decoded.startswith("/img/blur?"):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(decoded).query)
+        nested = (query.get("url") or [""])[0]
+        return _resolve_blur_source(nested, depth + 1) if nested else ("", "")
+    if decoded.startswith("/img/library/"):
+        inner = urllib.parse.unquote(decoded[len("/img/library/") :])
+        return _resolve_blur_source(inner, depth + 1)
+    if decoded.startswith("/img/poster?"):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(decoded).query)
+        local = _safe_local_poster((query.get("path") or [""])[0])
+        return ("", local) if local else ("", "")
+    if decoded.startswith("/img/tmdb/"):
+        rest = decoded[len("/img/tmdb/") :]
+        _, _, img_path = rest.partition("/")
+        return f"https://{TMDB_IMAGE_DOMAIN}/t/p/original/{img_path}", ""
+    if decoded.startswith("/img/douban/"):
+        inner = urllib.parse.unquote(decoded[len("/img/douban/") :])
+        if inner.startswith(("http://", "https://")):
+            return inner, ""
+        return f"https://{SOURCE_DOMAINS['douban']}/{inner.lstrip('/')}", ""
+    if decoded.startswith("/img/bgm/"):
+        inner = urllib.parse.unquote(decoded[len("/img/bgm/") :])
+        if inner.startswith(("http://", "https://")):
+            return inner, ""
+        return f"https://{SOURCE_DOMAINS['bgm']}/{inner.lstrip('/')}", ""
+    return decoded, ""
+
+
 @router.get("/blur", summary="图片模糊代理")
 async def proxy_blur_image(url: str, radius: int = 20):
     """通用图片模糊代理，供插件实现 SFW 展示；不包含任何内容画像判断."""
-    _guard_image_url(url)
-    radius = max(1, min(int(radius or 20), 60))
-    cache_path = get_cache_path("blur", f"{urllib.parse.quote(url, safe='')}-{radius}")
+    source, local_poster = _resolve_blur_source(url)
+    if not source and not local_poster:
+        raise NexusError("非法图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+    try:
+        radius = max(1, min(int(radius or 20), 60))
+    except (TypeError, ValueError):
+        radius = 20
+    cache_key = source or local_poster
+    cache_path = get_cache_path("blur", f"{urllib.parse.quote(cache_key, safe='')}-{radius}")
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return FileResponse(cache_path, media_type="image/jpeg")
-    data = await download_image(url, referer=image_referer_registry.resolve(url))
+    if local_poster:
+        try:
+            data = await asyncio.to_thread(Path(local_poster).read_bytes)
+        except OSError:
+            data = b""
+    else:
+        _guard_image_url(source)
+        data = await download_image(source, referer=image_referer_registry.resolve(source))
     if not data:
         raise NexusError("获取图片失败", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
 

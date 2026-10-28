@@ -45,12 +45,21 @@ class ImageDownloader:
 
     def __init__(self, temp_path: str, dst_backend: StorageBackend | None = None):
         self._temp_path = temp_path
+        self._local = threading.local()
         self._dst_backend = dst_backend
+
+    @property
+    def _dst_backend(self):
+        return getattr(self._local, "dst_backend", None)
+
+    @_dst_backend.setter
+    def _dst_backend(self, value) -> None:
+        self._local.dst_backend = value
 
     def set_dst_backend(self, dst_backend: StorageBackend | None):
         self._dst_backend = dst_backend
 
-    @retry(HttpClientError, logger=log)
+    @retry(HttpClientError, tries=1, delay=0.2, logger=log)
     def download(self, url, out_path, itype="", force=False):
         """下载图片并保存"""
         if not url or not out_path:
@@ -123,8 +132,8 @@ class ImageDownloader:
                 return base + guessed
         return image_path
 
-    def save_nfo(self, doc, out_file):
-        """保存 NFO XML 文件"""
+    def save_nfo(self, doc, out_file) -> bool:
+        """保存 NFO XML 文件；失败返回 False，由调用方决定是否重试."""
         log.info(f"[Scraper]正在保存NFO文件：{out_file}")
         try:
             xml_str = doc.toprettyxml(indent="  ", encoding="utf-8")
@@ -134,6 +143,8 @@ class ImageDownloader:
                 with open(out_file, "wb") as xml_file:
                     xml_file.write(xml_str)
             log.info(f"[Scraper]NFO文件已保存：{out_file}")
+            return True
         except Exception as err:
             log.error(f"[Scraper]保存NFO文件失败：{out_file}，错误：{err}")
             ExceptionUtils.exception_traceback(err)
+            return False

@@ -39,7 +39,7 @@ def render_nfo_extra_tags(
     extra = getattr(snapshot, "extra", {}) or {}
     for profile in list_nfo_profiles(registry):
         profile_key = profile.content_profile
-        matched = profile_key in {snapshot.content_profile, "default"}
+        matched = profile_key == snapshot.content_profile
         if not matched and profile_key:
             prefix = f"{profile_key}."
             matched = any(str(key).startswith(prefix) for key in extra)
