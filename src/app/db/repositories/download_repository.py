@@ -327,6 +327,29 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.TMDBID == str(tmdb_id)).all()
 
+    def get_download_history_by_identity(
+        self,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+    ) -> list[DOWNLOADHISTORY]:
+        """按统一身份/锚点查询下载历史（无 TMDB 的插件画像订阅超时判断用）."""
+        conditions = []
+        if identity_id:
+            conditions.append(DOWNLOADHISTORY.IDENTITY_ID == str(identity_id))
+        if anchor_provider and anchor_external_id:
+            conditions.append(
+                and_(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
+                )
+            )
+        if not conditions:
+            return []
+        with self.session() as db:
+            return db.query(DOWNLOADHISTORY).filter(or_(*conditions)).all()
+
     def get_download_history_by_path(self, path: str) -> DOWNLOADHISTORY | None:
         with self.session() as db:
             return (
