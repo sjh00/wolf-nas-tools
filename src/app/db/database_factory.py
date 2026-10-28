@@ -245,10 +245,14 @@ class DatabaseFactory:
             engine_kwargs["pool_recycle"] = kwargs.get("pool_recycle", 1800)
             engine_kwargs["pool_pre_ping"] = True
             if db_type == DatabaseFactory.POSTGRESQL:
-                # 标明连接归属，便于在 pg_stat_activity 中区分主池/调度池/临时引擎
-                engine_kwargs["connect_args"] = {
-                    "application_name": kwargs.get("application_name") or DatabaseFactory.PG_APPLICATION_NAME
-                }
+                # 标明连接归属，便于在 pg_stat_activity 中区分主池/调度池/临时引擎。
+                # 合并调用方 connect_args，避免覆盖 sslmode 等驱动参数。
+                connect_args = dict(kwargs.get("connect_args") or {})
+                connect_args.setdefault(
+                    "application_name",
+                    kwargs.get("application_name") or DatabaseFactory.PG_APPLICATION_NAME,
+                )
+                engine_kwargs["connect_args"] = connect_args
 
         engine = create_engine(url, **engine_kwargs)
 

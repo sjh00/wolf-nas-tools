@@ -135,17 +135,19 @@ def _index_names(table: str) -> set[str]:
 
 def _fill_nulls(table: str, columns: list[str]) -> None:
     existing = _columns(table)
+    quote = op.get_bind().dialect.identifier_preparer.quote
     for name in columns:
         if name not in existing:
             continue
         column_type = existing[name]["type"]
-        template = 'UPDATE "{0}" SET "{1}" = {2} WHERE "{1}" IS NULL'
+        prefix = f"UPDATE {quote(table)} SET {quote(name)} = "
+        suffix = f" WHERE {quote(name)} IS NULL"
         if isinstance(column_type, (sa.Integer, sa.BigInteger, sa.SmallInteger, sa.Float, sa.Numeric)):
-            op.execute(sa.text(template.format(table, name, ":value")).bindparams(value=0))
+            op.execute(sa.text(prefix + ":value" + suffix).bindparams(value=0))
         elif isinstance(column_type, sa.DateTime):
-            op.execute(sa.text(template.format(table, name, "current_timestamp")))
+            op.execute(sa.text(prefix + "current_timestamp" + suffix))
         else:
-            op.execute(sa.text(template.format(table, name, ":value")).bindparams(value=""))
+            op.execute(sa.text(prefix + ":value" + suffix).bindparams(value=""))
 
 
 def _set_nullable(table: str, columns: list[str], nullable: bool) -> None:

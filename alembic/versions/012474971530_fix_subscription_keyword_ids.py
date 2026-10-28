@@ -23,13 +23,14 @@ def _column_names(table: str) -> set[str]:
 
 
 def upgrade() -> None:
+    quote = op.get_bind().dialect.identifier_preparer.quote
     for table in ("SUBSCRIBE_MOVIES", "SUBSCRIBE_TVS"):
         if {"KEYWORD", "NAME", "TMDBID"}.issubset(_column_names(table)):
             op.execute(
                 sa.text(
-                    f'UPDATE "{table}" SET "KEYWORD" = "NAME" '
-                    'WHERE "KEYWORD" IS NOT NULL AND "KEYWORD" <> :empty '
-                    'AND "TMDBID" IS NOT NULL AND "KEYWORD" = "TMDBID"'
+                    f"UPDATE {quote(table)} SET {quote('KEYWORD')} = {quote('NAME')} "
+                    f"WHERE {quote('KEYWORD')} IS NOT NULL AND {quote('KEYWORD')} <> :empty "
+                    f"AND {quote('TMDBID')} IS NOT NULL AND {quote('KEYWORD')} = {quote('TMDBID')}"
                 ).bindparams(empty="")
             )
 

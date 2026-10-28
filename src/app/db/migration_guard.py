@@ -60,10 +60,16 @@ def install_idempotent_ddl(op_module: Any | None = None) -> bool:
 
     def create_table(*args: Any, **kwargs: Any) -> Any:
         name = args[0] if args else kwargs.get("table_name")
-        if name and _has_table(target, str(name)):
-            log.info(f"[alembic]表 {name} 已存在，跳过 create_table")
-            return None
-        return original_create_table(*args, **kwargs)
+        if not name or not _has_table(target, str(name)):
+            return original_create_table(*args, **kwargs)
+        # create_all() 可能只建了旧结构：表存在时仍要把缺失列补上。
+        existing = _columns(target, str(name))
+        missing = [item for item in args[1:] if isinstance(item, sa.Column) and item.name not in existing]
+        for column in missing:
+            original_add_column(str(name), column)
+        suffix = f"，补列 {[column.name for column in missing]}" if missing else ""
+        log.info(f"[alembic]表 {name} 已存在，跳过 create_table{suffix}")
+        return None
 
     def add_column(table_name: str, column: sa.Column, *args: Any, **kwargs: Any) -> Any:
         if column.name in _columns(target, table_name):

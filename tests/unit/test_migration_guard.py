@@ -87,3 +87,12 @@ def test_missing_table_passes_through() -> None:
         op.add_column("NOT_CREATED_YET", sa.Column("X", sa.Text()))
         op.create_index("ix_OTHER", "NOT_CREATED_YET", ["X"])
         assert op.calls == ["add_column:NOT_CREATED_YET.X", "create_index:ix_OTHER"]
+
+
+def test_existing_table_adds_missing_columns() -> None:
+    conn = _connect()
+    with conn:
+        op = _StubOp(conn)
+        install_idempotent_ddl(op)
+        op.create_table("EXISTING", sa.Column("NEW", sa.Text()))
+        assert op.calls == ["add_column:EXISTING.NEW"]
