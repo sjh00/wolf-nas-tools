@@ -22,3 +22,17 @@ def test_enter_releases_slot_when_ensure_session_fails(monkeypatch):
     slot.__enter__.assert_called_once()
     slot.__exit__.assert_called_once()
     assert session._slot is None
+
+
+def test_persistent_session_close_tabs_without_deleting_session():
+    session = BrowserSession.__new__(BrowserSession)
+    session._persist = True
+    session._sid = "sid"
+    session._client = MagicMock()
+    session.close_tabs = MagicMock()
+
+    session.close()
+
+    session.close_tabs.assert_called_once()
+    session._client.delete.assert_not_called()
+    session._client.close.assert_called_once()
