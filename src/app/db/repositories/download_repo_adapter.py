@@ -77,6 +77,22 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
             return []
         return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]
 
+    def get_by_identity(
+        self,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+    ) -> list[DownloadHistoryEntity]:
+        rows = self._repo.get_download_history_by_identity(
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+        )
+        if not rows:
+            return []
+        return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]
+
     def get_by_path(self, path: str) -> DownloadHistoryEntity | None:
         row = self._repo.get_download_history_by_path(path)
         if not row:
