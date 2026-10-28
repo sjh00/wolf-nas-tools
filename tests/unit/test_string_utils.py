@@ -72,3 +72,16 @@ class TestStringUtils:
         result = StringUtils.handler_special_chars("hello: world / test")
         assert ":" not in result
         assert "/" not in result
+
+
+def test_mask_sensitive_hides_magnet_and_tokens():
+    from app.utils import StringUtils
+
+    raw = "https://x/announce?passkey=secret&token=abc magnet:?xt=urn:btih:deadbeef Authorization: Bearer abc.def"
+
+    masked = StringUtils.mask_sensitive(raw)
+
+    assert "secret" not in masked
+    assert "deadbeef" not in masked
+    assert "abc.def" not in masked
+    assert "<magnet>" in masked

@@ -74,6 +74,31 @@ class TestMovieDownloadStrategy:
         assert attempted == ["first"]
         assert result == [first]
 
+    def test_download_movies_per_candidate_outcome_overall_success(self):
+        """不同电影各自记录成败：一个失败不影响另一个成功，整体只要有成功即返回."""
+        bad = MockMediaItem(type=MediaType.MOVIE, enclosure="bad", title="Movie Bad", tmdb_id=1)
+        good = MockMediaItem(type=MediaType.MOVIE, enclosure="good", title="Movie Good", tmdb_id=2)
+        attempted = []
+
+        def download_cb(item, torrent_file=None, tag=None, is_paused=None):
+            attempted.append(item.enclosure)
+            if item.enclosure == "bad":
+                return None, None, "站点返回 500"
+            return "did", "id1", ""
+
+        result = MovieDownloadStrategy.download_movies([bad, good], download_cb, lambda x: x)
+        assert attempted == ["bad", "good"]
+        assert result == [good]
+
+    def test_download_movies_all_failed_returns_empty(self):
+        first = MockMediaItem(type=MediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
+        second = MockMediaItem(type=MediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
+
+        def download_cb(item, torrent_file=None, tag=None, is_paused=None):
+            return None, None, "下载器错误"
+
+        assert MovieDownloadStrategy.download_movies([first, second], download_cb, lambda x: x) == []
+
     def test_download_movies_failure(self):
         movie = MockMediaItem(type=MediaType.MOVIE, enclosure="url1")
 

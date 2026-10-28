@@ -268,3 +268,49 @@ class TestThunderOperationsWithResolvedTid:
             result = client.delete_torrents(ids="old-task")
             assert result is True
             mock_pythunder.delete_task.assert_called_once_with("new-task", delete_files=False)
+
+
+class TestThunderAddError:
+    def test_add_failure_records_concrete_reason_without_secret(self):
+        mock_pythunder = MagicMock()
+        mock_pythunder._resolve_folder_id.return_value = "folder-1"
+        mock_pythunder.download.side_effect = RuntimeError(
+            "下载任务创建失败：HTTP 状态 409：任务已存在 "
+            "magnet:?xt=urn:btih:deadbeef&tr=https://x/announce?passkey=secret"
+        )
+
+        with patch(_PY_THUNDER, return_value=mock_pythunder):
+            client = Thunder(config={"host": "127.0.0.1", "port": "2345"})
+            result = client.add_torrent_and_get_id("magnet:?xt=urn:btih:deadbeef")
+
+        assert result is None
+        reason = client.get_last_add_error()
+        assert "HTTP 状态 409" in reason
+        assert "任务已存在" in reason
+        assert "secret" not in reason
+        assert "deadbeef" not in reason
+
+    def test_add_success_clears_previous_error(self):
+        mock_pythunder = MagicMock()
+        mock_pythunder._resolve_folder_id.return_value = "folder-1"
+        mock_pythunder.download.return_value = {"id": "task-1"}
+
+        with patch(_PY_THUNDER, return_value=mock_pythunder):
+            client = Thunder(config={"host": "127.0.0.1", "port": "2345"})
+            client._set_last_add_error("旧错误")
+            result = client.add_torrent_and_get_id("magnet:?xt=urn:btih:abc")
+
+        assert result == "task-1"
+        assert client.get_last_add_error() == ""
+
+    def test_add_missing_task_id_records_reason(self):
+        mock_pythunder = MagicMock()
+        mock_pythunder._resolve_folder_id.return_value = "folder-1"
+        mock_pythunder.download.return_value = {"name": "movie"}
+
+        with patch(_PY_THUNDER, return_value=mock_pythunder):
+            client = Thunder(config={"host": "127.0.0.1", "port": "2345"})
+            result = client.add_torrent_and_get_id("magnet:?xt=urn:btih:abc")
+
+        assert result is None
+        assert "任务 ID" in client.get_last_add_error()

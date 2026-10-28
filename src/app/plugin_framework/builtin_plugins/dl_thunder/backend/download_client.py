@@ -7,9 +7,8 @@ from app.downloader.client._base import _IDownloadClient
 from app.downloader.schema import ConfigField, DownloaderConfigSchema
 from app.downloader.strategy import RemoveStrategy
 from app.schemas.download import Torrent, TorrentStatus
-from app.utils import ExceptionUtils
 
-from .pythunder import PyThunder
+from .pythunder import PyThunder, sanitize_error_text
 
 
 class Thunder(_IDownloadClient):
@@ -257,7 +256,9 @@ class Thunder(_IDownloadClient):
         cookie: str | None = None,
         **kwargs: Any,
     ) -> str | None:
+        self._set_last_add_error("")
         if not self._ensure_connected() or not self._client:
+            self._set_last_add_error("迅雷未连接或连接配置无效")
             return None
         try:
             if isinstance(content, str):
@@ -266,13 +267,15 @@ class Thunder(_IDownloadClient):
                 elif content.endswith(".torrent") or os.path.exists(content):
                     magnet_url = self._client.torrent_to_magnet(content)
                     if not magnet_url:
-                        log.error("[{self.client_name}]种子文件转换磁力链接失败")
+                        log.error(f"[{self.client_name}]种子文件转换磁力链接失败")
+                        self._set_last_add_error("种子文件无法转换为磁力链接")
                         return None
                     download_url = magnet_url
                 else:
                     download_url = content
             else:
-                log.error("[{self.client_name}]不支持二进制种子内容")
+                log.error(f"[{self.client_name}]不支持二进制种子内容")
+                self._set_last_add_error("迅雷下载器不支持二进制种子内容")
                 return None
 
             folder_id = self._client._resolve_folder_id(download_dir or "/downloads/xunlei/")
@@ -286,12 +289,17 @@ class Thunder(_IDownloadClient):
                 file_names=file_names,
             )
             task_id = task_info.get("id") if task_info else None
-            return str(task_id) if task_id else None
-        except (InfrastructureError, NetworkError):
+            if not task_id:
+                self._set_last_add_error("迅雷未返回任务 ID（可能重复任务、保存路径无效或空间不足）")
+                return None
+            return str(task_id)
+        except (InfrastructureError, NetworkError) as e:
+            self._set_last_add_error(sanitize_error_text(e))
             raise
         except Exception as e:
-            log.error(f"[{self.client_name}]添加下载任务失败: {e!s}")
-            ExceptionUtils.exception_traceback(e)
+            reason = sanitize_error_text(e) or "未知错误"
+            self._set_last_add_error(reason)
+            log.error(f"[{self.client_name}]添加下载任务失败: {reason}")
             return None
 
     def start_torrents(self, ids: list[str] | str | None = None) -> bool:
