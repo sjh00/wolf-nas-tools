@@ -39,6 +39,15 @@ class TestChallengeDetection:
     def test_normal_page_is_not_challenge(self):
         assert not _is_challenge("<html><head><title>首页</title></head><body>正常内容</body></html>")
 
+    def test_cloudflare_script_on_normal_page_is_not_challenge(self):
+        """Cloudflare 会在已放行页面注入 challenge-platform 脚本，不能误判."""
+        html = (
+            "<html><head><title>SNOS-363 正常内容 - JAVLibrary</title>"
+            '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+            '</head><body><div class="video"></div></body></html>'
+        )
+        assert not _is_challenge(html)
+
     def test_safeline_title_is_challenge(self):
         assert _is_challenge("<html><head><title>雷池 - 安全拦截</title></head><body></body></html>")
 

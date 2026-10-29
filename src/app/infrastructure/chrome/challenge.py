@@ -12,8 +12,10 @@ import time
 # Cloudflare / 雷池强特征：仅整页拦截（interstitial）签名。
 # 注意不能用裸 cf-chl / turnstile：正常页面内嵌 Turnstile 组件会生成
 # cf-chl-widget-* 元素 id（如观众签到页），匹配会把正常页面误判为挑战页。
+# 注意不能包含 challenge-platform：Cloudflare 会在已放行的正常页面里注入
+# challenge-platform 脚本，用它判断会把正常页误判为挑战页并空等超时。
 CHALLENGE_INDICATORS = re.compile(
-    r"_cf_chl_opt|cf-browser-verification|cf-im-under-attack|challenge-form|challenge-platform|"
+    r"_cf_chl_opt|cf-browser-verification|cf-im-under-attack|challenge-form|"
     r"Checking your browser|Just a moment|Ray ID|slg-bg|slg-box",
     re.IGNORECASE,
 )
