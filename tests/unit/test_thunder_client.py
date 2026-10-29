@@ -314,3 +314,31 @@ class TestThunderAddError:
 
         assert result is None
         assert "任务 ID" in client.get_last_add_error()
+
+
+class TestThunderBinaryTorrent:
+    def test_binary_torrent_is_converted_to_magnet(self):
+        mock_pythunder = MagicMock()
+        mock_pythunder._resolve_folder_id.return_value = "folder-1"
+        mock_pythunder.download.return_value = {"id": "task-bin"}
+        mock_pythunder.torrent_to_magnet.return_value = "magnet:?xt=urn:btih:abc"
+
+        with patch(_PY_THUNDER, return_value=mock_pythunder):
+            client = Thunder(config={"host": "127.0.0.1", "port": "2345"})
+            result = client.add_torrent_and_get_id(b"d4:infod4:name1:xee", download_dir="/downloads")
+
+        assert result == "task-bin"
+        download_url = mock_pythunder.download.call_args.kwargs["download_urls"]
+        assert download_url.startswith("magnet:?xt=urn:btih:")
+        assert "dn=x" in download_url
+
+    def test_invalid_binary_torrent_reports_error(self):
+        mock_pythunder = MagicMock()
+
+        with patch(_PY_THUNDER, return_value=mock_pythunder):
+            client = Thunder(config={"host": "127.0.0.1", "port": "2345"})
+            result = client.add_torrent_and_get_id(b"<html>not torrent</html>")
+
+        assert result is None
+        assert client.get_last_add_error()
+        mock_pythunder.download.assert_not_called()

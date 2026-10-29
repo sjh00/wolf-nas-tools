@@ -2,26 +2,47 @@
 
 import queue
 
+import pytest
+
 from app.events import Event
 from app.events.constants import DOWNLOAD_COMPLETED, DOWNLOAD_FAILED, DOWNLOAD_STARTED
-from app.events.payloads import DownloadCompletedPayload, DownloadFailedPayload, DownloadStartedPayload
+from app.events.payloads import (
+    DownloadCompletedPayload,
+    DownloadFailedPayload,
+    DownloadStartedPayload,
+)
+from app.services.download.handlers import (
+    handle_download_completed,
+    handle_download_failed,
+    handle_download_started,
+)
+from app.services.download_event_queue import (
+    subscribe_download_events,
+    unsubscribe_download_events,
+)
 
 
-def _drain(q):
+def _drain(target: queue.Queue) -> None:
     while True:
         try:
-            q.get_nowait()
+            target.get_nowait()
         except queue.Empty:
             break
 
 
+@pytest.fixture
+def download_queue():
+    """使用当前 SSE 订阅队列，而不是已废弃的全局兼容队列."""
+    subscriber = subscribe_download_events()
+    _drain(subscriber)
+    try:
+        yield subscriber
+    finally:
+        unsubscribe_download_events(subscriber)
+
+
 class TestDownloadHandlers:
-    def test_handle_download_started_pushes_to_queue(self):
-        from app.services.download.handlers import handle_download_started
-        from app.services.download_event_queue import download_event_queue
-
-        _drain(download_event_queue)
-
+    def test_handle_download_started_pushes_to_queue(self, download_queue):
         event = Event(
             event_type=DOWNLOAD_STARTED,
             payload=DownloadStartedPayload(
@@ -37,35 +58,25 @@ class TestDownloadHandlers:
         )
         handle_download_started(event)
 
-        item = download_event_queue.get(timeout=1)
+        item = download_queue.get(timeout=1)
         assert item["event"] == DOWNLOAD_STARTED
         assert item["data"]["title"] == "Test Movie"
         assert item["data"]["downloader_id"] == "qb1"
         assert item["data"]["download_id"] == "abc123"
 
-    def test_handle_download_failed_pushes_to_queue(self):
-        from app.services.download.handlers import handle_download_failed
-        from app.services.download_event_queue import download_event_queue
-
-        _drain(download_event_queue)
-
+    def test_handle_download_failed_pushes_to_queue(self, download_queue):
         event = Event(
             event_type=DOWNLOAD_FAILED,
             payload=DownloadFailedPayload(media_info={"title": "Test Movie"}, reason="连接超时"),
         )
         handle_download_failed(event)
 
-        item = download_event_queue.get(timeout=1)
+        item = download_queue.get(timeout=1)
         assert item["event"] == DOWNLOAD_FAILED
         assert item["data"]["title"] == "Test Movie"
         assert item["data"]["reason"] == "连接超时"
 
-    def test_handle_download_completed_pushes_to_queue(self):
-        from app.services.download.handlers import handle_download_completed
-        from app.services.download_event_queue import download_event_queue
-
-        _drain(download_event_queue)
-
+    def test_handle_download_completed_pushes_to_queue(self, download_queue):
         event = Event(
             event_type=DOWNLOAD_COMPLETED,
             payload=DownloadCompletedPayload(
@@ -78,7 +89,7 @@ class TestDownloadHandlers:
         )
         handle_download_completed(event)
 
-        item = download_event_queue.get(timeout=1)
+        item = download_queue.get(timeout=1)
         assert item["event"] == DOWNLOAD_COMPLETED
         assert item["data"]["downloader_id"] == "qb1"
         assert item["data"]["task_id"] == "task123"
@@ -86,13 +97,8 @@ class TestDownloadHandlers:
         assert item["data"]["tags"] == ["NEXUS_MEDIA"]
         assert item["data"]["name"] == "movie"
 
-    def test_handle_download_started_with_dict_payload(self):
+    def test_handle_download_started_with_dict_payload(self, download_queue):
         """payload 是 dict 时也能正常处理."""
-        from app.services.download.handlers import handle_download_started
-        from app.services.download_event_queue import download_event_queue
-
-        _drain(download_event_queue)
-
         event = Event(
             event_type=DOWNLOAD_STARTED,
             payload={
@@ -108,17 +114,12 @@ class TestDownloadHandlers:
         )
         handle_download_started(event)
 
-        item = download_event_queue.get(timeout=1)
+        item = download_queue.get(timeout=1)
         assert item["data"]["title"] == "Dict Movie"
         assert item["data"]["download_id"] == "dict123"
 
-    def test_handle_download_completed_with_dict_payload(self):
+    def test_handle_download_completed_with_dict_payload(self, download_queue):
         """payload 是 dict 时也能正常处理."""
-        from app.services.download.handlers import handle_download_completed
-        from app.services.download_event_queue import download_event_queue
-
-        _drain(download_event_queue)
-
         event = Event(
             event_type=DOWNLOAD_COMPLETED,
             payload={
@@ -131,21 +132,16 @@ class TestDownloadHandlers:
         )
         handle_download_completed(event)
 
-        item = download_event_queue.get(timeout=1)
+        item = download_queue.get(timeout=1)
         assert item["data"]["task_id"] == "task456"
 
-    def test_handle_download_failed_with_dict_payload(self):
+    def test_handle_download_failed_with_dict_payload(self, download_queue):
         """payload 是 dict 时也能正常处理."""
-        from app.services.download.handlers import handle_download_failed
-        from app.services.download_event_queue import download_event_queue
-
-        _drain(download_event_queue)
-
         event = Event(
             event_type=DOWNLOAD_FAILED,
             payload={"media_info": {"title": "Bad Movie"}, "reason": "网络错误"},
         )
         handle_download_failed(event)
 
-        item = download_event_queue.get(timeout=1)
+        item = download_queue.get(timeout=1)
         assert item["data"]["reason"] == "网络错误"

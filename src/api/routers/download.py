@@ -34,7 +34,11 @@ from app.events.constants import DOWNLOAD_FAILED
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
-from app.services.download_event_queue import download_event_queue
+from app.services.download_event_queue import (
+    publish_download_event,
+    subscribe_download_events,
+    unsubscribe_download_events,
+)
 from app.services.download_service import DownloadService
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.filetransfer_service import FileTransferService as FileTransfer
@@ -301,9 +305,7 @@ def download(
             )
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
-            download_event_queue.put(
-                {"event": DOWNLOAD_FAILED, "data": {"title": f"下载ID:{req.id}", "reason": str(e)}}
-            )
+            publish_download_event({"event": DOWNLOAD_FAILED, "data": {"title": f"下载ID:{req.id}", "reason": str(e)}})
 
     ThreadExecutor(name="download").submit(_do_download)
     return success(message="下载任务已提交")
@@ -334,7 +336,7 @@ def download_link(
             )
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
-            download_event_queue.put({"event": DOWNLOAD_FAILED, "data": {"title": req.title or "", "reason": str(e)}})
+            publish_download_event({"event": DOWNLOAD_FAILED, "data": {"title": req.title or "", "reason": str(e)}})
 
     ThreadExecutor(name="download").submit(_do_download)
     return success(message="下载任务已提交")
@@ -382,7 +384,7 @@ def download_torrent(
             )
             if not result.success:
                 log.warn(f"[Download]下载失败: {result.message}")
-                download_event_queue.put(
+                publish_download_event(
                     {"event": DOWNLOAD_FAILED, "data": {"title": req.title, "reason": result.message}}
                 )
             else:
@@ -806,17 +808,23 @@ def truncate_blacklist(
 
 def _event_stream_generator(q):
     log.info(f"[SSE]客户端已连接下载事件流 (queue_id={hex(id(q))})")
-    while True:
-        try:
-            item = q.get(timeout=1)
-            log.debug(f"[SSE]推送事件: {item.get('event')}")
-            yield f"event: {item['event']}\ndata: {JsonUtils.dumps(item['data'])}\n\n"
-        except queue.Empty:
-            yield ": keepalive\n\n"
+    try:
+        while True:
+            try:
+                item = q.get(timeout=1)
+                log.debug(f"[SSE]推送事件: {item.get('event')}")
+                yield f"event: {item['event']}\ndata: {JsonUtils.dumps(item['data'])}\n\n"
+            except queue.Empty:
+                yield ": keepalive\n\n"
+    finally:
+        unsubscribe_download_events(q)
 
 
 @router.get("/events", summary="下载事件实时推送 (SSE)")
 def download_events(
     user: UserContext = Depends(require_any_permission("download:view", "download:manage")),
 ):
-    return StreamingResponse(_event_stream_generator(download_event_queue), media_type="text/event-stream")
+    return StreamingResponse(
+        _event_stream_generator(subscribe_download_events()),
+        media_type="text/event-stream",
+    )
