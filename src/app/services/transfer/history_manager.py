@@ -61,8 +61,30 @@ class TransferHistoryManager:
     def get_transfer_info_by_id(self, logid):
         return self.transfer_repo.get_transfer_info_by_id(logid=logid)
 
-    def get_transfer_history(self, search, page, rownum):
-        return self.transfer_repo.get_transfer_history(search=search, page=page, rownum=rownum)
+    def get_transfer_history(self, search, page, rownum, media_type=None):
+        return self.transfer_repo.get_transfer_history(search=search, page=page, rownum=rownum, media_type=media_type)
+
+    def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
+        return self.transfer_repo.update_transfer_history_poster(logid=logid, poster=poster)
+
+    def update_transfer_file_state(
+        self,
+        logid: int,
+        *,
+        source_state: str | None = None,
+        source_deleted_at: str | None = None,
+        dest_state: str | None = None,
+        dest_deleted_at: str | None = None,
+        files_checked_at: str | None = None,
+    ) -> None:
+        return self.transfer_repo.update_transfer_file_state(
+            logid,
+            source_state=source_state,
+            source_deleted_at=source_deleted_at,
+            dest_state=dest_state,
+            dest_deleted_at=dest_deleted_at,
+            files_checked_at=files_checked_at,
+        )
 
     def delete_transfer_log_by_id(self, logid):
         return self.transfer_repo.delete_transfer_log_by_id(logid=logid)

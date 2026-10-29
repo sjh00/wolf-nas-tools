@@ -57,6 +57,10 @@ from app.utils import ExceptionUtils, PathUtils, StringUtils
 # 多后端镜像上传：后端间写入间隔（秒），避免连续上传压垮后端
 MIRROR_BACKEND_DELAY = 1.0
 
+# 文件转移锁：短 TTL + 心跳续期，进程崩溃后最多遗留 3 分钟而不是 1 小时
+TRANSFER_LOCK_TTL = 180
+TRANSFER_LOCK_HEARTBEAT = 30
+
 # 目录内常见的附加/广告视频（非正片），识别前先排除
 _EXTRA_MEDIA_RE = re.compile(
     r"(?:^|[-_.\s\[\(])(?:sample|trailer|preview|teaser|广告|預告|预告)(?:$|[-_.\s\]\)])",
@@ -228,7 +232,9 @@ class FileTransferService:
         # 仅信任源路径仍存在的历史记录（调试/测试残留的假记录源已删除，不参与判断）
         if meta_info.type != MediaType.MOVIE and meta_info.tmdb_id and season and total_num:
             try:
-                season_str = f"S{season:02d}" if isinstance(season, int) else str(season)
+                match = re.search(r"\d+", str(season))
+                season_num = int(match.group()) if match else int(season)
+                season_str = f"S{season_num:02d}"
                 history = self._history.get_transfer_info_by(tmdbid=meta_info.tmdb_id, season=season_str)
                 transferred: set[int] = set()
                 if history:
@@ -236,15 +242,12 @@ class FileTransferService:
                         if not getattr(h, "source_path", "") or not os.path.exists(str(getattr(h, "source_path", ""))):
                             continue
                         # 目标硬链接/文件必须实际存在，否则视为缺失（如目标被删除）→ 触发重新硬链接
-                        dest_path = str(getattr(h, "dest_path", "") or "")
-                        dest_filename = str(getattr(h, "dest_filename", "") or "")
-                        dest_file = os.path.join(dest_path, dest_filename) if dest_path and dest_filename else ""
                         backend = getattr(h, "dst_backend", None) or "local"
-                        if not dest_file or not self._existence.exists(dest_file, backend):
+                        if not self._history_dest_exists(h, backend):
                             continue
                         se = h.season_episode or ""
-                        parts = se.replace("S", "").split("E")
-                        if len(parts) >= 2 and parts[0].isdigit() and int(parts[0]) == int(season):
+                        parts = [part.strip() for part in se.replace("S", "").split("E")]
+                        if len(parts) >= 2 and parts[0].isdigit() and int(parts[0]) == season_num:
                             ep = parts[1]
                             if "-" in ep:
                                 a, b = ep.split("-")
@@ -280,8 +283,11 @@ class FileTransferService:
     def get_transfer_info_by_id(self, logid):
         return self._history.get_transfer_info_by_id(logid)
 
-    def get_transfer_history(self, search, page, rownum):
-        return self._history.get_transfer_history(search, page, rownum)
+    def get_transfer_history(self, search, page, rownum, media_type=None):
+        return self._history.get_transfer_history(search, page, rownum, media_type)
+
+    def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
+        return self._history.update_transfer_history_poster(logid=logid, poster=poster)
 
     def delete_transfer_log_by_id(self, logid):
         return self._history.delete_transfer_log_by_id(logid)
@@ -335,6 +341,33 @@ class FileTransferService:
             return self._cleanup.delete_history(logids, flag)
         finally:
             lock.release()
+
+    def delete_records(self, logids: list[int]) -> list[dict]:
+        lock_key = f"transfer:delete-records:{hashlib.md5(str(logids).encode(), usedforsecurity=False).hexdigest()}"
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=300)
+        if not lock.acquire():
+            return [{"id": int(logid), "status": "failed", "message": "删除任务正在执行"} for logid in logids]
+        try:
+            return self._cleanup.delete_records(logids)
+        finally:
+            lock.release()
+
+    def delete_record_files(self, logids: list[int], targets: list[str]) -> list[dict]:
+        lock_key = f"transfer:delete-files:{hashlib.md5(str(logids).encode(), usedforsecurity=False).hexdigest()}"
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=300)
+        if not lock.acquire():
+            return [
+                {"id": int(logid), "target": target, "status": "failed", "message": "删除任务正在执行"}
+                for logid in logids
+                for target in targets
+            ]
+        try:
+            return self._cleanup.delete_record_files(logids, targets)
+        finally:
+            lock.release()
+
+    def check_record_files(self, logids: list[int], targets: list[str] | None = None) -> list[dict]:
+        return self._cleanup.check_record_files(logids, targets)
 
     def delete_media_file(self, filedir, filename, backend_id="local"):
         return self._cleanup.delete_media_file(filedir, filename, backend_id)
@@ -392,6 +425,24 @@ class FileTransferService:
 
     # ---------- 核心转移流程（保留在 Facade） ----------
 
+    @staticmethod
+    def _start_lock_heartbeat(
+        lock,
+        ttl_seconds: int = TRANSFER_LOCK_TTL,
+        interval: float = TRANSFER_LOCK_HEARTBEAT,
+    ) -> threading.Thread:
+        """后台续期转移锁；进程崩溃后停止续期，锁在 TTL 后自动释放."""
+
+        def _beat() -> None:
+            while lock.owned:
+                time.sleep(interval)
+                if not lock.owned or not lock.extend(ttl_seconds):
+                    return
+
+        thread = threading.Thread(target=_beat, daemon=True, name="filetransfer-lock-heartbeat")
+        thread.start()
+        return thread
+
     def transfer_media(
         self,
         in_from,
@@ -417,11 +468,13 @@ class FileTransferService:
 
         # 分布式锁：多实例同时处理同一文件/目录时互斥
         lock_key = f"filetransfer:media:{hashlib.md5(in_path.encode(), usedforsecurity=False).hexdigest()}"
-        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=3600)
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=TRANSFER_LOCK_TTL)
         acquired = lock.acquire()
         if not acquired:
             log.info(f"[Rmt]{in_path} 正在其他实例转移中，跳过")
             return self._finish_transfer(False, f"文件正在转移中：{in_path}")
+
+        self._start_lock_heartbeat(lock)
 
         with lock:
             if not operation:
@@ -634,7 +687,8 @@ class FileTransferService:
             value = getattr(value, "value", value)
             if value:
                 setattr(media_info, key, value)
-        poster = (getattr(snapshot, "images", {}) or {}).get("poster") or []
+        images = getattr(snapshot, "images", {}) or {}
+        poster = images.get("poster") or []
         extra = getattr(snapshot, "extra", {}) or {}
         source = extra.get("source_provider") or next(
             (value for key, value in extra.items() if str(key).endswith(".source_provider")),
@@ -697,6 +751,17 @@ class FileTransferService:
                     log.debug(f"[Rmt]主来源海报补全失败: {exc}")
         if poster:
             media_info.poster_path = _poster_value(poster[0], "url") or str(poster[0])
+        if not poster:
+            # 没有竖版海报时用插件快照的横版剧照，至少不要推 TMDB 占位图。
+            for kind in ("fanart", "backdrop"):
+                assets = images.get(kind) or []
+                if not assets:
+                    continue
+                image_url = _poster_value(assets[0], "url") or str(assets[0])
+                if image_url:
+                    media_info.fanart_backdrop = image_url
+                    media_info.fanart_poster = image_url
+                    break
         if (not source or self._is_virtual_provider(str(source))) and poster:
             source = _poster_value(poster[0], "provider")
         if not source or self._is_virtual_provider(str(source)):
@@ -1258,9 +1323,6 @@ class FileTransferService:
 
                 if media.type == MediaType.MOVIE:
                     media.user_id = self._resolve_owner_user_id(reg_path, media)
-                    self.message.send_transfer_movie_message(
-                        in_from, media, exist_filenum, self._path_resolver.movie_category_flag or False
-                    )
                 else:
                     message_key = f"{media.get_title_string()}-{media.get_season_string()}"
                     if not message_medias.get(message_key):
@@ -1289,6 +1351,11 @@ class FileTransferService:
                         file_name=self._scrape_file_base_name(ret_file_path, ret_dir_path),
                         file_ext=file_ext,
                         dst_backend=dst_backend,
+                    )
+                elif media.type == MediaType.MOVIE:
+                    # 刮削成功后才提示“已入库”，避免刮削失败仍显示成功。
+                    self.message.send_transfer_movie_message(
+                        in_from, media, exist_filenum, self._path_resolver.movie_category_flag or False
                     )
 
                 self._publish_subtitle_download(media, ret_file_path, file_ext, bool(bluray_disk_dir))
@@ -1430,12 +1497,19 @@ class FileTransferService:
 
     @classmethod
     def _history_dest_exists(cls, history, dst_backend) -> bool:
-        """转移历史的目标文件是否仍存在（目标被删则记录不再可信，需重新转移/重新硬链接）"""
+        """转移历史的目标文件是否仍存在（DEST 可能是库根，文件名在剧集子目录）."""
         dest_path = str(getattr(history, "dest_path", "") or "")
         dest_filename = str(getattr(history, "dest_filename", "") or "")
         if not dest_path or not dest_filename:
             return False
-        return cls._target_exists(os.path.join(dest_path, dest_filename), dst_backend)
+        if cls._target_exists(os.path.join(dest_path, dest_filename), dst_backend):
+            return True
+        if str(dst_backend or "local") != "local" or not os.path.isdir(dest_path):
+            return False
+        for _root, _dirs, files in os.walk(dest_path):
+            if dest_filename in files:
+                return True
+        return False
 
     @staticmethod
     def _episode_in_history(history, episode) -> bool:

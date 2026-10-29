@@ -10,6 +10,7 @@ from api.deps import (
     get_discovery_service,
     get_downloader_service,
     get_file_index_service,
+    get_filetransfer_service,
     get_media_config_service,
     get_media_file_service,
     get_media_info_service,
@@ -51,6 +52,7 @@ from app.services.media_service import (
 )
 from app.services.metadata_service import MetadataService
 from app.services.search_service import Searcher
+from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
 from app.utils import StringUtils
 from app.utils.response import fail, success
@@ -232,10 +234,23 @@ class GetTransferHistoryRequest(BaseModel):
     keyword: str | None = None
     page: int | None = None
     pagenum: int | None = None
+    type: str | None = None
 
 
 class GetTransferStatisticsRequest(BaseModel):
     days: int | None = None
+
+
+class HistoryIdsRequest(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
+class HistoryFilesDeleteRequest(HistoryIdsRequest):
+    targets: list[str] = Field(default_factory=list)
+
+
+class HistoryFilesCheckRequest(HistoryIdsRequest):
+    targets: list[str] | None = None
 
 
 class GetUnknownListByPageRequest(BaseModel):
@@ -796,7 +811,9 @@ def get_transfer_history(
     current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
-    result = svc.get_transfer_history_page(search_str=req.keyword, page=req.page, page_num=req.pagenum)
+    result = svc.get_transfer_history_page(
+        search_str=req.keyword, page=req.page, page_num=req.pagenum, media_type=req.type
+    )
     return success(
         data={
             "total": result.total,
@@ -816,6 +833,53 @@ def get_transfer_statistics(
 ):
     result = svc.get_transfer_statistics(days=req.days if req.days is not None else 90)
     return success(data=result)
+
+
+@router.post("/history/records/delete", response_model=CommonResponse, summary="删除识别记录（不删除文件）")
+def delete_history_records(
+    req: HistoryIdsRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+    ft: FileTransferService = Depends(get_filetransfer_service),
+):
+    ids = [int(item) for item in req.ids if item is not None]
+    if not ids:
+        return fail(msg="未选择要删除的记录")
+    results = ft.delete_records(ids)
+    svc.invalidate_cache()
+    deleted = sum(1 for item in results if item.get("status") == "deleted")
+    return success(data={"results": results, "deleted": deleted, "total": len(ids)})
+
+
+@router.post("/history/files/delete", response_model=CommonResponse, summary="删除识别记录关联文件（保留记录）")
+def delete_history_files(
+    req: HistoryFilesDeleteRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+    ft: FileTransferService = Depends(get_filetransfer_service),
+):
+    ids = [int(item) for item in req.ids if item is not None]
+    targets = [target for target in req.targets if target in ("source", "library")]
+    if not ids or not targets:
+        return fail(msg="未选择记录或删除目标")
+    results = ft.delete_record_files(ids, targets)
+    svc.invalidate_cache()
+    return success(data={"results": results})
+
+
+@router.post("/history/files/check", response_model=CommonResponse, summary="检测识别记录关联文件状态")
+def check_history_files(
+    req: HistoryFilesCheckRequest,
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+    ft: FileTransferService = Depends(get_filetransfer_service),
+):
+    ids = [int(item) for item in req.ids if item is not None]
+    if not ids:
+        return fail(msg="未选择记录")
+    results = ft.check_record_files(ids, req.targets)
+    svc.invalidate_cache()
+    return success(data={"results": results})
 
 
 @router.post("/unknown", response_model=CommonResponse, summary="获取未识别列表")

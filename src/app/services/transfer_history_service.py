@@ -68,6 +68,23 @@ class TransferHistoryService:
         return ""
 
     @staticmethod
+    def _build_capabilities(history: dict) -> dict[str, bool]:
+        """由服务端裁剪可用动作，前端只按能力渲染."""
+        source_state = str(history.get("SOURCE_STATE") or "unknown")
+        dest_state = str(history.get("DEST_STATE") or "unknown")
+        has_source = bool(history.get("SOURCE_PATH") and history.get("SOURCE_FILENAME"))
+        has_dest = bool(history.get("DEST_PATH"))
+        source_actionable = has_source and source_state not in ("deleted", "missing")
+        dest_actionable = has_dest and dest_state not in ("deleted", "missing")
+        return {
+            "reidentify": source_actionable,
+            "manual_identify": source_actionable,
+            "delete_record": True,
+            "delete_source": source_actionable,
+            "delete_library": dest_actionable,
+        }
+
+    @staticmethod
     def _local_poster(history: dict) -> str:
         """媒体目录内已有的 poster.jpg（本地或已挂载后端）."""
         dest_path = str(history.get("DEST_PATH") or "")
@@ -154,7 +171,7 @@ class TransferHistoryService:
     def _cache_key(self, prefix: str, *parts) -> str:
         return f"{prefix}:{':'.join(str(p) for p in parts)}"
 
-    def get_transfer_history_page(self, search_str, page, page_num) -> TransferHistoryPageDTO:
+    def get_transfer_history_page(self, search_str, page, page_num, media_type=None) -> TransferHistoryPageDTO:
         """分页查询转移历史（带缓存）"""
         if not page_num:
             page_num = 30
@@ -162,11 +179,11 @@ class TransferHistoryService:
             page = 1
         else:
             page = int(page)
-        cache_key = self._cache_key("history", search_str or "", page, page_num)
+        cache_key = self._cache_key("history", search_str or "", media_type or "", page, page_num)
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        result = self._filetransfer.get_transfer_history(search_str, page, page_num)
+        result = self._filetransfer.get_transfer_history(search_str, page, page_num, media_type)
         if result is None:
             total_count, historys = 0, []
         else:
@@ -178,10 +195,16 @@ class TransferHistoryService:
             rmt_mode = sync_mode or ""
             history = {k.upper(): v for k, v in history.items()}
             history.update({"SYNC_MODE": sync_mode, "RMT_MODE": rmt_mode})
+            history["SOURCE_STATE"] = history.get("SOURCE_STATE") or "unknown"
+            history["DEST_STATE"] = history.get("DEST_STATE") or "unknown"
+            history["CAPABILITIES"] = self._build_capabilities(history)
             # 海报富化：同 (type, tmdbid) 进程内只解析一次，缺 TMDBID/无解析器则跳过
             history["image"] = ""
             poster = self._resolve_poster(history)
             if poster:
+                if not str(history.get("POSTER") or "").strip():
+                    self._filetransfer.update_transfer_history_poster(history.get("ID"), poster)
+                    history["POSTER"] = poster
                 history["image"] = transform_display_image(
                     str(history.get("CONTENT_PROFILE") or ""),
                     poster,
