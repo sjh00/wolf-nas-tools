@@ -2,7 +2,7 @@
   "manifest_version": "1.0",
   "id": "libraryscraper",
   "name": "媒体库刮削",
-  "version": "1.1",
+  "version": "1.2",
   "author": "linyuan0213",
   "author_url": "https://github.com/linyuan0213",
   "description": "定时对媒体库进行刮削，补齐缺失元数据和图片。",
@@ -38,12 +38,43 @@
           "key": "mode",
           "type": "select",
           "label": "刮削模式",
-          "default": "missing",
+          "default": "repair",
           "options": [
-            {"label": "补充未刮削元数据", "value": "missing"},
+            {"label": "补齐缺失元数据（推荐）", "value": "repair"},
+            {"label": "仅处理完全未刮削的文件", "value": "missing"},
             {"label": "全量刮削（覆盖元数据和图片）", "value": "force_all"}
           ],
-          "help": "默认只处理缺少 NFO/图片的文件；全量模式会覆盖已有元数据和图片"
+          "help": "补齐模式只处理缺海报/横版占位/无演员 NFO 的目录；全量模式会覆盖已有元数据和图片"
+        },
+        {
+          "key": "backup_before_repair",
+          "type": "boolean",
+          "label": "写入前备份",
+          "default": true,
+          "help": "备份 poster/thumb/fanart/NFO/.watermark 到独立目录，备份失败时跳过该目录"
+        },
+        {
+          "key": "backup_path",
+          "type": "input",
+          "label": "备份目录",
+          "default": "",
+          "placeholder": "留空使用 data/plugin_backups/libraryscraper",
+          "help": "每次运行按时间戳和 pid 建立独立子目录"
+        },
+        {
+          "key": "batch_limit",
+          "type": "number",
+          "label": "单次批量上限",
+          "default": 0,
+          "help": "0 表示不限制；建议首次修复先设为 5-10 条验证"
+        },
+        {
+          "key": "only_codes",
+          "type": "input",
+          "label": "仅处理番号",
+          "default": "",
+          "placeholder": "IPX-247,DV-1622,TC-268",
+          "help": "逗号分隔；目录名包含任一番号时才处理，用于小范围验证"
         },
         {
           "key": "scraper_path",
