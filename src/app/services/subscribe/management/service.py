@@ -30,6 +30,14 @@ def _norm_title(value) -> str:
     return re.sub(r"""[\s~～\-—–:：·・,，.。!！?？'"“”()（）\[\]【】]""", "", str(value or "")).lower()
 
 
+def _parse_season_number(value) -> int:
+    """兼容 SEASON 存 "S02"/"Season 2"/2 等格式."""
+    if isinstance(value, int):
+        return value
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group()) if match else 1
+
+
 class SubscribeService:
     """订阅业务 Facade — 订阅的添加、完成、更新、查询、状态变更."""
 
@@ -139,7 +147,18 @@ class SubscribeService:
         """媒体是否已入库（用于待转移定稿判定）。"""
         try:
             exist_flag, _, _ = self._downloader.check_exists_medias(meta_info=media, total_ep=total_ep)
-            return bool(exist_flag)
+            if exist_flag:
+                return True
+            # 动画订阅可能落在 tv/anime 任一库；主路径未命中时互换类型再查一次。
+            if media.type in (MediaType.TV, MediaType.ANIME):
+                original = media.type
+                media.type = MediaType.ANIME if original == MediaType.TV else MediaType.TV
+                try:
+                    exist_flag, _, _ = self._downloader.check_exists_medias(meta_info=media, total_ep=total_ep)
+                    return bool(exist_flag)
+                finally:
+                    media.type = original
+            return False
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Subscribe]媒体入库检查失败: {e!s}")
             return False
@@ -190,7 +209,7 @@ class SubscribeService:
         cutoff = now - datetime.timedelta(minutes=max(int(timeout_minutes), 1))
         for tv in self._tv_repo.get_all(state=SubscribeState.COMPLETED.value) or []:
             try:
-                season = int(getattr(tv, "season", 0) or 1)
+                season = _parse_season_number(getattr(tv, "season", 1))
                 total = int(getattr(tv, "total", 0) or 0)
                 media = MediaInfo(type=MediaType.TV, tmdb_id=str(getattr(tv, "tmdb_id", "") or ""))
                 media.title = getattr(tv, "name", "") or ""

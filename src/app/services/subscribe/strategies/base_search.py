@@ -177,7 +177,9 @@ class BaseSearchStrategy:
             thread.join(timeout=1)
             self._coordinator.release(media_info)
 
-    def _search_movies(self, state: str = SubscribeState.PENDING.value, rssid: int | None = None) -> None:
+    def _search_movies(
+        self, state: str = SubscribeState.PENDING.value, rssid: int | None = None, force: bool = False
+    ) -> None:
         if rssid:
             rss_movies = self._service.get_subscribe_movies(rid=rssid) if self._service else {}
         else:
@@ -231,6 +233,12 @@ class BaseSearchStrategy:
                 media_info.user_id = rss_info.get("user_id")
                 media_info.keyword = keyword
 
+                # 手动刷新允许重下，但已入库的媒体绝不能再创建下载任务。
+                if force and self._service and self._service.media_exists(media_info):
+                    log.info(f"[Subscribe]{name_val} 已入库，忽略刷新重新下载")
+                    self._service.finish_rss_subscribe(rssid=rid, media=media_info)
+                    return
+
                 if self._coordinator and not self._coordinator.try_acquire(media_info):
                     log.info(f"[Subscribe]{MediaType.MOVIE.display_name} {name_val} 已被其他策略处理，跳过")
                     self._movie_repo.update_state(title=None, year=None, rssid=rid, state=SubscribeState.RUNNING.value)
@@ -273,6 +281,7 @@ class BaseSearchStrategy:
                             sites=self._get_effective_search_sites(rss_info, MediaType.MOVIE),
                             filters=filters,
                             user_id=rss_info.get("user_id"),
+                            force_download=force,
                         )
                         if over_edition:
                             if search_result:
@@ -330,7 +339,9 @@ class BaseSearchStrategy:
         with ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(_process_one, list(rss_movies.values())[:batch_limit]))
 
-    def _search_tvs(self, state: str = SubscribeState.PENDING.value, rssid: int | None = None) -> None:
+    def _search_tvs(
+        self, state: str = SubscribeState.PENDING.value, rssid: int | None = None, force: bool = False
+    ) -> None:
         if rssid:
             rss_tvs = self._service.get_subscribe_tvs(rid=rssid) if self._service else {}
         else:

@@ -10,6 +10,7 @@ from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
+from app.media.display_image_policy import unwrap_display_image_url
 from app.schemas.auth import UserContext
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
@@ -204,6 +205,8 @@ class SubscribeUpdateService:
         """更新电影、电视剧订阅（user 非空且非超管时仅可更新自己的订阅）"""
         if not rssid:
             return -1, "缺少订阅ID", None
+        if image:
+            image = unwrap_display_image_url(image)
 
         # 归属校验：普通用户越权更新返回不存在（避免资源探测）
         if user is not None and not user.is_superadmin:

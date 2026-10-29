@@ -45,11 +45,18 @@ def make_web_search_fn(orchestrator: SearchOrchestrator, system_config: Any):
             match_media.anchor_external_id = str(filter_args.get("anchor_external_id") or content)
             if not match_media.get_name():
                 match_media.en_name = content
+            # 自定义画像（成人番号等）不能走 TMDB 识别，否则 ACHJ-097 这类
+            # 番号会在过滤前被判“无法识别名称”，导致有资源也返回 0 条。
+            ident_flag = False
         if filter_args.get("site") == []:
             # 前端未选择站点时传空数组：归一为 None（全部可见站点）
             filter_args["site"] = None
-        if "site" not in filter_args and system_config:
-            _apply_default_sites(filter_args, media_type, system_config, profile)
+        if system_config:
+            if "site" not in filter_args:
+                _apply_default_sites(filter_args, media_type, system_config, profile)
+            else:
+                # 站点已经由前端指定/归一为全部时，仍要继承默认过滤规则。
+                _apply_default_rule(filter_args, media_type, system_config, profile)
 
         ctx = SearchContext(
             keyword=content,
@@ -71,6 +78,34 @@ def make_web_search_fn(orchestrator: SearchOrchestrator, system_config: Any):
     return search_fn
 
 
+def _default_subscribe_setting(
+    media_type: MediaType | None,
+    system_config: Any,
+    content_profile: str | None = None,
+) -> dict:
+    if media_type in (MediaType.TV, MediaType.ANIME):
+        key = SystemConfigKey.DefaultSubscribeSettingTV
+    else:
+        profile = str(content_profile or "").strip()
+        key = SystemConfigKey.DefaultSubscribeSettingMOV
+        if profile and profile != "default":
+            key = f"{key.value}::{profile}"
+    default_setting = system_config.get(key)
+    return default_setting if isinstance(default_setting, dict) else {}
+
+
+def _apply_default_rule(
+    filter_args: dict,
+    media_type: MediaType | None,
+    system_config: Any,
+    content_profile: str | None = None,
+) -> None:
+    """站点已指定时仍继承默认订阅的过滤规则（如 AV 自动优选）."""
+    default_setting = _default_subscribe_setting(media_type, system_config, content_profile)
+    if not filter_args.get("rule") and default_setting.get("rule") not in (None, ""):
+        filter_args["rule"] = default_setting.get("rule")
+
+
 def _apply_default_sites(
     filter_args: dict,
     media_type: MediaType | None,
@@ -79,17 +114,11 @@ def _apply_default_sites(
 ) -> None:
     """未显式指定站点时，应用对应载体/内容画像的默认搜索站点."""
     try:
-        if media_type in (MediaType.TV, MediaType.ANIME):
-            key = SystemConfigKey.DefaultSubscribeSettingTV
-        else:
-            profile = str(content_profile or "").strip()
-            key = SystemConfigKey.DefaultSubscribeSettingMOV
-            if profile and profile != "default":
-                key = f"{key.value}::{profile}"
-        default_setting = system_config.get(key)
-        if not isinstance(default_setting, dict):
-            default_setting = {}
+        default_setting = _default_subscribe_setting(media_type, system_config, content_profile)
         # None = 不限制，由索引器按用户可见站点过滤；避免空列表被当成"零站点"
         filter_args["site"] = default_setting.get("search_sites") or None
+        # 资源搜索沿用默认订阅的过滤规则（如 AV 自动优选），不静默退回全局默认组。
+        if not filter_args.get("rule") and default_setting.get("rule") not in (None, ""):
+            filter_args["rule"] = default_setting.get("rule")
     except Exception as e:
         log.warn(f"[WebSearch]读取默认订阅设置站点失败: {e}")

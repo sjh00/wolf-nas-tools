@@ -54,6 +54,8 @@ def engine(tmp_path):
     with patch("app.services.sync_engine.TransferHistoryRepositoryAdapter") as mock_history_cls:
         mock_history = MagicMock()
         mock_history.is_sync_in_history.return_value = False
+        mock_history.get_by_source.return_value = None
+        mock_history.get_by_source_dir.return_value = []
         mock_history_cls.return_value = mock_history
         eng = SyncEngine(
             transfer_engine=transfer_engine,
@@ -204,28 +206,28 @@ class TestSyncEngine:
         eng._pipeline.process.assert_not_called()
 
     def test_do_transfer_skips_blacklisted(self, engine, tmp_path):
-        """已转移过（黑名单命中）且目标仍存在的路径应跳过，避免每个扫描周期重复处理."""
+        """黑名单命中即跳过，不再检查目标是否存在."""
         eng, _, _ = engine
         cfg = SyncPathConfig(_Row())
         cfg.source = str(tmp_path / "src")
         cfg.dest = str(tmp_path / "dst")
         eng._transfer._blacklist.is_exists.return_value = True
-        with patch.object(eng, "_destination_exists_for_source", return_value=True):
-            eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
+        eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
         eng._pipeline.process.assert_not_called()
+        eng._transfer._blacklist.delete.assert_not_called()
 
     def test_do_transfer_skips_synced_history(self, engine, tmp_path):
-        """同步历史命中且目标仍存在时也应跳过."""
+        """同步历史命中即跳过，不再检查目标是否存在."""
         eng, _, _ = engine
         cfg = SyncPathConfig(_Row())
         cfg.dest = str(tmp_path / "dst")
         eng._history_repo.is_sync_in_history.return_value = True
-        with patch.object(eng, "_destination_exists_for_source", return_value=True):
-            eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
+        eng._do_transfer(str(tmp_path / "src" / "movie.mkv"), cfg)
         eng._pipeline.process.assert_not_called()
+        eng._history_repo.delete_sync_history.assert_not_called()
 
-    def test_do_transfer_relinks_when_target_missing(self, engine, tmp_path):
-        """回归：rename/转移模式下目标被删除，命中黑名单也应清理并重新同步（重新硬链接）."""
+    def test_do_transfer_skips_when_target_missing_but_blacklisted(self, engine, tmp_path):
+        """目标被用户删除后，黑名单仍应永久跳过，不能自动重新硬链接."""
         eng, _, _ = engine
         src = tmp_path / "src"
         src.mkdir()
@@ -235,13 +237,12 @@ class TestSyncEngine:
         cfg.dest = str(tmp_path / "dst")
         eng._transfer._blacklist.is_exists.return_value = True
         eng._pipeline.process.return_value = (True, "ok")
-        with patch.object(eng, "_destination_exists_for_source", return_value=False):
-            eng._do_transfer(str(src / "movie.mkv"), cfg)
-        eng._transfer._blacklist.delete.assert_called_once()
-        eng._pipeline.process.assert_called_once()
+        eng._do_transfer(str(src / "movie.mkv"), cfg)
+        eng._transfer._blacklist.delete.assert_not_called()
+        eng._pipeline.process.assert_not_called()
 
-    def test_do_transfer_relinks_dir_when_target_missing(self, engine, tmp_path):
-        """回归 #196：目录来源命中黑名单但目标已被删除时，应清理并重新同步（重新硬链接）."""
+    def test_do_transfer_skips_dir_when_target_missing_but_blacklisted(self, engine, tmp_path):
+        """目录命中黑名单后，即使目标缺失也不能清理记录并整目录重同步."""
         eng, _, _ = engine
         src = tmp_path / "src"
         movie_dir = src / "Movie.2020"
@@ -252,13 +253,12 @@ class TestSyncEngine:
         cfg.dest = str(tmp_path / "lib")
         eng._transfer._blacklist.is_exists.return_value = True
         eng._pipeline.process.return_value = (True, "ok")
-        # 目录内文件曾生成于 /lib（转移历史），但目标已被删除
         eng._history_repo.get_by_source_dir.return_value = [_history_rec(str(tmp_path / "lib" / "Movie"), "E01.mkv")]
 
         eng._do_transfer(str(movie_dir), cfg)
 
-        eng._pipeline.process.assert_called_once()
-        eng._transfer._blacklist.delete.assert_any_call(str(movie_dir))
+        eng._pipeline.process.assert_not_called()
+        eng._transfer._blacklist.delete.assert_not_called()
 
     def test_do_transfer_skips_dir_when_target_present(self, engine, tmp_path):
         """目录来源命中黑名单且目标仍存在时跳过，避免每个扫描周期重复处理."""
@@ -280,8 +280,8 @@ class TestSyncEngine:
 
         eng._pipeline.process.assert_not_called()
 
-    def test_do_transfer_relinks_dir_when_any_target_missing(self, engine, tmp_path):
-        """目录内任一文件的目标被删除即应重新同步（部分删除场景）."""
+    def test_do_transfer_skips_dir_even_when_some_target_missing(self, engine, tmp_path):
+        """目录内部分目标缺失时也不能整目录重同步."""
         eng, _, _ = engine
         src = tmp_path / "src"
         movie_dir = src / "Show" / "S01"
@@ -303,7 +303,7 @@ class TestSyncEngine:
 
         eng._do_transfer(str(movie_dir), cfg)
 
-        eng._pipeline.process.assert_called_once()
+        eng._pipeline.process.assert_not_called()
 
     def test_do_transfer_uses_latest_history_for_same_source(self, engine, tmp_path):
         """同一源文件有多条历史时以最近一次为准，旧目标缺失不误判为需重建."""
@@ -328,8 +328,8 @@ class TestSyncEngine:
 
         eng._pipeline.process.assert_not_called()
 
-    def test_do_transfer_relinks_dir_without_dir_blacklist(self, engine, tmp_path):
-        """目录未入黑名单但内部文件已入黑名单、目标被删除时，也应清理文件黑名单并重新同步."""
+    def test_do_transfer_dir_passes_to_pipeline_when_dir_itself_not_blacklisted(self, engine, tmp_path):
+        """目录本身不在历史/黑名单时交给流水线，由流水线按文件记录过滤."""
         eng, _, _ = engine
         src = tmp_path / "src"
         movie_dir = src / "Movie.2020"
@@ -346,7 +346,7 @@ class TestSyncEngine:
         eng._do_transfer(str(movie_dir), cfg)
 
         eng._pipeline.process.assert_called_once()
-        eng._transfer._blacklist.delete.assert_any_call(str(file_path))
+        eng._transfer._blacklist.delete.assert_not_called()
 
     def test_directory_destination_exists_without_history(self, engine, tmp_path):
         """目录无转移历史时无法判定，按目标存在处理，避免误判为需重建."""
@@ -356,8 +356,8 @@ class TestSyncEngine:
         eng._history_repo.get_by_source_dir.return_value = []
         assert eng._directory_destination_exists(str(tmp_path / "src"), cfg) is True
 
-    def test_do_link_relinks_when_history_hit_but_target_missing(self, engine, tmp_path):
-        """回归 #193：目标媒体文件被删除后，命中历史也应清理并重新硬链接."""
+    def test_do_link_skips_history_hit_even_when_target_missing(self, engine, tmp_path):
+        """命中同步历史后，目标被删除也跳过；历史上只能显式清除."""
         eng, _, _ = engine
         eng._history_repo.is_sync_in_history.return_value = True
         src = tmp_path / "src"
@@ -365,7 +365,7 @@ class TestSyncEngine:
         dst_root = tmp_path / "dst"
         dst_root.mkdir()
         src_file = src / "movie.mkv"
-        _write_media(src_file)  # 目标 dst/movie.mkv 不存在
+        _write_media(src_file)
         cfg = SyncPathConfig(_Row())
         cfg.source = str(src)
         cfg.dest = str(dst_root)
@@ -373,8 +373,8 @@ class TestSyncEngine:
 
         eng._do_link(str(src_file), cfg)
 
-        eng._history_repo.delete_sync_history.assert_called_once_with(str(src_file), str(dst_root))
-        eng._transfer._execute.assert_called_once()
+        eng._history_repo.delete_sync_history.assert_not_called()
+        eng._transfer._execute.assert_not_called()
 
     def test_do_link_skips_when_target_exists(self, engine, tmp_path):
         eng, _, _ = engine
@@ -560,3 +560,21 @@ class TestSyncEngine:
 
         eng._do_link = slow_link
         eng.on_file_event(str(f))
+
+
+def test_do_transfer_skips_when_transfer_history_target_exists(engine, tmp_path):
+    """rename/转移模式命中转移历史且目标存在时不得每个周期重复转移."""
+    eng, _, _ = engine
+    src = tmp_path / "src"
+    src.mkdir()
+    media = src / "movie.mkv"
+    _write_media(media)
+    cfg = SyncPathConfig(_Row())
+    cfg.source = str(src)
+    cfg.dest = str(tmp_path / "dst")
+    cfg.rename = True
+    rec = _history_rec(str(tmp_path / "dst" / "movie"), "movie.mkv")
+    eng._history_repo.get_by_source.return_value = rec
+    with patch.object(eng, "_history_dest_exists", return_value=True):
+        eng._do_transfer(str(media), cfg)
+    eng._pipeline.process.assert_not_called()

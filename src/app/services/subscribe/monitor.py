@@ -280,6 +280,6 @@ class SubscriptionMonitor:
             queue_strategy=self._queue_strategy,
         )
         if MediaType.from_string(mtype) == MediaType.MOVIE:
-            self._thread_executor.submit(engine.subscribe_search_movie, rssid)
+            self._thread_executor.submit(engine.subscribe_search_movie, rssid, force=True)
         else:
             self._thread_executor.submit(engine.subscribe_search_tv, rssid)
