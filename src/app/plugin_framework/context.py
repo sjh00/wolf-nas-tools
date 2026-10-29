@@ -393,7 +393,7 @@ class PluginContext:
             self._discovery_service.clear_cache()
 
     def register_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
-        """注册通知图片改写器（兼容旧插件）；新插件应使用展示图片转换器."""
+        """注册通知图片改写器；仅影响消息，不改变页面展示图片."""
         register_message_image_transformer(transformer)
 
     def unregister_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:

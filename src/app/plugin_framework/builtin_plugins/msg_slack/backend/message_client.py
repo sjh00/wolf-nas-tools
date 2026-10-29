@@ -202,14 +202,15 @@ class Slack(_IMessageClient):
                         f"{media.get_type_string()}\n"
                         f"{media.get_overview_string(50)}"
                     )
-                if media.get_poster_image():
+                message_poster = media.get_message_poster_image()
+                if message_poster:
                     blocks.append(
                         {
                             "type": "section",
                             "text": {"type": "mrkdwn", "text": text},
                             "accessory": {
                                 "type": "image",
-                                "image_url": media.get_poster_image(),
+                                "image_url": message_poster,
                                 "alt_text": media.get_title_string(),
                             },
                         }
