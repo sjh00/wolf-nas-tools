@@ -57,6 +57,19 @@ def test_finalize_tv_by_rssid_writes_history_deletes_and_notifies():
     message.send_rss_finished_message.assert_called_once()
 
 
+def test_finalize_tv_anime_profile_is_persisted_to_history():
+    tv_repo = MagicMock()
+    row = _row()
+    row.CONTENT_PROFILE = "anime"
+    tv_repo.get_all.side_effect = lambda *a, **k: [row] if k.get("rssid") else []
+    history_repo = MagicMock()
+    svc = SubscribeFinishService(MagicMock(), tv_repo, history_repo, MagicMock(), MagicMock())
+
+    svc.finalize_tv_by_rssid(5, MediaType.TV, MagicMock())
+
+    assert history_repo.upsert.call_args.kwargs["content_profile"] == "anime"
+
+
 def test_finalize_movie_by_rssid_writes_history_deletes():
     movie_repo = MagicMock()
     movie_repo.get_all.return_value = [
@@ -454,6 +467,21 @@ def test_reconcile_reopens_stale_pending():
 
     final_tv.assert_not_called()
     reopen.assert_called_once_with(MediaType.TV, 5, SubscribeState.RUNNING.value)
+
+
+def test_reconcile_finalizes_anime_tv_with_anime_type():
+    import datetime
+
+    svc, final_tv, _final_mv, reopen = _svc_for_reconcile()
+    tv = SimpleNamespace(id=5, name="T", year="2024", season="1", total=12, tmdb_id="1", content_profile="anime")
+    svc._tv_repo.get_all.return_value = [tv]
+    svc._movie_repo.get_all.return_value = []
+    setattr(svc, "media_exists", MagicMock(return_value=True))
+
+    svc.reconcile_pending_transfers(now=datetime.datetime(2026, 1, 1))
+
+    final_tv.assert_called_once_with(5, MediaType.ANIME)
+    reopen.assert_not_called()
 
 
 def test_reconcile_reopens_stale_movie_pending_by_anchor():

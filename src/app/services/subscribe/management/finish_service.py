@@ -158,6 +158,11 @@ class SubscribeFinishService:
             return
         row = rss[0]
         resolved_type = mtype or MediaType.TV
+        row_profile = str(getattr(row, "CONTENT_PROFILE", "") or "").strip()
+        if row_profile == "anime" and resolved_type != MediaType.ANIME:
+            resolved_type = MediaType.ANIME
+        elif resolved_type == MediaType.ANIME and row_profile in ("", "default"):
+            row_profile = "anime"
         media = MediaInfo(type=resolved_type, tmdb_id=str(row.TMDBID or ""))
         media.title = row.NAME
         media.year = row.YEAR
@@ -168,7 +173,7 @@ class SubscribeFinishService:
         if season_str.isdigit():
             media.begin_season = int(season_str)
         media.over_edition = bool(row.OVER_EDITION)
-        media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
+        media.content_profile = row_profile or "default"
         media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
         media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
         media.keyword = getattr(row, "KEYWORD", None)
@@ -176,6 +181,9 @@ class SubscribeFinishService:
         media.metadata_ref = getattr(row, "METADATA_REF", None)
         media.total_episodes = int(row.TOTAL or 0)
         total = row.TOTAL or row.TOTAL_EP
+        scope = _history_scope(row)
+        if resolved_type == MediaType.ANIME and str(scope.get("content_profile") or "").strip() in ("", "default"):
+            scope["content_profile"] = "anime"
         self._history_repo.upsert(
             rssid=rssid,
             rtype=MediaTypeMapper.to_tmdb(resolved_type),
@@ -188,7 +196,7 @@ class SubscribeFinishService:
             total=total,
             start=row.CURRENT_EP,
             user_id=owner_user_id,
-            **_history_scope(row),
+            **scope,
         )
         delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
         self._finish_sibling_tvs(row, media, delete_subscribe_fn)

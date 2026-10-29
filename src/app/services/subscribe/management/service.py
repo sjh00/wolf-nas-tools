@@ -211,7 +211,9 @@ class SubscribeService:
             try:
                 season = _parse_season_number(getattr(tv, "season", 1))
                 total = int(getattr(tv, "total", 0) or 0)
-                media = MediaInfo(type=MediaType.TV, tmdb_id=str(getattr(tv, "tmdb_id", "") or ""))
+                tv_profile = str(getattr(tv, "content_profile", "") or "").strip()
+                tv_mtype = MediaType.ANIME if tv_profile == "anime" else MediaType.TV
+                media = MediaInfo(type=tv_mtype, tmdb_id=str(getattr(tv, "tmdb_id", "") or ""))
                 media.title = getattr(tv, "name", "") or ""
                 media.year = getattr(tv, "year", "") or ""
                 media.begin_season = season
@@ -219,12 +221,12 @@ class SubscribeService:
                 tv_provider, tv_external = _normalized_anchor(
                     getattr(tv, "anchor_provider", ""), getattr(tv, "anchor_external_id", "")
                 )
-                media.content_profile = str(getattr(tv, "content_profile", "") or "default")
+                media.content_profile = tv_profile or "default"
                 media.anchor_provider = tv_provider
                 media.anchor_external_id = tv_external
                 media.keyword = getattr(tv, "keyword", None)
                 if self.media_exists(media, total_ep={season: total}):
-                    self.finalize_tv_by_rssid(tv.id, MediaType.TV)
+                    self.finalize_tv_by_rssid(tv.id, tv_mtype)
                 elif self._pending_stale(getattr(tv, "tmdb_id", ""), cutoff):
                     self.update_rss_state(MediaType.TV, tv.id, SubscribeState.RUNNING.value)
                     log.info(f"[Subscribe]待转移超时，重开订阅 rssid={tv.id}（{media.title}）")
