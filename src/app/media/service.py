@@ -876,6 +876,29 @@ class MediaService:
                     self._fill_episode_from_parent_paths(file_path, parsed)
                     info = MediaInfo.from_parser(parsed) if parsed else MediaInfo()
                     info.set_provider_data(tmdb_info)
+                    if isinstance(tmdb_info, dict):
+                        profile = str(tmdb_info.get("content_profile") or "").strip()
+                        if profile:
+                            info.content_profile = profile
+                        anchor_provider = str(tmdb_info.get("anchor_provider") or "").strip()
+                        if anchor_provider:
+                            info.anchor_provider = anchor_provider
+                        anchor_external = str(tmdb_info.get("anchor_external_id") or "").strip()
+                        if anchor_external:
+                            info.anchor_external_id = anchor_external
+                        provider_key = str(tmdb_info.get("provider") or "").strip()
+                        if provider_key:
+                            info.provider = provider_key
+                        if not info.title and tmdb_info.get("title"):
+                            info.title = str(tmdb_info["title"])
+                            info.cn_name = info.title
+                        if not info.year and tmdb_info.get("year"):
+                            info.year = str(tmdb_info["year"])
+                        if not info.poster_path and tmdb_info.get("poster_path"):
+                            info.poster_path = str(tmdb_info["poster_path"])
+                        if not info.overview and tmdb_info.get("overview"):
+                            info.overview = str(tmdb_info["overview"])
+                        info.provider_data = tmdb_info
                     self._backfill_total_episodes(info)
                     if season and info.type != MediaType.MOVIE:
                         info.begin_season = int(season)

@@ -11,6 +11,7 @@ from api.deps import (
     get_filetransfer_service,
     get_sync_service,
     get_thread_executor,
+    get_transfer_history_service,
 )
 from api.routers import sync as sync_router
 from app.schemas.auth import UserContext
@@ -66,6 +67,7 @@ def client(mock_sync_service, mock_filetransfer_service):
     app.dependency_overrides[get_sync_service] = lambda: mock_sync_service
     app.dependency_overrides[get_filetransfer_service] = lambda: mock_filetransfer_service
     app.dependency_overrides[get_thread_executor] = lambda: MagicMock()
+    app.dependency_overrides[get_transfer_history_service] = lambda: MagicMock()
     with TestClient(app) as c:
         yield c
 
@@ -131,6 +133,29 @@ class TestSyncRouter:
         resp = client.post("/api/v1/sync/rename", json={"logid": 1, "syncmod": "link"})
         assert resp.status_code == 200
         assert resp.json()["code"] == 0
+
+    def test_rename_passes_plugin_provider(self, client, mock_sync_service):
+        trans = MagicMock()
+        trans.SOURCE_PATH = "/src"
+        trans.SOURCE_FILENAME = "ABC-001.mp4"
+        trans.DEST = "/dst"
+        mock_sync_service.get_transfer_info_by_id.return_value = trans
+        resp = client.post(
+            "/api/v1/sync/rename",
+            json={
+                "logid": 1,
+                "syncmod": "link",
+                "content_profile": "adult",
+                "provider": "javdb",
+                "external_id": "ABC-001",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 0
+        kwargs = mock_sync_service.manual_transfer.call_args.kwargs
+        assert kwargs["content_profile"] == "adult"
+        assert kwargs["provider"] == "javdb"
+        assert kwargs["external_id"] == "ABC-001"
 
     def test_rename_file(self, client, mock_sync_service):
         resp = client.post("/api/v1/sync/rename/file", json={"path": "/a", "name": "b"})

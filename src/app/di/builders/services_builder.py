@@ -295,6 +295,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         thread_executor=thread_executor,
         storage_backend_repo=StorageBackendRepositoryAdapter(),
         media_service=media_service,
+        metadata_service=metadata_service,
     )
 
     file_index_service = FileIndexService(sync_path_repo=SyncPathRepositoryAdapter())

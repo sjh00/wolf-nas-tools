@@ -67,3 +67,49 @@ def test_fallback_to_cache_when_no_media_service():
     info, mtype = svc._resolve_manual_tmdb_info(MediaType.MOVIE, 7)
     assert info and mtype == MediaType.MOVIE
     cache.get_tmdb_info.assert_called_once()
+
+
+def test_provider_payload_is_injected_from_plugin():
+    svc = SyncService.__new__(SyncService)
+    metadata = MagicMock()
+    metadata.lookup.return_value = {
+        "title": "示例番号",
+        "year": "2026",
+        "media_type": "movie",
+        "content_profile": "custom",
+        "overview": "简介",
+        "images": {"poster": [{"url": "https://example.com/poster.jpg"}]},
+        "genres": ["剧情"],
+    }
+    setattr(svc, "_metadata_service", metadata)
+
+    payload, mtype = svc._resolve_manual_provider_info(MediaType.MOVIE, "custom", "demo", "ABC-001")
+
+    assert mtype == MediaType.MOVIE
+    assert payload is not None
+    assert payload["content_profile"] == "custom"
+    assert payload["anchor_provider"] == "demo"
+    assert payload["anchor_external_id"] == "ABC-001"
+    assert payload["provider"] == "demo"
+    assert payload["title"] == "示例番号"
+    assert payload["poster_path"] == "https://example.com/poster.jpg"
+    metadata.lookup.assert_called_once_with(
+        "demo",
+        "ABC-001",
+        media_type=MediaType.MOVIE,
+        content_profile="custom",
+        allow_private=False,
+        permissions=None,
+    )
+
+
+def test_provider_payload_missing_returns_none():
+    svc = SyncService.__new__(SyncService)
+    metadata = MagicMock()
+    metadata.lookup.return_value = None
+    setattr(svc, "_metadata_service", metadata)
+
+    payload, mtype = svc._resolve_manual_provider_info(MediaType.MOVIE, "custom", "demo", "ABC-001")
+
+    assert payload is None
+    assert mtype == MediaType.MOVIE

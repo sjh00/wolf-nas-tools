@@ -13,6 +13,7 @@ from typing import Any
 
 from loguru import logger
 
+from app.db.repositories.media_identity_repository import MediaIdentityRepository
 from app.db.repositories.media_sync_repo_adapter import MediaSyncRepositoryAdapter
 from app.db.repositories.transfer_repository import TransferRepository
 
@@ -25,6 +26,7 @@ class LibraryPresenceService:
         transfer_repo: Any = None,
         media_sync_repo: Any = None,
         media_server: Any = None,
+        identity_repo: Any = None,
         *,
         live_workers: int = 4,
         live_ttl: int = 300,
@@ -32,6 +34,7 @@ class LibraryPresenceService:
     ) -> None:
         self._transfer_repo = transfer_repo or TransferRepository()
         self._media_sync_repo = media_sync_repo or MediaSyncRepositoryAdapter()
+        self._identity_repo = identity_repo or MediaIdentityRepository()
         self._media_server = media_server
         self._live_workers = max(1, live_workers)
         self._live_ttl = max(1, live_ttl)
@@ -52,33 +55,57 @@ class LibraryPresenceService:
 
     def annotate(self, items: list[Any]) -> None:
         """原地写入 item.extra['in_library']."""
-        pairs = [pair for item in items if (pair := self._pair(item))[0]]
-        if not pairs:
-            return
-
-        present = self._batch_query(self._transfer_repo, pairs, "转移历史")
-        remaining = []
+        unresolved: list[tuple[Any, tuple[str, str]]] = []
         for item in items:
             pair = self._pair(item)
+            if pair[0]:
+                unresolved.append((item, pair))
+        if not unresolved:
+            return
+
+        # 1) 直接锚点：转移历史
+        present = self._batch_query(self._transfer_repo, [pair for _, pair in unresolved], "转移历史")
+        remaining = []
+        for item, pair in unresolved:
             if pair in present:
                 self._set(item)
-            elif pair[0]:
+            else:
                 remaining.append((item, pair))
-
         if not remaining:
             return
+
+        # 2) content_id 虚拟锚点：通过身份图解析到具体 provider
+        identity_map = self._resolve_identity_ids(remaining)
+        transfer_identity_ids = self._batch_identity_query(self._transfer_repo, set(identity_map.values()), "转移历史")
+        remaining = self._mark_by_identity(remaining, identity_map, transfer_identity_ids)
+        if not remaining:
+            return
+
+        # 3) 直接锚点：媒体库同步索引
         sync_present = self._batch_query(self._media_sync_repo, [pair for _, pair in remaining], "媒体库同步索引")
-        live_items = []
+        still: list[tuple[Any, tuple[str, str]]] = []
         for item, pair in remaining:
             if pair in sync_present:
                 self._set(item)
             else:
-                live_items.append(item)
+                still.append((item, pair))
+        remaining = still
+        if not remaining:
+            return
 
-        if not live_items or self._media_server is None:
+        # 4) 身份 ID：媒体库同步索引
+        sync_identity_ids = self._batch_identity_query(
+            self._media_sync_repo, set(identity_map.values()), "媒体库同步索引"
+        )
+        remaining = self._mark_by_identity(remaining, identity_map, sync_identity_ids)
+        if not remaining:
+            return
+
+        # 5) 实时媒体服务器兜底
+        if self._media_server is None:
             return
         immediate = []
-        for item in live_items:
+        for item, _pair in remaining:
             cached = self._cached_live(item)
             if cached is True:
                 self._set(item)
@@ -95,6 +122,59 @@ class LibraryPresenceService:
         for item, found in zip(immediate, results, strict=False):
             if found:
                 self._set(item)
+
+    def _resolve_identity_ids(self, items: list[tuple[Any, tuple[str, str]]]) -> dict[tuple[str, str], str]:
+        """把 content_id 虚拟锚点解析为身份 ID；插件通常把身份挂到 content_profile 下."""
+        result: dict[tuple[str, str], str] = {}
+        for item, pair in items:
+            anchor = getattr(item, "anchor_ref", None)
+            if anchor is None or str(getattr(anchor, "provider", "") or "") != "content_id":
+                continue
+            external = str(getattr(anchor, "external_id", "") or "").strip()
+            if not external:
+                continue
+            profile = str(getattr(item, "content_profile", "") or "default").strip() or "default"
+            scope = str(getattr(anchor, "scope", "") or "default").strip() or "default"
+            providers = [profile] if profile == "content_id" else [profile, "content_id"]
+            for provider in dict.fromkeys(providers):
+                for current_scope in dict.fromkeys([scope, "default"]):
+                    try:
+                        identity = self._identity_repo.find_by_ref(provider, external, scope=current_scope)
+                    except Exception:  # noqa: BLE001 - 身份查询失败继续兜底
+                        identity = None
+                    if identity is not None:
+                        result[pair] = str(getattr(identity, "IDENTITY_ID", "") or "")
+                        break
+                if pair in result:
+                    break
+        return {pair: identity_id for pair, identity_id in result.items() if identity_id}
+
+    def _batch_identity_query(self, repo: Any, identity_ids: set[str], label: str) -> set[str]:
+        if not identity_ids:
+            return set()
+        method = getattr(repo, "get_existing_identity_ids", None)
+        if method is None:
+            return set()
+        try:
+            return {str(item) for item in method(sorted(identity_ids)) if item}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[LibraryPresence]{label}身份查询失败: {exc}")
+            return set()
+
+    def _mark_by_identity(
+        self,
+        items: list[tuple[Any, tuple[str, str]]],
+        identity_map: dict[tuple[str, str], str],
+        present_identity_ids: set[str],
+    ) -> list[tuple[Any, tuple[str, str]]]:
+        remaining = []
+        for item, pair in items:
+            identity_id = identity_map.get(pair)
+            if identity_id and identity_id in present_identity_ids:
+                self._set(item)
+            else:
+                remaining.append((item, pair))
+        return remaining
 
     def warm(self, items: list[Any]) -> None:
         """后台预热入口：提前把媒体库存在性写入短 TTL 缓存."""
