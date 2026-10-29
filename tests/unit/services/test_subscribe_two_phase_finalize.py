@@ -536,6 +536,38 @@ def test_reconcile_finalizes_running_movie_when_transfer_history_exists():
     reopen.assert_not_called()
 
 
+def test_reconcile_normalizes_content_id_prefixed_anchor():
+    """订阅锚点被写成 tmdb:content_id:XXX 时，也应按外部 ID 命中转移历史."""
+    import datetime
+    from unittest.mock import patch
+
+    svc, _final_tv, final_mv, reopen = _svc_for_reconcile()
+    movie = SimpleNamespace(
+        id=22,
+        name="ABC-123",
+        year="",
+        tmdb_id="",
+        state="C",
+        identity_id="id-22",
+        anchor_provider="tmdb",
+        anchor_external_id="content_id:ABC-123",
+        content_profile="custom",
+        keyword="ABC-123",
+    )
+    svc._tv_repo.get_all.return_value = []
+    svc._movie_repo.get_all.return_value = [movie]
+    transfer_repo = MagicMock()
+    transfer_repo.return_value.get_existing_anchors.return_value = set()
+    transfer_repo.return_value.get_existing_external_ids.return_value = {"ABC-123"}
+
+    with patch("app.services.subscribe.management.service.TransferRepository", transfer_repo):
+        svc.reconcile_pending_transfers(now=datetime.datetime(2026, 1, 1))
+
+    transfer_repo.return_value.get_existing_external_ids.assert_called_once_with(["ABC-123"])
+    final_mv.assert_called_once_with(22)
+    reopen.assert_not_called()
+
+
 def test_reconcile_handles_season_string_prefix():
     """SEASON 存 "S02" 时不能因 int("S02") 异常跳过定稿."""
     import datetime
