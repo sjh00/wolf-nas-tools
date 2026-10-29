@@ -66,6 +66,35 @@ class TestTransferHistoryService:
         assert result.result[0]["SYNC_MODE"] == "link"
         assert result.result[0]["RMT_MODE"] == "link"
 
+    def test_history_capabilities_are_scoped_by_file_state(self, service, mock_filetransfer):
+        class _DeletedSource:
+            def as_dict(self):
+                return {
+                    "id": 9,
+                    "mode": "link",
+                    "source_path": "/src",
+                    "source_filename": "movie.mkv",
+                    "dest_path": "/dst",
+                    "dest_filename": "movie.mkv",
+                    "source_state": "deleted",
+                    "dest_state": "present",
+                }
+
+        mock_filetransfer.get_transfer_history.return_value = (1, [_DeletedSource()])
+        service._cache.clear()
+        result = service.get_transfer_history_page("", 1, 20)
+
+        item = result.result[0]
+        assert item["SOURCE_STATE"] == "deleted"
+        assert item["DEST_STATE"] == "present"
+        assert item["CAPABILITIES"] == {
+            "reidentify": False,
+            "manual_identify": False,
+            "delete_record": True,
+            "delete_source": False,
+            "delete_library": True,
+        }
+
     def test_history_image_uses_local_poster(self, service, mock_filetransfer, tmp_path):
         """本地 poster 优先；历史展示由前端套用 display 变换，不在这里套消息模糊."""
         (tmp_path / "poster.jpg").write_bytes(b"x")

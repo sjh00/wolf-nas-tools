@@ -28,8 +28,10 @@ class TransferHistoryRepositoryAdapter:
     ) -> None:
         self._repo.insert_transfer_history(in_from, rmt_mode, in_path, out_path, dest, media_info)
 
-    def get_page(self, search: str | None, page: int, rownum: int) -> tuple[int, list[TransferHistoryEntity]]:
-        count, rows = self._repo.get_transfer_history(search, page, rownum)
+    def get_page(
+        self, search: str | None, page: int, rownum: int, media_type: str | None = None
+    ) -> tuple[int, list[TransferHistoryEntity]]:
+        count, rows = self._repo.get_transfer_history(search, page, rownum, media_type)
         if not rows:
             return count, []
         return count, [e for e in [TransferHistoryEntity.from_orm(r) for r in rows] if e is not None]
@@ -103,10 +105,32 @@ class TransferHistoryRepositoryAdapter:
         row = self._repo.get_transfer_info_by_id(logid)
         return TransferHistoryEntity.from_orm(row)
 
+    def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
+        self._repo.update_transfer_history_poster(logid, poster)
+
+    def update_transfer_file_state(
+        self,
+        logid: int,
+        *,
+        source_state: str | None = None,
+        source_deleted_at: str | None = None,
+        dest_state: str | None = None,
+        dest_deleted_at: str | None = None,
+        files_checked_at: str | None = None,
+    ) -> None:
+        self._repo.update_transfer_file_state(
+            logid,
+            source_state=source_state,
+            source_deleted_at=source_deleted_at,
+            dest_state=dest_state,
+            dest_deleted_at=dest_deleted_at,
+            files_checked_at=files_checked_at,
+        )
+
     def get_transfer_history(
-        self, search: str | None, page: int, rownum: int
+        self, search: str | None, page: int, rownum: int, media_type: str | None = None
     ) -> tuple[int, list[TransferHistoryEntity]]:
-        total, rows = self._repo.get_transfer_history(search, page, rownum)
+        total, rows = self._repo.get_transfer_history(search, page, rownum, media_type)
         entities = [e for e in [TransferHistoryEntity.from_orm(r) for r in rows] if e is not None]
         return total, entities
 

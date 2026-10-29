@@ -47,6 +47,11 @@ class TRANSFERHISTORY(Base):
     ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
     CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    SOURCE_STATE: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    SOURCE_DELETED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    DEST_STATE: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    DEST_DELETED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    FILES_CHECKED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}

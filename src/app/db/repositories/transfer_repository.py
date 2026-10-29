@@ -7,6 +7,7 @@ import datetime
 import os.path
 import time
 from enum import Enum
+from typing import Any
 
 from sqlalchemy import and_, func, or_
 
@@ -60,6 +61,40 @@ class TransferRepository(BaseRepository):
                 TRANSFERHISTORY.DEST_PATH == dest_path,
                 TRANSFERHISTORY.DEST_FILENAME == dest_filename,
             ).update({"DATE": date})
+
+    def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
+        """回填历史记录海报，后续列表直接读库，避免逐条回源."""
+        if not logid or not poster:
+            return
+        with self.session() as db:
+            db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == logid).update({"POSTER": poster})
+
+    def update_transfer_file_state(
+        self,
+        logid: int,
+        *,
+        source_state: str | None = None,
+        source_deleted_at: str | None = None,
+        dest_state: str | None = None,
+        dest_deleted_at: str | None = None,
+        files_checked_at: str | None = None,
+    ) -> None:
+        """更新记录关联文件的持久化状态，供历史列表直接读取."""
+        values: dict[Any, Any] = {}
+        if source_state is not None:
+            values["SOURCE_STATE"] = source_state
+        if source_deleted_at is not None:
+            values["SOURCE_DELETED_AT"] = source_deleted_at
+        if dest_state is not None:
+            values["DEST_STATE"] = dest_state
+        if dest_deleted_at is not None:
+            values["DEST_DELETED_AT"] = dest_deleted_at
+        if files_checked_at is not None:
+            values["FILES_CHECKED_AT"] = files_checked_at
+        if not values:
+            return
+        with self.session() as db:
+            db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).update(values)
 
     def insert_transfer_history(
         self,
@@ -139,10 +174,14 @@ class TransferRepository(BaseRepository):
                     ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
                     ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
                     CONTENT_PROFILE=getattr(media_info, "content_profile", None),
+                    SOURCE_STATE="present",
+                    DEST_STATE="present" if dest_filename else "unknown",
                 )
             )
 
-    def get_transfer_history(self, search: str | None, page: int, rownum: int) -> tuple[int, list[TRANSFERHISTORY]]:
+    def get_transfer_history(
+        self, search: str | None, page: int, rownum: int, media_type: str | None = None
+    ) -> tuple[int, list[TRANSFERHISTORY]]:
         """
         查询识别转移记录（分页）
         """
@@ -151,28 +190,18 @@ class TransferRepository(BaseRepository):
         else:
             begin_pos = (int(page) - 1) * int(rownum)
 
-        if search:
-            search = f"%{search}%"
-            with self.session() as db:
-                count = (
-                    db.query(TRANSFERHISTORY)
-                    .filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search)) | (TRANSFERHISTORY.TITLE.like(search)))
-                    .count()
+        with self.session() as db:
+            query = db.query(TRANSFERHISTORY)
+            if search:
+                pattern = f"%{search}%"
+                query = query.filter(
+                    (TRANSFERHISTORY.SOURCE_FILENAME.like(pattern)) | (TRANSFERHISTORY.TITLE.like(pattern))
                 )
-                data = (
-                    db.query(TRANSFERHISTORY)
-                    .filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search)) | (TRANSFERHISTORY.TITLE.like(search)))
-                    .order_by(TRANSFERHISTORY.DATE.desc())
-                    .limit(int(rownum))
-                    .offset(begin_pos)
-                    .all()
-                )
-                return count, data
-        else:
-            with self.session() as db:
-                return db.query(TRANSFERHISTORY).count(), db.query(TRANSFERHISTORY).order_by(
-                    TRANSFERHISTORY.DATE.desc()
-                ).limit(int(rownum)).offset(begin_pos).all()
+            if media_type:
+                query = query.filter(TRANSFERHISTORY.TYPE == media_type)
+            count = query.count()
+            data = query.order_by(TRANSFERHISTORY.DATE.desc()).limit(int(rownum)).offset(begin_pos).all()
+            return count, data
 
     def get_transfer_info_by_dest_path(self, dest_path: str, filename: str | None = None) -> list[TRANSFERHISTORY]:
         """按转移目标路径查询记录，供无 TMDB 的豆瓣/BGM 自动删除使用."""
@@ -230,6 +259,20 @@ class TransferRepository(BaseRepository):
                 .all()
             )
         return {(str(provider), str(external)) for provider, external in rows}
+
+    def get_existing_identity_ids(self, identity_ids: list[str]) -> set[str]:
+        """批量查询已入库的媒体身份 ID，供探索页跨 provider 锚点兜底."""
+        normalized = {str(item).strip() for item in identity_ids if str(item or "").strip()}
+        if not normalized:
+            return set()
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY.IDENTITY_ID)
+                .filter(TRANSFERHISTORY.IDENTITY_ID.in_(list(normalized)))
+                .distinct()
+                .all()
+            )
+        return {str(row[0]) for row in rows if row[0]}
 
     def get_transfer_info_by_id(self, logid: int | None) -> TRANSFERHISTORY | None:
         """
