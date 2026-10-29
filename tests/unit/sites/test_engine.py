@@ -435,6 +435,14 @@ class TestSiteRuleTimeParse:
         assert int(dt.timestamp()) == 1780272000
 
 
+class TestTtgDetailUrl:
+    def test_legacy_details_php_uses_canonical_t_path(self):
+        engine = SiteEngine(definitions_dir="config/sites")
+        site = engine.get_by_name("ttg")
+        assert site is not None
+        assert engine.resolve_detail_url("https://totheglory.im/details.php?id=839506", "839506") == "/t/839506/"
+
+
 class TestHtmlTorrentAttrAuthDetection:
     """HTML 详情页抓取：登录态必须显式识别，避免把登录页当成"确定非免费"."""
 

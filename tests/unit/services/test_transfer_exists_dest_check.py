@@ -15,14 +15,19 @@ from app.services.transfer.filetransfer_service import FileTransferService
 def _svc(exists: bool, tmp_path, dest_filename="E05.mkv"):
     src = tmp_path / "src.mkv"
     src.write_bytes(b"x")
+    dest_root = tmp_path / "lib"
+    if exists:
+        nested = dest_root / "Show" / "Season 1"
+        nested.mkdir(parents=True)
+        (nested / dest_filename).write_bytes(b"y")
     svc = FileTransferService.__new__(FileTransferService)
     svc._history = MagicMock()
     svc._existence = MagicMock()
     svc._history.get_transfer_info_by.return_value = [
         SimpleNamespace(
             source_path=str(src),
-            season_episode="S01E05",
-            dest_path=str(tmp_path / "lib"),
+            season_episode="S01 E05",
+            dest_path=str(dest_root),
             dest_filename=dest_filename,
             dst_backend=None,
         )

@@ -60,11 +60,11 @@ class TestMakeWebSearchFn:
         orchestrator = MagicMock()
         orchestrator.orchestrate.return_value = (None, {}, 1, 0)
         system_config = MagicMock()
+        system_config.get.return_value = {}
         fn = make_web_search_fn(orchestrator, system_config=system_config)
         fn("x", filters={"site": ["manual"]})
         ctx = orchestrator.orchestrate.call_args[0][0]
         assert ctx.filter_args["site"] == ["manual"]
-        system_config.get.assert_not_called()
 
     def test_empty_site_list_means_all_sites(self):
         """前端未选择站点时传空数组 → 归一为 None（全部可见站点，含第三方索引器）
@@ -80,4 +80,3 @@ class TestMakeWebSearchFn:
         fn("x", filters={"site": []}, media_type=MediaType.TV)
         ctx = orchestrator.orchestrate.call_args[0][0]
         assert ctx.filter_args["site"] is None
-        system_config.get.assert_not_called()

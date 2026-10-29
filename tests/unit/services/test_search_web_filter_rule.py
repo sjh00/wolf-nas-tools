@@ -1,0 +1,48 @@
+"""WEB 资源搜索应继承默认订阅过滤规则."""
+
+from typing import Any, cast
+from unittest.mock import MagicMock
+
+from app.services.search_web_entry import _apply_default_sites
+
+
+def test_apply_default_sites_includes_default_filter_rule():
+    config = MagicMock()
+    config.get.return_value = {"search_sites": [], "rule": 10000}
+    args: dict = {}
+
+    _apply_default_sites(args, None, config, None)
+
+    assert args["rule"] == 10000
+    assert args["site"] is None
+
+
+def test_apply_default_rule_when_sites_are_already_all():
+    from app.services.search_web_entry import _apply_default_rule
+
+    config = MagicMock()
+    config.get.return_value = {"search_sites": [], "rule": 10000}
+    args = {"site": None}
+
+    _apply_default_rule(args, None, config, None)
+
+    assert args["rule"] == 10000
+
+
+def test_custom_profile_web_search_skips_tmdb_identification():
+    from app.services.search_web_entry import make_web_search_fn
+
+    captured = {}
+
+    class _Orchestrator:
+        def orchestrate(self, ctx):
+            captured["ident_flag"] = ctx.ident_flag
+            return [], [], 1, []
+
+    config = MagicMock()
+    config.get.return_value = {"search_sites": [], "rule": 10000}
+    fn = make_web_search_fn(cast(Any, _Orchestrator()), config)
+
+    fn("ACHJ-097", filters={"site": [], "content_profile": "adult"}, media_type=None)
+
+    assert captured["ident_flag"] is False

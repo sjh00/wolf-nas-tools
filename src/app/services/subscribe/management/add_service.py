@@ -11,6 +11,7 @@ from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
+from app.media.display_image_policy import unwrap_display_image_url
 from app.media.metadata import ProviderRef
 from app.media.metadata.registry import registry as metadata_registry
 from app.services.subscribe.management.utils import gen_rss_note
@@ -277,6 +278,8 @@ class SubscribeAddService:
         """添加电影、电视剧订阅（user_id 为订阅归属用户，None 为系统/插件创建）"""
         if not name:
             return -1, "标题或类型有误", None
+        if image:
+            image = unwrap_display_image_url(image)
         year = int(year) if str(year).isdigit() else ""
 
         # 新增订阅且未显式传值时，应用默认订阅设置

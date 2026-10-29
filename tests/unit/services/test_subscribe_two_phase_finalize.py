@@ -534,3 +534,19 @@ def test_reconcile_finalizes_running_movie_when_transfer_history_exists():
 
     final_mv.assert_called_once_with(21)
     reopen.assert_not_called()
+
+
+def test_reconcile_handles_season_string_prefix():
+    """SEASON 存 "S02" 时不能因 int("S02") 异常跳过定稿."""
+    import datetime
+
+    svc, final_tv, _final_mv, reopen = _svc_for_reconcile()
+    tv = SimpleNamespace(id=43, name="Anime", year="2022", season="S02", total=10, tmdb_id="105248")
+    svc._tv_repo.get_all.return_value = [tv]
+    svc._movie_repo.get_all.return_value = []
+    setattr(svc, "media_exists", MagicMock(return_value=True))
+
+    svc.reconcile_pending_transfers(now=datetime.datetime(2026, 1, 1))
+
+    final_tv.assert_called_once_with(43, MediaType.TV)
+    reopen.assert_not_called()

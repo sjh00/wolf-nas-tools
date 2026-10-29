@@ -124,14 +124,14 @@ class TestSubscribeSearchEngine:
         queue = MagicMock()
         engine = SubscribeSearchEngine(indexer_strategy=indexer, queue_strategy=queue)
         engine.subscribe_search_movie(rssid=1, state="R")
-        indexer._search_movies.assert_called_once_with(state="R", rssid=1)
+        indexer._search_movies.assert_called_once_with(state="R", rssid=1, force=False)
 
     def test_subscribe_search_movie_state_d(self):
         indexer = MagicMock()
         queue = MagicMock()
         engine = SubscribeSearchEngine(indexer_strategy=indexer, queue_strategy=queue)
         engine.subscribe_search_movie(rssid=1, state="D")
-        queue._search_movies.assert_called_once_with(state="D", rssid=1)
+        queue._search_movies.assert_called_once_with(state="D", rssid=1, force=False)
 
     def test_subscribe_search_tv_state_r(self):
         indexer = MagicMock()

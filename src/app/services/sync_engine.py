@@ -271,11 +271,8 @@ class SyncEngine:
         try:
             dst_backend = self._resolve_backend(cfg.dst_backend_id) if cfg.dst_backend_id != "local" else None
             if self._history_repo.is_sync_in_history(event_path, cfg.dest):
-                if self._sync_target_exists(dst, dst_backend):
-                    return
-                # 目标文件已被删除（直接 rm / 前端文件管理）：清理陈旧历史并重新链接
-                log.info(f"[Sync]{event_path} 目标已不存在，清理历史并重新链接")
-                self._history_repo.delete_sync_history(event_path, cfg.dest)
+                # 用户删除目标文件不解除同步历史；只有显式清除历史才允许重新链接。
+                return
             self._transfer._execute(event_path, dst, cfg.operation, dst_backend)
             self._history_repo.insert_sync_history(event_path, cfg.source, cfg.dest)
             self._transfer._blacklist.insert(event_path)
@@ -350,25 +347,23 @@ class SyncEngine:
         if PathUtils.is_incomplete_media_dir(event_path):
             log.info(f"[Sync]{event_path} 下载未完成，跳过")
             return
-        # 已转移记录（同步历史 / 转移黑名单）在目标仍存在时跳过，避免每个扫描周期重复处理；
-        # 目标已被删除（直接 rm / 前端删除 / 清空媒体目录）时清理记录并重新同步（重新硬链接）。
-        # 目录来源还需核对目录内文件的目标：黑名单可能只落在文件上，否则流水线会过滤掉需重建的文件。
+        # 同步历史、转移历史或黑名单命中即永久跳过，不再检查目标是否存在。
+        # 用户删除目标文件不会解除记录；只有显式清除历史/黑名单才允许重新转移。
         in_history = self._history_repo.is_sync_in_history(event_path, cfg.dest)
         in_blacklist = self._transfer._blacklist.is_exists(event_path)
         is_dir = os.path.isdir(event_path)
-        if in_history or in_blacklist or is_dir:
-            target_exists = self._destination_exists_for_source(event_path, cfg)
-            if target_exists and (in_history or in_blacklist):
+        if not is_dir:
+            try:
+                transfer_record = self._history_repo.get_by_source(event_path)
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[Sync]查询转移历史失败，继续检查: {e}")
+                transfer_record = None
+            if transfer_record is not None or in_history or in_blacklist:
                 return
-            if not target_exists:
-                if in_history:
-                    log.info(f"[Sync]{event_path} 目标已不存在，清理同步历史并重新同步")
-                    self._history_repo.delete_sync_history(event_path, cfg.dest)
-                if in_blacklist:
-                    log.info(f"[Sync]{event_path} 目标已不存在，清理黑名单并重新同步")
-                    self._transfer._blacklist.delete(event_path)
-                if is_dir:
-                    self._clear_dir_blacklist(event_path)
+        elif in_history or in_blacklist:
+            # 目录本身已有同步/转移记录时整目录跳过；目录内新文件由流水线按文件记录过滤，
+            # 不能因为某个子目标缺失就清理整目录历史并重新同步。
+            return
         if os.path.isdir(event_path):
             # 目录：仅当包含真实媒体文件时才交给转移流水线，
             # 避免空目录/仍在下载（仅 .part/.!qb）的目录每周期反复报错
@@ -447,13 +442,9 @@ class SyncEngine:
             return
 
         def _link_one(path: str) -> None:
-            rel = os.path.relpath(path, cfg.source)
-            dst = os.path.join(cfg.dest, rel)
             if self._history_repo.is_sync_in_history(path, cfg.dest):
-                if self._sync_target_exists(dst, dst_backend):
-                    return
-                log.info(f"[Sync]{path} 目标已不存在，清理历史并重新链接")
-                self._history_repo.delete_sync_history(path, cfg.dest)
+                # 目标缺失仍跳过；历史只能由用户显式清除。
+                return
             try:
                 self._do_link_with_backend(path, cfg, src_backend, dst_backend)
             except (ServiceError, RepositoryError, DomainError):
