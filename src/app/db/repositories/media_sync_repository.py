@@ -90,6 +90,20 @@ class MediaSyncRepository(BaseRepository):
             )
         return {(str(provider or ""), str(external or "")) for provider, external in rows}
 
+    def get_existing_identity_ids(self, identity_ids: list[str]) -> set[str]:
+        """批量查询媒体同步索引中的身份 ID，供探索页跨 provider 锚点兜底."""
+        normalized = {str(item).strip() for item in identity_ids if str(item or "").strip()}
+        if not normalized:
+            return set()
+        with self.session() as db:
+            rows = (
+                db.query(MEDIASYNCITEMS.IDENTITY_ID)
+                .filter(MEDIASYNCITEMS.IDENTITY_ID.in_(list(normalized)))
+                .distinct()
+                .all()
+            )
+        return {str(row[0]) for row in rows if row[0]}
+
     def empty_items(
         self, server_type: str | None = None, library: str | None = None, server_id: int | None = None
     ) -> bool:
