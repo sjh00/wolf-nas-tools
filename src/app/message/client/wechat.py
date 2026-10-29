@@ -348,7 +348,7 @@ class WeChat(_IMessageClient):
                 {
                     "title": item_title,
                     "description": "",
-                    "picurl": media.get_message_image() if i == 0 else media.get_poster_image(),
+                    "picurl": media.get_message_image() if i == 0 else media.get_message_poster_image(),
                     "url": media.get_detail_url(),
                 }
             )

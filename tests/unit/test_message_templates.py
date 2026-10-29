@@ -203,3 +203,25 @@ def test_rss_finished_default_movie_notifies_owner(engine):
     kwargs = dispatcher.send_user_msg.call_args.kwargs
     assert kwargs["msg_type"] == "rss_finished"
     assert kwargs["variables"]["content_profile"] == "default"
+
+
+def test_plugin_profile_template_precedes_client_generic_template():
+    from app.message.core.template_engine import TemplateEngine
+    from app.message.template_registry import message_template_registry
+
+    message_template_registry.register_pack(
+        "test-profile-priority",
+        {"pluginpriority": {"rss_finished": {"title": "PLUGIN {{ profile_label }}", "text": "plugin body"}}},
+        labels={"pluginpriority": "CUSTOM"},
+    )
+    try:
+        title, text = TemplateEngine().apply_client_template(
+            {"name": "wechat", "templates": {"rss_finished": {"title": "CORE", "text": "core body"}}},
+            "rss_finished",
+            {"content_profile": "pluginpriority"},
+            content_profile="pluginpriority",
+        )
+        assert title == "PLUGIN CUSTOM"
+        assert text == "plugin body"
+    finally:
+        message_template_registry.unregister_plugin("test-profile-priority")

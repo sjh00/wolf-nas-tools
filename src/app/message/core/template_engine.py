@@ -111,17 +111,18 @@ class TemplateEngine:
                 log.error(f"[Message]客户端 {client_name} 模板配置 JSON 解析失败: {e}")
                 return None, None
 
-        # 客户端模板优先；其次插件按 content_profile 注册的模板；最后核心默认模板
-        template_config = None
+        # 客户端显式 profile:msg_type 优先；其次插件画像模板；最后客户端通用模板/核心模板。
+        profile_template = None
+        generic_template = None
         if isinstance(templates, dict):
             if profile:
-                template_config = templates.get(f"{profile}:{msg_type}")
-            if not isinstance(template_config, dict):
-                template_config = templates.get(msg_type)
-            if not isinstance(template_config, dict):
-                template_config = None
+                profile_template = templates.get(f"{profile}:{msg_type}")
+            generic_template = templates.get(msg_type)
+        template_config = profile_template if isinstance(profile_template, dict) else None
         if template_config is None:
             template_config = message_template_registry.resolve(profile, msg_type)
+        if template_config is None:
+            template_config = generic_template if isinstance(generic_template, dict) else None
         if template_config is None:
             template_config = DEFAULT_MESSAGE_TEMPLATES.get(msg_type)
         if not template_config:

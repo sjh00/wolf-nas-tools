@@ -87,6 +87,8 @@ class MessageDispatcher:
                     url = f"{self._domain}?next={url}"
             else:
                 url = ""
+            if image and not image.startswith(("http://", "https://", "data:")):
+                image = f"{self._domain.rstrip('/')}/{image.lstrip('/')}"
         else:
             url = ""
         max_length = client.get("max_length")
