@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 
+from app.media.display_image_policy import transform_display_image
+
 _TRANSFORMERS: list[Callable[[str, str], str]] = []
 
 
@@ -27,7 +29,11 @@ def clear_message_image_transformers() -> None:
 def transform_message_image(content_profile: str, image_url: str) -> str:
     value = str(image_url or "")
     profile = str(content_profile or "")
-    for transformer in list(_TRANSFORMERS):
+    transformers = list(_TRANSFORMERS)
+    if not transformers:
+        # 兼容旧插件：只注册了展示转换器时，消息仍沿用旧行为。
+        return transform_display_image(profile, value)
+    for transformer in transformers:
         try:
             transformed = transformer(profile, value)
             if transformed:
