@@ -162,8 +162,8 @@ def test_snapshot_image_download_falls_back_to_next_candidate(tmp_path):
 
     scraper._download_snapshot_images(snapshot, str(tmp_path), {"poster": True}, False)
 
-    # 先尝试竖版，再回退宽幅，因此候选会被复用一次.
-    assert downloader.attempts == ["bad", "good", "bad", "good"]
+    # 只尝试竖版候选；横版整张封套/剧照不再被裁成海报。
+    assert downloader.attempts == ["bad", "good"]
 
 
 def test_nfo_profile_extra_tags():

@@ -680,6 +680,14 @@ class MetadataService:
                     cached_ok = bool(cached_metadata.fields.get("title"))
                     if cached_ok and not cached_metadata.images:
                         cached_ok = not self._refs_support_images(refs)
+                    if (
+                        cached_ok
+                        and media_type in {MediaType.MOVIE, MediaType.TV, MediaType.ANIME}
+                        and self._refs_support_images(refs)
+                        and not (cached_metadata.images or {}).get("poster")
+                    ):
+                        # 只有 fanart/截图时仍视为不完整：海报是媒体库卡片的核心图。
+                        cached_ok = False
                     if cached_ok:
                         return cached_metadata
                     log.debug("[Metadata]旧快照缺少标题/图片，重新合成")

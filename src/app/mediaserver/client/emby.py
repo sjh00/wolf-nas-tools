@@ -453,6 +453,49 @@ class Emby(_IMediaClient):
             return None
         return []
 
+    def get_item_id_by_path(self, path: str) -> str | None:
+        """按文件/目录名反查 Emby 条目 ID，兼容 NFO 标题与文件名不一致的情况."""
+        if not self._host or not self._apikey or not path:
+            return None
+        target = str(path).replace("\\", "/").rstrip("/")
+        base = os.path.basename(target)
+        stem = os.path.splitext(base)[0]
+        terms = [stem, base]
+        parent = os.path.basename(os.path.dirname(target))
+        if parent and parent not in terms:
+            terms.append(parent)
+        for term in terms:
+            if not term:
+                continue
+            req_url = (
+                f"{self._host}emby/Items?IncludeItemTypes=Movie&Fields=Path,Name"
+                f"&StartIndex=0&Recursive=true&SearchTerm={quote(str(term))}&Limit=20"
+                f"&IncludeSearchTypes=false&api_key={self._apikey}"
+            )
+            try:
+                res = HttpClient().get(req_url)
+                if not res:
+                    continue
+                for item in res.json().get("Items") or []:
+                    item_path = str(item.get("Path") or "").replace("\\", "/")
+                    item_base = os.path.basename(item_path)
+                    item_stem = os.path.splitext(item_base)[0]
+                    if (
+                        item_path.endswith(target)
+                        or target.endswith(item_path)
+                        or item_stem.lower() == stem.lower()
+                        or item_base.lower() == base.lower()
+                    ):
+                        item_id = str(item.get("Id") or "").strip()
+                        if item_id:
+                            return item_id
+            except (InfrastructureError, NetworkError, MediaServerError):
+                raise
+            except Exception as e:  # noqa: BLE001
+                ExceptionUtils.exception_traceback(e)
+                log.error(f"[{self.client_name}]按路径查询条目出错：" + str(e))
+        return None
+
     def search_movie_keyword(self, keyword: str) -> bool:
         """按名称/路径关键字检查电影是否存在（用于番号等非标题场景）."""
         if not self._host or not self._apikey or not keyword:
@@ -645,11 +688,11 @@ class Emby(_IMediaClient):
         """
         if not self._host or not self._apikey:
             return False
-        suffix = (
-            "&MetadataRefreshMode=FullRefresh&ImageRefreshMode=FullRefresh&ReplaceAllImages=true"
-            if replace_images
-            else ""
-        )
+        if replace_images:
+            suffix = "&MetadataRefreshMode=FullRefresh&ImageRefreshMode=FullRefresh&ReplaceAllImages=true"
+        else:
+            # 刷新本地图片，但绝不 ReplaceAllImages=true（会删掉/替换本地 poster）。
+            suffix = "&MetadataRefreshMode=Default&ImageRefreshMode=FullRefresh&ReplaceAllImages=false"
         req_url = f"{self._host}emby/Items/{item_id}/Refresh?Recursive=true{suffix}&api_key={self._apikey}"
         try:
             res = HttpClient().post(req_url)
@@ -709,6 +752,12 @@ class Emby(_IMediaClient):
             if item.get("type") == MediaType.MOVIE.value:
                 movies = self.get_movies(item.get("title"), item.get("year")) or []
                 movie_id = next((m.get("id") for m in movies if m.get("id")), None)
+                if not movie_id:
+                    # 插件/番号场景下 NFO 标题常与 Emby 条目名不一致，按路径兜底。
+                    item_path = str(item.get("file_path") or item.get("target_path") or "")
+                    movie_id = self.get_item_id_by_path(item_path)
+                    if movie_id:
+                        log.info(f"[{self.client_name}]按路径命中条目 {movie_id}: {item_path}")
                 if movie_id:
                     # 已入库电影必须刷新条目，才会重读新的 NFO/海报。
                     if movie_id not in item_ids:
@@ -718,7 +767,7 @@ class Emby(_IMediaClient):
             if library_id and library_id not in library_ids:
                 library_ids.append(library_id)
         for item_id in item_ids:
-            self.__refresh_emby_library_by_id(item_id, replace_images=True)
+            self.__refresh_emby_library_by_id(item_id, replace_images=False)
         # 开始刷新媒体库
         if "/" in library_ids:
             self.refresh_root_library()

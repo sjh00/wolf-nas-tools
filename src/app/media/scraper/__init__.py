@@ -11,6 +11,7 @@
 import json
 import os
 import re
+import shutil
 import threading
 import time
 
@@ -40,6 +41,8 @@ from .chinese_credits import ChineseCredits
 from .image_downloader import ImageDownloader
 from .media_library import MediaLibrary
 from .nfo_generator import NfoGenerator
+from .poster_quality import has_legacy_watermark_marker, synthetic_poster_path
+from .poster_quality import is_placeholder_image as _poster_is_placeholder
 from .processor_registry import scraper_processor_registry
 
 _PART_SUFFIX_RE = re.compile(r"(?i)[-_. ]?(?:cd|part|pt|disk|disc|dvd)\s*[1-9a-d]$")
@@ -71,6 +74,7 @@ class Scraper:
         self._scraper_pic = {}
         self._local = threading.local()
         self._rmt_mode = None
+        self._dst_backend = None
         self._temp_path = temp_manager.create_subdir("scraper")
         self._init_config()
         self._downloader = ImageDownloader(self._temp_path)
@@ -162,29 +166,29 @@ class Scraper:
             if not self._nfo_has_metadata(nfo_text):
                 return False
 
-        image_names = []
-        if pic_conf.get("poster") or pic_conf.get("fanart") or pic_conf.get("backdrop"):
-            image_names.extend(["poster", "fanart", "backdrop"])
-        if pic_conf.get("logo"):
-            image_names.append("logo")
-        if pic_conf.get("thumb") or pic_conf.get("episode_thumb"):
-            image_names.extend(["thumb", f"{os.path.basename(stem)}-thumb"])
-        if pic_required and image_names:
+        image_groups: list[tuple[str, ...]] = []
+        # 只把核心封面作为完成条件；logo/thumb/background 等属于可选附加图，
+        # 来源没有时不能反复判定为“刮削失败”。
+        if pic_conf.get("poster"):
+            image_groups.append(("poster",))
+        elif pic_conf.get("fanart") or pic_conf.get("backdrop"):
+            image_groups.append(("fanart", "backdrop"))
+        if pic_required and image_groups:
             roots = [file_dir, parent_dir] if is_tv else [file_dir]
-            for root in roots:
-                for name in image_names:
-                    for ext in (".jpg", ".jpeg", ".png", ".webp"):
-                        if self._target_exists(os.path.join(root, f"{name}{ext}"), dst_backend):
-                            break
-                    else:
-                        continue
-                    break
-                else:
-                    continue
-                break
-            else:
-                return False
+            for names in image_groups:
+                # 海报/背景/缩略图必须分别存在；有 fanart 不代表 poster 已完成。
+                if not any(
+                    self._target_exists(os.path.join(root, f"{name}{ext}"), dst_backend)
+                    for root in roots
+                    for name in names
+                    for ext in (".jpg", ".jpeg", ".png", ".webp")
+                ):
+                    return False
         return True
+
+    def profile_media_info(self, file_path: str):
+        """公开的画像媒体信息构造，供媒体库插件构造刷新事件."""
+        return self._profile_media_info(file_path)
 
     @staticmethod
     def _profile_media_info(file_path: str):
@@ -198,6 +202,19 @@ class Scraper:
         media_info.anchor_provider = getattr(parsed, "anchor_provider", "") or ""
         media_info.anchor_external_id = getattr(parsed, "anchor_external_id", "") or ""
         return media_info
+
+    def _nfo_needs_rewrite(self, dir_path: str, file_name: str, media_type) -> bool:
+        """已有 NFO 但缺少核心元数据时，增量模式也必须重写."""
+        is_tv = media_type in {MediaType.TV, MediaType.ANIME}
+        candidates = [os.path.join(dir_path, f"{file_name}.nfo")]
+        if is_tv:
+            candidates.extend([os.path.join(dir_path, "tvshow.nfo"), os.path.join(dir_path, "season.nfo")])
+        else:
+            candidates.append(os.path.join(dir_path, "movie.nfo"))
+        for nfo_path in candidates:
+            if self._exists(nfo_path) and not self._nfo_has_metadata(self._read_text(nfo_path)):
+                return True
+        return False
 
     def folder_scraper(self, path, exclude_path=None, mode=None, dst_backend=None):
         """刮削指定文件夹或文件"""
@@ -244,6 +261,8 @@ class Scraper:
                             continue
                         log.error(f"[Scraper]{file} 插件画像快照刮削未生成完整 NFO/图片")
                     log.warn(f"[Scraper]{file} 插件画像无法合成元数据快照")
+                    # 自定义画像必须由插件提供元数据；不能回退 TMDB 生成只有番号的空壳 NFO。
+                    continue
                 standard_snapshot = self._compose_standard_snapshot(file, mi)
                 if standard_snapshot is not None:
                     scraped = self.gen_snapshot_files(
@@ -379,6 +398,9 @@ class Scraper:
         self._downloader.set_dst_backend(dst_backend)
         if not getattr(snapshot, "content_profile", "") and getattr(media, "content_profile", ""):
             snapshot.content_profile = media.content_profile
+        if not force_nfo and self._nfo_needs_rewrite(dir_path, file_name, media.type):
+            log.info(f"[Scraper]{file_name} 现有 NFO 不完整，强制重写")
+            force_nfo = True
         if media.type == MediaType.MOVIE:
             self._scrape_movie_from_snapshot(snapshot, dir_path, file_name, force_nfo, force_pic)
         else:
@@ -389,20 +411,25 @@ class Scraper:
     def _scrape_movie_from_snapshot(self, snapshot, dir_path, file_name, force_nfo, force_pic):
         scraper_movie_nfo = self._scraper_nfo.get("movie", {})
         scraper_movie_pic = self._scraper_pic.get("movie", {})
-        self._ensure_snapshot_images(snapshot)
+        # 先运行插件快照处理器，再补图/补演员，避免 actor_fallback 尚未生成。
         scraper_processor_registry.enrich_snapshot(snapshot)
+        self._ensure_snapshot_images(snapshot)
+        # 图片落盘并裁剪后再写 NFO，确保 poster/thumb 标签指向真实存在的文件。
+        self._download_snapshot_images(snapshot, dir_path, scraper_movie_pic, force_pic)
+        self._normalize_snapshot_poster(snapshot, dir_path)
+        self._prune_missing_image_assets(snapshot, dir_path)
         if scraper_movie_nfo.get("basic") or scraper_movie_nfo.get("credits"):
             nfo_path = os.path.join(dir_path, f"{file_name}.nfo")
             if force_nfo or not self._exists(nfo_path):
                 self._nfo_gen.gen_movie_nfo_from_snapshot(snapshot, scraper_movie_nfo, dir_path, file_name)
-        self._download_snapshot_images(snapshot, dir_path, scraper_movie_pic, force_pic)
-        self._normalize_snapshot_poster(snapshot, dir_path)
+        self._cleanup_stale_nfos(dir_path, file_name)
         if self._dst_backend is None:
             self._apply_watermark(snapshot, dir_path)
 
     def _scrape_tv_from_snapshot(self, snapshot, media, dir_path, file_name, file_ext, force_nfo, force_pic):
         scraper_tv_nfo = self._scraper_nfo.get("tv", {})
         scraper_tv_pic = self._scraper_pic.get("tv", {})
+        self._ensure_snapshot_images(snapshot)
         season_dir = bool(
             re.match(
                 r"^(?:Season|S)\s*\d+$",
@@ -446,6 +473,7 @@ class Scraper:
                 )
 
         self._download_snapshot_images(snapshot, tv_root, scraper_tv_pic, force_pic)
+        self._ensure_poster_file(tv_root)
         if season is not None and scraper_tv_pic.get("season_poster") and season.poster:
             self._downloader.download(
                 season.poster,
@@ -464,8 +492,84 @@ class Scraper:
             return
         scraper_processor_registry.process_watermark(target_dir, snapshot)
 
+    @staticmethod
+    def _find_image(target_dir: str, name: str) -> str | None:
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            candidate = os.path.join(target_dir, f"{name}{ext}")
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _cleanup_stale_nfos(self, target_dir: str, current_file_name: str) -> None:
+        """删除同番号的旧 NFO（如 DV-1622-破解-C.nfo），避免 Emby 读到旧元数据."""
+        try:
+            names = os.listdir(target_dir)
+        except OSError:
+            return
+        video_ext = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov")
+        video_bases = {os.path.splitext(name)[0] for name in names if name.lower().endswith(video_ext)}
+        video_bases.add(current_file_name)
+        keep = video_bases | {"tvshow", "season", "movie", "album", "musicvideo"}
+
+        def code_prefix(value: str) -> str:
+            match = re.match(r"^([A-Za-z]{2,10})[-_ ]?(\d{2,6})", value)
+            return f"{match.group(1)}-{match.group(2)}".upper() if match else ""
+
+        video_prefixes = {code_prefix(base) for base in video_bases if code_prefix(base)}
+        for name in names:
+            if not name.lower().endswith(".nfo"):
+                continue
+            stem = name[:-4]
+            if stem in keep:
+                continue
+            prefix = code_prefix(stem)
+            if prefix and prefix in video_prefixes:
+                path = os.path.join(target_dir, name)
+                try:
+                    os.remove(path)
+                    log.warn(f"[Scraper]删除同番号旧 NFO：{path}")
+                except OSError as exc:
+                    log.warn(f"[Scraper]删除旧 NFO 失败 {path}: {exc}")
+
+    def _prune_missing_image_assets(self, snapshot, target_dir: str) -> None:
+        """NFO 只引用实际存在的图片，避免生成 poster.jpg 悬空标签."""
+        images = getattr(snapshot, "images", None)
+        if not isinstance(images, dict):
+            return
+        if not self._find_image(target_dir, "poster"):
+            images.pop("poster", None)
+        if not self._find_image(target_dir, "fanart"):
+            images.pop("fanart", None)
+        if not self._find_image(target_dir, "background"):
+            images.pop("background", None)
+
+    def _ensure_poster_file(self, target_dir: str) -> str | None:
+        """仅允许竖版图兜底；横版剧照/封套绝不能当海报."""
+        poster = self._find_image(target_dir, "poster")
+        if poster:
+            return poster
+        for name in ("fanart", "backdrop", "thumb"):
+            source = self._find_image(target_dir, name)
+            if not source or self._is_placeholder_image(source):
+                continue
+            try:
+                with Image.open(source) as img:
+                    if img.width > img.height * 1.05:
+                        continue
+            except Exception:
+                continue
+            poster = os.path.join(target_dir, "poster.jpg")
+            try:
+                shutil.copyfile(source, poster)
+            except OSError as exc:
+                log.warn(f"[Scraper]海报兜底复制失败 {source}: {exc}")
+                return None
+            log.warn(f"[Scraper]缺少海报，已用竖版 {name} 兜底生成 poster.jpg")
+            return poster
+        return None
+
     def _normalize_snapshot_poster(self, snapshot, target_dir):
-        """宽幅封面先裁右侧 2:3 前封面，再生成 fanart/thumb."""
+        """海报只保留竖版正面封面；横版整张封套/剧照转为 fanart 后删除 poster."""
         if self._dst_backend is not None:
             return
         poster_path = None
@@ -476,25 +580,87 @@ class Scraper:
                 break
         if not poster_path:
             return
+        if self._is_placeholder_image(poster_path):
+            try:
+                os.remove(poster_path)
+            except OSError:
+                pass
+            log.warn(f"[Scraper]删除 NOW PRINTING 占位海报：{poster_path}")
+            return
         try:
             with Image.open(poster_path) as img:
                 width, height = img.size
-                if width <= height * 1.15:
+                if width > height * 1.15:
+                    # 横版整张封套：先保留完整图做 fanart，再只裁正面封面。
+                    fanart_path = os.path.join(target_dir, "fanart.jpg")
+                    if not os.path.exists(fanart_path):
+                        img.save(fanart_path, quality=92)
+                    modes = scraper_processor_registry.process_poster(poster_path, snapshot)
+                    with Image.open(poster_path) as cropped:
+                        cw, ch = cropped.size
+                        if cw > ch * 1.15:
+                            target_w = max(1, int(ch * 0.71))
+                            cropped.crop((max(0, cw - target_w), 0, cw, ch)).save(poster_path, quality=94)
+                            modes = list(modes) + ["fallback-right"]
+                    log.info(f"[Scraper]封面裁剪模式 {','.join(modes) or 'fallback-right'}：{poster_path}")
                     return
-                original = img.copy()
-                fanart_path = os.path.join(target_dir, "fanart.jpg")
-                if not os.path.exists(fanart_path):
-                    original.save(fanart_path, quality=92)
-                thumb_path = os.path.join(target_dir, "thumb.jpg")
-                if not os.path.exists(thumb_path) or not self._valid_image(target_dir, "thumb", 300, 150):
-                    thumb_h = min(height, int(width * 9 / 16))
-                    top = max(0, (height - thumb_h) // 2)
-                    original.crop((0, top, width, top + thumb_h)).save(thumb_path, quality=90)
             modes = scraper_processor_registry.process_poster(poster_path, snapshot)
             if modes:
                 log.info(f"[Scraper]封面裁剪模式 {','.join(modes)}：{poster_path}")
         except Exception as exc:  # noqa: BLE001
             log.warn(f"[Scraper]封面后处理失败 {poster_path}: {exc}")
+
+    @staticmethod
+    def _is_placeholder_image(path: str) -> bool:
+        """识别 NOW PRINTING 等近灰白占位图，避免写入海报墙."""
+        return _poster_is_placeholder(path)
+
+    def _portrait_image_exists(self, target_dir, file_name, min_width=300) -> bool:
+        """已有合格竖版图时禁止 force 重下覆盖，防止横版/错误候选破坏海报."""
+        if file_name == "poster":
+            synthetic = synthetic_poster_path(target_dir)
+            if synthetic:
+                try:
+                    os.remove(synthetic)
+                except OSError:
+                    pass
+                log.warn(f"[Scraper]删除横版剧照裁出的伪海报：{synthetic}")
+                return False
+            if has_legacy_watermark_marker(target_dir):
+                # 旧版 40 字节 marker 说明 poster 来自旧版横版裁切，必须重建。
+                for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                    old = os.path.join(target_dir, f"poster{ext}")
+                    if os.path.exists(old):
+                        try:
+                            os.remove(old)
+                        except OSError:
+                            pass
+                # 旧 marker 必须一起清掉，否则海报重建后仍会被判定为旧版。
+                try:
+                    os.remove(os.path.join(target_dir, ".watermark"))
+                except OSError:
+                    pass
+                log.warn(f"[Scraper]旧版水印标记，重建 poster：{target_dir}")
+                return False
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            path = os.path.join(target_dir, f"{file_name}{ext}")
+            if not os.path.exists(path):
+                continue
+            try:
+                with Image.open(path) as img:
+                    width, height = img.size
+                if self._is_placeholder_image(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    return False
+                # 只有 >=300px 的竖版才视为已完成；147x200 缩略图仍可暂时保留，
+                # 但会继续尝试高清整张封套裁剪。
+                return height > width * 1.05 and width >= 300
+            except Exception:
+                return False
+        return False
 
     def _valid_image(self, target_dir, file_name, min_width, min_height):
         for ext in (".jpg", ".jpeg", ".png", ".webp"):
@@ -505,7 +671,7 @@ class Scraper:
                 with Image.open(path) as img:
                     width, height = img.size
                 if width >= min_width and height >= min_height:
-                    return True
+                    return not self._is_placeholder_image(path)
             except Exception as exc:  # noqa: BLE001 - 损坏图片视为无效
                 log.debug(f"[Scraper]图片校验失败 {path}: {exc}")
             try:
@@ -524,7 +690,12 @@ class Scraper:
         min_height,
         require_portrait=False,
     ):
-        for url in list(candidates)[:2]:
+        if file_name == "poster" and self._portrait_image_exists(target_dir, "poster", min_width):
+            log.debug(f"[Scraper]保留已有竖版海报：{target_dir}")
+            return True
+        # 海报按优先级依次尝试更多来源；前几个可能是 NOW PRINTING 占位图。
+        limit = 12 if file_name == "poster" else 5
+        for url in list(candidates)[:limit]:
             if not url or url.rstrip("/").endswith("/login"):
                 continue
             try:
@@ -562,13 +733,29 @@ class Scraper:
         title = getattr(fields.get("title"), "value", None) if hasattr(fields, "get") else None
         return bool(title)
 
+    @staticmethod
+    def _image_assets(assets) -> list[ImageAsset]:
+        result: list[ImageAsset] = []
+        for item in assets or []:
+            if isinstance(item, ImageAsset):
+                result.append(item)
+            elif isinstance(item, dict):
+                result.append(ImageAsset(**item))
+        return result
+
     def _ensure_snapshot_images(self, snapshot) -> None:
         """用快照主来源补齐图片/演职人员，优先复用聚合 provider 的合并结果."""
         if self._metadata_service is None:
             return
-        need_images = not getattr(snapshot, "images", None)
+        images = getattr(snapshot, "images", None)
+        if not isinstance(images, dict):
+            images = {}
+            snapshot.images = images
+        need_images = not any(images.values())
+        # 聚合来源可能只返回截图（fanart），不能因此跳过海报回补。
+        need_poster = not images.get("poster")
         need_credits = not getattr(snapshot, "credits", None)
-        if not need_images and not need_credits:
+        if not need_images and not need_poster and not need_credits:
             return
         extra = getattr(snapshot, "extra", {}) or {}
         preferred = [
@@ -598,15 +785,18 @@ class Scraper:
             )
             if not record:
                 continue
+            record_images = record.get("images") or {}
+            if need_poster:
+                posters = self._image_assets(record_images.get("poster"))
+                if posters:
+                    snapshot.images["poster"] = posters
+                    need_poster = False
             if need_images:
-                images = record.get("images") or {}
-                if images:
-                    snapshot.images = {
-                        kind: [ImageAsset(**item) for item in assets]
-                        for kind, assets in images.items()
-                        if isinstance(assets, list) and assets
-                    }
-                    need_images = not snapshot.images
+                for kind, assets in record_images.items():
+                    if snapshot.images.get(kind) or not isinstance(assets, list) or not assets:
+                        continue
+                    snapshot.images[kind] = self._image_assets(assets)
+                need_images = not any(snapshot.images.values())
             credits = record.get("credits") or []
             if need_credits and credits:
                 snapshot.credits = [Credit(**item) for item in credits]
@@ -614,8 +804,24 @@ class Scraper:
             record_extra = record.get("extra") or {}
             if record_extra:
                 snapshot.extra.update(record_extra)
-            if not need_images and not need_credits:
+            if not need_images and not need_poster and not need_credits:
                 return
+        if need_credits:
+            # 旧快照可能只有插件写入的演员名字（actor_fallback），没有 credits。
+            names = [str(name).strip() for name in (snapshot.extra.get("actor_fallback") or []) if str(name).strip()]
+            if names:
+                images = snapshot.extra.get("actor_images") or {}
+                provider = str(snapshot.primary_provider or snapshot.extra.get("source_provider") or "adult")
+                snapshot.credits = [
+                    Credit(
+                        name=name,
+                        role="actor",
+                        order=index,
+                        provider=provider,
+                        image_url=images.get(name),
+                    )
+                    for index, name in enumerate(names)
+                ]
 
     def _download_snapshot_images(self, snapshot, target_dir, scraper_pic, force_pic):
         mapping = (("poster", "poster"), ("backdrop", "fanart"), ("logo", "logo"), ("thumb", "thumb"))
@@ -639,20 +845,22 @@ class Scraper:
                 self._download_candidates(fanart_candidates, target_dir, file_name, force_pic, 500, 250)
                 continue
             candidates = self._images.candidates(snapshot, image_type)
-            min_width = 300 if image_type == "poster" else 100
-            min_height = 300 if image_type == "poster" else 100
+            # JAV 站点真正的竖版正面封面通常只有 147x200（DMM ps / JavBus thumb），
+            # 不能因为尺寸小就拒绝，否则只剩 800x538 横版封套，最终被裁成封底/剧照。
+            min_width = 120 if image_type == "poster" else 100
+            min_height = 160 if image_type == "poster" else 100
             if image_type == "poster":
-                if self._download_candidates(
+                # 允许下载 DMM/JavBus 的高清横版整张封套，随后由 poster 处理器
+                # 只裁正面封面；不会使用 fanart/剧照兜底。
+                self._download_candidates(
                     candidates,
                     target_dir,
                     file_name,
                     force_pic,
                     min_width,
                     min_height,
-                    require_portrait=True,
-                ):
-                    continue
-                log.info("[Scraper]未找到竖版海报，回退宽幅封面并裁切")
+                )
+                continue
             self._download_candidates(
                 candidates,
                 target_dir,
@@ -940,6 +1148,9 @@ class Scraper:
         self._scraper_nfo = self._scraper_nfo or {}
         self._scraper_pic = self._scraper_pic or {}
         self._dst_backend = dst_backend
+        if not force_nfo and self._nfo_needs_rewrite(dir_path, file_name, media.type):
+            log.info(f"[Scraper]{file_name} 现有 NFO 不完整，强制重写")
+            force_nfo = True
         self._downloader.set_dst_backend(dst_backend)
         log.info(
             f"[Scraper]开始生成刮削文件：dir={dir_path}, file={file_name}, "
@@ -1024,6 +1235,8 @@ class Scraper:
 
         try:
             self._download_images(media, dir_path, scraper_movie_pic, force_pic)
+            # 普通 TMDB 路径也可能拿到横版图，写入后统一做竖版裁切。
+            self._normalize_snapshot_poster(None, dir_path)
         except Exception as e:
             log.error(f"[Scraper]下载电影图片失败：{e}")
 
@@ -1188,7 +1401,7 @@ class Scraper:
         """下载电影图片"""
         if scraper_pic.get("poster"):
             poster = media.get_poster_image(original=True)
-            if poster:
+            if poster and not self._portrait_image_exists(dir_path, "poster", 300):
                 self._downloader.download(poster, dir_path, "poster", force_pic)
         if scraper_pic.get("backdrop"):
             backdrop = media.get_backdrop_image(default=False, original=True)
@@ -1206,7 +1419,7 @@ class Scraper:
         """下载电视剧图片"""
         if scraper_pic.get("poster"):
             poster = media.get_poster_image(original=True)
-            if poster:
+            if poster and not self._portrait_image_exists(tv_root, "poster", 300):
                 self._downloader.download(poster, tv_root, "poster", force_pic)
         if scraper_pic.get("backdrop"):
             backdrop = media.get_backdrop_image(default=False, original=True)

@@ -15,6 +15,30 @@ def test_emby_item_honors_explicit_library_id():
     assert cast(Any, client)._Emby__get_emby_library_id_by_item({"library_id": "4"}) == "4"
 
 
+def test_emby_refresh_uses_path_when_title_does_not_match():
+    client = Emby.__new__(Emby)
+    client._host = "http://emby/"
+    client._apikey = "key"
+    client.get_movies = MagicMock(return_value=[])
+    client.get_item_id_by_path = MagicMock(return_value="129531")
+    refresh_item = MagicMock()
+    setattr(client, "_Emby__refresh_emby_library_by_id", refresh_item)
+
+    client.refresh_library_by_items(
+        [
+            {
+                "title": "TC-268 アダルト動画サイト MGS動画",
+                "year": "",
+                "type": "movie",
+                "file_path": "/Media/adult/日本有码/TC/TC-268/TC-268.mp4",
+            }
+        ]
+    )
+
+    client.get_item_id_by_path.assert_called_once_with("/Media/adult/日本有码/TC/TC-268/TC-268.mp4")
+    refresh_item.assert_called_once_with("129531", replace_images=False)
+
+
 def test_root_refresh_uses_library_id_when_supported():
     server = MediaServer.__new__(MediaServer)
     client = MagicMock()
@@ -55,3 +79,16 @@ def test_plex_refresh_by_items_uses_section_id():
     client._plex.library.sections.return_value = []
     client.refresh_library_by_items([{"library_id": "7"}])
     client._plex.query.assert_called_once_with("/library/sections/7/refresh")
+
+
+def test_emby_item_refresh_never_replace_all_images():
+    client = Emby.__new__(Emby)
+    client._host = "http://emby/"
+    client._apikey = "key"
+    with patch("app.mediaserver.client.emby.HttpClient") as http_client:
+        http_client.return_value.post.return_value = MagicMock()
+        getattr(client, "_Emby__refresh_emby_library_by_id")("129531", replace_images=False)
+    request_url = http_client.return_value.post.call_args.args[0]
+    assert "ImageRefreshMode=FullRefresh" in request_url
+    assert "ReplaceAllImages=false" in request_url
+    assert "ReplaceAllImages=true" not in request_url

@@ -703,3 +703,49 @@ def test_compose_for_media_recomposes_cached_snapshot_missing_images():
     assert snapshot is not None
     assert snapshot.fields["title"].value == "TMDB 标题"
     assert repo.saved
+
+
+def test_compose_for_media_recomposes_cached_snapshot_missing_poster():
+    """只有 fanart 没有 poster 的快照仍不完整，转移阶段不能直接复用."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from app.media.metadata import FieldValue, ImageAsset, MediaMetadata
+
+    reg = MetadataRegistry()
+    reg.register_provider(
+        _FakeProvider(
+            "tmdb",
+            "TMDB 标题",
+            capabilities={ProviderCapability.DETAIL, ProviderCapability.IMAGES},
+        )
+    )
+    repo = _FakeSnapshotRepo()
+    svc = MetadataService(registry=reg, identity_repo=repo, register_builtins=False)
+    repo.find_by_ref = lambda *args, **kwargs: SimpleNamespace(IDENTITY_ID="id-2")
+    cached = MediaMetadata(
+        identity_id="id-2",
+        fields={"title": FieldValue(value="旧标题", provider="tmdb", external_id="1")},
+        images={"fanart": [ImageAsset(type="fanart", url="https://example.com/f.jpg")]},
+    )
+    repo.snapshots.append(
+        SimpleNamespace(
+            CREATED_AT=datetime.now(),
+            SNAPSHOT_HASH="old",
+            PAYLOAD=cached.model_dump_json(),
+            SCOPE="default",
+        )
+    )
+
+    class _MediaInfo:
+        type = MediaType.MOVIE
+        tmdb_id = "278"
+        douban_id = None
+        title = "自动标题"
+        year = "1994"
+
+    snapshot = svc.compose_for_media(_MediaInfo(), persist=True, max_age_seconds=3600)
+
+    assert snapshot is not None
+    assert snapshot.fields["title"].value == "TMDB 标题"
+    assert repo.saved
