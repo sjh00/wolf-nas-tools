@@ -408,6 +408,9 @@ class DownloadPipeline:
         file_indices=None,
         file_names=None,
     ):
+        if isinstance(content, bytes) and not Torrent.torrent_has_media(content):
+            log.warn(f"[DownloadPipeline]跳过无媒体文件的种子：{title}")
+            return None
         print_url = StringUtils.mask_sensitive(content if isinstance(content, str) else url, 200)
         log.info(
             f"[DownloadPipeline]{'添加任务并暂停' if is_paused else '添加任务'}：%s，目录：%s，Url：%s"

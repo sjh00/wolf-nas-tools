@@ -1,29 +1,20 @@
-"""下载事件队列单元测试."""
+"""下载事件广播：新订阅者不能收到历史事件."""
 
-import queue
+from app.services.download_event_queue import (
+    publish_download_event,
+    subscribe_download_events,
+    unsubscribe_download_events,
+)
 
-from app.services.download_event_queue import download_event_queue
 
+def test_new_subscriber_gets_only_future_events():
+    old = subscribe_download_events()
+    publish_download_event({"event": "download.completed", "data": {"name": "old"}})
+    assert old.get(timeout=1)["data"]["name"] == "old"
+    unsubscribe_download_events(old)
 
-class TestDownloadEventQueue:
-    def test_queue_is_standard_queue(self):
-        assert isinstance(download_event_queue, queue.Queue)
-
-    def test_put_and_get(self):
-        while not download_event_queue.empty():
-            download_event_queue.get_nowait()
-
-        download_event_queue.put({"event": "test", "data": {"k": "v"}})
-        item = download_event_queue.get(timeout=1)
-
-        assert item == {"event": "test", "data": {"k": "v"}}
-
-    def test_get_blocks_on_empty(self):
-        while not download_event_queue.empty():
-            download_event_queue.get_nowait()
-
-        try:
-            download_event_queue.get(timeout=0.01)
-            assert False, "should have raised"
-        except queue.Empty:
-            pass
+    new = subscribe_download_events()
+    assert new.empty()
+    publish_download_event({"event": "download.completed", "data": {"name": "new"}})
+    assert new.get(timeout=1)["data"]["name"] == "new"
+    unsubscribe_download_events(new)

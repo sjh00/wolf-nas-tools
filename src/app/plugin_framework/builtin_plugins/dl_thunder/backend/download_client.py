@@ -1,5 +1,7 @@
+import hashlib
 import os
 from typing import Any
+from urllib.parse import quote
 
 import log
 from app.core.exceptions import InfrastructureError, NetworkError
@@ -238,13 +240,108 @@ class Thunder(_IDownloadClient):
     def get_remove_torrents(self, strategy: RemoveStrategy) -> list[dict]:
         return []
 
+    @staticmethod
+    def _bdecode(data: bytes, index: int = 0):
+        """最小 bencode 解析；返回 (value, next_index)."""
+        marker = data[index : index + 1]
+        if marker == b"i":
+            end = data.index(b"e", index)
+            return int(data[index + 1 : end]), end + 1
+        if marker == b"l":
+            result = []
+            index += 1
+            while data[index : index + 1] != b"e":
+                value, index = Thunder._bdecode(data, index)
+                result.append(value)
+            return result, index + 1
+        if marker == b"d":
+            result = {}
+            index += 1
+            while data[index : index + 1] != b"e":
+                key, index = Thunder._bdecode(data, index)
+                value, index = Thunder._bdecode(data, index)
+                result[key] = value
+            return result, index + 1
+        colon = data.index(b":", index)
+        length = int(data[index:colon])
+        start = colon + 1
+        return data[start : start + length], start + length
+
+    @classmethod
+    def _torrent_bytes_to_magnet(cls, content: bytes) -> str | None:
+        """本地解析 torrent，计算 info_hash 生成磁力；迅雷只接收磁力链接."""
+        if not content or content[:1] != b"d":
+            return None
+        try:
+            root, _ = cls._bdecode(content)
+            info_marker = content.index(b"4:info")
+            info_start = info_marker + len(b"4:info")
+            _, info_end = cls._bdecode(content, info_start)
+            info_hash = hashlib.sha1(content[info_start:info_end]).hexdigest()
+            info = root.get(b"info") or {}
+            name = info.get(b"name") if isinstance(info, dict) else None
+            name_text = name.decode("utf-8", errors="ignore") if isinstance(name, bytes) else ""
+            trackers: list[str] = []
+            announce = root.get(b"announce")
+            if isinstance(announce, bytes):
+                trackers.append(announce.decode("utf-8", errors="ignore"))
+            announce_list = root.get(b"announce-list")
+            if isinstance(announce_list, list):
+                for tier in announce_list:
+                    if isinstance(tier, list):
+                        for tracker in tier:
+                            if isinstance(tracker, bytes):
+                                trackers.append(tracker.decode("utf-8", errors="ignore"))
+            parts = [f"magnet:?xt=urn:btih:{info_hash}"]
+            if name_text:
+                parts.append(f"dn={quote(name_text, safe='')}")
+            for tracker in dict.fromkeys(trackers):
+                if tracker:
+                    parts.append(f"tr={quote(tracker, safe='')}")
+            return "&".join(parts)
+        except Exception as e:  # noqa: BLE001
+            log.error(f"[{cls.client_name}]本地解析种子失败: {sanitize_error_text(e)}")
+            return None
+
+    @classmethod
+    def _select_media_file_indices(cls, content: bytes) -> str:
+        """选择视频文件，排除 .url/.txt 和远小于主视频的广告 MP4."""
+        if not content or content[:1] != b"d":
+            return ""
+        try:
+            root, _ = cls._bdecode(content)
+            info = root.get(b"info") or {}
+            files = info.get(b"files") if isinstance(info, dict) else None
+            if not isinstance(files, list) or not files:
+                return ""
+            media = {".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".flv", ".webm"}
+            candidates: list[tuple[int, str, int]] = []
+            for index, item in enumerate(files):
+                if not isinstance(item, dict):
+                    continue
+                path = item.get(b"path")
+                if not isinstance(path, list) or not path:
+                    continue
+                name = "/".join(str(part, "utf-8", "ignore") if isinstance(part, bytes) else str(part) for part in path)
+                ext = os.path.splitext(name)[1].lower()
+                size = int(item.get(b"length") or 0)
+                if ext in media and size > 0:
+                    candidates.append((index, name, size))
+            if not candidates:
+                return ""
+            largest = max(size for _, _, size in candidates)
+            selected = [index for index, _, size in candidates if size >= largest * 0.1]
+            return ",".join(str(index) for index in selected)
+        except Exception:
+            return ""
+
     def add_torrent(self, content: str | bytes, **kwargs) -> bool:
         result = self.add_torrent_and_get_id(content, **kwargs)
         return result is not None and result != ""
 
     def add_torrent_and_get_id(
         self,
-        content: str | bytes,
+        content: Any,
         is_paused: bool = False,
         download_dir: str | None = None,
         tags: list[str] | None = None,
@@ -261,11 +358,56 @@ class Thunder(_IDownloadClient):
             self._set_last_add_error("迅雷未连接或连接配置无效")
             return None
         try:
-            if isinstance(content, str):
+            # 插件调用链可能把 bytes 序列化成 list/bytearray/dict；先统一还原。
+            if isinstance(content, memoryview):
+                content = content.tobytes()
+            elif isinstance(content, bytearray):
+                content = bytes(content)
+            elif isinstance(content, (list, tuple)) and all(
+                isinstance(item, int) and 0 <= item <= 255 for item in content
+            ):
+                content = bytes([int(item) for item in content])
+            elif isinstance(content, dict):
+                for key in ("content", "data", "torrent", "bytes", "body"):
+                    value = content.get(key)
+                    if isinstance(value, memoryview):
+                        content = value.tobytes()
+                        break
+                    if isinstance(value, bytearray):
+                        content = bytes(value)
+                        break
+                    if isinstance(value, (bytes, str)):
+                        content = value
+                        break
+            elif not isinstance(content, (str, bytes)):
+                attr = getattr(content, "content", None)
+                if isinstance(attr, (bytes, bytearray, memoryview)):
+                    content = bytes(attr)
+            if isinstance(content, bytes):
+                log.debug(f"[{self.client_name}]add_torrent 收到二进制种子: {len(content)} bytes")
+            else:
+                log.debug(f"[{self.client_name}]add_torrent 内容类型: {type(content).__name__}")
+            if isinstance(content, bytes):
+                # 下载流水线会把 .torrent 读成 bytes；迅雷只接受磁力/种子路径，
+                # 这里落临时文件转磁力，转换后立即删除。
+                if content.startswith(b"magnet:"):
+                    download_url = content.decode("utf-8", errors="ignore")
+                else:
+                    download_url = self._torrent_bytes_to_magnet(content)
+                    if not download_url:
+                        self._set_last_add_error("二进制种子无法转换为磁力链接")
+                        return None
+            elif isinstance(content, str):
                 if content.startswith("magnet:"):
                     download_url = content
                 elif content.endswith(".torrent") or os.path.exists(content):
-                    magnet_url = self._client.torrent_to_magnet(content)
+                    try:
+                        with open(content, "rb") as handle:
+                            torrent_data = handle.read()
+                    except OSError:
+                        self._set_last_add_error(f"种子文件不存在或无法读取：{content}")
+                        return None
+                    magnet_url = self._torrent_bytes_to_magnet(torrent_data)
                     if not magnet_url:
                         log.error(f"[{self.client_name}]种子文件转换磁力链接失败")
                         self._set_last_add_error("种子文件无法转换为磁力链接")
@@ -274,13 +416,16 @@ class Thunder(_IDownloadClient):
                 else:
                     download_url = content
             else:
-                log.error(f"[{self.client_name}]不支持二进制种子内容")
-                self._set_last_add_error("迅雷下载器不支持二进制种子内容")
+                self._set_last_add_error(f"迅雷下载器收到不支持的种子内容类型：{type(content).__name__}")
                 return None
 
             folder_id = self._client._resolve_folder_id(download_dir or "/downloads/xunlei/")
             file_indices = kwargs.get("file_indices")
             file_names = kwargs.get("file_names")
+            if isinstance(content, bytes) and not file_indices:
+                file_indices = self._select_media_file_indices(content) or None
+                if file_indices:
+                    log.info(f"[{self.client_name}]选择视频文件索引: {file_indices}")
             task_info = self._client.download(
                 download_urls=download_url,
                 destination_path=download_dir or "/downloads/xunlei/",

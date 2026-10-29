@@ -7,6 +7,7 @@ import bencodepy
 from bencode import bdecode
 
 import log
+from app.core.constants import RMT_MEDIAEXT
 from app.domain.mediatypes import MediaType
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient
@@ -253,6 +254,30 @@ class Torrent:
             f.write(file_content)
 
         return file_path, file_content, ""
+
+    @staticmethod
+    def torrent_has_media(content: bytes) -> bool:
+        """检查种子内容是否至少包含一个视频文件；纯广告 .url/.txt 种子直接跳过."""
+        if not content:
+            return False
+        try:
+            torrent = Torrent._safe_decode(content)
+            info = torrent.get("info") or {}
+            names: list[str] = []
+            files = info.get("files")
+            if isinstance(files, list) and files:
+                for item in files:
+                    path = item.get("path") if isinstance(item, dict) else None
+                    if isinstance(path, list) and path:
+                        names.append("/".join(str(part) for part in path))
+            else:
+                name = info.get("name")
+                if isinstance(name, str):
+                    names.append(name)
+            media_exts = {str(ext).lower() for ext in RMT_MEDIAEXT}
+            return any(os.path.splitext(name)[-1].lower() in media_exts for name in names)
+        except Exception:
+            return False
 
     @staticmethod
     def get_torrent_files(path):
