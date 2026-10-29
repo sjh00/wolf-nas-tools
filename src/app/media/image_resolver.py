@@ -40,6 +40,16 @@ class MediaImageResolver:
                 value = provider_data.get(key)
                 if value:
                     return str(value)
+        # 自定义画像（插件）通常只把图片放在快照里，不能回退成 TMDB 占位图。
+        snapshot = getattr(media, "snapshot", None)
+        images = getattr(snapshot, "images", None)
+        if isinstance(images, dict):
+            for kind in ("fanart", "backdrop", "poster"):
+                assets = images.get(kind) or []
+                if assets:
+                    url = getattr(assets[0], "url", None)
+                    if url:
+                        return str(url)
         return DEFAULT_TMDB_IMAGE
 
     @staticmethod

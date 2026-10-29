@@ -1,12 +1,13 @@
-"""通用展示图片转换器：插件可按内容画像统一裁剪/模糊所有展示图片.
+"""通用展示图片转换器：插件可按内容画像改写页面展示图片.
 
-探索、下载、历史、订阅与通知共用同一套规则，避免消息渠道单独维护模糊开关。
+只作用于探索、下载、历史、订阅等页面；通知图片走 message_image_policy。
 """
 
 from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
+from urllib.parse import parse_qs, unquote, urlsplit
 
 _TRANSFORMERS: list[Callable[[str, str], str]] = []
 
@@ -28,8 +29,13 @@ def clear_display_image_transformers() -> None:
 
 
 def transform_display_image(content_profile: str, image_url: str) -> str:
-    """按注册顺序转换展示图片；插件失败不影响其他规则."""
+    """按注册顺序转换展示图片；先还原历史遗留的模糊代理 URL."""
     value = str(image_url or "")
+    for _ in range(5):
+        unwrapped = unwrap_display_image_url(value)
+        if unwrapped == value:
+            break
+        value = unwrapped
     profile = str(content_profile or "")
     for transformer in list(_TRANSFORMERS):
         try:
@@ -39,3 +45,16 @@ def transform_display_image(content_profile: str, image_url: str) -> str:
         except Exception:  # noqa: BLE001 - 单插件失败不影响图片展示
             continue
     return value
+
+
+def unwrap_display_image_url(image_url: str | None) -> str:
+    """把展示用的 /img/blur?url=... 还原成原始图片 URL，避免写回数据库."""
+    value = str(image_url or "")
+    if "/img/blur" not in value:
+        return value
+    try:
+        query = parse_qs(urlsplit(value).query)
+        raw = (query.get("url") or [""])[0]
+        return unquote(raw) if raw else value
+    except Exception:
+        return value
