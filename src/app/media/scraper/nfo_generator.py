@@ -143,6 +143,8 @@ class NfoGenerator:
             for actor in actors:
                 xactor = DomUtils.add_node(doc, root, "actor")
                 DomUtils.add_node(doc, xactor, "name", actor.get("name") or "")
+                for alias in actor.get("aliases") or []:
+                    DomUtils.add_node(doc, xactor, "alias", alias)
                 DomUtils.add_node(doc, xactor, "type", "Actor")
                 DomUtils.add_node(doc, xactor, "role", actor.get("role") or "")
                 DomUtils.add_node(doc, xactor, "order", actor.get("order") if actor.get("order") is not None else "")
@@ -347,6 +349,8 @@ class NfoGenerator:
                 elif credit.role == "actor":
                     actor = DomUtils.add_node(doc, root, "actor")
                     DomUtils.add_node(doc, actor, "name", credit.name)
+                    for alias in credit.aliases:
+                        DomUtils.add_node(doc, actor, "alias", alias)
                     DomUtils.add_node(doc, actor, "type", "Actor")
                     DomUtils.add_node(doc, actor, "role", credit.character or "")
                     DomUtils.add_node(doc, actor, "order", credit.order)
@@ -356,9 +360,12 @@ class NfoGenerator:
                         DomUtils.add_node(doc, actor, "thumb", credit.image_url)
                         DomUtils.add_node(doc, actor, "profile", credit.image_url)
             if not snapshot.credits and fallback_actors:
+                actor_aliases = (snapshot.extra or {}).get("actor_aliases") or {}
                 for name in fallback_actors:
                     actor = DomUtils.add_node(doc, root, "actor")
                     DomUtils.add_node(doc, actor, "name", name)
+                    for alias in actor_aliases.get(name) or []:
+                        DomUtils.add_node(doc, actor, "alias", alias)
                     DomUtils.add_node(doc, actor, "type", "Actor")
                     image = actor_images.get(name)
                     if image:
