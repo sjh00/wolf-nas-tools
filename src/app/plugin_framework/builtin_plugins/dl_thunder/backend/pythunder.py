@@ -249,6 +249,11 @@ class PyThunder:
 
         # 提取所有文件
         file_list, total_size_bytes, total_files, _ = extract_files_from_resources(resources)
+        root_name = ""
+        if resources:
+            first = resources[0]
+            if len(resources) > 1 or first.get("is_dir"):
+                root_name = str(first.get("name") or "").strip()
 
         # 按文件索引排序
         file_list.sort(key=lambda x: x.get("file_index", 0))
@@ -259,6 +264,7 @@ class PyThunder:
             "total_files": total_files,
             "total_size_bytes": total_size_bytes,
             "total_size_formatted": self._format_file_size(total_size_bytes),
+            "root_name": root_name,
             "files": file_list,
             "raw_response": result if len(file_list) == 0 else None,  # 如果没有文件，保留原始响应
         }
@@ -459,6 +465,7 @@ class PyThunder:
         files = torrent_info["files"]
         total_files = torrent_info["total_files"]
         total_size_bytes = torrent_info["total_size_bytes"]
+        root_name = str(torrent_info.get("root_name") or "").strip()
 
         # 确定要下载的文件
         if file_names:
@@ -475,15 +482,17 @@ class PyThunder:
             indices = [str(f["file_index"]) for f in selected_files]
             sub_file_index = ",".join(indices)
 
-            # 使用第一个选中文件的名称作为任务名称
-            task_name = selected_files[0]["name"] if selected_files else files[0]["name"]
+            # 多文件种子使用根目录名作为任务名，保留原始目录结构
+            task_name = root_name or (selected_files[0]["name"] if selected_files else files[0]["name"])
+            selected_file_name = selected_files[0]["name"] if selected_files else files[0]["name"]
             download_size = selected_size
             download_count = selected_count
 
         elif file_indices:
             # 使用指定的文件索引
             sub_file_index = file_indices
-            task_name = files[0]["name"]  # 使用第一个文件作为任务名称
+            task_name = root_name or files[0]["name"]
+            selected_file_name = files[0]["name"]
 
             # 如果指定了索引，需要计算选中文件的大小
             if file_indices == "--1":
@@ -530,7 +539,8 @@ class PyThunder:
         else:
             # 默认下载全部
             sub_file_index = "--1"
-            task_name = files[0]["name"]
+            task_name = root_name or files[0]["name"]
+            selected_file_name = files[0]["name"]
             download_size = total_size_bytes
             download_count = total_files
 
@@ -561,7 +571,7 @@ class PyThunder:
         data = {
             "type": "user#download-url",
             "name": task_name,
-            "file_name": task_name,
+            "file_name": selected_file_name,
             "file_size": str(download_size),  # 使用需要下载的文件大小总和
             "space": f"device_id#{device_id}",
             "params": {
