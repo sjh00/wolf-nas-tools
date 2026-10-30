@@ -110,6 +110,16 @@ class MovieLikePlugin:
             if ret != 0:
                 self.ctx.error(f"{retmsg}")
             else:
-                self.ctx.emit("media.library_synced", {"dest": new_path, "media_info": {}})
+                route = self._mediaserver.resolve_route(None, new_path)
+                self.ctx.emit(
+                    "media.library_synced",
+                    {
+                        "dest": new_path,
+                        "media_info": {
+                            "content_profile": route.content_profile if route else "default",
+                            "target_path": new_path,
+                        },
+                    },
+                )
         else:
             self.ctx.warn(f"{org_path} 目录不存在")

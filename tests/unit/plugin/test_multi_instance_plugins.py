@@ -36,8 +36,7 @@ def test_libraryrefresh_media_event_also_scans_routed_library():
         }
     )
 
-    plugin._mediaserver.refresh_library_by_items.assert_called_once()
-    plugin._mediaserver.refresh_root_library.assert_called_once_with(server_id=2, library_id="4")
+    plugin._mediaserver.refresh_library_with_scan.assert_called_once()
 
 
 def test_movielike_uses_directory_routed_server_type():
