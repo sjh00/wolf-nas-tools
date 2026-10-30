@@ -496,6 +496,42 @@ class Emby(_IMediaClient):
                 log.error(f"[{self.client_name}]按路径查询条目出错：" + str(e))
         return None
 
+    def list_persons(self, limit: int = 10000) -> list[dict]:
+        """列出演员/人物条目，供上层同步别名等人物元数据."""
+        if not self._host or not self._apikey:
+            return []
+        req_url = (
+            f"{self._host}emby/Items?Recursive=true&IncludeItemTypes=Person"
+            f"&Fields=Tags,Name&Limit={int(limit)}&api_key={self._apikey}"
+        )
+        try:
+            res = HttpClient().get(req_url)
+            return list((res.json() or {}).get("Items") or []) if res else []
+        except (InfrastructureError, NetworkError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]查询演员列表出错：" + str(e))
+            return []
+
+    def add_person_tags(self, person_id: str, tags: list[str]) -> bool:
+        """给人物条目添加标签（Emby 不支持 alias 字段，用 Tags 承载别名）."""
+        if not self._host or not self._apikey or not person_id:
+            return False
+        names = [str(tag).strip() for tag in tags if str(tag).strip()]
+        if not names:
+            return True
+        req_url = f"{self._host}emby/Items/{person_id}/Tags/Add?api_key={self._apikey}"
+        try:
+            res = HttpClient().post(req_url, json={"Tags": [{"Name": name} for name in names]})
+            return bool(res)
+        except (InfrastructureError, NetworkError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]添加演员标签出错：" + str(e))
+            return False
+
     def search_movie_keyword(self, keyword: str) -> bool:
         """按名称/路径关键字检查电影是否存在（用于番号等非标题场景）."""
         if not self._host or not self._apikey or not keyword:
