@@ -172,7 +172,7 @@ class MediaServer:
             for route in route_repo.list() if routes is None else routes:
                 if not route.enabled or not route.target_path:
                     continue
-                if route.content_profile and route.content_profile != (content_profile or ""):
+                if content_profile and route.content_profile and route.content_profile != content_profile:
                     continue
                 if PathUtils.is_path_in_path(route.target_path, target_path):
                     candidates.append(route)
