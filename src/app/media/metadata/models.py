@@ -97,6 +97,7 @@ class ImageAsset(BaseModel):
 
 class Credit(BaseModel):
     name: str
+    aliases: list[str] = Field(default_factory=list)
     role: str = "actor"
     character: str | None = None
     order: int = 0
