@@ -97,6 +97,8 @@ class LibraryRefreshPlugin:
                     }
                 ]
             )
+            # 新目录可能尚未被 Emby 扫描到，再触发路由命中的媒体库扫描
+            self._mediaserver.refresh_root_library(server_id=server_id, library_id=library_id)
         else:
             self.ctx.info(f"媒体服务器 {mediaserver_type} 刷新整库 ...")
             self._mediaserver.refresh_root_library(server_id=server_id, library_id=library_id)

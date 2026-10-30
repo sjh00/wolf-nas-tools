@@ -22,6 +22,24 @@ def test_libraryrefresh_root_refresh_uses_directory_target():
     plugin._mediaserver.refresh_root_library.assert_called_once_with(server_id=2, library_id="4")
 
 
+def test_libraryrefresh_media_event_also_scans_routed_library():
+    plugin = LibraryRefreshPlugin.__new__(LibraryRefreshPlugin)
+    plugin.ctx = MagicMock()
+    plugin._mediaserver = MagicMock()
+    plugin._mediaserver.resolve_route.return_value = SimpleNamespace(server_id=2, library_id="4")
+    plugin._mediaserver.get_type.return_value = "emby"
+
+    plugin._refresh_library(
+        {
+            "dest": "/media/private/movie",
+            "media_info": {"title": "PPR-012", "year": "2026", "content_profile": "private"},
+        }
+    )
+
+    plugin._mediaserver.refresh_library_by_items.assert_called_once()
+    plugin._mediaserver.refresh_root_library.assert_called_once_with(server_id=2, library_id="4")
+
+
 def test_movielike_uses_directory_routed_server_type():
     plugin = MovieLikePlugin.__new__(MovieLikePlugin)
     plugin.ctx = MagicMock()
