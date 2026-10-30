@@ -332,6 +332,15 @@ def _record_detail_data(record: dict, media_type: MediaType, status: dict | None
     genres = [str(item) for item in (record.get("genres") or []) if item]
     credits = [item for item in (record.get("credits") or []) if isinstance(item, dict)]
     crews = [{item.get("name"): item.get("character") or "演员"} for item in credits[:12] if item.get("name")]
+    actor_profiles = [
+        {
+            "name": item.get("name"),
+            "aliases": list(item.get("aliases") or []),
+            "image_url": item.get("image_url") or "",
+        }
+        for item in credits[:24]
+        if item.get("name") and str(item.get("role") or "actor") == "actor"
+    ]
     release_date = str(record.get("release_date") or "")
     runtime = record.get("runtime")
     runtime_text = StringUtils.str_timehours(runtime) if isinstance(runtime, int) and runtime else ""
@@ -366,6 +375,7 @@ def _record_detail_data(record: dict, media_type: MediaType, status: dict | None
         "runtime": runtime_text,
         "vote": next(iter((record.get("ratings") or {}).values()), None),
         "crews": crews,
+        "actor_profiles": actor_profiles,
         "fact": facts,
         "seasons": [],
         "links": [],
@@ -1076,6 +1086,15 @@ def media_detail_by_ref(
         for item in credits[:12]
         if item.get("name")
     ]
+    actor_profiles = [
+        {
+            "name": item.get("name"),
+            "aliases": list(item.get("aliases") or []),
+            "image_url": item.get("image_url") or "",
+        }
+        for item in credits[:24]
+        if item.get("name") and str(item.get("role") or "actor") == "actor"
+    ]
     extra = snapshot.get("extra") or {}
     aliases = snapshot.get("aliases") or []
     seasons = []
@@ -1190,6 +1209,7 @@ def media_detail_by_ref(
         "runtime": StringUtils.str_timehours(runtime) if runtime else "",
         "vote": rating,
         "crews": crews,
+        "actor_profiles": actor_profiles,
         "fact": facts,
         "seasons": seasons,
         "links": links,
