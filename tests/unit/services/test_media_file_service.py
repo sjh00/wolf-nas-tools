@@ -143,3 +143,16 @@ class TestResolveBackend:
         service._storage_backend_repo.get_by_id.return_value = None
         with pytest.raises(ResourceNotFoundError):
             service._resolve_backend("99")
+
+
+class TestDownloadPoster:
+    def test_delegates_to_downloader(self, service, tmp_path):
+        service._scraper._downloader.download.return_value = True
+        assert service.download_poster("https://example.com/poster.jpg", str(tmp_path)) is True
+        service._scraper._downloader.download.assert_called_once_with(
+            "https://example.com/poster.jpg", str(tmp_path), "poster", force=True
+        )
+
+    def test_rejects_empty_args(self, service):
+        assert service.download_poster("", "/tmp") is False
+        assert service.download_poster("https://example.com/a.jpg", "") is False
