@@ -245,6 +245,10 @@ class Scraper:
                             persist=True,
                             max_age_seconds=0 if force_refresh else 1800,
                         )
+                    if snapshot is None and force_refresh:
+                        snapshot = self._metadata_service.latest_snapshot_for_media(profile_info)
+                        if snapshot is not None:
+                            log.warn(f"[Scraper]{file} 强制重刮合成失败，回退最近快照")
                     if snapshot is not None:
                         scraped = self.gen_snapshot_files(
                             snapshot=snapshot,
