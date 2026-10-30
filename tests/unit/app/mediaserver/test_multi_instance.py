@@ -116,6 +116,37 @@ def test_directory_refresh_uses_longest_path_and_groups():
     assert adult_items[0]["library_id"] == "4"
 
 
+def test_directory_refresh_matches_route_without_content_profile():
+    rows = [_row(1, "普通 Emby", default=True), _row(2, "成人 Emby")]
+    server, route_repo = _server(rows)
+    route_repo.list.return_value = [
+        SimpleNamespace(
+            enabled=True,
+            target_path="/Media/private",
+            content_profile="private",
+            server_id=2,
+            library_id=None,
+        )
+    ]
+    clients = {1: MagicMock(), 2: MagicMock()}
+    lock = MagicMock()
+    lock.acquire.return_value = True
+
+    with (
+        patch.object(
+            MediaServer,
+            "_MediaServer__get_server",
+            side_effect=lambda ctype, conf: clients[int(conf["host"].rsplit("-", 1)[1])],
+        ),
+        patch("app.mediaserver.media_server.get_lock_manager") as lock_manager,
+    ):
+        lock_manager.return_value.create_lock.return_value = lock
+        server.refresh_library_by_items([{"title": "PPR-012", "target_path": "/Media/private/PPR/PPR-012"}])
+
+    clients[2].refresh_library_by_items.assert_called_once()
+    clients[1].refresh_library_by_items.assert_not_called()
+
+
 @patch("app.mediaserver.media_server.get_lock_manager")
 def test_sync_only_clears_target_instance(lock_manager):
     lock = MagicMock()
