@@ -286,6 +286,34 @@ class MediaServer:
             return None
         return self.server.get_movies(title, year)
 
+    def list_persons(
+        self,
+        server_id: int | None = None,
+        content_profile: str | None = None,
+        target_path: str | None = None,
+    ) -> list[dict]:
+        """按路由解析实例并列出人物条目。"""
+        resolved = self.resolve_server_id(server_id, content_profile, target_path)
+        client = self._get_client(resolved)
+        if not client or not hasattr(client, "list_persons"):
+            return []
+        return client.list_persons()
+
+    def add_person_tags(
+        self,
+        person_id: str,
+        tags: list[str],
+        server_id: int | None = None,
+        content_profile: str | None = None,
+        target_path: str | None = None,
+    ) -> bool:
+        """按路由解析实例并给人物追加标签。"""
+        resolved = self.resolve_server_id(server_id, content_profile, target_path)
+        client = self._get_client(resolved)
+        if not client or not hasattr(client, "add_person_tags"):
+            return False
+        return client.add_person_tags(person_id, tags)
+
     def refresh_library_by_items(
         self,
         items,
