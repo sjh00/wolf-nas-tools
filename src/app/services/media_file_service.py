@@ -261,6 +261,13 @@ class MediaFileService:
         self._thread_executor.submit(self._scraper.folder_scraper, path, None, "force_all", dst_backend)
         return "刮削任务已提交，正在后台运行。"
 
+    def download_poster(self, url: str, media_dir: str) -> bool:
+        """从指定 URL 下载海报到媒体目录，供维护任务复用."""
+        if not url or not media_dir:
+            return False
+        self._scraper._init_config()
+        return bool(self._scraper._downloader.download(url, media_dir, "poster", force=True))
+
     def make_dir(self, parent: str, name: str, backend_id: str = "local") -> str:
         """在 parent 下创建目录，返回新目录路径"""
         self._validate_file_name(name)
