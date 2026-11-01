@@ -27,7 +27,9 @@ class AGENTCONVERSATION(Base):
     USER_ID: Mapped[str] = mapped_column(String(64), default="", server_default="")
     CHANNEL: Mapped[str] = mapped_column(String(32), default="web", server_default="web")
     SESSION_ID: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    TITLE: Mapped[str] = mapped_column(String(120), default="", server_default="")
     SUMMARY: Mapped[str] = mapped_column(Text, default="")
+    CHECKPOINT: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     TOKEN_USAGE: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     UPDATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -46,6 +48,32 @@ class AGENTMESSAGE(Base):
     TOOL_CALLS: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     TOKENS: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AGENTTURN(Base):
+    __tablename__ = "AGENT_TURN"
+
+    ID: Mapped[str] = mapped_column(String(64), primary_key=True)
+    USER_ID: Mapped[str] = mapped_column(String(64), index=True)
+    SESSION_ID: Mapped[str] = mapped_column(String(128), index=True)
+    STATUS: Mapped[str] = mapped_column(String(32), default="running")
+    CANCEL_REQUESTED: Mapped[bool] = mapped_column(Boolean, default=False)
+    CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    UPDATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AGENTPENDINGACTION(Base):
+    __tablename__ = "AGENT_PENDING_ACTION"
+
+    ID: Mapped[str] = mapped_column(String(64), primary_key=True)
+    TURN_ID: Mapped[str] = mapped_column(String(64), ForeignKey("AGENT_TURN.ID", ondelete="CASCADE"), index=True)
+    USER_ID: Mapped[str] = mapped_column(String(64), index=True)
+    TOOL: Mapped[str] = mapped_column(String(128))
+    ARGUMENTS: Mapped[dict] = mapped_column(JSON, default=dict)
+    MESSAGE: Mapped[str] = mapped_column(Text, default="")
+    STATUS: Mapped[str] = mapped_column(String(32), default="pending")
+    CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    EXPIRES_AT: Mapped[datetime] = mapped_column(DateTime)
 
 
 class AGENTWEBMESSAGE(Base):

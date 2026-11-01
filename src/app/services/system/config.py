@@ -1,7 +1,6 @@
 """Config services - 索引器、媒体服务器、系统配置与配置更新."""
 
 import json
-from typing import cast
 
 from sqlalchemy import text
 
@@ -215,6 +214,7 @@ class MediaServerConfigService:
             server_dict[item.NAME] = {
                 "id": item.ID,
                 "name": item.NAME,
+                "type": item.TYPE or item.NAME,
                 "enabled": item.ENABLED,
                 "is_default": item.IS_DEFAULT,
                 "config": cfg,
@@ -226,36 +226,53 @@ class MediaServerConfigService:
 
     def save_config(self, data: dict) -> MediaServerConfigResultDTO:
         """保存媒体服务器配置"""
-        name = data.get("type") or ""
         test = data.get("test") in [True, "true", "on", "1", 1]
-        config = {}
+        sid = int(data["id"]) if data.get("id") else None
+        item = self._config_repo.get_media_servers(sid)[0] if sid else None
+        server_type = str(data.get("type") or (item.TYPE if item else "") or (item.NAME if item else ""))
+        name = str(data.get("name") or (item.NAME if item else "") or server_type).strip()
+        if not name or not server_type:
+            return MediaServerConfigResultDTO(success=False, code=-1, msg="实例名称和类型不能为空")
+        duplicated = self._config_repo.get_media_server_by_name(name)
+        if item is None and duplicated is not None:
+            # 兼容旧调用仅按 type/name 更新实例
+            item = duplicated
+            sid = int(duplicated.ID)
+        if duplicated and (sid is None or int(duplicated.ID) != sid):
+            return MediaServerConfigResultDTO(success=False, code=-1, msg="实例名称已存在")
+        try:
+            config = JsonUtils.loads(item.CONFIG) if item and item.CONFIG else {}
+        except json.JSONDecodeError:
+            config = {}
         for key, value in data.items():
-            if key.startswith(name + "."):
+            if key.startswith(server_type + "."):
                 config[key.split(".", 1)[1]] = value
-            elif key not in ("type", "test"):
+            elif key not in ("id", "name", "type", "test"):
                 config[key] = value
         if not config:
             return MediaServerConfigResultDTO(success=False, code=-1, msg="配置为空")
         enabled = 1 if config.get("enabled") else 0
         is_default = 1 if config.get("is_default") else 0
-        item = self._config_repo.get_media_server_by_name(name)
-        sid = cast(int, item.ID) if item else None
         self._config_repo.update_media_server(
-            sid=int(sid) if sid else None,
+            sid=sid,
             name=name,
             enabled=enabled,
             config=JsonUtils.dumps(config),
             is_default=is_default,
+            server_type=server_type,
         )
-        if is_default:
-            self._config_repo.set_default_media_server(name)
+        if is_default or (enabled and not self._config_repo.get_default_media_server()):
+            saved = self._config_repo.get_media_server_by_name(name)
+            if saved is None:
+                return MediaServerConfigResultDTO(success=False, code=-1, msg="默认实例保存失败")
+            self._config_repo.set_default_media_server_id(int(saved.ID))
         self._media_server._refresh()
         TokenCache.delete("index")
         if test:
             try:
                 # 遍历注册表（含插件注册的媒体服务器客户端），而非仅扫描内置目录
                 for schema in get_all_mediaserver_clients():
-                    if schema.match(name):
+                    if schema.match(server_type):
                         client = schema(config)
                         status = client.get_status()
                         return MediaServerConfigResultDTO(
@@ -267,6 +284,24 @@ class MediaServerConfigService:
             except Exception as e:
                 ExceptionUtils.exception_traceback(e)
                 return MediaServerConfigResultDTO(success=False, code=-1, msg=str(e))
+        return MediaServerConfigResultDTO(success=True)
+
+    def delete_config(self, sid: int) -> MediaServerConfigResultDTO:
+        rows = self._config_repo.get_media_servers(sid)
+        if not rows:
+            return MediaServerConfigResultDTO(success=False, code=-1, msg="媒体服务器不存在")
+        if rows[0].IS_DEFAULT and len(self._config_repo.get_media_servers()) > 1:
+            return MediaServerConfigResultDTO(success=False, code=-1, msg="默认实例不能删除，请先设置其他默认实例")
+        self._config_repo.delete_media_server(sid)
+        self._media_server._refresh()
+        return MediaServerConfigResultDTO(success=True)
+
+    def set_default(self, sid: int) -> MediaServerConfigResultDTO:
+        rows = self._config_repo.get_media_servers(sid)
+        if not rows or not rows[0].ENABLED:
+            return MediaServerConfigResultDTO(success=False, code=-1, msg="默认实例必须是启用状态")
+        self._config_repo.set_default_media_server_id(sid)
+        self._media_server._refresh()
         return MediaServerConfigResultDTO(success=True)
 
     def apply_config(
@@ -290,7 +325,14 @@ class MediaServerConfigService:
         if is_default is not None:
             merged["is_default"] = 1 if is_default else 0
         merged.update({k: v for k, v in (config_overlay or {}).items() if v is not None})
-        result = self.save_config({"type": name, **merged})
+        result = self.save_config(
+            {
+                "id": current.get("id"),
+                "name": current.get("name") or name,
+                "type": current.get("type") or name,
+                **merged,
+            }
+        )
         if not getattr(result, "success", True):
             raise ValueError(getattr(result, "msg", "保存失败"))
 

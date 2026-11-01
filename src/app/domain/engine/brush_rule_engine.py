@@ -45,6 +45,9 @@ class BrushRuleEngine:
     # 操作符映射，用于前端展示
     OP_DISPLAY = {"gt": ">", "lt": "<", "bw": ""}
 
+    # 依赖种子详情页属性的删种规则键；属性抓取失败时这些条件不做判定
+    REMOVE_ATTR_RULE_KEYS = ("freestatus", "hr", "hr_time", "pubdate")
+
     # --------------------------------------------------
     # 通用范围检查
     # --------------------------------------------------
@@ -282,12 +285,14 @@ class BrushRuleEngine:
     # --------------------------------------------------
     @classmethod
     def check_remove_rule(
-        cls, remove_rule: dict | None, params: dict
+        cls, remove_rule: dict | None, params: dict, attr_unknown: bool = False
     ) -> tuple[bool, BrushDeleteType | list[BrushDeleteType]]:
         """
         检查是否符合删种规则
         :param remove_rule: 删种规则，包含 mode 字段来决定使用 and 或 or 模式
         :param params: 一个字典，包含所有要检查的参数
+        :param attr_unknown: 种子详情属性是否未知（详情抓取失败）；True 时属性相关条件不做判定，
+            仅执行与属性无关的条件（如做种时间/等待时间/分享率等）
         """
         if not remove_rule:
             return False, BrushDeleteType.NOTDELETE
@@ -323,13 +328,6 @@ class BrushRuleEngine:
             "iatime": (BrushDeleteType.IATIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "pending_time": (BrushDeleteType.PENDINGTIME, lambda value, rv: cls.check_range_rule(value, rv, 3600)),
             "freespace": (BrushDeleteType.FREESPACE, lambda value, rv: cls.check_range_rule(value, rv, 1024**3)),
-            # freestatus = “Free到期删”：仍免费时不删，Free 到期（非免费）才删；
-            # 该键开关（前端以 'Y' 存储，历史模板也可能为 FREE/NORMAL），
-            # 关闭态已在循环外跳过，这里统一按到期语义判断，杜绝“免费即删”误删。
-            "freestatus": (
-                BrushDeleteType.FREESTATUS,
-                lambda value, rv: not value,
-            ),
             "hr": (BrushDeleteType.HR, lambda value, rv: value if rv == "HR" else not value if rv == "NOHR" else True),
             "alive_time": (BrushDeleteType.ALIVETIME, lambda value, rv: cls.check_range_rule(value, rv, 1)),
             "upspeed": (BrushDeleteType.UPSPEED, lambda value, rv: cls.check_range_rule(value, rv, 1024)),
@@ -340,8 +338,21 @@ class BrushRuleEngine:
             ),
         }
 
-        triggered_types = []
+        # freestatus 是删种前置约束，不再作为独立删种条件：
+        # - 未完成任务由 stopfree 负责暂停，不在这里按 Free 状态删除；
+        # - 已完成任务必须 Free 到期且有其他删种条件，才继续评估。
+        free_end_guard = remove_rule.get("freestatus") not in ("#", SwitchState.OFF.value, None, "")
         mode = remove_rule.get("mode", "and")
+        if free_end_guard and params.get("is_completed", True):
+            has_other_rules = any(
+                remove_rule.get(rule) not in ("#", SwitchState.OFF.value, None, "") for rule in rule_checks
+            )
+            if not has_other_rules or (attr_unknown and mode == "and"):
+                return False, BrushDeleteType.NOTDELETE
+            if not attr_unknown and params.get("torrent_attr", {}).get("free", False):
+                return False, BrushDeleteType.NOTDELETE
+
+        triggered_types = []
         log.info(
             f"[Brush][删种规则] 当前值 ratio={values['ratio']}, 做种={values['time']}s, "
             f"上传={values['uploadsize']}B, 活了{values['alive_time']}h, "
@@ -351,6 +362,15 @@ class BrushRuleEngine:
         for rule, (delete_type, check_func) in rule_checks.items():
             rule_value = remove_rule.get(rule)
             if rule_value in ("#", SwitchState.OFF.value, None, ""):
+                continue
+
+            # 详情属性未知（抓取失败）时，free/hr/hour 相关条件无法判定：
+            # or 模式下跳过该条件、继续评估其余与属性无关的条件；
+            # and 模式下因该条件无法满足而阻止本次删种（避免误删）。
+            if attr_unknown and rule in cls.REMOVE_ATTR_RULE_KEYS:
+                log.info(f"[Brush][删种规则] {rule} 属性未知（详情抓取失败），本轮不判定")
+                if mode == "and":
+                    return False, BrushDeleteType.NOTDELETE
                 continue
 
             # hr_time 规则仅对 HR 种子生效，非 HR 种子在两种模式下都跳过
@@ -388,7 +408,12 @@ class BrushRuleEngine:
     # 停种规则
     # --------------------------------------------------
     @classmethod
-    def check_stop_rule(cls, stop_rule: dict | None, params: dict):
+    def check_stop_rule(cls, stop_rule: dict | None, params: dict, attr_unknown: bool = False):
+        """检查是否符合停种规则
+
+        :param attr_unknown: 详情属性是否未知（抓取失败）；True 时跳过 stopfree（Free 到期）条件，
+            仅评估与属性无关的条件（分享率/上传量/做种时间/平均速度）
+        """
         if not stop_rule:
             return False, BrushStopType.NOTSTOP
 
@@ -432,6 +457,15 @@ class BrushRuleEngine:
         for rule, (stop_type, check_func) in rule_checks.items():
             rule_value = stop_rule.get(rule)
             if rule_value in ("#", SwitchState.OFF.value, None, ""):
+                continue
+            # Free 到期暂停只针对未完成下载；已完成种子继续评估其他停种规则。
+            if rule == "stopfree" and params.get("is_completed", False):
+                log.info("[Brush][停种规则] 下载已完成，不单独因 Free 到期停种")
+                continue
+            # 属性未知（抓取失败）：stopfree（Free 到期）无法判定，跳过该项，
+            # 其余与属性无关的停种条件仍正常评估。
+            if attr_unknown and rule == "stopfree":
+                log.info("[Brush][停种规则] stopfree 属性未知（详情抓取失败），本轮不判定")
                 continue
             if check_func(rule_value):
                 log.info(f"[Brush][停种规则] {rule} 触发: 规则={rule_value}")

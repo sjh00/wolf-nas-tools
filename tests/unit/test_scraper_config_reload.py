@@ -27,7 +27,7 @@ class TestScraperConfigHotReload:
         assert scraper._scraper_nfo == {}
 
         media = MagicMock()
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
         # 配置为空时应跳过（不调用刮削内部逻辑）
         scraper._scrape_movie = MagicMock()
         scraper._scrape_tv = MagicMock()
@@ -55,7 +55,7 @@ class TestScraperConfigHotReload:
         scraper._scrape_movie = MagicMock()
         scraper._scrape_tv = MagicMock()
         media = MagicMock()
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
         scraper.gen_scraper_files(media=media, dir_path="/tmp", file_name="f", file_ext=".mkv")
         scraper._scrape_tv.assert_not_called()
         scraper._scrape_movie.assert_not_called()

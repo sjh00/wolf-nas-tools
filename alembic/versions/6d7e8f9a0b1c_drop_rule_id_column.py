@@ -34,9 +34,14 @@ def has_column(table_name, column_name):
 
 
 def upgrade() -> None:
-    if has_table("SITE_BRUSH_TASK") and has_column("SITE_BRUSH_TASK", "RULE_ID"):
-        op.drop_constraint("SITE_BRUSH_TASK_ibfk_1", "SITE_BRUSH_TASK", type_="foreignkey")
+    if not (has_table("SITE_BRUSH_TASK") and has_column("SITE_BRUSH_TASK", "RULE_ID")):
+        return
+    if op.get_bind().dialect.name == "sqlite":
+        # 5ec 的 SQLite 重建表已去掉 RULE_ID 外键，这里只剩列。
         op.drop_column("SITE_BRUSH_TASK", "RULE_ID")
+        return
+    op.drop_constraint("SITE_BRUSH_TASK_ibfk_1", "SITE_BRUSH_TASK", type_="foreignkey")
+    op.drop_column("SITE_BRUSH_TASK", "RULE_ID")
 
 
 def downgrade() -> None:

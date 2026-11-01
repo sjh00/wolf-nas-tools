@@ -5,7 +5,7 @@ API Key 数据访问层
 
 from datetime import datetime
 
-from sqlalchemy import desc, func
+from sqlalchemy import func
 
 from app.db.models.apikey import APIKEY, APIKEYLOG
 from app.db.repositories.base_repository import BaseRepository
@@ -17,25 +17,25 @@ class APIKeyRepository(BaseRepository):
     def get_by_id(self, key_id: int) -> APIKEY | None:
         """根据 ID 获取 API Key"""
         with self.session() as db:
-            return db.query(APIKEY).filter(key_id == APIKEY.ID).first()
+            return db.query(APIKEY).filter(APIKEY.ID == key_id).first()
 
     def get_by_key_value(self, key_value: str) -> APIKEY | None:
         """根据 Key 值获取 API Key"""
         with self.session() as db:
-            return db.query(APIKEY).filter(key_value == APIKEY.KEY_VALUE).first()
+            return db.query(APIKEY).filter(APIKEY.KEY_VALUE == key_value).first()
 
     def get_by_key_and_status(self, key_value: str, status: int = 1) -> APIKEY | None:
         """根据 Key 值和状态获取 API Key"""
         with self.session() as db:
-            return db.query(APIKEY).filter(key_value == APIKEY.KEY_VALUE, status == APIKEY.STATUS).first()
+            return db.query(APIKEY).filter(APIKEY.KEY_VALUE == key_value, APIKEY.STATUS == status).first()
 
     def get_by_name(self, name: str, status: int | None = None) -> APIKEY | None:
         """根据名称获取 API Key"""
         with self.session() as db:
-            query = db.query(APIKEY).filter(name == APIKEY.NAME)
+            query = db.query(APIKEY).filter(APIKEY.NAME == name)
             if status is not None:
-                query = query.filter(status == APIKEY.STATUS)
-            return query.order_by(desc(APIKEY.CREATED_AT)).first()
+                query = query.filter(APIKEY.STATUS == status)
+            return query.order_by(APIKEY.CREATED_AT.desc()).first()
 
     def list_keys(self, page: int = 1, page_size: int = 50, created_by: int | None = None) -> tuple[list[APIKEY], int]:
         """获取 API Key 列表（支持分页；created_by 非空时按创建者过滤）"""
@@ -43,7 +43,7 @@ class APIKeyRepository(BaseRepository):
             query = db.query(APIKEY)
             if created_by is not None:
                 query = query.filter(APIKEY.CREATED_BY == created_by)
-            query = query.order_by(desc(APIKEY.CREATED_AT))
+            query = query.order_by(APIKEY.CREATED_AT.desc())
             total = query.count()
             items = self._paginate(query, page, page_size).all()
             return items, total
@@ -79,7 +79,7 @@ class APIKeyRepository(BaseRepository):
     def update_key(self, key_id: int, **kwargs) -> bool:
         """更新 API Key"""
         with self.session() as db:
-            key = db.query(APIKEY).filter(key_id == APIKEY.ID).first()
+            key = db.query(APIKEY).filter(APIKEY.ID == key_id).first()
             if not key:
                 return False
             for k, v in kwargs.items():
@@ -91,10 +91,10 @@ class APIKeyRepository(BaseRepository):
     def delete_key(self, key_id: int) -> bool:
         """删除 API Key"""
         with self.session() as db:
-            key = db.query(APIKEY).filter(key_id == APIKEY.ID).first()
+            key = db.query(APIKEY).filter(APIKEY.ID == key_id).first()
             if not key:
                 return False
-            db.query(APIKEYLOG).filter(key_id == APIKEYLOG.API_KEY_ID).delete()
+            db.query(APIKEYLOG).filter(APIKEYLOG.API_KEY_ID == key_id).delete()
             db.delete(key)
             db.commit()
             return True
@@ -102,7 +102,7 @@ class APIKeyRepository(BaseRepository):
     def increment_use_count(self, key_id: int) -> bool:
         """增加使用次数"""
         with self.session() as db:
-            key = db.query(APIKEY).filter(key_id == APIKEY.ID).first()
+            key = db.query(APIKEY).filter(APIKEY.ID == key_id).first()
             if not key:
                 return False
             key.USE_COUNT = (key.USE_COUNT or 0) + 1  # type: ignore[assignment]
@@ -168,9 +168,9 @@ class APIKeyLogRepository(BaseRepository):
     ) -> tuple[list[APIKEYLOG], int]:
         """获取使用记录列表"""
         with self.session() as db:
-            query = db.query(APIKEYLOG).order_by(desc(APIKEYLOG.REQUEST_AT))
+            query = db.query(APIKEYLOG).order_by(APIKEYLOG.REQUEST_AT.desc())
             if api_key_id is not None:
-                query = query.filter(api_key_id == APIKEYLOG.API_KEY_ID)
+                query = query.filter(APIKEYLOG.API_KEY_ID == api_key_id)
             total = query.count()
             items = self._paginate(query, page, page_size).all()
             return items, total
@@ -178,11 +178,11 @@ class APIKeyLogRepository(BaseRepository):
     def get_log_by_request_id(self, request_id: str) -> APIKEYLOG | None:
         """根据请求 ID 获取记录"""
         with self.session() as db:
-            return db.query(APIKEYLOG).filter(request_id == APIKEYLOG.REQUEST_ID).first()
+            return db.query(APIKEYLOG).filter(APIKEYLOG.REQUEST_ID == request_id).first()
 
     def delete_logs_by_key_id(self, api_key_id: int) -> int:
         """删除指定 API Key 的所有记录"""
         with self.session() as db:
-            result = db.query(APIKEYLOG).filter(api_key_id == APIKEYLOG.API_KEY_ID).delete()
+            result = db.query(APIKEYLOG).filter(APIKEYLOG.API_KEY_ID == api_key_id).delete()
             db.commit()
             return result

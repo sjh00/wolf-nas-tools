@@ -146,7 +146,7 @@ class RBACRoleRepository(BaseRepository):
 
     def create_role(
         self, role_name: str, role_code: str, description: str | None = None, role_level: int = 100
-    ) -> RBACRole:
+    ) -> RBACRole | None:
         """
         创建角色
 

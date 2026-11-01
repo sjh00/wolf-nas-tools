@@ -47,6 +47,17 @@ class SearchQueryBuilder:
         根据媒体信息构建多语言搜索词列表
         :return: (搜索词列表, 建议最大并发数)
         """
+        # 自定义内容画像（如 AV）只用番号/关键词搜索，避免标题带来噪声
+        profile = str(getattr(media_info, "content_profile", "") or "").strip()
+        if profile and profile != "default":
+            keyword = (
+                media_info.keyword
+                or getattr(media_info, "anchor_external_id", "")
+                or str(getattr(media_info, "tmdb_id", "") or "").split(":", 1)[-1]
+            )
+            if keyword:
+                return [str(keyword)], 1
+
         search_name_list = []
         if media_info.keyword:
             search_name_list.append(media_info.keyword)
@@ -236,11 +247,40 @@ class SearchResultProcessor:
 
         return sorted(media_list, key=_sort_key, reverse=True)
 
-    def filter_downloaded(self, media_list: list) -> list:
-        """过滤掉已完成下载历史中存在的资源（失败/进行中的任务不阻塞）"""
+    def filter_downloaded(self, media_list: list, force: bool = False) -> list:
+        """过滤已完成下载历史；手动刷新仅在无活动任务时允许重新下载."""
+        if force and media_list:
+            media_item = media_list[0]
+            ref = media_item.get_media_ref()
+            if ref is not None and ref.provider != "tmdb":
+                get_rows = getattr(self._download_repo, "get_by_identity", None)
+                rows = (
+                    get_rows(
+                        identity_id=getattr(media_item, "identity_id", None),
+                        anchor_provider=ref.provider,
+                        anchor_external_id=ref.external_id,
+                    )
+                    if get_rows
+                    else []
+                )
+                active = {"downloading", "pending", "running", "paused", "queued"}
+                if not any(str(getattr(row, "state", "") or "").lower() in active for row in rows or []):
+                    return list(media_list)
         filtered = []
         for media_item in media_list:
-            if media_item.tmdb_id:
+            ref = media_item.get_media_ref()
+            if ref is not None and ref.provider != "tmdb":
+                season_episode = media_item.get_season_episode_string()
+                is_done = getattr(self._download_repo, "is_completed_by_identity", None)
+                if is_done and is_done(
+                    identity_id=getattr(media_item, "identity_id", None),
+                    anchor_provider=ref.provider,
+                    anchor_external_id=ref.external_id,
+                    season_episode=season_episode,
+                ):
+                    log.info(f"[Searcher]{media_item.title} {season_episode} 已存在完成下载，跳过下载")
+                    continue
+            elif media_item.tmdb_id:
                 season_episode = media_item.get_season_episode_string()
                 if self._download_repo.is_completed_by_tmdb(media_item.tmdb_id, season_episode):
                     log.info(f"[Searcher]{media_item.title} {season_episode} 已存在完成下载，跳过下载")
@@ -337,6 +377,7 @@ class Searcher:
         filters: dict | None = None,
         user_name=None,
         user_id: int | str | None = None,
+        force_download: bool = False,
     ) -> tuple[Any, dict, int, int]:
         """
         只搜索和下载一个资源
@@ -420,7 +461,7 @@ class Searcher:
                 return None, no_exists, len(media_list), 0
 
         # 4. 过滤已下载
-        filtered_media_list = processor.filter_downloaded(media_list)
+        filtered_media_list = processor.filter_downloaded(media_list, force=force_download)
         if not filtered_media_list:
             log.info("[Searcher]所有搜索结果已在下载历史中存在，跳过下载")
             return None, no_exists, len(media_list), 0
@@ -445,11 +486,12 @@ class Searcher:
         if not download_items:
             log.info(f"[Searcher]{media_info.title} 未下载到资源")
             return None, no_exists, len(media_list), 0
-        else:
-            log.info(f"[Searcher]实际下载了 {len(download_items)} 个资源")
-            if left_medias:
-                return None, no_exists, len(media_list), len(download_items)
-            return download_items[0], no_exists, len(media_list), len(download_items)
+        log.info(f"[Searcher]实际下载了 {len(download_items)} 个资源")
+        # 电影没有"缺失集"概念：剩余候选只是同一部片的其它站点资源，不代表未完成。
+        # 返回已下载项，避免订阅/搜索链路误判为"无结果"而重复下载或重复建订阅。
+        if left_medias and getattr(media_info, "type", None) != MediaType.MOVIE:
+            return None, no_exists, len(media_list), len(download_items)
+        return download_items[0], no_exists, len(media_list), len(download_items)
 
     def get_search_result_by_id(self, dl_id):
         if self.search_repo is None:
@@ -507,6 +549,7 @@ class SearchService:
         filters: dict | None = None,
         user_name: str | None = None,
         user_id: int | str | None = None,
+        force_download: bool = False,
     ) -> SearchOneMediaResultDTO:
         result = self._searcher.search_one_media(
             media_info=media_info,
@@ -516,6 +559,7 @@ class SearchService:
             filters=filters or {},
             user_name=user_name,
             user_id=user_id,
+            force_download=force_download,
         )
         if not result:
             return SearchOneMediaResultDTO()

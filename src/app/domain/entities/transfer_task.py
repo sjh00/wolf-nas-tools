@@ -48,7 +48,7 @@ class TransferTask:
     dst_backend_id: str = "local"
     """目标存储后端 ID"""
 
-    tmdb_info: dict[str, Any] | None = None
+    provider_data: dict[str, Any] | None = None
     """预知的 TMDB 信息（下载器场景可用）"""
 
     media_type: str | None = None

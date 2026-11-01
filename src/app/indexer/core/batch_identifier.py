@@ -378,7 +378,7 @@ class BatchIdentifier:
         info.type = info.type or getattr(match_media, "type", None)
         info.title = getattr(match_media, "title", None)
         info.original_title = getattr(match_media, "original_title", None)
-        info.tmdb_info = getattr(match_media, "tmdb_info", None) or {}
+        info.provider_data = getattr(match_media, "provider_data", None) or {}
         info.poster_path = getattr(match_media, "poster_path", None)
         info.backdrop_path = getattr(match_media, "backdrop_path", None)
         # 全名严格命中目标别名集 → 最高置信

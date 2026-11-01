@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from app.db.models import SEARCHRESULTINFO
 from app.db.repositories.base_repository import BaseRepository
 from app.domain.mediatypes import MediaType
+from app.media.metadata.policy import ANCHOR_POLICY
 from app.utils.json_utils import JsonUtils
 
 
@@ -56,12 +57,13 @@ class SearchRepository(BaseRepository):
 
             mappings = []
             for media_item in media_items:
-                if media_item.type == MediaType.TV:
-                    mtype = MediaType.TV.value
+                if media_item.type == MediaType.ANIME:
+                    mtype = MediaType.ANIME.value
                 elif media_item.type == MediaType.MOVIE:
                     mtype = MediaType.MOVIE.value
                 else:
-                    mtype = MediaType.ANIME.value
+                    # TV/UNKNOWN/None 统一按 tv 存储，避免 UNKNOWN 被误标为动漫
+                    mtype = MediaType.TV.value
 
                 # 截断超长 ENCLOSURE：去掉磁力链接中多余的 tracker，只保留核心 btih
                 enclosure = media_item.enclosure or ""
@@ -84,6 +86,13 @@ class SearchRepository(BaseRepository):
                     "IMAGE": (media_item.get_backdrop_image(default=False, original=True) or ""),
                     "POSTER": (media_item.get_poster_image() or ""),
                     "TMDBID": media_item.tmdb_id or "",
+                    "IDENTITY_ID": getattr(media_item, "identity_id", None) or "",
+                    "ANCHOR_PROVIDER": getattr(media_item, "anchor_provider", None) or "",
+                    "ANCHOR_EXTERNAL_ID": getattr(media_item, "anchor_external_id", None) or "",
+                    "CONTENT_PROFILE": getattr(media_item, "content_profile", None) or "default",
+                    "METADATA_POLICY": getattr(media_item, "metadata_policy", None)
+                    or ANCHOR_POLICY.get(str(getattr(media_item, "anchor_provider", "") or ""), ""),
+                    "NAMING_PROFILE": getattr(media_item, "naming_profile", None) or "",
                     "OVERVIEW": media_item.overview or "",
                     "RES_TYPE": JsonUtils.dumps(
                         {
@@ -117,14 +126,14 @@ class SearchRepository(BaseRepository):
                 }
                 if session_id:
                     mapping["SEARCH_SESSION_ID"] = session_id
-                if user_id:
+                if user_id is not None:
                     mapping["USER_ID"] = str(user_id)
                 mapping["CREATED_AT"] = datetime.now(timezone.utc).replace(tzinfo=None)
                 mappings.append(mapping)
 
             # 按 DB 唯一约束 (PAGEURL, SITE, SEARCH_SESSION_ID) 去重
             # MySQL 唯一键为 PAGEURL 前缀索引（191 字符），其余库使用完整列
-            dialect = inspect(db.bind).dialect.name
+            dialect = inspect(db.get_bind()).dialect.name
             pageurl_prefix = 191 if dialect == "mysql" else None
             deduped = {}
             for m in mappings:
@@ -136,43 +145,7 @@ class SearchRepository(BaseRepository):
             if not mappings:
                 return
 
-            if dialect == "mysql":
-                stmt = mysql_insert(SEARCHRESULTINFO).values(mappings)
-                stmt = stmt.on_duplicate_key_update(
-                    TORRENT_NAME=stmt.inserted.TORRENT_NAME,
-                    ENCLOSURE=stmt.inserted.ENCLOSURE,
-                    DESCRIPTION=stmt.inserted.DESCRIPTION,
-                    SIZE=stmt.inserted.SIZE,
-                    SEEDERS=stmt.inserted.SEEDERS,
-                    PEERS=stmt.inserted.PEERS,
-                )
-                db.execute(stmt)
-            elif dialect == "postgresql":
-                stmt = pg_insert(SEARCHRESULTINFO).values(mappings)
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uq_search_pageurl_site_session",
-                    set_={
-                        "TORRENT_NAME": stmt.excluded.TORRENT_NAME,
-                        "ENCLOSURE": stmt.excluded.ENCLOSURE,
-                        "SIZE": stmt.excluded.SIZE,
-                        "SEEDERS": stmt.excluded.SEEDERS,
-                        "PEERS": stmt.excluded.PEERS,
-                    },
-                )
-                db.execute(stmt)
-            else:
-                stmt = sqlite_insert(SEARCHRESULTINFO).values(mappings)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["PAGEURL", "SITE", "SEARCH_SESSION_ID"],
-                    set_={
-                        "TORRENT_NAME": stmt.excluded.TORRENT_NAME,
-                        "ENCLOSURE": stmt.excluded.ENCLOSURE,
-                        "SIZE": stmt.excluded.SIZE,
-                        "SEEDERS": stmt.excluded.SEEDERS,
-                        "PEERS": stmt.excluded.PEERS,
-                    },
-                )
-                db.execute(stmt)
+            db.execute(self._build_upsert_stmt(dialect, mappings))
             db.commit()
             # 概率性清理：删除 24 小时以上的旧记录
             if random.random() < 0.1:
@@ -184,6 +157,52 @@ class SearchRepository(BaseRepository):
                 )
                 if deleted:
                     db.commit()
+
+    @staticmethod
+    def _build_upsert_stmt(dialect: str, mappings: list[dict]):
+        """按方言构建 upsert 语句。
+
+        唯一键为 (PAGEURL, SITE, SEARCH_SESSION_ID)。该唯一性在模型与迁移中均以唯一索引
+        （uq_search_pageurl_site_session）提供，而非表约束；PostgreSQL 的
+        `ON CONFLICT ON CONSTRAINT` 只接受表约束，故统一用 `index_elements` 推断唯一索引。
+        """
+        conflict_cols = ["PAGEURL", "SITE", "SEARCH_SESSION_ID"]
+        if dialect == "mysql":
+            stmt = mysql_insert(SEARCHRESULTINFO).values(mappings)
+            return stmt.on_duplicate_key_update(
+                TORRENT_NAME=stmt.inserted.TORRENT_NAME,
+                ENCLOSURE=stmt.inserted.ENCLOSURE,
+                DESCRIPTION=stmt.inserted.DESCRIPTION,
+                SIZE=stmt.inserted.SIZE,
+                SEEDERS=stmt.inserted.SEEDERS,
+                PEERS=stmt.inserted.PEERS,
+                IDENTITY_ID=stmt.inserted.IDENTITY_ID,
+                ANCHOR_PROVIDER=stmt.inserted.ANCHOR_PROVIDER,
+                ANCHOR_EXTERNAL_ID=stmt.inserted.ANCHOR_EXTERNAL_ID,
+                CONTENT_PROFILE=stmt.inserted.CONTENT_PROFILE,
+                METADATA_POLICY=stmt.inserted.METADATA_POLICY,
+                NAMING_PROFILE=stmt.inserted.NAMING_PROFILE,
+            )
+        if dialect == "postgresql":
+            stmt = pg_insert(SEARCHRESULTINFO).values(mappings)
+        else:
+            stmt = sqlite_insert(SEARCHRESULTINFO).values(mappings)
+        return stmt.on_conflict_do_update(
+            index_elements=conflict_cols,
+            set_={
+                "TORRENT_NAME": stmt.excluded.TORRENT_NAME,
+                "ENCLOSURE": stmt.excluded.ENCLOSURE,
+                "SIZE": stmt.excluded.SIZE,
+                "SEEDERS": stmt.excluded.SEEDERS,
+                "PEERS": stmt.excluded.PEERS,
+                "IDENTITY_ID": stmt.excluded.IDENTITY_ID,
+                "ANCHOR_PROVIDER": stmt.excluded.ANCHOR_PROVIDER,
+                "ANCHOR_EXTERNAL_ID": stmt.excluded.ANCHOR_EXTERNAL_ID,
+                "CONTENT_PROFILE": stmt.excluded.CONTENT_PROFILE,
+                "METADATA_POLICY": stmt.excluded.METADATA_POLICY,
+                "NAMING_PROFILE": stmt.excluded.NAMING_PROFILE,
+            },
+        )
 
     def get_search_result_by_id(self, dl_id):
         """

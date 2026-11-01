@@ -87,16 +87,27 @@ class SiteCache:
         self._sync_indexer_site_config()
 
     def _sync_indexer_site_config(self) -> None:
-        """将 builtin 站点名同步到 INDEXER_SITE_CONFIG。
+        """将 builtin 站点名同步到 INDEXER_SITE_CONFIG；已存在行保留 enabled/download_setting。
 
-        不写入 enabled：新行走表默认值（启用搜索），已有行保留用户设置。
+        不写入 enabled：新行走表默认值（默认启用搜索），已有行保留用户设置。
+        显式写 enabled=True 会在 upsert 时把用户手动关闭的站点重新打开
+        （多实例并发下 existing 快照可能过期），故一律不覆盖。
         """
         try:
+            existing = {
+                str(row.site_name).strip().casefold()
+                for row in self._indexer_site_config_repo.list_all()
+                if str(row.site_name or "").strip()
+            }
             for site_info in self._site_by_ids.values():
+                site_name = str(site_info.get("name") or "").strip()
+                if not site_name or site_name.casefold() in existing:
+                    continue
                 self._indexer_site_config_repo.upsert_site(
-                    site_name=site_info["name"],
+                    site_name=site_name,
                     source="builtin",
                 )
+                existing.add(site_name.casefold())
         except Exception as e:
             log.error(f"[SiteCache]同步索引器站点配置失败: {e!s}")
 

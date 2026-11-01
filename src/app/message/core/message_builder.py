@@ -9,9 +9,13 @@ from typing import Any
 import log
 from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAdapter
 from app.domain.mediatypes import MediaType
+from app.media.metadata.registry import registry as metadata_registry
+from app.message.template_registry import message_template_registry
 from app.schemas.auth import SUPERADMIN_ROLE_CODE
+from app.services.subscription_context import resolve_subscription_context
 from app.services.web import WebUtils
 from app.utils import StringUtils
+from app.utils.json_utils import JsonUtils
 
 _FAIL_NOTIFY_INTERVAL = 600
 _fail_notify_cache: dict[str, float] = {}
@@ -29,6 +33,53 @@ def _should_notify_fail(key: str) -> bool:
         return True
 
 
+def _type_label(media_info, profile: str) -> str:
+    """消息中的用户可见类型：普通媒体用电影/电视剧，扩展画像用插件标签."""
+    if profile and profile != "default":
+        return message_template_registry.label(profile) or profile
+    return media_info.type.display_name
+
+
+def _source_provider(item) -> str:
+    """消息中的来源展示：优先真实 provider，聚合源回退到订阅备注的真实来源。"""
+    provider = str(getattr(item, "provider", "") or getattr(item, "anchor_provider", "") or "").strip()
+    metadata_ref = str(getattr(item, "metadata_ref", "") or "").strip()
+    if (not provider or provider == "content_id") and ":" in metadata_ref:
+        provider = metadata_ref.split(":", 1)[0].strip()
+    desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+    provider_data = getattr(item, "provider_data", None)
+    if isinstance(provider_data, dict):
+        real_source = str(provider_data.get("source_provider") or "").strip()
+        reusable = not provider or provider == "content_id" or desc is None
+        if real_source and (reusable or getattr(desc, "virtual", False)):
+            provider = real_source
+            desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
+    if not provider:
+        return ""
+    if getattr(desc, "virtual", False):
+        return "未知来源"
+    return str(getattr(desc, "display_name", "") or provider)
+
+
+def _message_variables(item, *, source_provider: str | None = None) -> dict[str, Any]:
+    """订阅通知统一变量：来源、关键词与过滤条件，供插件模板消费。"""
+    profile = str(getattr(item, "content_profile", "") or "default")
+    source = source_provider if source_provider is not None else _source_provider(item)
+    return {
+        "content_profile": profile,
+        "profile_label": message_template_registry.label(profile) or (profile if profile != "default" else ""),
+        "source_provider": source,
+        "keyword": str(getattr(item, "keyword", "") or ""),
+        "filter_restype": str(getattr(item, "filter_restype", "") or ""),
+        "filter_pix": str(getattr(item, "filter_pix", "") or ""),
+        "filter_team": str(getattr(item, "filter_team", "") or ""),
+        "filter_rule": getattr(item, "filter_rule", None),
+        "filter_include": str(getattr(item, "filter_include", "") or ""),
+        "filter_exclude": str(getattr(item, "filter_exclude", "") or ""),
+        "filter_free": bool(getattr(item, "filter_free", False)),
+    }
+
+
 class MessageBuilder:
     """负责各类业务场景的消息内容构建和发送."""
 
@@ -38,7 +89,15 @@ class MessageBuilder:
         self._messagecenter = messagecenter
         self._template_engine = template_engine
 
-    def _send_admin_msg(self, title: str, text: str, url: str | None = None, image: str | None = None) -> bool:
+    def _send_admin_msg(
+        self,
+        title: str,
+        text: str,
+        url: str | None = None,
+        image: str | None = None,
+        msg_type: str | None = None,
+        variables: dict | None = None,
+    ) -> bool:
         """系统/人工介入类事件定向推送给超级管理员（Web + 其绑定渠道）.
 
         返回是否有管理员被通知；无管理员时退化为全局系统消息。
@@ -50,39 +109,49 @@ class MessageBuilder:
             admin_ids = []
         if not admin_ids:
             if self._messagecenter:
-                self._messagecenter.insert_system_message(title=title, content=text)
+                self._insert_system_message(msg_type, variables, title, text)
             return False
         for uid in admin_ids:
-            self._dispatcher.send_user_msg(uid, title, text, image=image, url=url)
+            self._dispatcher.send_user_msg(
+                uid,
+                title,
+                text,
+                image=image,
+                url=url,
+                msg_type=msg_type,
+                variables=variables,
+                template_engine=self._template_engine,
+            )
         return True
 
     def send_download_message(self, in_from, can_item, download_setting_name=None, downloader_name=None) -> None:
-        msg_title = f"{can_item.get_title_ep_string()} 开始下载"
+        self._enrich_from_subscription(can_item)
+        msg_title = f"⬇️ {can_item.get_title_ep_string()} 开始下载"
         msg_text = f"{can_item.get_star_string()}"
-        msg_text = f"{msg_text}\n来自：{StringUtils.resolve_in_from_display(in_from)}"
+        msg_text = f"{msg_text}\n📥 来自：{StringUtils.resolve_in_from_display(in_from)}"
         message_image = can_item.get_message_image() if hasattr(can_item, "get_message_image") else ""
         log.debug(f"[MessageBuilder]下载消息图片: {message_image}")
         if download_setting_name:
-            msg_text = f"{msg_text}\n下载设置：{download_setting_name}"
+            msg_text = f"{msg_text}\n⚙️ 下载设置：{download_setting_name}"
         if downloader_name:
-            msg_text = f"{msg_text}\n下载器：{downloader_name}"
+            msg_text = f"{msg_text}\n🖥️ 下载器：{downloader_name}"
         if can_item.user_name:
-            msg_text = f"{msg_text}\n用户：{can_item.user_name}"
+            msg_text = f"{msg_text}\n👤 用户：{can_item.user_name}"
         if can_item.site:
             if StringUtils.resolve_in_from_display(in_from) == "自定义订阅":
-                msg_text = f"{msg_text}\n任务：{can_item.site}"
+                msg_text = f"{msg_text}\n📌 任务：{can_item.site}"
             else:
-                msg_text = f"{msg_text}\n站点：{can_item.site}"
+                msg_text = f"{msg_text}\n🌐 站点：{can_item.site}"
         if can_item.get_resource_type_string():
-            msg_text = f"{msg_text}\n质量：{can_item.get_resource_type_string()}"
+            msg_text = f"{msg_text}\n📦 质量：{can_item.get_resource_type_string()}"
         if can_item.size:
             if str(can_item.size).isdigit():
                 size = StringUtils.str_filesize(can_item.size)
             else:
                 size = can_item.size
-            msg_text = f"{msg_text}\n大小：{size}"
+            msg_text = f"{msg_text}\n💾 大小：{size}"
         if can_item.org_string:
-            msg_text = f"{msg_text}\n种子：{can_item.org_string}"
+            msg_text = f"{msg_text}\n🎬 种子：{can_item.org_string}"
         if can_item.seeders:
             msg_text = f"{msg_text}\n做种数：{can_item.seeders}"
         msg_text = f"{msg_text}\n促销：{can_item.get_volume_factor_string()}"
@@ -127,6 +196,7 @@ class MessageBuilder:
             "star_string": can_item.get_star_string() if hasattr(can_item, "get_star_string") else "",
             "title_ep_string": can_item.get_title_ep_string() if hasattr(can_item, "get_title_ep_string") else "",
             "title_string": can_item.get_title_string() if hasattr(can_item, "get_title_string") else "",
+            **_message_variables(can_item),
         }
         # 归属用户的下载事件：定向推送（Web + 绑定渠道），不广播全局外部渠道（ADR-021 5.6）
         owner_user_id = getattr(can_item, "user_id", None)
@@ -142,8 +212,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_text)
+        self._insert_system_message("download_start", variables, msg_title, msg_text)
         for client in self._client_manager.active_clients:
             if "download_start" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -157,12 +226,33 @@ class MessageBuilder:
                     template_engine=self._template_engine,
                 )
 
+    def _insert_system_message(self, msg_type, variables, title, text):
+        if self._messagecenter is None:
+            return
+        title, text = self._render_system_message(msg_type, variables, title, text)
+        self._messagecenter.insert_system_message(title=title, content=text)
+
+    def _render_system_message(self, msg_type, variables, title, text):
+        """Web 系统消息同样应用插件/渠道模板，避免退化为手写纯文本."""
+        if self._template_engine is None:
+            return title, text
+        tpl_title, tpl_text = self._template_engine.apply_client_template(
+            {},
+            msg_type,
+            variables,
+            content_profile=str((variables or {}).get("content_profile") or ""),
+        )
+        return tpl_title or title, tpl_text or text
+
     def send_transfer_movie_message(self, in_from, media_info, exist_filenum, category_flag) -> None:
-        msg_title = f"{media_info.get_title_string()} 已入库"
+        self._enrich_from_subscription(media_info)
+        msg_title = f"✅ {media_info.get_title_string()} 已入库"
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        type_label = _type_label(media_info, profile)
         if media_info.vote_average:
-            msg_str = f"{media_info.get_vote_string()}，类型：{MediaType.MOVIE.display_name}"
+            msg_str = f"{media_info.get_vote_string()}，类型：{type_label}"
         else:
-            msg_str = f"类型：{MediaType.MOVIE.display_name}"
+            msg_str = f"类型：{type_label}"
         if media_info.category:
             if category_flag:
                 msg_str = f"{msg_str}，类别：{media_info.category}"
@@ -179,6 +269,7 @@ class MessageBuilder:
             "in_from": StringUtils.resolve_in_from_display(in_from),
             "exist_filenum": exist_filenum,
             "category_flag": category_flag,
+            **_message_variables(media_info),
         }
         # 归属用户的入库事件：定向推送（ADR-021 5.6）
         owner_user_id = getattr(media_info, "user_id", None)
@@ -194,8 +285,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+        self._insert_system_message("transfer_finished", variables, msg_title, msg_str)
         for client in self._client_manager.active_clients:
             if "transfer_finished" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -213,11 +303,12 @@ class MessageBuilder:
         self, message_medias: dict, in_from: Enum, exist_filenum: int = 0, category_flag: bool = False
     ) -> None:
         for item_info in message_medias.values():
+            self._enrich_from_subscription(item_info)
             if item_info.total_episodes == 1:
-                msg_title = f"{item_info.get_title_string()} {item_info.get_season_episode_string()} 已入库"
+                msg_title = f"✅ {item_info.get_title_string()} {item_info.get_season_episode_string()} 已入库"
             else:
                 msg_title = (
-                    f"{item_info.get_title_string()} {item_info.get_season_string()} "
+                    f"✅ {item_info.get_title_string()} {item_info.get_season_string()} "
                     f"共{item_info.total_episodes}集 已入库"
                 )
             if item_info.vote_average:
@@ -240,6 +331,7 @@ class MessageBuilder:
                 "season_episode": item_info.get_season_episode_string()
                 if hasattr(item_info, "get_season_episode_string")
                 else "",
+                **_message_variables(item_info),
             }
             # 归属用户的入库事件：定向推送（ADR-021 5.6）
             owner_user_id = getattr(item_info, "user_id", None)
@@ -255,8 +347,7 @@ class MessageBuilder:
                     template_engine=self._template_engine,
                 )
                 continue
-            if self._messagecenter:
-                self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+            self._insert_system_message("transfer_finished", variables, msg_title, msg_str)
             for client in self._client_manager.active_clients:
                 if "transfer_finished" in (client.get("switches") or ""):
                     self._dispatcher.sendmsg(
@@ -285,14 +376,89 @@ class MessageBuilder:
             tag = item.get_season_string() or ""
         return tag
 
+    @staticmethod
+    def _subscription_context(item):
+        return resolve_subscription_context(item)
+
+    def _enrich_from_subscription(self, item):
+        """统一给下载/入库/完成消息补订阅名称、来源和海报."""
+        subscription = self._subscription_context(item)
+        if subscription is None:
+            return None
+        if not str(getattr(item, "poster_path", "") or ""):
+            image = str(getattr(subscription, "image", "") or "")
+            if image:
+                item.poster_path = image
+        desc = str(getattr(subscription, "desc", "") or "")
+        note = JsonUtils.loads(desc) if desc and JsonUtils.is_valid_json(desc) else {}
+        if not isinstance(note, dict):
+            note = {}
+        if not str(getattr(item, "poster_path", "") or ""):
+            note_poster = str(note.get("poster") or "")
+            if note_poster:
+                item.poster_path = note_poster
+        real_source = str(note.get("source_provider") or "").strip()
+        if real_source:
+            item.provider_data = {
+                **(getattr(item, "provider_data", None) or {}),
+                "source_provider": real_source,
+            }
+        provider = str(getattr(subscription, "provider", "") or "")
+        if not str(getattr(item, "anchor_provider", "") or ""):
+            anchor = str(getattr(subscription, "anchor_provider", "") or "")
+            if anchor:
+                item.anchor_provider = anchor
+        if provider:
+            item.provider = provider
+        metadata_ref = str(getattr(subscription, "metadata_ref", "") or "")
+        if metadata_ref:
+            item.metadata_ref = metadata_ref
+        if not getattr(item, "rssid", None):
+            item.rssid = getattr(subscription, "id", None)
+        if not str(getattr(item, "keyword", "") or ""):
+            keyword = str(getattr(subscription, "keyword", "") or "")
+            if keyword:
+                item.keyword = keyword
+        profile = str(getattr(subscription, "content_profile", "") or "")
+        if profile:
+            # 订阅画像优先于搜索条目的临时画像，避免普通番剧被按 AV 规则处理。
+            item.content_profile = profile
+        return subscription
+
     def send_download_fail_message(self, item, error_msg: str) -> None:
-        title = f"{item.get_title_string()} {self._format_season_episode(item)} 添加下载任务失败".strip()
-        if not _should_notify_fail(f"{title}|{getattr(item, 'enclosure', '')}"):
+        subscription = self._enrich_from_subscription(item)
+        # 同一订阅/同一媒体在短时间内只通知一次，避免 1080P、4K 等
+        # 多个种子连续失败时刷屏。
+        failure_key = str(getattr(item, "rssid", None) or getattr(item, "tmdb_id", None) or item.get_title_string())
+        if not _should_notify_fail(f"download-fail:{failure_key}"):
             return
+        if subscription is not None:
+            subscription_image = str(getattr(subscription, "image", "") or "")
+            if subscription_image and not str(getattr(item, "poster_path", "") or ""):
+                item.poster_path = subscription_image
+            if not getattr(item, "title", ""):
+                item.title = getattr(subscription, "name", "") or item.title
+        title = f"❌ {item.get_title_string()} {self._format_season_episode(item)} 添加下载任务失败".strip()
         site = getattr(item, "site", "") or ""
         org_string = getattr(item, "org_string", "") or ""
         enclosure = getattr(item, "enclosure", "") or ""
-        text = f"标题：{title}\n站点：{site}\n种子名称：{org_string}\n种子链接：{enclosure}\n错误信息：{error_msg}"
+        subscription_line = ""
+        if subscription is not None:
+            source = _source_provider(subscription) or "未知"
+            keyword = str(getattr(subscription, "keyword", "") or "").strip()
+            subscription_line = (
+                f"📺 订阅：{getattr(subscription, 'name', '')} (#{getattr(subscription, 'id', '')})\n"
+                f"📡 来源：{source}\n"
+            )
+            if keyword:
+                subscription_line += f"🔢 关键词：{keyword}\n"
+        text = (
+            f"{subscription_line}"
+            f"🌐 站点：{site or '未知'}\n"
+            f"🎬 种子：{org_string or '未知'}\n"
+            f"🔗 链接：{enclosure or '无'}\n"
+            f"❗ 原因：{error_msg}"
+        )
         owner_user_id = getattr(item, "user_id", None)
         if owner_user_id:
             self._dispatcher.send_user_msg(
@@ -301,15 +467,31 @@ class MessageBuilder:
                 text,
                 image=item.get_message_image(),
                 msg_type="download_fail",
-                variables={"item": item, "error_msg": error_msg},
+                variables={
+                    "item": item,
+                    "error_msg": error_msg,
+                    **_message_variables(item),
+                    "subscription": subscription,
+                },
                 template_engine=self._template_engine,
             )
             return
         # 无归属的失败事件 → 定向超级管理员
-        self._send_admin_msg(title, text, image=item.get_message_image())
+        variables = {
+            "item": item,
+            "error_msg": error_msg,
+            **_message_variables(item),
+            "subscription": subscription,
+        }
+        self._send_admin_msg(
+            title,
+            text,
+            image=item.get_message_image(),
+            msg_type="download_fail",
+            variables=variables,
+        )
         for client in self._client_manager.active_clients:
             if "download_fail" in (client.get("switches") or ""):
-                variables = {"item": item, "error_msg": error_msg}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -321,17 +503,29 @@ class MessageBuilder:
                 )
 
     def send_subscribe_success_message(self, in_from: Enum, media_info) -> None:
+        self._enrich_from_subscription(media_info)
         if media_info.type == MediaType.MOVIE:
-            msg_title = f"{media_info.get_title_string()} 已添加订阅"
+            msg_title = f"📌 {media_info.get_title_string()} 已添加订阅"
         else:
-            msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已添加订阅"
-        msg_str = f"类型：{media_info.type.display_name}"
+            msg_title = f"📌 {media_info.get_title_string()} {media_info.get_season_string()} 已添加订阅"
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        source = _source_provider(media_info)
+        keyword = str(getattr(media_info, "keyword", "") or "").strip()
+        msg_str = f"📺 类型：{_type_label(media_info, profile)}"
+        if keyword:
+            msg_str = f"{msg_str}\n🔢 关键词：{keyword}"
+        if source:
+            msg_str = f"{msg_str}\n📡 来源：{source}"
         if media_info.vote_average:
-            msg_str = f"{msg_str}，{media_info.get_vote_string()}"
-        msg_str = f"{msg_str}，来自：{StringUtils.resolve_in_from_display(in_from)}"
+            msg_str = f"{msg_str}\n⭐ {media_info.get_vote_string()}"
+        msg_str = f"{msg_str}\n📥 来自：{StringUtils.resolve_in_from_display(in_from)}"
         if media_info.user_name:
-            msg_str = f"{msg_str}，用户：{media_info.user_name}"
-        variables = {"media_info": media_info, "in_from": StringUtils.resolve_in_from_display(in_from)}
+            msg_str = f"{msg_str}\n👤 用户：{media_info.user_name}"
+        variables = {
+            "media_info": media_info,
+            "in_from": StringUtils.resolve_in_from_display(in_from),
+            **_message_variables(media_info, source_provider=source),
+        }
         # 归属用户的订阅事件：定向推送给该用户（Web + 绑定渠道），不广播到全局外部渠道（ADR-021 5.6）
         owner_user_id = getattr(media_info, "user_id", None)
         if owner_user_id:
@@ -346,8 +540,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+        self._insert_system_message("rss_added", variables, msg_title, msg_str)
         for client in self._client_manager.active_clients:
             if "rss_added" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -362,18 +555,27 @@ class MessageBuilder:
                 )
 
     def send_rss_finished_message(self, media_info, owner_user_id: int | None = None) -> None:
-        if media_info.type == MediaType.MOVIE:
-            return
+        self._enrich_from_subscription(media_info)
+        profile = str(getattr(media_info, "content_profile", "") or "default")
+        if owner_user_id is None:
+            owner_user_id = getattr(media_info, "user_id", None)
         if media_info.over_edition:
-            msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
+            msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成洗版"
         else:
-            msg_title = f"{media_info.get_title_string()} {media_info.get_season_string()} 已完成订阅"
-        msg_str = f"类型：{media_info.type.display_name}"
+            msg_title = f"🎉 {media_info.get_title_string()} {media_info.get_season_string()} 已完成订阅"
+        source = _source_provider(media_info)
+        keyword = str(getattr(media_info, "keyword", "") or "").strip()
+        msg_str = f"📺 类型：{_type_label(media_info, profile)}"
+        if keyword:
+            msg_str = f"{msg_str}\n🔢 关键词：{keyword}"
+        if source:
+            msg_str = f"{msg_str}\n📡 来源：{source}"
         if media_info.vote_average:
-            msg_str = f"{msg_str}，{media_info.get_vote_string()}"
+            msg_str = f"{msg_str}\n⭐ {media_info.get_vote_string()}"
         variables = {
             "media_info": media_info,
             "over_edition": media_info.over_edition if hasattr(media_info, "over_edition") else False,
+            **_message_variables(media_info, source_provider=source),
         }
         # 归属用户的订阅完成事件：定向推送（ADR-021 5.6）
         if owner_user_id:
@@ -388,8 +590,7 @@ class MessageBuilder:
                 template_engine=self._template_engine,
             )
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=msg_title, content=msg_str)
+        self._insert_system_message("rss_finished", variables, msg_title, msg_str)
         for client in self._client_manager.active_clients:
             if "rss_finished" in (client.get("switches") or ""):
                 self._dispatcher.sendmsg(
@@ -406,13 +607,12 @@ class MessageBuilder:
     def send_site_signin_message(self, msgs: list) -> None:
         if not msgs:
             return
-        title = "站点签到"
+        title = "📊 站点签到"
         text = "\n".join(msgs)
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"msgs": msgs}
+        self._insert_system_message("site_signin", variables, title, text)
         for client in self._client_manager.active_clients:
             if "site_signin" in (client.get("switches") or ""):
-                variables = {"msgs": msgs}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -425,13 +625,13 @@ class MessageBuilder:
     def send_site_message(self, title=None, text=None) -> None:
         if not title:
             return
+        title = f"📬 {title}"
         if not text:
             text = ""
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("site_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if "site_message" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -445,13 +645,13 @@ class MessageBuilder:
         """站点解析健康告警：独立开关 site_parse_health，与通用站点通知分开控制."""
         if not title:
             return
+        title = f"🩺 {title}"
         if not text:
             text = ""
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text}
+        self._insert_system_message("site_parse_health", variables, title, text)
         for client in self._client_manager.active_clients:
             if "site_parse_health" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -464,13 +664,19 @@ class MessageBuilder:
     def send_transfer_fail_message(self, path: str, count: int, text: str) -> None:
         if not path or not count:
             return
-        title = f"[{count} 个文件入库失败]"
-        text = f"源路径：{path}\n原因：{text}"
+        title = f"❌ [{count} 个文件入库失败]"
+        text = f"📁 源路径：{path}\n❗ 原因：{text}"
         # 失败/人工介入类事件定向给超级管理员（ADR-021 5.6），不再广播给所有用户
-        self._send_admin_msg(title, text, url="unidentification")
+        variables = {"path": path, "count": count, "text": text}
+        self._send_admin_msg(
+            title,
+            text,
+            url="unidentification",
+            msg_type="transfer_fail",
+            variables=variables,
+        )
         for client in self._client_manager.active_clients:
             if "transfer_fail" in (client.get("switches") or ""):
-                variables = {"path": path, "count": count, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -484,11 +690,11 @@ class MessageBuilder:
     def send_auto_remove_torrents_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        title = f"🗑️ {title}"
+        variables = {"title": title, "text": text}
+        self._insert_system_message("auto_remove_torrents", variables, title, text)
         for client in self._client_manager.active_clients:
             if "auto_remove_torrents" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -502,11 +708,11 @@ class MessageBuilder:
     def send_brushtask_remove_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        title = f"🗑️ {title}"
+        variables = {"title": title, "text": text}
+        self._insert_system_message("brushtask_remove", variables, title, text)
         for client in self._client_manager.active_clients:
             if "brushtask_remove" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -520,11 +726,11 @@ class MessageBuilder:
     def send_brushtask_added_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        title = f"🌊 {title}"
+        variables = {"title": title, "text": text}
+        self._insert_system_message("brushtask_added", variables, title, text)
         for client in self._client_manager.active_clients:
             if "brushtask_added" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -538,11 +744,11 @@ class MessageBuilder:
     def send_brushtask_pause_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        title = f"⏸️ {title}"
+        variables = {"title": title, "text": text}
+        self._insert_system_message("brushtask_pause", variables, title, text)
         for client in self._client_manager.active_clients:
             if "brushtask_pause" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -603,19 +809,18 @@ class MessageBuilder:
         if not image_url:
             image_url = _webhook_images.get(channel)
         message_content = "\n".join(message_texts)
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=message_title, content=message_content)
         url = event_info.get("play_url") or ""
+        variables = {
+            "event_info": event_info,
+            "channel": channel,
+            "message_title": message_title,
+            "message_content": message_content,
+            "image_url": image_url,
+            "url": url,
+        }
+        self._insert_system_message("mediaserver_message", variables, message_title, message_content)
         for client in self._client_manager.active_clients:
             if "mediaserver_message" in (client.get("switches") or ""):
-                variables = {
-                    "event_info": event_info,
-                    "channel": channel,
-                    "message_title": message_title,
-                    "message_content": message_content,
-                    "image_url": image_url,
-                    "url": url,
-                }
                 self._dispatcher.sendmsg(
                     client=client,
                     title=message_title,
@@ -632,11 +837,10 @@ class MessageBuilder:
     ) -> None:
         if not title:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text, "url": url, "image": image}
+        self._insert_system_message("custom_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if "custom_message" in (client.get("switches") or ""):
-                variables = {"title": title, "text": text, "url": url, "image": image}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -653,11 +857,10 @@ class MessageBuilder:
             return
         if not clients:
             return
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"title": title, "text": text, "image": image}
+        self._insert_system_message("custom_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if str(client.get("id")) in clients:
-                variables = {"title": title, "text": text, "image": image}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,
@@ -673,11 +876,10 @@ class MessageBuilder:
             return
         title = "站点数据统计"
         text = "\n".join(msgs)
-        if self._messagecenter:
-            self._messagecenter.insert_system_message(title=title, content=text)
+        variables = {"msgs": msgs, "title": title, "text": text}
+        self._insert_system_message("ptrefresh_date_message", variables, title, text)
         for client in self._client_manager.active_clients:
             if "ptrefresh_date_message" in (client.get("switches") or ""):
-                variables = {"msgs": msgs, "title": title, "text": text}
                 self._dispatcher.sendmsg(
                     client=client,
                     title=title,

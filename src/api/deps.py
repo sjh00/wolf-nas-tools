@@ -268,6 +268,16 @@ def get_media_service(app_context: AppContext = Depends(get_app_context)):
     return app_context.media_service
 
 
+def get_metadata_service(app_context: AppContext = Depends(get_app_context)):
+    """获取多源元数据服务实例"""
+    return app_context.metadata_service
+
+
+def get_discovery_service(app_context: AppContext = Depends(get_app_context)):
+    """获取探索页发现服务实例"""
+    return app_context.discovery_service
+
+
 def get_subscribe_service(app_context: AppContext = Depends(get_app_context)) -> SubscribeService:
     """获取订阅服务实例"""
     return app_context.subscribe_service
@@ -491,6 +501,11 @@ def get_search_result_service(app_context: AppContext = Depends(get_app_context)
 def get_transfer_history_service(app_context: AppContext = Depends(get_app_context)):
     """获取转移历史服务实例"""
     return app_context.transfer_history_service
+
+
+def get_library_rename_service(app_context: AppContext = Depends(get_app_context)):
+    """获取媒体库批量重命名服务实例"""
+    return app_context.library_rename_service
 
 
 def get_config_reloader(app_context: AppContext = Depends(get_app_context)):

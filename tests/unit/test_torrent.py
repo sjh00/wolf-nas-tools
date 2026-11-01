@@ -209,3 +209,44 @@ class TestTorrentContentErrors:
             path, content, msg = torrent.save_torrent_file("https://api.m-team.cc/api/rss/dlv2?sign=abc&t=1")
         assert path is None and content is None
         assert "不可重试" in msg and "最多下載10次" in msg
+
+    def _redirect(self, status_code: int, location: str):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.headers = {"location": location}
+        resp.content = b""
+        resp.text = ""
+        return resp
+
+    def test_prowlarr_magnet_redirect_returns_magnet(self):
+        """Prowlarr/Jackett 下载接口 302 到 magnet: 时应直接返回磁力链接
+
+        回归：此前 HttpClient 自动跟随跳转 → httpx 报
+        "Request URL has an unsupported protocol 'magnet://'" → 下载失败。
+        """
+        torrent = self._torrent()
+        magnet = "magnet:?xt=urn:btih:ABCDEF123456&dn=Show"
+        with patch("app.sites.torrent.HttpClient") as client:
+            client.return_value.get.return_value = self._redirect(302, magnet)
+            path, content, msg = torrent.save_torrent_file("http://192.168.1.1:9696/6/download?apikey=k&link=a1lv")
+        assert path is None
+        assert content == magnet
+        assert msg == "磁力链接"
+        assert client.return_value.get.call_args.kwargs["follow_redirects"] is False
+
+    def test_http_redirect_followed_manually(self):
+        """302 指向 http(s) 种子地址时手动跟一跳，仍走原有解析逻辑"""
+        torrent = self._torrent()
+        magnet = "magnet:?xt=urn:btih:ZZZ"
+        first = self._redirect(302, "https://cdn.example.com/a.torrent")
+        second = MagicMock()
+        second.status_code = 200
+        second.content = magnet.encode()
+        second.text = magnet
+        second.headers = {"content-type": "application/x-bittorrent"}
+        with patch("app.sites.torrent.HttpClient") as client:
+            client.return_value.get.side_effect = [first, second]
+            path, content, msg = torrent.save_torrent_file("https://site.example.com/dl/1")
+        assert content == magnet
+        assert client.return_value.get.call_count == 2
+        assert client.return_value.get.call_args_list[1].kwargs["url"] == "https://cdn.example.com/a.torrent"

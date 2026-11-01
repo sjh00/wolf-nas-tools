@@ -340,6 +340,13 @@ class Plex(_IMediaClient):
         """
         return None
 
+    def refresh_library(self, library_id):
+        """按 Plex section 刷新媒体库。"""
+        if not self._plex:
+            return False
+        self._plex.query(f"/library/sections/{library_id}/refresh")
+        return True
+
     def refresh_root_library(self) -> bool:
         """
         通知Plex刷新整个媒体库
@@ -365,18 +372,23 @@ class Plex(_IMediaClient):
                 ExceptionUtils.exception_traceback(err)
         result_dict = {}
         for item in items:
-            file_path = item.get("file_path")
-            lib_key, path = self.__find_librarie(file_path, self._libraries)
+            file_path = item.get("file_path") or item.get("target_path")
+            if item.get("library_id"):
+                lib_key = str(item["library_id"])
+                path = os.path.dirname(file_path) if file_path else ""
+            else:
+                lib_key, path = self.__find_librarie(file_path, self._libraries)
             # 如果存在同一剧集的多集,key(path)相同会合并
             result_dict[path] = lib_key
-        if "" in result_dict:
-            # 如果有匹配失败的,刷新整个库
-            self._plex.library.update()
-        else:
-            # 否则一个一个刷新
-            for path, lib_key in result_dict.items():
-                log.info(f"[{self.client_name}]刷新媒体库：{lib_key} : {path}")
+        for path, lib_key in result_dict.items():
+            if not lib_key:
+                self._plex.library.update()
+                return
+            log.info(f"[{self.client_name}]刷新媒体库：{lib_key} : {path}")
+            if path:
                 self._plex.query(f"/library/sections/{lib_key}/refresh?path={quote_plus(path)}")
+            else:
+                self.refresh_library(lib_key)
 
     @staticmethod
     def __find_librarie(path, libraries):

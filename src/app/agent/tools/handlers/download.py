@@ -30,7 +30,7 @@ def download_add_link(
 
 def media_download(ctx: ToolContext, title: str, media_format: str = "", user_id: str | None = None) -> ToolResult:
     meta = ctx.media_service.get_media_info(title=title)
-    if not meta or not meta.tmdb_info:
+    if not meta or not meta.provider_data:
         return ToolResult(success=False, error=f"无法识别《{title}》的媒体信息")
     filters = {"media_format": media_format} if media_format else None
     if user_id:

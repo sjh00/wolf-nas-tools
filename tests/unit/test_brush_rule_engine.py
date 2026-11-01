@@ -209,12 +209,19 @@ class TestCheckRemoveRule:
         need, _ = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is False
 
-    def test_freestatus_free_rule_triggers_when_free_expired(self):
+    def test_freestatus_alone_never_triggers_delete(self):
         rule = {"freestatus": "FREE", "mode": "or"}
-        params = {"torrent_attr": {"free": False}}
+        params = {"torrent_attr": {"free": False}, "is_completed": True}
+        need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
+        assert need is False
+        assert dtype == BrushDeleteType.NOTDELETE
+
+    def test_freestatus_guard_with_ratio_triggers_after_free_end(self):
+        rule = {"freestatus": "FREE", "ratio": "lt#5", "mode": "or"}
+        params = {"torrent_attr": {"free": False}, "ratio": 2.5, "is_completed": True}
         need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is True
-        assert dtype == BrushDeleteType.FREESTATUS
+        assert dtype == BrushDeleteType.RATIO
 
     def test_freestatus_free_rule_not_triggers_when_still_free(self):
         rule = {"freestatus": "FREE", "mode": "or"}
@@ -222,12 +229,12 @@ class TestCheckRemoveRule:
         need, _ = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is False
 
-    def test_freestatus_switch_triggers_when_free_expired(self):
-        # 前端开关存值 'Y'：免费到期（非免费）才删
-        rule = {"freestatus": "Y", "mode": "or"}
-        need, dtype = BrushRuleEngine.check_remove_rule(rule, {"torrent_attr": {"free": False}})
-        assert need is True
-        assert dtype == BrushDeleteType.FREESTATUS
+    def test_freestatus_guard_blocks_delete_while_still_free(self):
+        rule = {"freestatus": "Y", "ratio": "lt#5", "mode": "or"}
+        params = {"torrent_attr": {"free": True}, "ratio": 2.5, "is_completed": True}
+        need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
+        assert need is False
+        assert dtype == BrushDeleteType.NOTDELETE
 
     def test_freestatus_switch_not_triggers_when_still_free(self):
         rule = {"freestatus": "Y", "mode": "or"}
@@ -241,12 +248,12 @@ class TestCheckRemoveRule:
         need, _ = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is False
 
-    def test_freestatus_normal_rule_triggers_when_not_free(self):
-        rule = {"freestatus": "NORMAL", "mode": "or"}
-        params = {"torrent_attr": {"free": False}}
+    def test_freestatus_guard_does_not_block_other_rules_for_downloading(self):
+        rule = {"freestatus": "NORMAL", "ratio": "lt#5", "mode": "or"}
+        params = {"torrent_attr": {"free": True}, "ratio": 2.5, "is_completed": False}
         need, dtype = BrushRuleEngine.check_remove_rule(rule, params)
         assert need is True
-        assert dtype == BrushDeleteType.FREESTATUS
+        assert dtype == BrushDeleteType.RATIO
 
     def test_hr_rule_triggers_when_is_hr(self):
         rule = {"hr": "HR", "mode": "or"}
@@ -381,6 +388,33 @@ class TestCheckRemoveRule:
         assert need is True
         assert dtype == BrushDeleteType.FREESPACE
 
+    def test_attr_unknown_or_mode_still_triggers_time_rule(self):
+        # 详情属性抓取失败：or 模式下与属性无关的条件（等待时间）仍应触发删种
+        rule = {"freestatus": "Y", "pending_time": "gt#1", "mode": "or"}
+        params = {"pending_time": 4000, "torrent_attr": {}}
+        need, dtype = BrushRuleEngine.check_remove_rule(rule, params, attr_unknown=True)
+        assert need is True
+        assert dtype == BrushDeleteType.PENDINGTIME
+
+    def test_attr_unknown_or_mode_attr_rule_not_triggers(self):
+        # 属性未知时 freestatus 不得按“非免费”误判触发删除
+        rule = {"freestatus": "Y", "mode": "or"}
+        params = {"torrent_attr": {}}
+        need, _ = BrushRuleEngine.check_remove_rule(rule, params, attr_unknown=True)
+        assert need is False
+
+    def test_attr_unknown_hr_rule_not_triggers(self):
+        rule = {"hr": "NOHR", "mode": "or"}
+        need, _ = BrushRuleEngine.check_remove_rule(rule, {"torrent_attr": {}}, attr_unknown=True)
+        assert need is False
+
+    def test_attr_unknown_and_mode_blocks_delete(self):
+        # and 模式下属性条件无法确认，即使其它条件满足也不删（安全优先）
+        rule = {"freestatus": "Y", "pending_time": "gt#1", "mode": "and"}
+        params = {"pending_time": 4000, "torrent_attr": {}}
+        need, _ = BrushRuleEngine.check_remove_rule(rule, params, attr_unknown=True)
+        assert need is False
+
 
 # =========================================================================
 # check_stop_rule
@@ -473,12 +507,39 @@ class TestCheckStopRule:
         need, _ = BrushRuleEngine.check_stop_rule(stop_rule, {"free": True})
         assert need is False
 
+    def test_stopfree_does_not_stop_completed_torrent(self):
+        need, stype = BrushRuleEngine.check_stop_rule({"stopfree": "Y"}, {"free": False, "is_completed": True})
+        assert need is False
+        assert stype == BrushStopType.NOTSTOP
+
+    def test_completed_torrent_still_obeys_ratio_rule(self):
+        need, stype = BrushRuleEngine.check_stop_rule(
+            {"stopfree": "Y", "ratio": "gt#1"},
+            {"free": False, "is_completed": True, "ratio": 2.5},
+        )
+        assert need is True
+        assert stype == BrushStopType.RATIO
+
     def test_first_triggering_rule_wins(self):
         stop_rule = {"ratio": "lt#5.0", "seedtime": "gt#1"}
         params = {"ratio": 2.5, "seeding_time": 4000}
         need, stype = BrushRuleEngine.check_stop_rule(stop_rule, params)
         assert need is True
         assert stype == BrushStopType.RATIO
+
+    def test_attr_unknown_skips_stopfree_but_keeps_seedtime(self):
+        # 属性抓取失败：stopfree（Free 到期）跳过，但做种时间等无关条件仍触发停种
+        stop_rule = {"stopfree": "Y", "seedtime": "gt#1"}
+        params = {"seeding_time": 4000}
+        need, stype = BrushRuleEngine.check_stop_rule(stop_rule, params, attr_unknown=True)
+        assert need is True
+        assert stype == BrushStopType.SEEDTIME
+
+    def test_attr_unknown_stopfree_only_not_triggers(self):
+        stop_rule = {"stopfree": "Y"}
+        need, stype = BrushRuleEngine.check_stop_rule(stop_rule, {}, attr_unknown=True)
+        assert need is False
+        assert stype == BrushStopType.NOTSTOP
 
 
 # =========================================================================

@@ -5,10 +5,13 @@ import mimetypes
 import os
 import threading
 
+from PIL import Image
+
 import log
 from app.infrastructure.http import HttpClientError
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
+from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.storage.backends.base import StorageBackend
 from app.utils import ExceptionUtils
 from app.utils.commons import retry
@@ -42,44 +45,70 @@ class ImageDownloader:
 
     def __init__(self, temp_path: str, dst_backend: StorageBackend | None = None):
         self._temp_path = temp_path
+        self._local = threading.local()
         self._dst_backend = dst_backend
+
+    @property
+    def _dst_backend(self):
+        return getattr(self._local, "dst_backend", None)
+
+    @_dst_backend.setter
+    def _dst_backend(self, value) -> None:
+        self._local.dst_backend = value
 
     def set_dst_backend(self, dst_backend: StorageBackend | None):
         self._dst_backend = dst_backend
 
-    @retry(HttpClientError, logger=log)
+    @retry(HttpClientError, tries=1, delay=0.2, logger=log)
     def download(self, url, out_path, itype="", force=False):
         """下载图片并保存"""
         if not url or not out_path:
-            return
+            return False
         if itype:
             ext = self._guess_extension(url)
             image_path = os.path.join(out_path, f"{itype}{ext}")
         else:
             image_path = out_path
         if not force and os.path.exists(image_path):
-            return
+            return True
         try:
             log.info(f"[Scraper]正在下载{itype}图片：{url} ...")
             with _IMAGE_DOWNLOAD_SEMAPHORE:
-                r = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings())).get(
-                    url=url, raise_exception=True
-                )
+                headers = {}
+                referer = image_referer_registry.resolve(url)
+                if referer:
+                    headers["Referer"] = referer
+                kwargs = {"url": url, "raise_exception": True}
+                if headers:
+                    kwargs["headers"] = headers
+                r = HttpClient(config=HttpClientConfig(proxy_url=_proxy_url_from_settings())).get(**kwargs)
             if r:
                 resolved_path = self._resolve_extension(image_path, r.headers.get("content-type", ""))
+                content = r.content
+                if itype == "poster" and not resolved_path.lower().endswith((".jpg", ".jpeg")):
+                    try:
+                        with Image.open(io.BytesIO(content)) as source:
+                            buffer = io.BytesIO()
+                            source.convert("RGB").save(buffer, format="JPEG", quality=92)
+                        content = buffer.getvalue()
+                        resolved_path = os.path.splitext(resolved_path)[0] + ".jpg"
+                    except Exception:  # noqa: BLE001, S110 - 转换失败保留原格式
+                        pass
                 if self._dst_backend:
-                    self._dst_backend.write_stream(resolved_path, io.BytesIO(r.content), len(r.content))
+                    self._dst_backend.write_stream(resolved_path, io.BytesIO(content), len(content))
                 else:
                     with open(file=resolved_path, mode="wb") as img:
-                        img.write(r.content)
+                        img.write(content)
                 log.info(f"[Scraper]{itype}图片已保存：{resolved_path}")
-            else:
-                log.info(f"[Scraper]{itype}图片下载失败，请检查网络连通性")
+                return True
+            log.info(f"[Scraper]{itype}图片下载失败，请检查网络连通性")
+            return False
         except HttpClientError as ex:
             raise HttpClientError(str(ex)) from ex
         except Exception as err:
             log.error(f"[Scraper]下载{itype}图片失败：{image_path}，错误：{err}")
             ExceptionUtils.exception_traceback(err)
+            return False
 
     @staticmethod
     def _guess_extension(url: str) -> str:
@@ -103,8 +132,8 @@ class ImageDownloader:
                 return base + guessed
         return image_path
 
-    def save_nfo(self, doc, out_file):
-        """保存 NFO XML 文件"""
+    def save_nfo(self, doc, out_file) -> bool:
+        """保存 NFO XML 文件；失败返回 False，由调用方决定是否重试."""
         log.info(f"[Scraper]正在保存NFO文件：{out_file}")
         try:
             xml_str = doc.toprettyxml(indent="  ", encoding="utf-8")
@@ -114,6 +143,8 @@ class ImageDownloader:
                 with open(out_file, "wb") as xml_file:
                     xml_file.write(xml_str)
             log.info(f"[Scraper]NFO文件已保存：{out_file}")
+            return True
         except Exception as err:
             log.error(f"[Scraper]保存NFO文件失败：{out_file}，错误：{err}")
             ExceptionUtils.exception_traceback(err)
+            return False

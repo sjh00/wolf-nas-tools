@@ -13,6 +13,7 @@ DownloadStrategies - 批量下载策略
 import contextlib
 
 import log
+from app.domain.media_ref import identity_keys_match, media_identity_key
 from app.domain.mediatypes import MediaType
 
 _DOWNLOAD_FAILED_FLAG = "_download_failed"
@@ -53,20 +54,22 @@ class MovieDownloadStrategy:
             movie_title = (
                 item.get_title_string() if hasattr(item, "get_title_string") else (getattr(item, "title", "") or "")
             )
-            movie_tmdb_id = getattr(item, "tmdb_id", None)
-            movie_name = f"{movie_tmdb_id}:{movie_title}" if movie_tmdb_id else movie_title
+            movie_key = media_identity_key(item)
+            movie_name = f"{movie_key}:{movie_title}" if movie_key else movie_title
             if movie_name in downloaded_names:
                 continue
             if not item.enclosure:
                 item.enclosure = get_download_url_callback(item.page_url)
+            site = str(getattr(item, "site", "") or "未知站点")
             _downloader_id, did, msg = download_callback(item)
             if did:
                 downloaded_names.add(movie_name)
                 if item not in return_items:
                     return_items.append(item)
+                log.info(f"[Downloader]候选下载成功: {movie_title} @ {site}")
             else:
                 mark_download_failed(item)
-                log.error(f"[Downloader]下载失败: {item.title}, 错误: {msg}")
+                log.warn(f"[Downloader]候选下载失败: {movie_title} @ {site}，继续尝试下一候选：{msg}")
         return return_items
 
 
@@ -104,26 +107,54 @@ class SeasonPackStrategy:
                 item_season = item.get_season_list()
                 if item.get_episode_list():
                     continue
-                if need_tmdbid != item.tmdb_id:
+                if not identity_keys_match(need_tmdbid, media_identity_key(item)):
                     continue
                 if not item.enclosure:
                     item.enclosure = get_download_url_callback(item.page_url)
                 if set(item_season).issubset(set(need_season)):
                     if len(item_season) == 1:
-                        # 只有一季的可能是命名错误，需要打开种子鉴别
+                        # 只有一季的可能是命名错误，需打开种子核对实际集号覆盖，
+                        # 避免“标题 S01、内容仅单集”被当作整季而误判完成
                         total_eps = SeasonPackStrategy._get_season_episodes(need_tvs, need_tmdbid, item_season[0])
                         torrent_episodes, torrent_path = get_torrent_episodes_callback(item.enclosure, item.page_url)
-                        # 仅在已知总集数且种子集数足够时下载整季包
-                        if torrent_episodes and total_eps > 0 and len(torrent_episodes) >= total_eps:
-                            _, download_id, _ = download_callback(item, torrent_file=torrent_path)
-                        elif not torrent_episodes:
-                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过整季匹配")
+                        covered = set(torrent_episodes or [])
+                        if not covered:
+                            log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过（无法确认覆盖）")
                             continue
-                        else:
-                            # total_eps 未知或集数不足
+                        # 总集数已知：覆盖需达到该季总集数；未知：至少需多集，
+                        # 以排除“标题 S01、内容仅单集”的误标，同时避免总集数未知时永远不下载
+                        coverage_ok = len(covered) >= total_eps if total_eps else len(covered) >= 2
+                        if not coverage_ok:
+                            log.info(
+                                f"[Downloader]种子 {item.org_string} 无法确认覆盖该季"
+                                f"（实际 {len(covered)} 集，总集数={total_eps}），跳过"
+                            )
                             continue
+                        _, download_id, _ = download_callback(item, torrent_file=torrent_path)
                     else:
-                        _, download_id, _ = download_callback(item)
+                        # 多季包：非磁力需核对实际集数覆盖，避免标题含多季但内容不全时误判完成；
+                        # 磁力无法预解析文件清单，保持原整包下载路径
+                        if (item.enclosure or "").startswith("magnet:"):
+                            _, download_id, _ = download_callback(item)
+                        else:
+                            req_eps = sum(
+                                SeasonPackStrategy._get_season_episodes(need_tvs, need_tmdbid, s) for s in item_season
+                            )
+                            torrent_episodes, torrent_path = get_torrent_episodes_callback(
+                                item.enclosure, item.page_url
+                            )
+                            covered = set(torrent_episodes or [])
+                            if not covered:
+                                log.info(f"[Downloader]种子 {item.org_string} 未含集数信息，跳过（无法确认覆盖）")
+                                continue
+                            coverage_ok = len(covered) >= req_eps if req_eps else len(covered) >= 2
+                            if not coverage_ok:
+                                log.info(
+                                    f"[Downloader]种子 {item.org_string} 无法确认覆盖整包"
+                                    f"（实际 {len(covered)} 集，需求 {req_eps} 集），跳过"
+                                )
+                                continue
+                            _, download_id, _ = download_callback(item, torrent_file=torrent_path)
                     if download_id:
                         if item not in return_items:
                             return_items.append(item)
@@ -207,7 +238,7 @@ class EpisodeStrategy:
             for tv in list(need_tv):
                 need_season = tv.get("season") or 1
                 need_episodes = tv.get("episodes")
-                total_episodes = tv.get("total_episodes")
+                total_episodes = tv.get("total_episodes") or 0
                 # 缺失整季的转化为缺失集
                 if not need_episodes:
                     if not total_episodes:
@@ -217,7 +248,7 @@ class EpisodeStrategy:
                 for item in download_list:
                     if item.type == MediaType.MOVIE:
                         continue
-                    if item.tmdb_id != need_tmdbid:
+                    if not identity_keys_match(need_tmdbid, media_identity_key(item)):
                         continue
                     if item in return_items or is_download_failed(item):
                         continue
@@ -257,6 +288,8 @@ class EpisodeStrategy:
         set_files_status_callback,
         start_torrents_callback,
         return_items: list,
+        get_torrent_episodes_by_tid_callback=None,
+        remove_torrents_callback=None,
     ) -> tuple[list, dict]:
         """
         从整季包中选取需要的集数下载（仅支持QB/TR）
@@ -264,6 +297,14 @@ class EpisodeStrategy:
         """
         if not need_tvs:
             return return_items, need_tvs
+
+        def _rollback(download_id, downloader_id):
+            """原子回滚：删除已暂停加入但未成功启动的任务"""
+            if remove_torrents_callback and download_id:
+                try:
+                    remove_torrents_callback(download_id, downloader_id)
+                except Exception as e:  # noqa: BLE001
+                    log.warn(f"[Downloader]回滚删除任务失败：{e}")
 
         need_tv_list = list(need_tvs)
         for need_tmdbid in need_tv_list:
@@ -287,7 +328,7 @@ class EpisodeStrategy:
                     # 选中单季整季的或单季包括需要的所有集的
                     item_season = item.get_season_list()
                     item_episodes = item.get_episode_list()
-                    if item.tmdb_id != need_tmdbid:
+                    if not identity_keys_match(need_tmdbid, media_identity_key(item)):
                         continue
                     if not item_episodes:
                         # 无集数信息但属于单季整季的也考虑
@@ -299,31 +340,72 @@ class EpisodeStrategy:
 
                     if not item.enclosure:
                         item.enclosure = get_download_url_callback(item.page_url)
-                    # 检查种子看是否有需要的集
+                    is_magnet = (item.enclosure or "").startswith("magnet:")
+
+                    if is_magnet:
+                        # 磁力原子化：暂停加入 → 读取文件清单筛选取需 → 开始；任一步失败即回滚删除任务
+                        downloader_id, download_id, _ = download_callback(item, torrent_file=None, is_paused=True)
+                        if not download_id:
+                            continue
+                        try:
+                            torrent_episodes = (
+                                get_torrent_episodes_by_tid_callback(download_id, downloader_id, item.page_url)
+                                if get_torrent_episodes_by_tid_callback
+                                else []
+                            )
+                            if torrent_episodes:
+                                selected_episodes = set(torrent_episodes).intersection(set(need_episodes))
+                                if not selected_episodes:
+                                    log.info(f"[Downloader]{item.org_string} 磁力包内没有需要的集，回滚")
+                                    _rollback(download_id, downloader_id)
+                                    continue
+                                need_episodes = EpisodeStrategy._update_episodes(
+                                    need_tvs, need_tmdbid, need_episodes, list(selected_episodes), need_season
+                                )
+                                log.info(f"[Downloader]从 {item.org_string} 中选取集：{selected_episodes}")
+                                set_files_status_callback(
+                                    tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
+                                )
+                            else:
+                                # 无法解析文件清单：仍按整包下载，但不清空缺失（避免单集包当整季完成）；
+                                # 实际覆盖由转移后按落盘文件核定（subscribe/handlers）。
+                                log.warn(
+                                    f"[Downloader]{item.org_string} 磁力未解析出文件清单，"
+                                    f"按整包下载，保留缺失待转移后核定"
+                                )
+                            log.info(f"[Downloader]{item.org_string} 开始下载 ")
+                            start_torrents_callback(ids=download_id, downloader_id=downloader_id)
+                            if item not in return_items:
+                                return_items.append(item)
+                        except Exception as e:  # noqa: BLE001
+                            log.error(f"[Downloader]{item.org_string} 磁力整季包处理失败，回滚：{e}")
+                            _rollback(download_id, downloader_id)
+                        continue
+
+                    # 非磁力：解析种子集数 → 暂停加入 → 设置需集 → 开始（失败回滚）
                     torrent_episodes, torrent_path = get_torrent_episodes_callback(item.enclosure, item.page_url)
                     selected_episodes = set(torrent_episodes).intersection(set(need_episodes))
                     if not selected_episodes:
                         log.info(f"[Downloader]{item.org_string} 没有需要的集，跳过...")
                         continue
-                    # 添加下载并暂停
                     downloader_id, download_id, _ = download_callback(item, torrent_file=torrent_path, is_paused=True)
                     if not download_id:
                         continue
-                    # 更新仍需集数
-                    need_episodes = EpisodeStrategy._update_episodes(
-                        need_tvs, need_tmdbid, need_episodes, list(selected_episodes), need_season
-                    )
-                    # 设置任务只下载想要的文件
-                    log.info(f"[Downloader]从 {item.org_string} 中选取集：{selected_episodes}")
-                    set_files_status_callback(
-                        tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
-                    )
-                    # 重新开始任务
-                    log.info(f"[Downloader]{item.org_string} 开始下载 ")
-                    start_torrents_callback(ids=download_id, downloader_id=downloader_id)
-                    # 记录下载项
-                    if item not in return_items:
-                        return_items.append(item)
+                    try:
+                        need_episodes = EpisodeStrategy._update_episodes(
+                            need_tvs, need_tmdbid, need_episodes, list(selected_episodes), need_season
+                        )
+                        log.info(f"[Downloader]从 {item.org_string} 中选取集：{selected_episodes}")
+                        set_files_status_callback(
+                            tid=download_id, need_episodes=list(selected_episodes), downloader_id=downloader_id
+                        )
+                        log.info(f"[Downloader]{item.org_string} 开始下载 ")
+                        start_torrents_callback(ids=download_id, downloader_id=downloader_id)
+                        if item not in return_items:
+                            return_items.append(item)
+                    except Exception as e:  # noqa: BLE001
+                        log.error(f"[Downloader]{item.org_string} 整季包处理失败，回滚：{e}")
+                        _rollback(download_id, downloader_id)
                 index += 1
         return return_items, need_tvs
 

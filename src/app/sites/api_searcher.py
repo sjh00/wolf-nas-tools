@@ -19,6 +19,7 @@ import log
 from app.domain.mediatypes import MediaType
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
+from app.media.metadata.registry import registry as metadata_registry
 from app.sites import engine_tools
 from app.sites.engine import SiteDefinition
 from app.sites.searchers import _TRANSFORMS
@@ -45,6 +46,7 @@ class ApiSiteSearcher:
         page: int = 0,
         mtype: MediaType | None = None,
         page_size: int | None = None,
+        content_profile: str | None = None,
     ) -> list[dict[str, Any]]:
         if not self._site.api:
             return []
@@ -58,8 +60,11 @@ class ApiSiteSearcher:
         mode_mapping = search_config.get("mode_mapping", {})
         mtype_override = {}
         mtype_name = self._mtype_name(mtype)
-        if mtype_name and mode_mapping:
-            mapped = mode_mapping.get(mtype_name)
+        profile = str(content_profile or "").strip()
+        # 搜索模式由 provider descriptor 声明，核心不再识别具体画像
+        mode_key = metadata_registry.search_mode_for_profile(profile) or mtype_name
+        if mode_key and mode_mapping:
+            mapped = mode_mapping.get(mode_key)
             if mapped is not None:
                 if isinstance(mapped, list):
                     return self._fanout_search(

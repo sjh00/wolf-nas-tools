@@ -19,9 +19,21 @@ _CHINESE_META_CLEAN = frozenset(
 _EP_TITLE_META_RE = re.compile(
     r"(?i)\b(?:mkv|mp4|avi|ts|m2ts|1080p|2160p|720p|480p|web-?dl|webrip|bluray|bdrip|hdtv|"
     r"h\.?26[45]|x\.?26[45]|hevc|avc|av1|aac|ac3|ddp?\d*\.?\d*|dts|flac|atmos|truehd|hdr\d*|"
-    r"dv|sdr|hlg|remux|repack|proper|internal|extended|uncut|theatrical|unrated|rerelease|"
+    r"hfr\d*|vfr|dv|sdr|hlg|remux|repack|proper|internal|extended|uncut|theatrical|unrated|rerelease|"
     r"remastered|upscaled|ep\d*|s\d{1,2})\b"
 )
+
+# 音频编码 + 声道组合（AAC2.0 / DDP5.1 / EAC3 2.0 / TrueHD7.1 / DTS-HD.MA5.1）
+# 必须在点号转空格前整体移除，否则声道数字被拆成独立词残留进标题（AAC2.0 → "0"）
+_AUDIO_CODEC_CHANNEL_RE = re.compile(
+    r"(?i)(?<![\w])"
+    r"(?:e[-]?ac[-]?3|ac[-]?3|aac|dd\+?p?|dts(?:[-. ]?hd(?:[-. ]?ma)?)?|truehd|atmos|"
+    r"flac|alac|lpcm|pcm|opus|mp3)"
+    r"(?:[-. ]?\d+(?:\.\d+)?)?"
+    r"(?![\w])"
+)
+# 裸声道布局（2.0 / 5.1 / 7.1）— 无编码名时的残留
+_CHANNEL_LAYOUT_RE = re.compile(r"(?<![\w.])(?:2|5|6|7|9)\.(?:0|1|2)(?![\d\w])")
 
 
 def _split_episode_title(ctx: ParseContext) -> str | None:
@@ -63,8 +75,8 @@ _META_TOKEN_RE = re.compile(
     r"|dts[-.\s]?(hd[-.\s]?ma|hd|x)?\d*([.\s]\d+)?|truehd[-.\s]?\(?atmos\)?|truehd\d*([.\s]\d+)?|\(?atmos\)?"
     r"|mp3\d*|mp2|opus|ogg|vorbis|wma"
     r"|lpcm\d*(\.\d+)?|pcm|dolby[-\s]?digital"
-    # --- HDR/色彩 ---
-    r"|hdr\d*|hdr10\+?|dovi|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
+    # --- HDR/色彩/帧率 ---
+    r"|hdr\d*|hdr10\+?|hfr\d*|vfr|dovi|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
     # --- 来源/平台 ---
     r"|web[-]?(dl|rip|dlr|dlmux|dlrip)?|webcast|webtv"
     r"|blu[-]?ray|bluray|bd(rip|mv|remux|iso|25|50|66|100)?|bd[-]?rip|bdmv"
@@ -78,7 +90,8 @@ _META_TOKEN_RE = re.compile(
     r"|pcok|peacock|pmtp|paramount|shdr|showtime|appletv|vudu|fandango"
     r"|mubi|criterion|shoutfactory|arrow|radiance|capelight|kino|cocp|eureka|bfi"
     r"|baha|cr|crunchyroll|abema|ani-one|ani|b-global|bilibili|viutv|myvideo"
-    r"|friday|kktv|linetv|catchplay|iqiyi|youku|tencent|mgtv|wetv|galaxy|gimy"
+    r"|friday|kktv|linetv|catchplay|iqiyi|youku|tencent|tx|mgtv|wetv|galaxy|gimy"
+    r"|ma|moviesanywhere|itunes"
     # --- 地区代码 ---
     r"|eur|gbr|ger|kor|jpn|usa|fra|ita|esp|deu|aus|can|chn|hkg|twn|sgp|ind|tha|nld|bel|dnk|swe|nor|fin|prt|bra|mex|arg"
     # --- 发布组 ---
@@ -130,6 +143,7 @@ _GROUP_KEYWORDS_RE = re.compile(
     r"字幕|压制|制作组|发布组|字幕社|工作室|论坛|奶茶屋|茶屋|字幕组|汉化|翻译|搬运|资源组|分享组",
     re.IGNORECASE,
 )
+
 # 版本短语：整体剔除（如 Extended Version / Theatrical Cut / Director's Edition）
 _VER_PHRASE_RE = re.compile(
     r"(?i)\b(?:extended|uncut|unrated|theatrical|remastered|anniversary|special|"
@@ -141,6 +155,44 @@ _RE_GROUP_CHAIN = re.compile(r"^[A-Z0-9]{2,8}(?:-[A-Z0-9]{2,8})+$")
 
 # 尾部特集描述词：仅在标题主体之后出现时视为元数据（Pilot 单独成片名时保留）
 _SPECIAL_DESC_WORDS = frozenset({"pilot", "premiere", "prologue", "special"})
+
+# 语义歧义 token：既可能是发布标签（Movie/TV/Game/End/Final/Max/MA/DC…），也可能是片名本身
+# 仅当它位于已消费元数据（分辨率/来源/编码/季集/年份等）之后时才按标签剥离，
+# 位于元数据之前或整条标题无元数据时保留（修复 The End of Oak Street / Game of Thrones 等被削词）
+_AMBIGUOUS_META_TOKEN_RE = re.compile(
+    r"(?i)^("
+    r"game|end|fin|final|the[-]?end"
+    r"|special|season|complete|collection|pack|batch|trilogy|quadrilogy|mini"
+    r"|plus|extra|bonus|deleted|shot|interview|preview|recap|highlights"
+    r"|max|ma|dc|cr|fox|abc|nbc|cbs|hbo|starz|showtime|amc|tnt|tbs|fx|syfy|bbc|itv"
+    r"|from|share|movie([+&]?\w+)?|tv[+&]?\w*"
+    r"|dual|multi|limited|extended|anniversary"
+    r")$"
+)
+
+
+def _title_safe_ambiguous_words(ctx: ParseContext, text: str) -> set[str]:
+    """找出位于元数据之前的歧义 token —— 它们属于片名，不应被当作标签剥离。
+
+    元数据之后的同类 token（如 1080p 后的 Movie/TV/MA）仍按标签剥离。
+    """
+    meta_ends = sorted(end for _, end in ctx.consumed_spans)
+    safe: set[str] = set()
+    cursor = 0
+    for m in re.finditer(r"[A-Za-z0-9_]+", text):
+        word = m.group(0)
+        if not _AMBIGUOUS_META_TOKEN_RE.match(word):
+            continue
+        pos = ctx.text.find(word, cursor)
+        if pos < 0:
+            # 原文找不到（括号内容被清洗等）→ 无法断言位于标题区，按标签处理
+            continue
+        cursor = pos + len(word)
+        # 无任何已消费元数据时整条均为片名；有元数据时仅其之前的部分算片名
+        if not meta_ends or not any(end <= pos for end in meta_ends):
+            safe.add(word.lower())
+    return safe
+
 
 _RE_KANA_TITLE = re.compile(r"[぀-ヿ]+")
 
@@ -170,6 +222,10 @@ def extract_name(ctx: ParseContext, original_text: str) -> None:
         _title_remaining = _split_episode_title(ctx)
         if _title_remaining:
             remaining = _title_remaining
+
+    # 音频编码+声道与裸声道布局先整体移除（点号转空格后会残留数字词）
+    remaining = _AUDIO_CODEC_CHANNEL_RE.sub(" ", remaining)
+    remaining = _CHANNEL_LAYOUT_RE.sub(" ", remaining)
 
     # 剩余文本中的点号为文件名分隔符 → 转空格以便名称提取
     remaining = remaining.replace(".", " ")
@@ -377,6 +433,8 @@ def _extract_cn_from_prefix(text: str) -> str | None:
 
 def _extract_free_text(ctx: ParseContext, text: str) -> None:
     """从自由文本中提取名称"""
+    # 位于元数据之前的歧义 token 属于片名（The End / Game / Mad Max / Final…），先定位再清洗文本
+    title_safe_tokens = _title_safe_ambiguous_words(ctx, text)
     # 中西文边界补空格：避免"瑞克和莫蒂Rick and Morty"被当成一个混合词，
     # 导致中文名混入英文字母、英文名被截断
     text = re.sub(r"(?<=[\u4e00-\u9fff])(?=[A-Za-z])|(?<=[A-Za-z])(?=[\u4e00-\u9fff])", " ", text)
@@ -465,8 +523,10 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
 
     if not text or text in _ANIME_NO_WORDS:
         return
-    # 纯数字短片名（65 / 24 / 2012）不能因长度 < 3 被丢掉
-    if len(text) < 3 and not StringUtils.is_chinese(text) and not text.isdigit():
+    # 允许 2 字符英文片名（It / Up / Ma / Pi）与纯数字短片名（65 / 24 / 2012）；
+    # 单字符仍按残留处理，与转移链路 `len(title) < 2` 的判定保持一致
+    if len(text) < 2 and not StringUtils.is_chinese(text) and not text.isdigit():
+        return
         return
 
     words = text.split()
@@ -479,7 +539,7 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
         word = word.removesuffix("]")
         if not word:
             continue
-        if _META_TOKEN_RE.match(word):
+        if _META_TOKEN_RE.match(word) and word.lower() not in title_safe_tokens:
             continue
         # 仅丢掉编码碎片（H.264 拆出的 H/X），不要误伤 He/E 这类片名词
         if len(word) == 1 and word.lower() in ("h", "x"):

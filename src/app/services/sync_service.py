@@ -54,12 +54,18 @@ class SyncService:
         media_cache: MediaCache,
         thread_executor: ThreadExecutor,
         storage_backend_repo: StorageBackendRepositoryAdapter,
+        media_service=None,
+        metadata_service=None,
     ):
         self._sync = sync
         self._filetransfer = filetransfer
         self._media_cache = media_cache
         self._thread_executor = thread_executor
         self._storage_backend_repo = storage_backend_repo
+        # 手动转移需实时按 TMDB ID 查询详情（媒体服务会实时请求并回写缓存），
+        # 不能只依赖只读缓存，否则缓存未命中时报「识别失败，无法查询到TMDB信息」
+        self._media_service = media_service
+        self._metadata_service = metadata_service
 
     # ---------- 同步目录校验 ----------
 
@@ -193,15 +199,46 @@ class SyncService:
         need_fix_all: bool = False,
         src_backend_id: str = "local",
         dst_backend_id: str = "",
+        content_profile: str | None = None,
+        provider: str | None = None,
+        external_id: str | None = None,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
     ) -> ManualTransferResultDTO:
         """
         手工转移文件
         验证参数后提交后台线程执行，避免 API 超时
         支持 webdav/openlist 等远程存储源：先暂存到本地临时目录再走本地转移管道
+        自定义内容画像通过插件 provider 注入元数据，不走 TMDB。
         """
         inpath = os.path.normpath(inpath)
         if outpath:
             outpath = os.path.normpath(outpath)
+
+        episode = None
+        if episode_format:
+            episode = (
+                EpisodeFormat(episode_format, episode_details or "", episode_part or "", episode_offset or ""),
+                need_fix_all,
+            )
+
+        tmdb_info = None
+        if provider and external_id:
+            tmdb_info, media_type = self._resolve_manual_provider_info(
+                media_type,
+                content_profile,
+                provider,
+                external_id,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+            if not tmdb_info:
+                return ManualTransferResultDTO(success=False, message="识别失败，无法获取插件元数据")
+        elif tmdbid:
+            tmdb_info, media_type = self._resolve_manual_tmdb_info(media_type, tmdbid)
+            if not tmdb_info:
+                return ManualTransferResultDTO(success=False, message="识别失败，无法查询到TMDB信息")
+
         # 目标后端（用于判断是否同源后端）
         dst_backend_obj = self._resolve_dst_backend_by_dest(outpath or "", dst_backend_id or None)
         if src_backend_id and src_backend_id != "local":
@@ -210,17 +247,6 @@ class SyncService:
                 return ManualTransferResultDTO(success=False, message="输入路径不存在")
             # 同后端：无需下载暂存，直接走后端服务端复制
             if dst_backend_obj is not None and str(getattr(dst_backend_obj, "id", "")) == str(src_backend_id):
-                episode = None
-                if episode_format:
-                    episode = (
-                        EpisodeFormat(episode_format, episode_details or "", episode_part or "", episode_offset or ""),
-                        need_fix_all,
-                    )
-                tmdb_info = None
-                if tmdbid:
-                    tmdb_info = self._media_cache.get_tmdb_info(mtype=media_type or MediaType.MOVIE, tmdbid=tmdbid)
-                    if not tmdb_info:
-                        return ManualTransferResultDTO(success=False, message="识别失败，无法查询到TMDB信息")
                 self._submit_manual_transfer(
                     inpath,
                     syncmod,
@@ -242,25 +268,102 @@ class SyncService:
         elif not os.path.exists(inpath):
             return ManualTransferResultDTO(success=False, message="输入路径不存在")
 
-        episode = None
-        if episode_format:
-            episode = (
-                EpisodeFormat(episode_format, episode_details or "", episode_part or "", episode_offset or ""),
-                need_fix_all,
-            )
-
-        tmdb_info = None
-        if tmdbid:
-            tmdb_info = self._media_cache.get_tmdb_info(mtype=media_type or MediaType.MOVIE, tmdbid=tmdbid)
-            if not tmdb_info:
-                return ManualTransferResultDTO(success=False, message="识别失败，无法查询到TMDB信息")
-
         # 根据目的目录查找目标后端
         dst_backend = dst_backend_obj or self._resolve_dst_backend_by_dest(outpath or "")
 
         return self._submit_manual_transfer(
             inpath, syncmod, outpath, media_type, episode, min_filesize, tmdb_info, season, dst_backend
         )
+
+    def _resolve_manual_provider_info(
+        self,
+        media_type: MediaType | None,
+        content_profile: str | None,
+        provider: str,
+        external_id: str,
+        *,
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
+    ):
+        """按插件 provider 构造转移元数据，不依赖 TMDB."""
+        if self._metadata_service is None:
+            return None, media_type or MediaType.MOVIE
+        record = self._metadata_service.lookup(
+            provider,
+            str(external_id),
+            media_type=media_type,
+            content_profile=content_profile,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+        if not record:
+            return None, media_type or MediaType.MOVIE
+
+        resolved_type = media_type or MediaType.from_string(str(record.get("media_type") or ""))
+        if resolved_type == MediaType.UNKNOWN:
+            resolved_type = MediaType.MOVIE
+        images = record.get("images") or {}
+        posters = images.get("poster") or []
+        poster = record.get("poster") or (posters[0].get("url") if posters else "")
+        profile = str(content_profile or record.get("content_profile") or "default")
+        payload = {
+            "id": 0,
+            "media_type": resolved_type.value,
+            "title": str(record.get("title") or external_id),
+            "original_title": record.get("original_title"),
+            "year": str(record.get("year") or ""),
+            "release_date": record.get("release_date") or "",
+            "overview": record.get("overview") or "",
+            "vote_average": record.get("vote_average") or 0,
+            "poster_path": poster or "",
+            "genres": record.get("genres") or [],
+            "content_profile": profile,
+            "anchor_provider": provider,
+            "anchor_external_id": str(external_id),
+            "provider": provider,
+            "provider_data": record,
+        }
+        return payload, resolved_type
+
+    def _resolve_manual_tmdb_info(self, media_type, tmdbid):
+        """手动转移解析 TMDB 信息；类型选错（如电视剧按电影）时回退另一类型.
+
+        优先**实时查询**（不依赖缓存是否命中），返回 (tmdb_info, media_type)；
+        回退命中时返回纠正后的类型，避免入库到错误目录。
+        """
+        primary = media_type or MediaType.MOVIE
+        alternates = [primary]
+        alt = MediaType.TV if primary == MediaType.MOVIE else MediaType.MOVIE
+        if alt not in alternates:
+            alternates.append(alt)
+        for mtype in alternates:
+            info = self._fetch_tmdb_info(mtype, tmdbid)
+            if info:
+                return info, self._media_type_from_info(info, mtype)
+        return None, primary
+
+    def _fetch_tmdb_info(self, mtype, tmdbid):
+        """按 TMDB ID 查询详情：媒体服务实时查询优先，回退只读缓存"""
+        media_service = getattr(self, "_media_service", None)
+        if media_service is not None:
+            try:
+                return media_service.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
+            except Exception as err:
+                log.warn(f"[Rmt]查询TMDB详情失败：{str(err)}")
+                return None
+        return self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
+
+    @staticmethod
+    def _media_type_from_info(info, fallback):
+        """以 TMDB 详情里的 media_type 为准纠正类型，缺失时用回退值"""
+        mtype = info.get("media_type") if isinstance(info, dict) else None
+        if isinstance(mtype, MediaType):
+            return mtype
+        if mtype:
+            parsed = MediaType.from_string(str(mtype))
+            if parsed != MediaType.UNKNOWN:
+                return parsed
+        return fallback
 
     def _submit_manual_transfer(
         self,
@@ -440,6 +543,7 @@ class SyncService:
                     in_path=path,
                     target_dir=dest_dir,
                     dst_backend=dst_backend,
+                    force_scrape=True,
                 )
                 if succ_flag and flag == "unidentification":
                     self._filetransfer.update_transfer_unknown_state(path)
@@ -553,11 +657,15 @@ class SyncService:
 
     @staticmethod
     def rename_file(path: str, name: str) -> SimpleResultDTO:
-        """重命名文件/目录"""
+        """重命名文件/目录（仅允许同目录内重命名，杜绝路径穿越）"""
         if not path or not name:
             return SimpleResultDTO(success=True)
+        # 仅取文件名部分：name 含 / 或 ../ 或为绝对路径时不得逃逸原目录
+        safe_name = os.path.basename(str(name).strip())
+        if not safe_name or safe_name in (".", ".."):
+            return SimpleResultDTO(success=False, message="无效的文件名")
         try:
-            shutil.move(path, os.path.join(os.path.dirname(path), name))
+            shutil.move(path, os.path.join(os.path.dirname(path), safe_name))
             return SimpleResultDTO(success=True)
         except (ServiceError, RepositoryError, DomainError):
             raise

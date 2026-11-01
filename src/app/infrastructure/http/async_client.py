@@ -196,6 +196,9 @@ class AsyncHttpClient:
         cache_bypass = kwargs.pop("cache_bypass", False)
 
         if self._rate_limiter and rate_limit_key and rate_limit_rate:
+            # 未显式指定超时时给有限默认值，避免桶耗尽时无限阻塞
+            if rate_limit_timeout is None:
+                rate_limit_timeout = 30.0
             acquired = self._rate_limiter.acquire(
                 key=rate_limit_key,
                 rate=rate_limit_rate,
@@ -212,7 +215,9 @@ class AsyncHttpClient:
 
         async def _do_request() -> httpx2.Response:
             response = await self._client.request(method, url, **kwargs)
-            if raise_on_error:
+            # httpx 的 raise_for_status 对 3xx 也会抛错；重定向应交给调用方处理，
+            # 故仅在真正的错误状态码（>=400）时抛错。
+            if raise_on_error and response.status_code >= 400:
                 response.raise_for_status()
             return response
 
@@ -266,11 +271,19 @@ class AsyncHttpClient:
     async def delete(self, url: str, **kwargs: Any) -> httpx2.Response:
         return await self.request("DELETE", url, **kwargs)
 
-    async def close(self) -> None:
+    def _release(self) -> None:
         if self._closed:
             return
         self._closed = True
         _pool.release(self._config)
+
+    async def close(self) -> None:
+        self._release()
+
+    def __del__(self):
+        # 兜底释放：调用方忘记 close 时，对象回收即归还连接池引用
+        with contextlib.suppress(Exception):
+            self._release()
 
     async def __aenter__(self):
         return self

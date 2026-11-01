@@ -44,8 +44,12 @@ class BaseRepository:
 
     @contextmanager
     def readonly(self):
-        """只读 session 上下文（不自动提交）。"""
-        session = self._session_manager.session()
+        """只读 session 上下文（不自动提交）。处于显式事务中时复用共享 Session。"""
+        shared = self._session_manager.current_tx_session()
+        if shared is not None:
+            yield shared
+            return
+        session = self._session_manager.session
         try:
             yield session
         finally:

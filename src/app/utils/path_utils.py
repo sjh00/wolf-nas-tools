@@ -6,8 +6,13 @@ PathUtils - 路径相关纯函数工具
 import os
 import re
 
+from app.core.constants import RMT_MIN_FILESIZE
 from app.core.root_path import get_project_root
 from app.core.settings import settings
+
+# 下载器未完成临时文件后缀（迅雷 .xltd，qBittorrent/Aria2 等）
+INCOMPLETE_DOWNLOAD_SUFFIXES = (".xltd", ".part", ".!qb", ".aria2")
+_INCOMPLETE_SCAN_DEPTH = 2
 
 
 def get_config_path():
@@ -41,6 +46,27 @@ def get_user_plugin_path():
 
 
 class PathUtils:
+    @staticmethod
+    def join_path(base: str, *parts: str) -> str:
+        """按 base 的路径风格拼接，避免 Windows 给 POSIX 路径插入反斜杠。
+
+        媒体库/远端后端路径统一是 POSIX 风格，直接 os.path.join 在 Windows 上
+        会产出 `/media/tv\\Show` 这类混合分隔符，导致比对与落库记录不一致。
+        """
+        text = str(base or "")
+        if not text:
+            return ""
+        sep = "\\" if (re.match(r"^[A-Za-z]:[\\/]", text) or text.startswith("\\\\")) else "/"
+        result = text
+        for part in parts:
+            piece = str(part or "")
+            if not piece:
+                continue
+            if not result.endswith(("/", "\\")):
+                result += sep
+            result += piece.lstrip("/\\")
+        return result
+
     @staticmethod
     def get_dir_files(in_path, exts: str | list = "", filesize=0, episode_format=None):
         """
@@ -141,6 +167,43 @@ class PathUtils:
             or "/@eaDir" in normalized.rstrip("/")  # 路径以 @eaDir 结尾
             or "/." in normalized  # 隐藏目录段（/.xxx/）
         )
+
+    @staticmethod
+    def has_incomplete_download_marker(path, depth: int = _INCOMPLETE_SCAN_DEPTH) -> bool:
+        """目录内是否存在下载器未完成临时文件（如迅雷 .xltd）."""
+        if not path or not os.path.isdir(path):
+            return False
+        base_depth = os.path.normpath(path).count(os.sep)
+        for root, dirs, files in os.walk(path):
+            for name in (*dirs, *files):
+                if name.lower().endswith(INCOMPLETE_DOWNLOAD_SUFFIXES):
+                    return True
+            if root.count(os.sep) - base_depth >= depth:
+                dirs[:] = []
+        return False
+
+    @staticmethod
+    def is_incomplete_media_dir(path, exts: list[str] | None = None) -> bool:
+        """是否为下载器未完成的媒体目录.
+
+        迅雷等下载器会创建与文件同名的目录（如 ``Movie.mp4/``），下载中的
+        ``.xltd`` 与广告小文件混在其中；此类目录在完成前不能进入识别/转移。
+        """
+        if not path or not os.path.isdir(path):
+            return False
+        # 迅雷完成后的目录名也可能带媒体后缀（Movie.mp4/）；
+        # 只有还存在 .xltd 等未完成标记时才算未完成，不能仅凭后缀判断。
+        return PathUtils.has_incomplete_download_marker(path)
+
+    @staticmethod
+    def resolve_min_filesize(value=None, default_bytes: int = RMT_MIN_FILESIZE) -> int:
+        """把配置中的 MB 数值（int/str）解析为字节；空值返回默认值."""
+        raw = str(value if value is not None else "").strip()
+        if not raw or raw == "0":
+            return default_bytes
+        if raw.isdigit():
+            return int(raw) * 1024 * 1024
+        return default_bytes
 
     @staticmethod
     def is_path_in_path(path1, path2):

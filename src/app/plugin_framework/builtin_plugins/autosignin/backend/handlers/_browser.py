@@ -43,10 +43,36 @@ class BrowserSigninHandler(SiteSigninHandler):
         if not server_url:
             return SigninResult.fail(site, "Chrome 服务器未配置")
 
-        self._plugin_ctx.info(f"开始浏览器签到：{site}")
+        login_mode = self._config.get("mode") == "login"
+        self._plugin_ctx.info(f"开始浏览器{'登录刷新' if login_mode else '签到'}：{site}")
         try:
             with _BROWSER_SIGNIN_LOCK:
+                if login_mode:
+                    return self._do_login_refresh(ctx, site, home_url, server_url)
                 return self._do_signin(ctx, site, site_def, home_url, server_url)
+        except Exception as e:
+            ExceptionUtils.exception_traceback(e)
+            return SigninResult.fail(site, str(e))
+
+    def _do_login_refresh(self, ctx, site, home_url, server_url) -> SigninResult:
+        """登录模式（浏览器自动化）：只打开站点首页刷新登录态/过盾，不触碰签到页与按钮."""
+        try:
+            lab = settings.get("laboratory") or {}
+            fp_profile_id = str(lab.get("chrome_fp_profile_id") or "") or None
+            with BrowserSession(site_key=site, server_url=server_url, fp_profile_id=fp_profile_id) as session:
+                result = session.navigate(home_url, cookie=ctx.cookie)
+                html_text = result.get("html", "") or ""
+                if not html_text:
+                    return SigninResult.fail(site, "无法打开网站")
+                html_text = self._wait_cloudflare(session, post_navigate=html_text)
+                if CHALLENGE_INDICATORS.search(html_text):
+                    return SigninResult.fail(site, f"挑战未通过: {html_text[:100]}")
+                html_text = self._wait_embedded_turnstile(session, html_text)
+                if has_pending_turnstile(html_text):
+                    return SigninResult.fail(site, self._turnstile_failure_reason(html_text))
+                if not is_logged_in(html_text):
+                    return SigninResult.fail(site, SigninResult.COOKIE_EXPIRED)
+                return SigninResult.login_refresh(site)
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
             return SigninResult.fail(site, str(e))
@@ -71,7 +97,7 @@ class BrowserSigninHandler(SiteSigninHandler):
                 if has_pending_turnstile(html_text) and not (
                     self._already_signed(html_text) or self._success(html_text)
                 ):
-                    return SigninResult.fail(site, "人机验证未完成（Cloudflare Turnstile 未通过），请稍后重试")
+                    return SigninResult.fail(site, self._turnstile_failure_reason(html_text))
 
                 if self._already_signed(html_text):
                     return SigninResult.already(site)
@@ -110,6 +136,8 @@ class BrowserSigninHandler(SiteSigninHandler):
                     return SigninResult.already(site)
                 if self._two_factor(html_text):
                     return SigninResult.fail(site, "需要两步验证")
+                if has_pending_turnstile(html_text):
+                    return SigninResult.fail(site, self._turnstile_failure_reason(html_text))
                 if self._error(html_text):
                     return SigninResult.fail(site, "页面显示错误")
                 return SigninResult.fail(site, "浏览器签到失败，未知原因")
@@ -139,7 +167,23 @@ class BrowserSigninHandler(SiteSigninHandler):
             html_text = session.html()
             if not has_pending_turnstile(html_text):
                 return html_text
+            if BrowserSigninHandler._turnstile_failure_reason(html_text) != (
+                "人机验证未完成（Cloudflare Turnstile 未通过），请稍后重试"
+            ):
+                return html_text
         return html_text
+
+    @staticmethod
+    def _turnstile_failure_reason(html_text: str) -> str:
+        """区分 Turnstile 资源加载失败、验证过期与普通未通过."""
+        text = html_text or ""
+        if "验证程序长时间未加载完成" in text or ("challenges.cloudflare.com" in text and "代理规则" in text):
+            return "Turnstile 资源加载失败（challenges.cloudflare.com 不可达），请检查浏览器代理/网络规则"
+        if "验证已过期" in text or "verification expired" in text.lower() or "验证已失效" in text:
+            return "Turnstile 验证已过期，请稍后重试"
+        if "验证失败，请重试" in text or "verification failed" in text.lower():
+            return "Turnstile 验证失败，请稍后重试"
+        return "人机验证未完成（Cloudflare Turnstile 未通过），请稍后重试"
 
     @staticmethod
     def _wait_page_stable(session: BrowserSession) -> str:

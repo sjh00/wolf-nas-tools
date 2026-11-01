@@ -1,6 +1,7 @@
 import re
 
 import log
+from app.domain.episode_utils import infer_episode_key
 from app.domain.media_utils import check_media_exists
 from app.domain.mediatypes import MediaType
 from app.infrastructure.image_proxy import ImageProxy
@@ -47,12 +48,10 @@ class SearchResultService:
             mtype = item.TYPE or ""
             parsed_mtype = MediaType.from_string(mtype)
             se_key = item.ES_STRING if item.ES_STRING and parsed_mtype != MediaType.MOVIE else MediaType.MOVIE.value
+            if parsed_mtype != MediaType.MOVIE:
+                se_key = infer_episode_key(se_key, item.TORRENT_NAME)
             media_type = parsed_mtype.value if parsed_mtype != MediaType.UNKNOWN else mtype
-            labels = [
-                label
-                for label in str(item.NOTE).split("|")
-                if label in ["官方", "官组", "中字", "国语", "粤语", "国配", "特效", "特效字幕"]
-            ]
+            labels = [label.strip() for label in str(item.NOTE).split("|") if label.strip()]
             torrent_item = {
                 "id": item.ID,
                 "seeders": item.SEEDERS,

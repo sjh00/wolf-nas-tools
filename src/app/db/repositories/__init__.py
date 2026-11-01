@@ -13,10 +13,13 @@ from .base_repository import BaseRepository
 from .brush_repository import BrushRepository
 from .config_repository import ConfigRepository
 from .download_repository import DownloadRepository
+from .legacy_media_ref_repository import LegacyMediaRefRepository
+from .media_identity_repository import MediaIdentityRepository
 from .media_repo_adapter import MediaInfoRepositoryAdapter
 from .media_repository import MediaInfoRepository, MediaRecord
 from .media_sync_repo_adapter import MediaSyncRepositoryAdapter
 from .media_sync_repository import MediaSyncRepository
+from .person_identity_repository import PersonIdentityRepository
 from .plugin_framework_repo_adapter import (
     PluginConfigRepositoryAdapter,
     PluginLogRepositoryAdapter,
@@ -76,6 +79,8 @@ __all__ = [
     # Media
     "MediaInfoRepository",
     "MediaRecord",
+    "MediaIdentityRepository",
+    "LegacyMediaRefRepository",
     "MediaInfoRepositoryAdapter",
     # Media Sync
     "MediaSyncRepository",

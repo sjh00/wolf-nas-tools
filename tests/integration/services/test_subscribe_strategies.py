@@ -1,7 +1,9 @@
 """Tests for app.services.subscribe coordinator, search engine, and strategies."""
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.search_engine import SubscribeSearchEngine
@@ -122,14 +124,14 @@ class TestSubscribeSearchEngine:
         queue = MagicMock()
         engine = SubscribeSearchEngine(indexer_strategy=indexer, queue_strategy=queue)
         engine.subscribe_search_movie(rssid=1, state="R")
-        indexer._search_movies.assert_called_once_with(state="R", rssid=1)
+        indexer._search_movies.assert_called_once_with(state="R", rssid=1, force=False)
 
     def test_subscribe_search_movie_state_d(self):
         indexer = MagicMock()
         queue = MagicMock()
         engine = SubscribeSearchEngine(indexer_strategy=indexer, queue_strategy=queue)
         engine.subscribe_search_movie(rssid=1, state="D")
-        queue._search_movies.assert_called_once_with(state="D", rssid=1)
+        queue._search_movies.assert_called_once_with(state="D", rssid=1, force=False)
 
     def test_subscribe_search_tv_state_r(self):
         indexer = MagicMock()
@@ -310,6 +312,56 @@ class TestRssFeedStrategy:
         strategy._download_matched_torrents([media], {})
         coord.try_acquire.assert_called_once()
 
+    def test_rss_download_marks_pending_transfer_not_finish(self):
+        """下载覆盖完成后登记“待转移”（COMPLETED），不在此删除订阅、不写历史。"""
+        strategy = self._make_strategy()
+        media = MagicMock()
+        media.type = MediaType.TV
+        media.begin_episode = None
+        media.enclosure = "http://site/a.torrent"
+        media.page_url = "http://site/page"
+        media.rssid = 5
+        media.over_edition = False
+        media.tmdb_id = 1
+        media.begin_season = 1
+        media.total_episodes = 12
+        media.get_episode_list.return_value = list(range(1, 13))
+        media.res_order = 1
+        media.site_order = 1
+        media.seeders = 1
+        downloader = cast(Any, strategy.downloader)
+        downloader.get_torrent_episodes.return_value = (list(range(1, 13)), "/tmp/a.torrent")
+        downloader.batch_download.return_value = ([media], {})
+
+        strategy._download_matched_torrents([media], {1: None})
+
+        subscribe = cast(Any, strategy.subscribe)
+        subscribe.finish_rss_subscribe.assert_not_called()
+        subscribe.update_rss_state.assert_called_once_with(MediaType.TV, 5, SubscribeState.COMPLETED.value)
+
+    def test_rss_movie_marks_pending_transfer(self):
+        """电影下载成功登记“待转移”（COMPLETED），由转移落盘确认后定稿。"""
+        strategy = self._make_strategy()
+        media = MagicMock()
+        media.type = MediaType.MOVIE
+        media.rssid = 7
+        media.over_edition = False
+        media.tmdb_id = 9
+        media.total_episodes = 0
+        media.begin_episode = None
+        media.get_episode_list.return_value = []
+        media.res_order = 1
+        media.site_order = 1
+        media.seeders = 1
+        downloader = cast(Any, strategy.downloader)
+        downloader.batch_download.return_value = ([media], {})
+
+        strategy._download_matched_torrents([media], {})
+
+        subscribe = cast(Any, strategy.subscribe)
+        subscribe.finish_rss_subscribe.assert_not_called()
+        subscribe.update_rss_state.assert_called_once_with(MediaType.MOVIE, 7, SubscribeState.COMPLETED.value)
+
     def test_get_default_rss_sites_no_system_config(self):
         strategy = self._make_strategy()
         strategy._system_config = None
@@ -342,3 +394,58 @@ class TestRssFeedStrategy:
         sys_config.get.side_effect = RuntimeError("db error")
         strategy._system_config = sys_config
         assert strategy._get_default_rss_sites(MediaType.TV) == []
+
+    def test_custom_rss_only_allows_owner_subscriptions(self):
+        strategy = self._make_strategy()
+        subs = {
+            1: {"name": "所有者订阅", "user_id": 7},
+            2: {"name": "其他用户订阅", "user_id": 8},
+            3: {"name": "系统订阅", "user_id": None},
+        }
+        item = {"custom_rss": True, "owner_user_id": 7, "site_name": "custom_rss:3"}
+        assert list(strategy._filter_subscriptions_for_item(subs, item)) == [1]
+
+    def test_selected_custom_rss_is_polled(self):
+        strategy = self._make_strategy()
+        strategy_any = cast(Any, strategy)
+        custom = MagicMock()
+        custom.poll_sites.return_value = [
+            {
+                "id": -3,
+                "source_id": 3,
+                "name": "custom_rss:3",
+                "rssurl": "https://example.com/feed",
+                "custom_rss": True,
+                "owner_user_id": 7,
+            }
+        ]
+        custom.poll_articles.return_value = [{"title": "Example", "enclosure": "magnet:?xt=abc"}]
+        strategy._custom_rss = custom
+        strategy_any.sites.get_sites.return_value = []
+        strategy_any.subscribe.get_subscribe_movies.return_value = {
+            1: {"name": "Example", "rss_sites": ["custom_rss:3"], "user_id": 7}
+        }
+        strategy_any.subscribe.get_subscribe_tvs.return_value = {}
+        strategy_any.media.identify_batch.return_value = [None]
+
+        strategy._do_rss_poll()
+
+        custom.poll_articles.assert_called_once_with(3)
+
+    def test_unselected_custom_rss_is_not_polled(self):
+        strategy = self._make_strategy()
+        strategy_any = cast(Any, strategy)
+        custom = MagicMock()
+        custom.poll_sites.return_value = [
+            {"name": "custom_rss:3", "rssurl": "https://example.com/feed", "custom_rss": True}
+        ]
+        strategy._custom_rss = custom
+        strategy_any.sites.get_sites.return_value = []
+        strategy_any.subscribe.get_subscribe_movies.return_value = {
+            1: {"name": "Example", "rss_sites": ["siteA"], "user_id": 7}
+        }
+        strategy_any.subscribe.get_subscribe_tvs.return_value = {}
+
+        strategy._do_rss_poll()
+
+        custom.poll_articles.assert_not_called()

@@ -1,15 +1,21 @@
 """Agent 对话 Router 单元测试"""
 
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.deps import get_app_context, get_current_user
 from api.exception_handlers import register_exception_handlers
 from api.routers import chat as chat_router
+from app.db.models import Base
+from app.db.session import Database
 from app.schemas.auth import UserContext
+
+Base.metadata.create_all(Database().engine)
 
 
 def _make_client(agent_ready=True, conversation_store=None, answer="这是回答"):
@@ -56,7 +62,8 @@ class TestChatRouter:
     def test_chat_clear_disabled(self):
         client, _ = _make_client(conversation_store=None)
         resp = client.post("/api/agent/chat/clear", json={"session_id": "s1"})
-        assert resp.json()["code"] != 0
+        assert resp.json()["code"] == 0
+        assert resp.json()["data"]["cleared"] is False
 
     def test_confirm_dangerous_executes(self):
         app = FastAPI()
@@ -69,15 +76,19 @@ class TestChatRouter:
         executor.execute.return_value = MagicMock(success=True, data={"deleted": True})
         ctx = SimpleNamespace(agent_service=MagicMock(), conversation_store=None, tool_executor=executor)
         app.dependency_overrides[get_app_context] = lambda: ctx
+        runtime = chat_router._DEFAULT_RUNTIME
+        session_id = f"confirm-{uuid.uuid4().hex}"
+        turn_id = runtime.start_turn(session_id, "1")
+        action = runtime.create_pending(turn_id, "subscribe_delete", {"sub_id": 1}, "确认删除", "1", session_id)
 
         with TestClient(app) as c:
-            resp = c.post("/api/agent/chat/confirm", json={"tool": "subscribe_delete", "arguments": {"sub_id": 1}})
+            resp = c.post("/api/agent/chat/confirm", json={"pending_action_id": action.id})
         assert resp.json()["code"] == 0
         executor.execute.assert_called_once_with(
             "subscribe_delete",
             {"sub_id": 1},
             confirmed=True,
-            session_id="",
+            session_id=session_id,
             user_id="1",
             user_permissions=["agent:view", "agent:manage"],
         )
@@ -92,9 +103,13 @@ class TestChatRouter:
         executor.get_schema.return_value = {"name": "media_search", "level": "read"}
         ctx = SimpleNamespace(agent_service=MagicMock(), conversation_store=None, tool_executor=executor)
         app.dependency_overrides[get_app_context] = lambda: ctx
+        runtime = chat_router._DEFAULT_RUNTIME
+        session_id = f"reject-{uuid.uuid4().hex}"
+        turn_id = runtime.start_turn(session_id, "1")
+        action = runtime.create_pending(turn_id, "media_search", {"query": "x"}, "查询", "1", session_id)
 
         with TestClient(app) as c:
-            resp = c.post("/api/agent/chat/confirm", json={"tool": "media_search", "arguments": {"query": "x"}})
+            resp = c.post("/api/agent/chat/confirm", json={"pending_action_id": action.id})
         assert resp.json()["code"] != 0
         executor.execute.assert_not_called()
 
@@ -105,7 +120,7 @@ class TestChatRouter:
         viewer = UserContext(user_id=1, username="v", level=0, permissions=["agent:view"])
         app.dependency_overrides[get_current_user] = lambda: viewer
         with TestClient(app) as c:
-            resp = c.post("/api/agent/chat/confirm", json={"tool": "x", "arguments": {}})
+            resp = c.post("/api/agent/chat/confirm", json={"pending_action_id": "x"})
         assert resp.status_code == 403
 
     def test_permission_denied(self):
@@ -117,3 +132,38 @@ class TestChatRouter:
         with TestClient(app) as c:
             resp = c.post("/api/agent/chat", json={"question": "hi"})
         assert resp.status_code == 403
+
+    def test_agent_status_is_lightweight(self):
+        client, agent_service = _make_client()
+        agent_service.provider_name = "openai"
+        agent_service.model_name = "gpt-test"
+        resp = client.get("/api/agent/status")
+        assert resp.json()["code"] == 0
+        data = resp.json()["data"]
+        assert data["provider"] == "openai"
+        assert data["model"] == "gpt-test"
+        assert "api_key" not in data
+
+    def test_cancel_turn(self):
+        client, _ = _make_client()
+        runtime = chat_router._DEFAULT_RUNTIME
+        turn_id = runtime.start_turn("cancel-session", "1")
+        resp = client.post("/api/agent/chat/cancel", json={"turn_id": turn_id})
+        assert resp.json()["code"] == 0
+        assert runtime.should_cancel(turn_id)
+        runtime.finish_turn(turn_id, "cancelled", "cancel-session")
+
+    def test_reject_pending_action(self):
+        app = FastAPI()
+        app.include_router(chat_router.router, prefix="/api/agent")
+        admin = UserContext(user_id=1, username="admin", level=0, permissions=["agent:manage"])
+        app.dependency_overrides[get_current_user] = lambda: admin
+        app.dependency_overrides[get_app_context] = lambda: SimpleNamespace()
+        runtime = chat_router._DEFAULT_RUNTIME
+        turn_id = runtime.start_turn("reject-action-session", "1")
+        action = runtime.create_pending(turn_id, "subscribe_delete", {}, "确认删除", "1", "reject-action-session")
+        with TestClient(app) as c:
+            resp = c.post("/api/agent/chat/reject", json={"pending_action_id": action.id})
+        assert resp.json()["code"] == 0
+        with pytest.raises(Exception):
+            runtime.get_pending(action.id, "1")

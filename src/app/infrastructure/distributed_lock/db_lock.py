@@ -21,6 +21,7 @@ class DbDistributedLock(DistributedLock):
 
     def acquire(self) -> bool:
         """尝试获取数据库锁."""
+        self._last_error = None
         try:
             instance = self._token.split(":")[0]
             result = self._repo.acquire(
@@ -37,6 +38,7 @@ class DbDistributedLock(DistributedLock):
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
+            self._last_error = e
             log.error(f"[DbLock]获取锁异常: {self._lock_key}, {e}")
             return False
 

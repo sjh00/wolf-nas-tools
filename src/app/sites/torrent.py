@@ -1,12 +1,13 @@
 import datetime
 import os.path
 import re
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import bencodepy
 from bencode import bdecode
 
 import log
+from app.core.constants import RMT_MEDIAEXT
 from app.domain.mediatypes import MediaType
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient
@@ -163,7 +164,20 @@ class Torrent:
                 config=HttpClientConfig(proxy_url=proxy_url),
                 rate_limiter=rate_limiter_engine,
             )
-            req = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
+            # 不自动跟随跳转：Prowlarr/Jackett 的下载接口会 302 到 magnet:，
+            # httpx 跟随会抛 "Request URL has an unsupported protocol 'magnet://'"。
+            req = client.get(url=url, headers=headers, auth=auth, follow_redirects=False, **rl_kwargs)
+            redirect_hops = 0
+            while getattr(req, "status_code", 200) in (301, 302, 303, 307, 308) and redirect_hops < 3:
+                location = str(req.headers.get("location") or "").strip()
+                if location.startswith("magnet:"):
+                    log.info(f"[Torrent]站点返回磁力跳转，直接使用磁力链接：{url[:200]}")
+                    return None, location, "磁力链接"
+                if not location:
+                    break
+                url = urljoin(url, location)
+                req = client.get(url=url, headers=headers, auth=auth, follow_redirects=False, **rl_kwargs)
+                redirect_hops += 1
         except HttpClientError as exc:
             log.warn(f"[Torrent]下载请求失败, url={url[:200]}, status={exc.status_code}, err={str(exc)}")
             if exc.status_code == 429:
@@ -240,6 +254,30 @@ class Torrent:
             f.write(file_content)
 
         return file_path, file_content, ""
+
+    @staticmethod
+    def torrent_has_media(content: bytes) -> bool:
+        """检查种子内容是否至少包含一个视频文件；纯广告 .url/.txt 种子直接跳过."""
+        if not content:
+            return False
+        try:
+            torrent = Torrent._safe_decode(content)
+            info = torrent.get("info") or {}
+            names: list[str] = []
+            files = info.get("files")
+            if isinstance(files, list) and files:
+                for item in files:
+                    path = item.get("path") if isinstance(item, dict) else None
+                    if isinstance(path, list) and path:
+                        names.append("/".join(str(part) for part in path))
+            else:
+                name = info.get("name")
+                if isinstance(name, str):
+                    names.append(name)
+            media_exts = {str(ext).lower() for ext in RMT_MEDIAEXT}
+            return any(os.path.splitext(name)[-1].lower() in media_exts for name in names)
+        except Exception:
+            return False
 
     @staticmethod
     def get_torrent_files(path):

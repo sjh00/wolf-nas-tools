@@ -198,7 +198,7 @@ class SiteRepositoryImpl(BaseRepository):
 
     def get_by_id(self, site_id: int) -> SiteEntity | None:
         with self.session() as db:
-            orm = db.query(CONFIGSITE).filter(int(site_id) == CONFIGSITE.ID).first()
+            orm = db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(site_id)).first()
             return SiteEntity.from_orm(orm) if orm else None
 
     def list_all(self) -> list[SiteEntity]:
@@ -208,7 +208,7 @@ class SiteRepositoryImpl(BaseRepository):
 
     def list_by_name(self, name: str) -> list[SiteEntity]:
         with self.session() as db:
-            orm_list = db.query(CONFIGSITE).filter(name == CONFIGSITE.NAME).all()
+            orm_list = db.query(CONFIGSITE).filter(CONFIGSITE.NAME == name).all()
             return [SiteEntity.from_orm(orm) for orm in orm_list]
 
     def insert(self, entity: SiteEntity) -> None:
@@ -233,7 +233,7 @@ class SiteRepositoryImpl(BaseRepository):
             raise ValueError("Entity ID is required")
 
         with self.session() as db:
-            db.query(CONFIGSITE).filter(int(entity.id) == CONFIGSITE.ID).update(
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(entity.id)).update(
                 {
                     "NAME": entity.name,
                     "PRI": entity.pri,
@@ -250,11 +250,11 @@ class SiteRepositoryImpl(BaseRepository):
 
     def delete(self, site_id: int) -> None:
         with self.session() as db:
-            db.query(CONFIGSITE).filter(int(site_id) == CONFIGSITE.ID).delete()
+            db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(site_id)).delete()
 
     def update_cookie_ua(self, site_id: int, cookie: str, ua: str | None = None) -> None:
         with self.session() as db:
-            rec = db.query(CONFIGSITE).filter(int(site_id) == CONFIGSITE.ID).first()
+            rec = db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(site_id)).first()
             if rec:
                 note = {}
                 if rec.NOTE:
@@ -264,6 +264,6 @@ class SiteRepositoryImpl(BaseRepository):
                         note = {}
                 if ua:
                     note["ua"] = ua
-                db.query(CONFIGSITE).filter(int(site_id) == CONFIGSITE.ID).update(
+                db.query(CONFIGSITE).filter(CONFIGSITE.ID == int(site_id)).update(
                     {"COOKIE": cookie, "NOTE": JsonUtils.dumps(note)}
                 )

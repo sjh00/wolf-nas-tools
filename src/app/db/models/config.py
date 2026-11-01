@@ -121,6 +121,7 @@ class MEDIASERVER(Base):
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
     NAME: Mapped[str] = mapped_column(String(255), index=True)
+    TYPE: Mapped[str] = mapped_column(String(32), default="", server_default="")
     ENABLED: Mapped[int] = mapped_column(Integer)
     CONFIG: Mapped[str] = mapped_column(Text)
     IS_DEFAULT: Mapped[int] = mapped_column(Integer)
@@ -141,6 +142,9 @@ class CONFIGMEDIA(Base):
     TV_BACKEND: Mapped[str | None] = mapped_column(Text, nullable=True)
     ANIME_BACKEND: Mapped[str | None] = mapped_column(Text, nullable=True)
     UNKNOWN_BACKEND: Mapped[str | None] = mapped_column(Text, nullable=True)
+    MOVIE_LAYOUT: Mapped[str] = mapped_column(String(20), default="category")
+    TV_LAYOUT: Mapped[str] = mapped_column(String(20), default="category")
+    ANIME_LAYOUT: Mapped[str] = mapped_column(String(20), default="flat")
     NOTE: Mapped[str] = mapped_column(Text, default="")
 
 
@@ -154,6 +158,7 @@ class CONFIGCATEGORY(Base):
     NAME: Mapped[str] = mapped_column(String(255))
     SORT_ORDER: Mapped[int] = mapped_column(Integer, default=0)
     IS_DEFAULT: Mapped[int] = mapped_column(Integer, default=0)
+    ENABLED: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class CONFIGCATEGORYRULE(Base):
@@ -165,3 +170,4 @@ class CONFIGCATEGORYRULE(Base):
     CATEGORY_ID: Mapped[int] = mapped_column(Integer, ForeignKey("CONFIG_CATEGORY.ID"), index=True)
     FIELD: Mapped[str] = mapped_column(String(100))
     VALUE: Mapped[str] = mapped_column(Text)
+    RULE_JSON: Mapped[str | None] = mapped_column(Text, nullable=True)

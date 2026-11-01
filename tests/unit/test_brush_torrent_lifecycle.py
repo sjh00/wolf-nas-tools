@@ -154,6 +154,18 @@ class _RepoWithEnclosure:
             for i in self._ids
         ]
 
+    def insert_brush_event(self, **kwargs):
+        pass
+
+    def update_brushtask_torrent_state(self, rows):
+        pass
+
+    def add_brushtask_upload_count(self, *args, **kwargs):
+        pass
+
+    def delete_brushtask_torrent(self, taskid, rid):
+        pass
+
 
 def test_remove_rule_without_attr_does_not_fetch_torrent_attr():
     """空删种规则/纯下载器指标规则：不应为每颗种子抓取详情页（避免消耗站点限流）"""
@@ -239,6 +251,33 @@ def test_torrent_not_deleted_when_attr_unknown():
     """详情属性抓取失败（返回 None）：跳过本轮判断，不得按非免费误删"""
     torrent = _seeding_torrent()
     helper = _UrlTrackingHelper(attr=None)
+    lc = _lc_with_helper(helper, torrent)
+    lc.remove_task_torrents(1, _task({"freestatus": "Y", "mode": "or"}))
+    assert lc._downloader.deleted == []
+
+
+def test_expired_free_completed_not_deleted_without_other_rules():
+    torrent = _seeding_torrent()
+    helper = _UrlTrackingHelper(attr={"free": False})
+    lc = _lc_with_helper(helper, torrent)
+    lc.remove_task_torrents(1, _task({"freestatus": "Y", "mode": "or"}))
+    assert lc._downloader.deleted == []
+
+
+def test_expired_free_completed_deleted_when_ratio_rule_matches():
+    torrent = _seeding_torrent()
+    torrent.ratio = 2.5
+    helper = _UrlTrackingHelper(attr={"free": False})
+    lc = _lc_with_helper(helper, torrent)
+    lc.remove_task_torrents(1, _task({"freestatus": "Y", "ratio": "lt#5", "mode": "or"}))
+    assert lc._downloader.deleted == ["A"]
+
+
+def test_expired_free_incomplete_not_deleted_by_free_rule():
+    torrent = _seeding_torrent()
+    torrent.progress = 0.5
+    torrent.status = TorrentStatus.Downloading
+    helper = _UrlTrackingHelper(attr={"free": False})
     lc = _lc_with_helper(helper, torrent)
     lc.remove_task_torrents(1, _task({"freestatus": "Y", "mode": "or"}))
     assert lc._downloader.deleted == []

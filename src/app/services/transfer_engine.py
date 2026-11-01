@@ -211,7 +211,8 @@ class TransferEngine:
         else:
             files = PathUtils.get_dir_files(src_dir)
         for file in files:
-            new_file = file.replace(src_dir, target_dir)
+            # 用 relpath 拼接，避免 str.replace 把路径中任意位置的 src_dir 子串都替换
+            new_file = os.path.join(target_dir, os.path.relpath(file, src_dir))
             if backend.exists(new_file):
                 log.warn(f"[Rmt]{new_file} 文件已存在")
                 continue
@@ -266,7 +267,7 @@ class TransferEngine:
             log.warn(f"[Rmt]文件已存在：{dst}")
             return
         if over_flag and old_file:
-            old_backend = src_backend or self._local
+            old_backend = dst_b
             if old_backend.exists(old_file):
                 st = old_backend.stat(old_file)
                 if st and not st.is_dir:

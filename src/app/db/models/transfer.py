@@ -23,6 +23,7 @@ class TRANSFERHISTORY(Base):
     __table_args__ = (
         Index("INDX_TRANSFER_HISTORY_SOURCE", "SOURCE_PATH", "SOURCE_FILENAME"),
         Index("INDX_TRANSFER_HISTORY_TMDBID", "TMDBID"),
+        Index("INDX_TRANSFER_HISTORY_DEST", "DEST_PATH", "DEST_FILENAME"),
     )
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
@@ -39,8 +40,18 @@ class TRANSFERHISTORY(Base):
     DEST: Mapped[str] = mapped_column(String(255))
     DEST_PATH: Mapped[str] = mapped_column(String(255))
     DEST_FILENAME: Mapped[str] = mapped_column(String(255))
+    POSTER: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     DST_BACKEND: Mapped[str | None] = mapped_column(String(64), nullable=True)
     DATE: Mapped[str] = mapped_column(String(20), index=True)
+    IDENTITY_ID: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    SOURCE_STATE: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    SOURCE_DELETED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    DEST_STATE: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    DEST_DELETED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    FILES_CHECKED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}

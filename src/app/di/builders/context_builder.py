@@ -1,6 +1,7 @@
 """上下文 Builder — 组装完整 AppContext。"""
 
 import log
+from app.agent.runtime import AgentRuntime
 from app.di.builders.agent_builder import build_agent_rag
 from app.di.builders.coordinators_builder import build_coordinators
 from app.di.builders.facades_builder import build_business_facades
@@ -45,6 +46,7 @@ def build_app_context() -> AppContext:
         knowledge_ingestor=agent_rag.knowledge_ingestor,
         conversation_store=agent_rag.conversation_store,
         semantic_memory=agent_rag.semantic_memory,
+        agent_runtime=AgentRuntime(),
         downloader_core=services.downloader_core,
         download_monitor=facades.download_monitor,
         filetransfer_service=services.filetransfer_service,
@@ -64,6 +66,8 @@ def build_app_context() -> AppContext:
         site_resolver=services.site_resolver,
         site_favicon_service=services.site_favicon_service,
         media_info_service=services.media_info_service,
+        metadata_service=services.metadata_service,
+        discovery_service=services.discovery_service,
         media_config_service=services.media_config_service,
         media_file_service=services.media_file_service,
         media_library_service=services.media_library_service,
@@ -93,10 +97,12 @@ def build_app_context() -> AppContext:
         storage_backend_service=services.storage_backend_service,
         search_result_service=services.search_result_service,
         transfer_history_service=services.transfer_history_service,
+        library_rename_service=services.library_rename_service,
         subscribe_calendar_service=services.subscribe_calendar_service,
         subscribe_history_service=services.subscribe_history_service,
         words_service=services.words_service,
         user_rss_service=services.user_rss_service,
+        custom_rss_service=services.custom_rss_service,
         site_grant_service=services.site_grant_service,
         channel_binding_service=services.channel_binding_service,
         subscription_monitor=coordinators.subscription_monitor,

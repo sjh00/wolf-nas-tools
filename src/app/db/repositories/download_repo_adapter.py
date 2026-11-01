@@ -24,13 +24,34 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
         return self._repo.is_exists_download_history(enclosure, downloader, download_id)
 
     def is_exists_by_tmdb(self, tmdb_id: str, season_episode: str) -> bool:
+        if not str(tmdb_id).isdigit():
+            return False
         return self._repo.is_exists_download_history_by_tmdb(int(tmdb_id), season_episode)
 
     def is_completed_by_tmdb(self, tmdb_id: str, season_episode: str) -> bool:
+        if not str(tmdb_id).isdigit():
+            return False
         return self._repo.is_completed_download_history_by_tmdb(int(tmdb_id), season_episode)
+
+    def is_completed_by_identity(
+        self,
+        *,
+        identity_id: str | None,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        season_episode: str | None,
+    ) -> bool:
+        return self._repo.is_completed_download_history_by_identity(
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            season_episode=season_episode,
+        )
 
     def get_contiguous_completed_episode_by_tmdb(self, tmdb_id, season: int | None, start: int = 1) -> int:
         """查询某季已完成下载的连续集数（重订阅续订用，季包保守记 start）."""
+        if not str(tmdb_id).isdigit():
+            return 0
         return self._repo.get_contiguous_completed_episode_by_tmdb(int(tmdb_id), season, start=start)
 
     def insert(self, media_info, downloader: str, download_id: str, save_dir: str) -> None:
@@ -46,6 +67,28 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
 
     def get_by_title(self, title: str) -> list[DownloadHistoryEntity]:
         rows = self._repo.get_download_history_by_title(title)
+        if not rows:
+            return []
+        return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]
+
+    def get_by_tmdb(self, tmdb_id: int | str | None) -> list[DownloadHistoryEntity]:
+        rows = self._repo.get_download_history_by_tmdb(tmdb_id)
+        if not rows:
+            return []
+        return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]
+
+    def get_by_identity(
+        self,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+    ) -> list[DownloadHistoryEntity]:
+        rows = self._repo.get_download_history_by_identity(
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+        )
         if not rows:
             return []
         return [entity for entity in [DownloadHistoryEntity.from_orm(r) for r in rows] if entity is not None]

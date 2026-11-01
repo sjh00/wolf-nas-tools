@@ -57,6 +57,75 @@ class PluginToolConfig:
 
 
 @dataclass
+class PluginMetadataConfig:
+    """插件声明的元数据扩展（provider / discovery / profile）."""
+
+    visibility: str = "public"
+    required_permission: str = ""
+    providers: list[dict] = field(default_factory=list)
+    discovery_providers: list[dict] = field(default_factory=list)
+    content_profiles: list[dict] = field(default_factory=list)
+    match_profiles: list[dict] = field(default_factory=list)
+    parser_profiles: list[dict] = field(default_factory=list)
+    naming_profiles: list[dict] = field(default_factory=list)
+    nfo_profiles: list[dict] = field(default_factory=list)
+    message_templates: dict = field(default_factory=dict)
+    message_labels: dict = field(default_factory=dict)
+    image_referers: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "PluginMetadataConfig":
+        data = data or {}
+
+        def normalize(items) -> list[dict]:
+            result = []
+            for item in items or []:
+                if isinstance(item, str):
+                    result.append({"key": item})
+                elif isinstance(item, dict):
+                    result.append(item)
+            return result
+
+        message_templates = data.get("message_templates")
+        message_labels = data.get("message_labels")
+        image_referers = data.get("image_referers")
+        return cls(
+            visibility=data.get("visibility", "public"),
+            required_permission=data.get("required_permission", ""),
+            providers=normalize(data.get("providers")),
+            discovery_providers=normalize(data.get("discovery_providers")),
+            content_profiles=normalize(data.get("content_profiles")),
+            match_profiles=normalize(data.get("match_profiles")),
+            parser_profiles=normalize(data.get("parser_profiles")),
+            naming_profiles=normalize(data.get("naming_profiles")),
+            nfo_profiles=normalize(data.get("nfo_profiles")),
+            message_templates=dict(message_templates) if isinstance(message_templates, dict) else {},
+            message_labels=dict(message_labels) if isinstance(message_labels, dict) else {},
+            image_referers=dict(image_referers) if isinstance(image_referers, dict) else {},
+        )
+
+    def keys(self, kind: str) -> set[str]:
+        items = getattr(self, kind, []) or []
+        return {str(item.get("key")) for item in items if item.get("key")}
+
+    def to_dict(self) -> dict:
+        return {
+            "visibility": self.visibility,
+            "required_permission": self.required_permission,
+            "providers": self.providers,
+            "discovery_providers": self.discovery_providers,
+            "content_profiles": self.content_profiles,
+            "match_profiles": self.match_profiles,
+            "parser_profiles": self.parser_profiles,
+            "naming_profiles": self.naming_profiles,
+            "nfo_profiles": self.nfo_profiles,
+            "message_templates": self.message_templates,
+            "message_labels": self.message_labels,
+            "image_referers": self.image_referers,
+        }
+
+
+@dataclass
 class PluginBackendConfig:
     entry: str = ""
     api_prefix: str = ""
@@ -65,6 +134,7 @@ class PluginBackendConfig:
     supports_run: bool = False
     dependencies: list[str] = field(default_factory=list)
     tools: list[PluginToolConfig] = field(default_factory=list)
+    metadata: PluginMetadataConfig = field(default_factory=PluginMetadataConfig)
 
 
 @dataclass
@@ -74,6 +144,9 @@ class PluginRouteConfig:
     title: str = ""
     icon: str = ""
     menu: bool = True
+    parent: str = ""
+    permission: str = ""
+    order: int | None = None
 
 
 @dataclass
@@ -109,6 +182,7 @@ class PluginFrontendConfig:
     routes: list[PluginRouteConfig] = field(default_factory=list)
     settings: PluginSettingsConfig | None = None
     slots: list[PluginSlotConfig] = field(default_factory=list)
+    content_profiles: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -136,6 +210,9 @@ class PluginManifest:
         routes = [PluginRouteConfig(**r) for r in frontend_data.get("routes", [])]
         fields = [PluginFieldConfig(**f) for f in frontend_data.get("settings", {}).get("fields", [])]
         slots = [PluginSlotConfig(**s) for s in frontend_data.get("slots", [])]
+        content_profiles = [
+            item for item in frontend_data.get("content_profiles", []) if isinstance(item, dict) and item.get("key")
+        ]
 
         return cls(
             manifest_version=data.get("manifest_version", "1.0"),
@@ -158,6 +235,7 @@ class PluginManifest:
                 supports_run=backend_data.get("supports_run", False),
                 dependencies=backend_data.get("dependencies", []),
                 tools=[PluginToolConfig.from_dict(t) for t in backend_data.get("tools", [])],
+                metadata=PluginMetadataConfig.from_dict(backend_data.get("metadata")),
             ),
             frontend=PluginFrontendConfig(
                 routes=routes,
@@ -168,6 +246,7 @@ class PluginManifest:
                 if frontend_data.get("settings")
                 else None,
                 slots=slots,
+                content_profiles=content_profiles,
             ),
         )
 
@@ -193,10 +272,20 @@ class PluginManifest:
                 "supports_run": self.backend.supports_run,
                 "dependencies": self.backend.dependencies,
                 "tools": [t.to_dict() for t in self.backend.tools],
+                "metadata": self.backend.metadata.to_dict(),
             },
             "frontend": {
                 "routes": [
-                    {"path": r.path, "component": r.component, "title": r.title, "icon": r.icon, "menu": r.menu}
+                    {
+                        "path": r.path,
+                        "component": r.component,
+                        "title": r.title,
+                        "icon": r.icon,
+                        "menu": r.menu,
+                        "parent": r.parent,
+                        "permission": r.permission,
+                        "order": r.order,
+                    }
                     for r in self.frontend.routes
                 ],
                 "settings": {
@@ -222,6 +311,7 @@ class PluginManifest:
                 "slots": [
                     {"target": s.target, "position": s.position, "component": s.component} for s in self.frontend.slots
                 ],
+                "content_profiles": self.frontend.content_profiles,
             },
         }
 

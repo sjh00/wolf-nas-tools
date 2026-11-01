@@ -102,11 +102,11 @@ class PluginRepository(BaseRepository):
             if media_type:
                 count = (
                     db.query(TMDBBLACKLIST)
-                    .filter(str(tmdb_id) == TMDBBLACKLIST.TMDB_ID, media_type == TMDBBLACKLIST.MEDIA_TYPE)
+                    .filter(TMDBBLACKLIST.TMDB_ID == str(tmdb_id), TMDBBLACKLIST.MEDIA_TYPE == media_type)
                     .count()
                 )
             else:
-                count = db.query(TMDBBLACKLIST).filter(str(tmdb_id) == TMDBBLACKLIST.TMDB_ID).count()
+                count = db.query(TMDBBLACKLIST).filter(TMDBBLACKLIST.TMDB_ID == str(tmdb_id)).count()
             return count > 0
 
     def get_tmdb_blacklist(self):
@@ -137,7 +137,7 @@ class PluginRepository(BaseRepository):
         if not tmdb_id:
             return
         with self.session() as db:
-            query = db.query(TMDBBLACKLIST).filter(str(tmdb_id) == TMDBBLACKLIST.TMDB_ID)
+            query = db.query(TMDBBLACKLIST).filter(TMDBBLACKLIST.TMDB_ID == str(tmdb_id))
             if media_type:
                 query = query.filter(media_type == TMDBBLACKLIST.MEDIA_TYPE)
             if query.first():
@@ -168,10 +168,10 @@ class PluginRepository(BaseRepository):
         with self.session() as db:
             if media_type:
                 db.query(TMDBBLACKLIST).filter(
-                    str(tmdb_id) == TMDBBLACKLIST.TMDB_ID, media_type == TMDBBLACKLIST.MEDIA_TYPE
+                    TMDBBLACKLIST.TMDB_ID == str(tmdb_id), TMDBBLACKLIST.MEDIA_TYPE == media_type
                 ).delete()
             else:
-                db.query(TMDBBLACKLIST).filter(str(tmdb_id) == TMDBBLACKLIST.TMDB_ID).delete()
+                db.query(TMDBBLACKLIST).filter(TMDBBLACKLIST.TMDB_ID == str(tmdb_id)).delete()
 
     def clear_tmdb_blacklist(self):
         """

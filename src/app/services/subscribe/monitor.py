@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from typing import TYPE_CHECKING
 
 import pytz
 
@@ -17,8 +18,10 @@ from app.services.subscribe.search_engine import SubscribeSearchEngine
 from app.services.subscribe.strategies.indexer_search import IndexerSearchStrategy
 from app.services.subscribe.strategies.queue_search import QueueSearchStrategy
 from app.services.subscribe.strategies.rss_feed import RssFeedStrategy
-from app.services.subscribe_service import SubscribeService
 from app.utils import ExceptionUtils
+
+if TYPE_CHECKING:
+    from app.services.subscribe_service import SubscribeService
 
 
 class SubscriptionMonitor:
@@ -60,6 +63,7 @@ class SubscriptionMonitor:
         # 任务级去重：防止多个周期同时提交同一策略
         self._running_tasks: dict[str, bool] = {}
         self._error_retry_count = 0
+        self._last_reconcile: datetime.datetime | None = None
         self._bind_coordinator()
         self._load_last_run_times()
 
@@ -117,6 +121,35 @@ class SubscriptionMonitor:
         if self._should_run_search() and not self._running_tasks.get("search"):
             self._running_tasks["search"] = True
             self._thread_executor.submit(self._run_indexer_search)
+        # 待转移订阅清理：已入库则定稿，超时未入库则重开，避免永久滞留
+        if self._should_run_reconcile() and not self._running_tasks.get("reconcile"):
+            self._running_tasks["reconcile"] = True
+            self._last_reconcile = datetime.datetime.now(self._tz)
+            self._thread_executor.submit(self._run_reconcile)
+
+    def _reconcile_interval_seconds(self) -> int:
+        try:
+            return max(int(str(self._system_config.get("subscribe.reconcile_interval") or 900)), 60)
+        except (TypeError, ValueError):
+            return 900
+
+    def _should_run_reconcile(self) -> bool:
+        if self._last_reconcile is None:
+            return True
+        elapsed = (datetime.datetime.now(self._tz) - self._last_reconcile).total_seconds()
+        return elapsed >= self._reconcile_interval_seconds()
+
+    def _run_reconcile(self) -> None:
+        try:
+            try:
+                timeout = int(str(self._system_config.get("subscribe.pending_transfer_timeout_minutes") or 180))
+            except (TypeError, ValueError):
+                timeout = 180
+            self._subscribe.reconcile_pending_transfers(timeout_minutes=timeout)
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[SubscriptionMonitor] 待转移订阅清理失败: {e}")
+        finally:
+            self._running_tasks["reconcile"] = False
 
     def _run_queue_search(self) -> None:
         try:
@@ -247,6 +280,6 @@ class SubscriptionMonitor:
             queue_strategy=self._queue_strategy,
         )
         if MediaType.from_string(mtype) == MediaType.MOVIE:
-            self._thread_executor.submit(engine.subscribe_search_movie, rssid)
+            self._thread_executor.submit(engine.subscribe_search_movie, rssid, force=True)
         else:
             self._thread_executor.submit(engine.subscribe_search_tv, rssid)

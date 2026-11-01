@@ -55,6 +55,14 @@ class SubscribeHistoryEntity:
     finish_time: str
     note: str
     user_id: int | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
+    metadata_policy: str | None = None
+    naming_profile: str | None = None
 
     @classmethod
     def from_orm(cls, orm_model) -> Optional["SubscribeHistoryEntity"]:
@@ -75,6 +83,14 @@ class SubscribeHistoryEntity:
             finish_time=orm_model.FINISH_TIME or "",
             note=orm_model.NOTE or "",
             user_id=getattr(orm_model, "USER_ID", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            provider=getattr(orm_model, "PROVIDER", None),
+            metadata_ref=getattr(orm_model, "METADATA_REF", None),
+            metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
+            naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
 
     # 从 ORM 列名到 dataclass 字段名的映射
@@ -108,6 +124,14 @@ class SubscribeHistoryEntity:
             "start": self.start,
             "finish_time": self.finish_time,
             "note": self.note,
+            "identity_id": self.identity_id,
+            "anchor_provider": self.anchor_provider,
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
+            "metadata_policy": self.metadata_policy,
+            "naming_profile": self.naming_profile,
         }
 
 
@@ -140,6 +164,14 @@ class SubscribeMovieEntity:
     add_date: str = ""
     filter_free: bool = False
     user_id: int | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
+    metadata_policy: str | None = None
+    naming_profile: str | None = None
 
     @property
     def state_enum(self) -> SubscribeState:
@@ -239,6 +271,14 @@ class SubscribeMovieEntity:
             note=orm_model.NOTE or "",
             add_date=getattr(orm_model, "ADD_DATE", None) or "",
             user_id=getattr(orm_model, "USER_ID", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            provider=getattr(orm_model, "PROVIDER", None),
+            metadata_ref=getattr(orm_model, "METADATA_REF", None),
+            metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
+            naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
 
     # 从 ORM 列名到 dataclass 字段名的映射
@@ -283,6 +323,14 @@ class SubscribeMovieEntity:
             "state": self.state,
             "desc": self.description,
             "note": self.note,
+            "identity_id": self.identity_id,
+            "anchor_provider": self.anchor_provider,
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
+            "metadata_policy": self.metadata_policy,
+            "naming_profile": self.naming_profile,
         }
 
 
@@ -375,6 +423,14 @@ class SubscribeTvEntity:
     add_date: str = ""
     filter_free: bool = False
     user_id: int | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
+    metadata_policy: str | None = None
+    naming_profile: str | None = None
 
     @property
     def state_enum(self) -> SubscribeState:
@@ -494,6 +550,14 @@ class SubscribeTvEntity:
             note=orm_model.NOTE or "",
             add_date=getattr(orm_model, "ADD_DATE", None) or "",
             user_id=getattr(orm_model, "USER_ID", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            provider=getattr(orm_model, "PROVIDER", None),
+            metadata_ref=getattr(orm_model, "METADATA_REF", None),
+            metadata_policy=getattr(orm_model, "METADATA_POLICY", None),
+            naming_profile=getattr(orm_model, "NAMING_PROFILE", None),
         )
 
     # 从 ORM 列名到 dataclass 字段名的映射
@@ -543,6 +607,14 @@ class SubscribeTvEntity:
             "state": self.state,
             "desc": self.description,
             "note": self.note,
+            "identity_id": self.identity_id,
+            "anchor_provider": self.anchor_provider,
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
+            "metadata_policy": self.metadata_policy,
+            "naming_profile": self.naming_profile,
         }
 
 

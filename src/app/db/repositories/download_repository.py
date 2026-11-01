@@ -30,7 +30,7 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(DOWNLOADHISTORY.ID)
-                .filter(downloader == DOWNLOADHISTORY.DOWNLOADER, download_id == DOWNLOADHISTORY.DOWNLOAD_ID)
+                .filter(DOWNLOADHISTORY.DOWNLOADER == downloader, DOWNLOADHISTORY.DOWNLOAD_ID == download_id)
                 .first()
                 is not None
             )
@@ -48,7 +48,7 @@ class DownloadRepository(BaseRepository):
             )
 
             if season_episode:
-                query = query.filter(season_episode == DOWNLOADHISTORY.SE)
+                query = query.filter(DOWNLOADHISTORY.SE == season_episode)
 
             return query.first() is not None
 
@@ -67,7 +67,31 @@ class DownloadRepository(BaseRepository):
             )
 
             if season_episode:
-                query = query.filter(season_episode == DOWNLOADHISTORY.SE)
+                query = query.filter(DOWNLOADHISTORY.SE == season_episode)
+            return query.first() is not None
+
+    def is_completed_download_history_by_identity(
+        self,
+        *,
+        identity_id: str | None,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        season_episode: str | None,
+    ) -> bool:
+        """按统一身份查询已完成下载（不依赖 TMDB 数字 ID）."""
+        if not identity_id and not (anchor_provider and anchor_external_id):
+            return False
+        with self.session() as db:
+            query = db.query(DOWNLOADHISTORY.ID).filter(DOWNLOADHISTORY.STATE == "completed")
+            if identity_id:
+                query = query.filter(DOWNLOADHISTORY.IDENTITY_ID == str(identity_id))
+            else:
+                query = query.filter(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
+                )
+            if season_episode:
+                query = query.filter(DOWNLOADHISTORY.SE == season_episode)
             return query.first() is not None
 
     def get_contiguous_completed_episode_by_tmdb(
@@ -180,8 +204,8 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             if self.is_exists_download_history(enclosure=enclosure, downloader=downloader, download_id=download_id):
                 db.query(DOWNLOADHISTORY).filter(
-                    downloader == DOWNLOADHISTORY.DOWNLOADER,
-                    download_id == DOWNLOADHISTORY.DOWNLOAD_ID,
+                    DOWNLOADHISTORY.DOWNLOADER == downloader,
+                    DOWNLOADHISTORY.DOWNLOAD_ID == download_id,
                 ).update(
                     {
                         "TITLE": media_info.title,
@@ -201,6 +225,10 @@ class DownloadRepository(BaseRepository):
                         "SE": media_info.get_season_episode_string() or "",
                         "STATE": "downloading",
                         "DATE": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
+                        "IDENTITY_ID": getattr(media_info, "identity_id", None),
+                        "ANCHOR_PROVIDER": getattr(media_info, "anchor_provider", None),
+                        "ANCHOR_EXTERNAL_ID": getattr(media_info, "anchor_external_id", None),
+                        "CONTENT_PROFILE": getattr(media_info, "content_profile", None),
                         **({"USER_ID": user_id} if user_id is not None else {}),
                     }
                 )
@@ -225,6 +253,10 @@ class DownloadRepository(BaseRepository):
                         SAVE_PATH=save_dir,
                         SE=media_info.get_season_episode_string() or "",
                         STATE="downloading",
+                        IDENTITY_ID=getattr(media_info, "identity_id", None),
+                        ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
+                        ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
+                        CONTENT_PROFILE=getattr(media_info, "content_profile", None),
                     )
                 )
 
@@ -242,7 +274,7 @@ class DownloadRepository(BaseRepository):
         """
         with self.session() as db:
             if hid:
-                query = db.query(DOWNLOADHISTORY).filter(int(hid) == DOWNLOADHISTORY.ID)
+                query = db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.ID == int(hid))
                 if user is not None and not user.is_superadmin:
                     query = query.filter(
                         or_(DOWNLOADHISTORY.USER_ID == user.user_id, DOWNLOADHISTORY.USER_ID.is_(None))
@@ -298,13 +330,43 @@ class DownloadRepository(BaseRepository):
 
     def get_download_history_by_title(self, title: str) -> list[DOWNLOADHISTORY]:
         with self.session() as db:
-            return db.query(DOWNLOADHISTORY).filter(title == DOWNLOADHISTORY.TITLE).all()
+            return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.TITLE == title).all()
+
+    def get_download_history_by_tmdb(self, tmdb_id: int | str | None) -> list[DOWNLOADHISTORY]:
+        """按 TMDB 查询下载历史（待转移超时判断用，避免标题不一致导致漏判）。"""
+        if not tmdb_id:
+            return []
+        with self.session() as db:
+            return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.TMDBID == str(tmdb_id)).all()
+
+    def get_download_history_by_identity(
+        self,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+    ) -> list[DOWNLOADHISTORY]:
+        """按统一身份/锚点查询下载历史（无 TMDB 的插件画像订阅超时判断用）."""
+        conditions = []
+        if identity_id:
+            conditions.append(DOWNLOADHISTORY.IDENTITY_ID == str(identity_id))
+        if anchor_provider and anchor_external_id:
+            conditions.append(
+                and_(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
+                )
+            )
+        if not conditions:
+            return []
+        with self.session() as db:
+            return db.query(DOWNLOADHISTORY).filter(or_(*conditions)).all()
 
     def get_download_history_by_path(self, path: str) -> DOWNLOADHISTORY | None:
         with self.session() as db:
             return (
                 db.query(DOWNLOADHISTORY)
-                .filter(os.path.normpath(path) == DOWNLOADHISTORY.SAVE_PATH)
+                .filter(DOWNLOADHISTORY.SAVE_PATH == os.path.normpath(path))
                 .order_by(DOWNLOADHISTORY.DATE.desc())
                 .first()
             )
@@ -314,14 +376,14 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(DOWNLOADHISTORY)
-                .filter(os.path.normpath(path) == DOWNLOADHISTORY.SAVE_PATH)
+                .filter(DOWNLOADHISTORY.SAVE_PATH == os.path.normpath(path))
                 .order_by(DOWNLOADHISTORY.DATE.desc())
                 .all()
             )
 
     def count_download_history_by_path(self, path: str) -> int:
         with self.session() as db:
-            return db.query(DOWNLOADHISTORY).filter(os.path.normpath(path) == DOWNLOADHISTORY.SAVE_PATH).count()
+            return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.SAVE_PATH == os.path.normpath(path)).count()
 
     def get_download_history_by_downloader(self, downloader: str, download_id: str) -> DOWNLOADHISTORY | None:
         """
@@ -330,7 +392,7 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(DOWNLOADHISTORY)
-                .filter(downloader == DOWNLOADHISTORY.DOWNLOADER, download_id == DOWNLOADHISTORY.DOWNLOAD_ID)
+                .filter(DOWNLOADHISTORY.DOWNLOADER == downloader, DOWNLOADHISTORY.DOWNLOAD_ID == download_id)
                 .order_by(DOWNLOADHISTORY.DATE.desc())
                 .first()
             )
@@ -342,7 +404,7 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(DOWNLOADHISTORY)
-                .filter(download_id == DOWNLOADHISTORY.DOWNLOAD_ID)
+                .filter(DOWNLOADHISTORY.DOWNLOAD_ID == download_id)
                 .order_by(DOWNLOADHISTORY.DATE.desc())
                 .first()
             )
@@ -382,8 +444,8 @@ class DownloadRepository(BaseRepository):
         """
         with self.session() as db:
             db.query(DOWNLOADHISTORY).filter(
-                downloader == DOWNLOADHISTORY.DOWNLOADER,
-                download_id == DOWNLOADHISTORY.DOWNLOAD_ID,
+                DOWNLOADHISTORY.DOWNLOADER == downloader,
+                DOWNLOADHISTORY.DOWNLOAD_ID == download_id,
             ).update({"STATE": state})
 
     def update_download_save_path(
@@ -398,11 +460,11 @@ class DownloadRepository(BaseRepository):
             q = db.query(DOWNLOADHISTORY)
             if downloader and download_id:
                 q = q.filter(
-                    downloader == DOWNLOADHISTORY.DOWNLOADER,
-                    download_id == DOWNLOADHISTORY.DOWNLOAD_ID,
+                    DOWNLOADHISTORY.DOWNLOADER == downloader,
+                    DOWNLOADHISTORY.DOWNLOAD_ID == download_id,
                 )
             elif tmdb_id:
-                q = q.filter(tmdb_id == DOWNLOADHISTORY.TMDBID)
+                q = q.filter(DOWNLOADHISTORY.TMDBID == tmdb_id)
             else:
                 return 0
             matched = q.all()
@@ -443,7 +505,7 @@ class DownloadRepository(BaseRepository):
         if not sid:
             return
         with self.session() as db:
-            db.query(DOWNLOADSETTING).filter(int(sid) == DOWNLOADSETTING.ID).delete()
+            db.query(DOWNLOADSETTING).filter(DOWNLOADSETTING.ID == int(sid)).delete()
 
     def get_download_setting(self, sid: int | None = None) -> list[DOWNLOADSETTING]:
         """
@@ -451,7 +513,7 @@ class DownloadRepository(BaseRepository):
         """
         with self.session() as db:
             if sid:
-                return db.query(DOWNLOADSETTING).filter(int(sid) == DOWNLOADSETTING.ID).all()
+                return db.query(DOWNLOADSETTING).filter(DOWNLOADSETTING.ID == int(sid)).all()
             return db.query(DOWNLOADSETTING).all()
 
     def update_download_setting(
@@ -472,7 +534,7 @@ class DownloadRepository(BaseRepository):
         """
         with self.session() as db:
             if sid:
-                db.query(DOWNLOADSETTING).filter(int(sid) == DOWNLOADSETTING.ID).update(
+                db.query(DOWNLOADSETTING).filter(DOWNLOADSETTING.ID == int(sid)).update(
                     {
                         "NAME": name,
                         "CATEGORY": category,
@@ -527,7 +589,7 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             db.query(INDEXERSTATISTICS).delete()
 
-    def get_indexer_statistics(self, client_id: str, hours: int = 24) -> list[tuple]:
+    def get_indexer_statistics(self, client_id: str, hours: int = 24) -> list:
         """
         查询索引器统计（默认最近24小时）
         """
@@ -541,7 +603,7 @@ class DownloadRepository(BaseRepository):
                     func.sum(case((INDEXERSTATISTICS.RESULT == "Y", 1), else_=0)).label("SUCCESS"),
                     func.avg(INDEXERSTATISTICS.SECONDS).label("AVG"),
                 )
-                .filter(client_id == INDEXERSTATISTICS.TYPE, INDEXERSTATISTICS.DATE >= cutoff)
+                .filter(INDEXERSTATISTICS.TYPE == client_id, INDEXERSTATISTICS.DATE >= cutoff)
                 .group_by(INDEXERSTATISTICS.INDEXER)
                 .all()
             )

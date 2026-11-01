@@ -215,6 +215,7 @@ class DownloadPipeline:
             downloader_id=downloader_id,
             download_id=download_id,
             page_url=media_info.page_url,
+            content=content,
             dl_files_folder=dl_files_folder,
             dl_files=dl_files,
             download_dir=download_dir,
@@ -227,7 +228,8 @@ class DownloadPipeline:
             user_id=user_id,
         )
 
-        if not media_info.enclosure and file_path:
+        # 清理本次由 URL 下载的临时种子文件；用户上传的 torrent_file 需保留
+        if file_path and not torrent_file:
             with contextlib.suppress(Exception):
                 Torrent(self._site_engine).delete_torrent_file(file_path)
 
@@ -291,6 +293,7 @@ class DownloadPipeline:
                             ua=site_info.get("ua"),
                             headers=headers,
                             proxy=proxy if proxy is not None else site_info.get("proxy") or False,
+                            chrome=bool(site_info.get("chrome")),
                             browser_persistent=bool(site_info.get("browser_persistent")),
                         )
                     except Exception as e:  # noqa: BLE001
@@ -496,7 +499,10 @@ class DownloadPipeline:
         file_indices=None,
         file_names=None,
     ):
-        print_url = content if isinstance(content, str) else url
+        if isinstance(content, bytes) and not Torrent.torrent_has_media(content):
+            log.warn(f"[DownloadPipeline]跳过无媒体文件的种子：{title}")
+            return None
+        print_url = StringUtils.mask_sensitive(content if isinstance(content, str) else url, 200)
         log.info(
             f"[DownloadPipeline]{'添加任务并暂停' if is_paused else '添加任务'}：%s，目录：%s，Url：%s"
             % (title, download_dir, print_url)
@@ -525,6 +531,7 @@ class DownloadPipeline:
         downloader_id,
         download_id,
         page_url,
+        content,
         dl_files_folder,
         dl_files,
         download_dir,
@@ -541,6 +548,11 @@ class DownloadPipeline:
 
         visit_dir = self._client_factory.get_download_visit_dir(download_dir)
         save_dir = subtitle_dir = None
+        # 用实际下载内容判断是否磁力：站点下载接口可能 302 跳转/直接返回 magnet，
+        # 此时 enclosure 仍是原始 http 链接，据此判定会误落 else 分支而删除任务
+        is_magnet = (isinstance(content, str) and content.strip().startswith("magnet:")) or (
+            bool(media_info.enclosure) and media_info.enclosure.startswith("magnet:")
+        )
         if visit_dir:
             if dl_files_folder:
                 save_dir = os.path.join(visit_dir, dl_files_folder)
@@ -548,7 +560,7 @@ class DownloadPipeline:
             elif dl_files:
                 save_dir = os.path.join(visit_dir, dl_files[0])
                 subtitle_dir = visit_dir
-            elif media_info.enclosure and media_info.enclosure.startswith("magnet:"):
+            elif is_magnet:
                 save_dir = visit_dir
                 subtitle_dir = visit_dir
             else:
@@ -598,7 +610,8 @@ class DownloadPipeline:
                 except Exception:
                     log.warn(f"[Pipeline]字幕下载失败: {media_info.title or media_info.org_string}")
 
-            ThreadExecutor(name="subtitle").submit(_download_subtitle)
+            # 使用进程级共享执行器：临时构造会被 __del__ 立即 shutdown(cancel_futures=True) 取消任务
+            ThreadExecutor.named("subtitle").submit(_download_subtitle)
 
         if in_from:
             media_info.user_name = user_name

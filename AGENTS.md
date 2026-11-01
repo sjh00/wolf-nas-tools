@@ -80,6 +80,8 @@ backend/
 - 工厂: `src/app/db/database_factory.py`
 - 迁移: `alembic/` 目录（`alembic upgrade head`）
 - 添加模型时，需要添加 Alembic 迁移并更新仓库。
+- **迁移 revision ID 必须使用 `uv run alembic revision -m "..."` 生成的 12 位随机 hex，禁止手写**；文件名格式为 `<revision>_<slug>.py`。已有迁移的 revision ID 不可修改。
+- 修改模型/迁移后，使用临时数据库执行 `uv run alembic upgrade head`、`uv run alembic check`，确认无漂移再提交。
 
 ## 安全扫描
 - `just bandit` — 源码安全扫描

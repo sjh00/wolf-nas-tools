@@ -22,6 +22,7 @@ from lxml import etree
 
 import log
 from app.core.root_path import get_project_root
+from app.core.settings import settings
 from app.infrastructure.chrome.challenge import is_challenge
 from app.infrastructure.http.auth import CookieAuth
 from app.infrastructure.http.client import HttpClient
@@ -61,6 +62,19 @@ def _claim_page_fetch_slot(site_id: str, interval: float) -> float:
         start = max(now, slot)
         _page_pace_state.setdefault(site_id, {})["slot"] = start + interval
         return start - now
+
+
+_page_fetch_warn_state: dict[str, float] = {}
+
+
+def _warn_page_fetch(site_id: str, msg: str) -> None:
+    """页面抓取失败（空/非 2xx/异常）告警：同站点 60s 内仅一次，暴露真实原因便于定位。"""
+    now = time.monotonic()
+    with _page_pace_lock:
+        if now - _page_fetch_warn_state.get(site_id, 0.0) < 60.0:
+            return
+        _page_fetch_warn_state[site_id] = now
+    log.warn(f"[SiteEngine]{msg}")
 
 
 def _page_fetch_interval(site_id: str) -> float:
@@ -282,10 +296,27 @@ class SiteEngine:
 
     @classmethod
     def _resolve_definitions_dir(cls) -> str:
-        """优先使用环境变量 NEXUS_SITES_DIR，不存在则回退到内置目录"""
+        """优先使用环境变量 NEXUS_SITES_DIR，其次在线更新目录，最后回退到内置目录。"""
         env_dir = os.environ.get("NEXUS_SITES_DIR")
         if env_dir and os.path.isdir(env_dir):
             return env_dir
+        try:
+            user_sites = os.path.join(settings.config_path, "sites")
+            version = ""
+            version_file = os.path.join(user_sites, "version")
+            if os.path.isfile(version_file):
+                with open(version_file, encoding="utf-8") as f:
+                    version = f.read().strip()
+            has_defs = any(
+                os.path.isdir(os.path.join(user_sites, sub))
+                and any(name.endswith(".json") for name in os.listdir(os.path.join(user_sites, sub)))
+                for sub in ("api", "html")
+            )
+            # 仅在存在“在线更新版本标记”（非 builtin 副本）时优先用户目录，避免读到过期内置副本
+            if has_defs and version and version != "builtin":
+                return user_sites
+        except Exception:  # noqa: BLE001
+            log.debug("[SiteEngine]解析用户站点配置目录失败，回退内置目录")
         return cls._BUILTIN_DEFINITIONS_DIR
 
     def __init__(self, definitions_dir: str | None = None):
@@ -320,6 +351,18 @@ class SiteEngine:
                 log.debug(f"[SiteEngine]加载站点定义: {site_def.name} ({site_def.id})")
             except Exception:
                 log.warn(f"[SiteEngine]加载站点定义失败: {fname}\n{traceback.format_exc()}")
+
+    def reload(self) -> None:
+        """重新加载站点定义（在线配置更新后热生效，无需重启）。"""
+        self._sites.clear()
+        self._domain_index.clear()
+        self._auth_cache.clear()
+        if self._definitions_dir and os.path.isdir(self._definitions_dir):
+            for subdir in ("api", "html"):
+                subpath = os.path.join(self._definitions_dir, subdir)
+                if os.path.isdir(subpath):
+                    self._load(subpath)
+        log.info(f"[SiteEngine]站点定义已重载，共 {len(self._sites)} 个（{self._definitions_dir}）")
 
     def _index_site(self, site_def: SiteDefinition) -> None:
         """将站点定义加入 domain 索引."""
@@ -762,9 +805,13 @@ class SiteEngine:
                     detail_url = f"{self._base_from_url(torrent_url).rstrip('/')}/{detail_url.lstrip('/')}"
             else:
                 detail_url = torrent_url
-            html_txt = self._fetch_page(detail_url, user_config)
+            html_txt, final_url = self._fetch_page_ex(detail_url, user_config)
+            if "login" in (final_url or "").lower():
+                raise TorrentAttrFetchError(f"种子详情页被重定向到登录页（cookie 失效/未登录）, url={detail_url[:120]}")
             if not html_txt:
                 raise TorrentAttrFetchError(f"种子详情页抓取为空, url={detail_url[:120]}")
+            if not is_logged_in(html_txt):
+                raise TorrentAttrFetchError(f"种子详情页未登录（cookie 可能失效）, url={detail_url[:120]}")
             attrs = self._eval_html_conf(html_txt, conf)
             if attrs is None:
                 raise TorrentAttrFetchError(f"种子详情页解析失败, url={detail_url[:120]}")
@@ -817,7 +864,15 @@ class SiteEngine:
     def _fetch_page_ex(self, url, user_config) -> tuple[str | None, str]:
         """抓取页面，返回 (text, final_url)；final_url 供调用方检测登录重定向."""
         ua = user_config.get("ua", "")
-        headers = {"User-Agent": ua} if ua else {}
+        raw_headers = user_config.get("headers")
+        if isinstance(raw_headers, str):
+            try:
+                raw_headers = JsonUtils.loads(raw_headers)
+            except Exception:  # noqa: BLE001
+                raw_headers = {}
+        headers = dict(raw_headers) if isinstance(raw_headers, dict) else {}
+        if ua:
+            headers.setdefault("User-Agent", ua)
         proxies = get_proxies() if user_config.get("proxy") else None
         proxy_url = proxies.get("http") if proxies else None
         site = self.get_by_url(url)
@@ -860,13 +915,15 @@ class SiteEngine:
                 res = client.get(url=url, headers=headers, auth=auth, **rl_kwargs)
                 final = str(res.url) if getattr(res, "url", None) else url
                 if not res.is_success:
-                    log.debug(f"[SiteEngine]页面抓取非 2xx: HTTP {res.status_code} url={str(url)[:80]}")
+                    _warn_page_fetch(site_id, f"页面抓取非 2xx: HTTP {res.status_code} url={str(url)[:120]}")
                     return None, final
                 return res.text, final
             except Exception as e:
                 # 鉴权失败被重定向到登录页时，CF 挑战/403 会抛异常且消息含 login URL，
                 # 把异常中的最终地址透传，供自检调用方识别（正常路径不受影响）
                 err_msg = str(e)
+                if "login" not in err_msg.lower():
+                    _warn_page_fetch(site_id, f"页面抓取异常: {err_msg[:160]} url={str(url)[:120]}")
                 return None, (err_msg if "login" in err_msg.lower() else url)
             finally:
                 if client is not None and with_browser is not None:

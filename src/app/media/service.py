@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
 import log
+from app.core.constants import ANIME_GENREIDS
 from app.core.settings import settings
 from app.domain.enums import IdentifyStatus, MatchMode
 from app.domain.mediatypes import MediaType
@@ -25,6 +26,33 @@ from app.media.parser.regex import RegexParser
 from app.media.parser.unified.preprocessor import is_collection_context, strip_collection_noise
 from app.storage.backends.base import StorageBackend
 from app.utils import EpisodeFormat, PathUtils, StringUtils
+
+
+def _promote_tmdb_anime_type(info) -> None:
+    """批量识别路径按 TMDB genre 16 提升为动漫.
+
+    单条 identify()/identify_files() 经 MediaInfo.set_provider_data 已具备该判定；
+    批量路径手工拼 provider_data，需在此补齐，否则 RSS/搜索得到的动漫会被当作 tv。
+    仅做 tv -> anime 提升，不会降级已判定的 anime。
+    """
+    tmdb_info = getattr(info, "provider_data", None)
+    if not isinstance(tmdb_info, dict) or info.type == MediaType.ANIME:
+        return
+    media_type = tmdb_info.get("media_type")
+    if not isinstance(media_type, MediaType):
+        media_type = MediaType.from_string(str(media_type or ""))
+    if media_type != MediaType.TV:
+        return
+    genres = tmdb_info.get("genre_ids") or tmdb_info.get("genres") or []
+    genre_ids = set()
+    for genre in genres:
+        if isinstance(genre, dict):
+            if genre.get("id"):
+                genre_ids.add(str(genre["id"]))
+        else:
+            genre_ids.add(str(genre))
+    if genre_ids.intersection(set(ANIME_GENREIDS)):
+        info.type = MediaType.ANIME
 
 
 class MediaService:
@@ -285,7 +313,7 @@ class MediaService:
                         "backdrop_path",
                         "fanart_poster",
                         "fanart_backdrop",
-                        "tmdb_info",
+                        "provider_data",
                         "cn_name",
                         "en_name",
                         "type",
@@ -391,7 +419,7 @@ class MediaService:
             info.vote_average = result.vote_average
             info.poster_path = result.poster_path
             info.backdrop_path = result.backdrop_path
-            info.tmdb_info = {
+            info.provider_data = {
                 "id": result.tmdb_id,
                 "title": result.title,
                 "original_title": result.original_title,
@@ -413,22 +441,22 @@ class MediaService:
                 chinese=chinese,
             )
             if full_info:
-                info.tmdb_info = full_info
+                info.provider_data = full_info
                 info.title = full_info.get("title") or full_info.get("name") or info.title
                 info.original_title = (
                     full_info.get("original_title") or full_info.get("original_name") or info.original_title
                 )
                 info.year = (
-                    full_info.get("release_date", "")[:4]
+                    (full_info.get("release_date") or "")[:4]
                     if full_info.get("release_date")
-                    else full_info.get("first_air_date", "")[:4]
+                    else (full_info.get("first_air_date") or "")[:4]
                 ) or info.year
                 info.overview = full_info.get("overview") or info.overview
                 info.vote_average = round(float(full_info.get("vote_average", 0)), 1) or info.vote_average
                 info.poster_path = ImageProxy.get_tmdbimage_url(full_info.get("poster_path")) or info.poster_path
                 info.backdrop_path = ImageProxy.get_tmdbimage_url(full_info.get("backdrop_path")) or info.backdrop_path
                 # 根据 genre_ids 更新类型（动漫 vs 电视剧）
-                info.set_tmdb_info(full_info)
+                info.set_provider_data(full_info)
 
         # 6.1 获取英文 / 中文标题用于匹配
         if info.tmdb_id:
@@ -614,7 +642,7 @@ class MediaService:
                     info.vote_average = looked_up.vote_average
                     info.poster_path = looked_up.poster_path
                     info.backdrop_path = looked_up.backdrop_path
-                    info.tmdb_info = {
+                    info.provider_data = {
                         "id": looked_up.tmdb_id,
                         "title": looked_up.title,
                         "original_title": looked_up.original_title,
@@ -627,6 +655,7 @@ class MediaService:
                         "genres": looked_up.genres,
                         "external_ids": looked_up.external_ids,
                     }
+                    _promote_tmdb_anime_type(info)
             info.site = item.get("site")
             info.enclosure = item.get("enclosure")
             info.size = item.get("size", 0)
@@ -805,7 +834,7 @@ class MediaService:
             info.vote_average = looked_up.vote_average
             info.poster_path = looked_up.poster_path
             info.backdrop_path = looked_up.backdrop_path
-            info.tmdb_info = {
+            info.provider_data = {
                 "id": looked_up.tmdb_id,
                 "title": looked_up.title,
                 "original_title": looked_up.original_title,
@@ -818,6 +847,7 @@ class MediaService:
                 "genres": looked_up.genres,
                 "external_ids": looked_up.external_ids,
             }
+            _promote_tmdb_anime_type(info)
             return IdentifyStatus.HIT, info
         return IdentifyStatus.NOT_FOUND, info
 
@@ -858,11 +888,35 @@ class MediaService:
                     if not _path_isdir(file_path) and PathUtils.get_bluray_dir(file_path):
                         continue
                     file_name, _ = self._apply_words(file_name)
+                    file_name = StringUtils.strip_release_noise(file_name)
                     parsed = self._parser.parse(file_name)
                     parsed = self._post_process(parsed, file_name)
                     self._fill_episode_from_parent_paths(file_path, parsed)
                     info = MediaInfo.from_parser(parsed) if parsed else MediaInfo()
-                    info.set_tmdb_info(tmdb_info)
+                    info.set_provider_data(tmdb_info)
+                    if isinstance(tmdb_info, dict):
+                        profile = str(tmdb_info.get("content_profile") or "").strip()
+                        if profile:
+                            info.content_profile = profile
+                        anchor_provider = str(tmdb_info.get("anchor_provider") or "").strip()
+                        if anchor_provider:
+                            info.anchor_provider = anchor_provider
+                        anchor_external = str(tmdb_info.get("anchor_external_id") or "").strip()
+                        if anchor_external:
+                            info.anchor_external_id = anchor_external
+                        provider_key = str(tmdb_info.get("provider") or "").strip()
+                        if provider_key:
+                            info.provider = provider_key
+                        if not info.title and tmdb_info.get("title"):
+                            info.title = str(tmdb_info["title"])
+                            info.cn_name = info.title
+                        if not info.year and tmdb_info.get("year"):
+                            info.year = str(tmdb_info["year"])
+                        if not info.poster_path and tmdb_info.get("poster_path"):
+                            info.poster_path = str(tmdb_info["poster_path"])
+                        if not info.overview and tmdb_info.get("overview"):
+                            info.overview = str(tmdb_info["overview"])
+                        info.provider_data = tmdb_info
                     self._backfill_total_episodes(info)
                     if season and info.type != MediaType.MOVIE:
                         info.begin_season = int(season)
@@ -924,6 +978,7 @@ class MediaService:
                 if not _path_isdir(file_path) and PathUtils.get_bluray_dir(file_path):
                     continue
                 file_name, _ = self._apply_words(file_name)
+                file_name = StringUtils.strip_release_noise(file_name)
                 parent_name = os.path.basename(os.path.dirname(file_path))
                 parent_parent_name = os.path.basename(PathUtils.get_parent_paths(file_path, 2))
                 items.append(
@@ -1009,16 +1064,16 @@ class MediaService:
                     info.poster_path = looked_up.poster_path
                     info.backdrop_path = looked_up.backdrop_path
                     # 取完整 TMDB detail（含 origin_country/genre_ids 等），
-                    # 确保 set_tmdb_info 的类型与分类判定正确，避免落到"未分类"
+                    # 确保 set_provider_data 的类型与分类判定正确，避免落到"未分类"
                     detail = self.get_tmdb_info(
                         mtype=looked_up.media_type or parsed.type,
                         tmdbid=looked_up.tmdb_id,
                     )
                     if detail:
-                        info.tmdb_info = detail
-                        info.set_tmdb_info(detail)
+                        info.provider_data = detail
+                        info.set_provider_data(detail)
                     else:
-                        info.tmdb_info = {
+                        info.provider_data = {
                             "id": looked_up.tmdb_id,
                             "title": looked_up.title,
                             "name": looked_up.title,
@@ -1033,7 +1088,7 @@ class MediaService:
                             "genres": looked_up.genres,
                             "external_ids": looked_up.external_ids,
                         }
-                        info.set_tmdb_info(info.tmdb_info)
+                        info.set_provider_data(info.provider_data)
                 if episode_format:
                     begin_ep, end_ep, part = episode_format.split_episode(item["title"])
                     if begin_ep is not None:
@@ -1136,8 +1191,8 @@ class MediaService:
         cleaned = re.sub(r"\d{4}[-\s]*\d{2}[-\s]*\d{2}", " ", cleaned)
         cleaned = re.sub(r"\b\d{3,}p?\b", " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(
-            r"\b(?:hdtv|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|avc|av1|aac|ac3|dts|"
-            r"ddp?\d*\.?\d*|flac|atmos|truehd|hdr\d*|dv|sdr|hlg|remux|imax|repack|proper|"
+            r"\b(?:hdtv|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|avc|av1|aac\d*\.?\d*|ac3|dts|"
+            r"ddp?\d*\.?\d*|flac|atmos|truehd|hdr\d*|hfr\d*|vfr|tx|dv|sdr|hlg|remux|imax|repack|proper|"
             r"internal|extended|uncut|directors\s*cut|theatrical|unrated|rerelease|remastered|"
             r"upscaled)\b",
             " ",
@@ -1167,6 +1222,8 @@ class MediaService:
     # ---------- TMDB 代理方法 ----------
 
     def get_tmdb_info(self, mtype, tmdbid, language=None, append_to_response=None, chinese=True):
+        if not str(tmdbid or "").isdigit():
+            return {}
         return self._lookup.get_tmdb_info(mtype, tmdbid, language, append_to_response, chinese)
 
     def get_tmdb_infos(self, title, year=None, mtype=None, language=None, page=1):
@@ -1195,6 +1252,8 @@ class MediaService:
         return self._lookup.get_tmdb_season_episodes(tmdbid, season)
 
     def get_tmdb_tv_season_detail(self, tmdbid, season):
+        if not str(tmdbid or "").isdigit():
+            return {}
         return self._lookup.get_tmdb_tv_season_detail(tmdbid, season)
 
     def get_tmdb_backdrop(self, mtype, tmdbid):
@@ -1223,7 +1282,7 @@ class MediaService:
 
     def enrich_en_name(self, media_info) -> None:
         """补全英文名：en_name 为空或非拉丁（日/韩/中文原名）时取 TMDB 英文标题用于搜索与匹配."""
-        if not media_info or not getattr(media_info, "tmdb_id", None):
+        if not media_info or not str(getattr(media_info, "tmdb_id", "") or "").isdigit():
             return
         if not media_info.en_name or not re.search(r"[A-Za-z]", str(media_info.en_name or "")):
             try:
@@ -1301,6 +1360,8 @@ class MediaService:
 
         开启 laboratory.identity_index 后走别名索引（热路径零网络），失败回退旧路径。
         """
+        if not str(tmdb_id).isdigit():
+            return []
         if settings.get("laboratory").get("identity_index"):
             try:
                 names = get_identity_builder().get_work_names("tmdb", int(tmdb_id), mtype)
@@ -1314,7 +1375,7 @@ class MediaService:
         """发布组季/集重映射（种子编号 → TMDB 规范编号）"""
         if not self._episode_mapping_enabled:
             return
-        if not info or not info.tmdb_id or info.type == MediaType.MOVIE or info.begin_season is None:
+        if not info or not str(info.tmdb_id).isdigit() or info.type == MediaType.MOVIE or info.begin_season is None:
             return
         # 已映射成功则跳过（begin_season != seeds_season 说明 remap 已生效）
         if info.seeds_season and info.begin_season != info.seeds_season:

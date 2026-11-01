@@ -45,6 +45,8 @@ def test_app_context_fields():
         site_resolver=MagicMock(),
         site_favicon_service=MagicMock(),
         media_info_service=MagicMock(),
+        metadata_service=MagicMock(),
+        discovery_service=MagicMock(),
         media_config_service=MagicMock(),
         media_file_service=MagicMock(),
         media_library_service=MagicMock(),

@@ -14,8 +14,11 @@ from app.services.rss_processor import RssHelper
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.handlers import (
     build_manual_download_subscribe_handler,
+    build_media_episode_transferred_handler,
+    build_movie_transfer_finalize_handler,
     build_rss_auto_subscribe_handler,
     build_subscribe_add_search_handler,
+    build_transfer_fail_reopen_handler,
 )
 from app.services.subscribe.matcher import SubscribeMatcher
 from app.services.subscribe.monitor import SubscriptionMonitor
@@ -85,6 +88,7 @@ def build_coordinators(
         message=message,
         system_config=system_config,
         site_grant_service=services.site_grant_service,
+        custom_rss=services.custom_rss_service,
     )
     indexer_strategy = IndexerSearchStrategy(
         service=subscribe_service,
@@ -166,6 +170,7 @@ def build_coordinators(
         message_client_service=services.message_client_service,
         rbac_service=services.rbac_service,
         site_grant_service=services.site_grant_service,
+        metadata_service=services.metadata_service,
         media_server_config_service=services.media_server_config_service,
         indexer_config_service=services.indexer_config_service,
         system_config_service=services.system_config_service,
@@ -200,6 +205,12 @@ def build_coordinators(
     build_manual_download_subscribe_handler(subscribe_service)
     # 注册订阅添加/更新后自动触发队列搜索的事件处理器
     build_subscribe_add_search_handler(queue_strategy, thread_executor)
+    # 转移落盘确认后定稿订阅（写历史、删订阅、联动兄弟）
+    build_media_episode_transferred_handler(subscribe_service)
+    # 电影转移落盘确认后定稿
+    build_movie_transfer_finalize_handler(subscribe_service)
+    # 转移失败后回滚：重开订阅并复位下载历史，允许重新下载
+    build_transfer_fail_reopen_handler(subscribe_service)
 
     return CoordinatorObjects(
         subscription_monitor=subscription_monitor,

@@ -1,11 +1,148 @@
 """LLM 提供商抽象基类"""
 
+import asyncio
 import json
+import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+import log
+from app.core.settings import settings
+from app.infrastructure.rate_limiter.backends import RateLimitEngine
 from app.utils.json_utils import JsonUtils
+
+# ---------------------------------------------------------------------------
+# LLM 并发限流 + 429 退避重试（所有 Provider 共用）
+# ---------------------------------------------------------------------------
+
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 2.0
+_RATE_LIMIT_ERROR_NAMES = frozenset({"ratelimiterror", "resourceexhausted", "toomanyrequests"})
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """跨 SDK 识别限流错误（OpenAI/httpx 状态码 429、Google ResourceExhausted 等）"""
+    if getattr(e, "status_code", None) == 429 or getattr(e, "code", None) == 429:
+        return True
+    if e.__class__.__name__.lower() in _RATE_LIMIT_ERROR_NAMES:
+        return True
+    text = str(e).lower()
+    return "429" in text or "rate limit" in text or "too many requests" in text
+
+
+def _retry_after_seconds(e: Exception) -> float | None:
+    """读取响应头 Retry-After（秒）"""
+    response = getattr(e, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    value = headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+_llm_engine: RateLimitEngine | None = None
+_llm_limit: int = 0
+_llm_engine_lock = threading.Lock()
+
+
+def _get_llm_engine() -> tuple[RateLimitEngine, int]:
+    """LLM 调用并发闸门（复用 RateLimitEngine 的并发限流）。
+
+    上限来自 agent.max_concurrency（默认 5，<=0 表示不限制）。
+    """
+    global _llm_engine, _llm_limit
+    if _llm_engine is None:
+        with _llm_engine_lock:
+            if _llm_engine is None:
+                _llm_limit = int((settings.get("agent") or {}).get("max_concurrency", 5) or 0)
+                # 复用限流引擎：Redis 可用时并发闸门分布式生效，否则退回进程内
+                _llm_engine = RateLimitEngine()
+    return _llm_engine, _llm_limit
+
+
+class LLMThrottle:
+    """LLM 调用并发闸门 + 限流退避重试。
+
+    并发闸门复用限流子系统的 ``RateLimitEngine.acquire_concurrency``（令牌桶无法表达「并发」语义）；
+    所有 Provider 的网络调用都应经 ``LLMThrottle.call(fn, *args, **kwargs)`` 发出。
+    """
+
+    _KEY = "llm"
+
+    @classmethod
+    def call(
+        cls,
+        func,
+        *args,
+        max_retries: int = _RATE_LIMIT_RETRIES,
+        base_delay: float = _RATE_LIMIT_BASE_DELAY,
+        **kwargs,
+    ) -> Any:
+        engine, limit = _get_llm_engine()
+        attempt = 0
+        while True:
+            token = engine.acquire_concurrency(cls._KEY, limit)
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if not (_is_rate_limit_error(e) and attempt < max_retries):
+                    raise
+                delay = _retry_after_seconds(e) or (base_delay * (2**attempt))
+            finally:
+                if token:
+                    engine.release_concurrency(cls._KEY, token)
+            # 已释放并发名额，退避后再重试
+            attempt += 1
+            log.warn(f"[LLMThrottle]触发限流，{delay:.1f}s 后重试 ({attempt}/{max_retries})")
+            time.sleep(delay)
+
+    @classmethod
+    async def call_async(
+        cls,
+        func,
+        *args,
+        max_retries: int = _RATE_LIMIT_RETRIES,
+        base_delay: float = _RATE_LIMIT_BASE_DELAY,
+        **kwargs,
+    ) -> Any:
+        """异步版本的并发闸门与 429 退避。"""
+        engine, limit = _get_llm_engine()
+        attempt = 0
+        while True:
+            token = engine.acquire_concurrency(cls._KEY, limit)
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if not (_is_rate_limit_error(e) and attempt < max_retries):
+                    raise
+                delay = _retry_after_seconds(e) or (base_delay * (2**attempt))
+            finally:
+                if token:
+                    engine.release_concurrency(cls._KEY, token)
+            attempt += 1
+            log.warn(f"[LLMThrottle]触发限流，{delay:.1f}s 后重试 ({attempt}/{max_retries})")
+            await asyncio.sleep(delay)
+
+    @classmethod
+    def reset(cls) -> None:
+        """重置缓存的并发闸门（配置变更/测试用）"""
+        global _llm_engine, _llm_limit
+        with _llm_engine_lock:
+            _llm_engine = None
+            _llm_limit = 0
+
+
+def get_llm_engine() -> RateLimitEngine:
+    """获取 LLM 并发闸门（测试/配置用）"""
+    return _get_llm_engine()[0]
+
 
 _TOOL_COMMON_RULES = """2. 不需要工具（闲聊、问候、简单回答）时直接回复文字
 3. 知识类问题（怎么配置/怎么用/报错原因）优先调用 kb_search；无结果时不要编造，如实说明
@@ -74,6 +211,7 @@ class ChatToolResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     reasoning: str = ""
     native: bool = False
+    usage: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_tool_calls(self) -> bool:
@@ -231,6 +369,28 @@ class BaseProvider(ABC):
         if on_reasoning and resp.reasoning:
             on_reasoning(resp.reasoning)
         return resp
+
+    async def async_chat_with_tools_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        on_token: Any = None,
+        on_reasoning: Any = None,
+        reasoning: ReasoningConfig | None = None,
+    ) -> ChatToolResponse:
+        """兼容回退：没有原生异步实现的 Provider 使用线程适配。"""
+        return await asyncio.to_thread(
+            self.chat_with_tools_stream,
+            messages,
+            tools,
+            system_prompt,
+            temperature,
+            on_token,
+            on_reasoning,
+            reasoning,
+        )
 
     @abstractmethod
     def is_available(self) -> bool:

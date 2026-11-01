@@ -2,6 +2,8 @@
 存储后端仓储
 """
 
+from typing import Any, cast
+
 from app.db.models import STORAGEBACKEND
 from app.db.repositories.base_repository import BaseRepository
 
@@ -26,7 +28,7 @@ class StorageBackendRepository(BaseRepository):
 
     def update(self, sid, **kwargs):
         with self.session() as db:
-            db.query(STORAGEBACKEND).filter(STORAGEBACKEND.ID == sid).update(kwargs)
+            db.query(STORAGEBACKEND).filter(STORAGEBACKEND.ID == sid).update(cast(Any, kwargs))
             db.commit()
 
     def delete(self, sid):

@@ -98,7 +98,9 @@ class TestFileTransferServiceConcurrent:
 
         service._thread_executor.submit.side_effect = fake_submit
         results = service._run_parallel([1, 2], _maybe_fail)
-        assert results[0] is None
+        # 失败隔离：失败项返回同构失败结果（不再返回 None，避免合并时被默认成功）
+        assert results[0]["success_flag"] is False
+        assert results[0]["failed_count"] == 1
         assert results[1] == 4
 
     def test_transfer_files_groups_by_dist_path(self, service):

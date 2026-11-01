@@ -1,6 +1,7 @@
-"""Subscribe refresh service - 刷新订阅TMDB信息."""
+"""Subscribe refresh service - 按统一身份刷新订阅元数据."""
 
 import log
+from app.core.settings import settings
 from app.db.transaction import transaction_scope
 from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
@@ -11,18 +12,28 @@ from app.services.subscribe.management.utils import gen_rss_note
 class SubscribeRefreshService:
     """刷新订阅服务"""
 
-    def __init__(self, movie_repo, tv_repo, tv_episode_repo, media_service):
+    def __init__(self, movie_repo, tv_repo, tv_episode_repo, media_service, metadata_service=None):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
         self._tv_episode_repo = tv_episode_repo
         self._media = media_service
+        self._metadata = metadata_service
 
     def refresh_rss_metainfo(self, get_subscribe_movies_fn, get_subscribe_tvs_fn) -> None:
+        legacy_fallback = bool((settings.get("media") or {}).get("legacy_tmdb_fallback", True))
         """定时将豆瓣订阅转换为TMDB的订阅，并更新订阅的TMDB信息"""
         log.info("[Subscribe]开始刷新订阅TMDB信息...")
         rss_movies = get_subscribe_movies_fn(state=SubscribeState.RUNNING.value)
         for _rid, rss_info in rss_movies.items():
             if rss_info.get("fuzzy_match"):
+                continue
+            anchor_provider = str(rss_info.get("anchor_provider") or "")
+            if anchor_provider and self._refresh_anchor_movie(rss_info):
+                continue
+            if anchor_provider and anchor_provider != "tmdb":
+                # 无法从统一身份拿到快照时，不回退为 TMDB 桥接
+                continue
+            if not legacy_fallback and not anchor_provider:
                 continue
             rssid = rss_info.get("id")
             name = rss_info.get("name")
@@ -51,6 +62,14 @@ class SubscribeRefreshService:
         for rss_info in rss_tvs.values():
             if rss_info.get("fuzzy_match"):
                 continue
+            anchor_provider = str(rss_info.get("anchor_provider") or "")
+            if anchor_provider and self._refresh_anchor_tv(rss_info):
+                continue
+            if anchor_provider and anchor_provider != "tmdb":
+                # 无法从统一身份拿到快照时，不回退为 TMDB 桥接
+                continue
+            if not legacy_fallback and not anchor_provider:
+                continue
             rssid = rss_info.get("id")
             name = rss_info.get("name")
             year = rss_info.get("year") or ""
@@ -65,7 +84,7 @@ class SubscribeRefreshService:
             media_info = self.__get_media_info(tmdbid=tmdbid, name=name, year=year, mtype=MediaType.TV, cache=True)
             if media_info and media_info.tmdb_id:
                 total_episode = self._media.get_tmdb_season_episodes_num(
-                    tv_info=media_info.tmdb_info, season=int(str(season).replace("S", ""))
+                    tv_info=media_info.provider_data, season=int(str(season).replace("S", ""))
                 )
                 if total_ep:
                     total_episode = total_ep
@@ -94,12 +113,158 @@ class SubscribeRefreshService:
                         )
         log.info("[Subscribe]订阅TMDB信息刷新完成")
 
+    @staticmethod
+    def _snapshot_value(snapshot: dict, name: str):
+        item = (snapshot.get("fields") or {}).get(name)
+        if isinstance(item, dict):
+            return item.get("value")
+        return item
+
+    @staticmethod
+    def _snapshot_poster(snapshot: dict) -> str:
+        images = snapshot.get("images") or {}
+        for key in ("poster", "thumb", "cover"):
+            values = images.get(key) or []
+            for item in values:
+                if isinstance(item, dict) and item.get("url"):
+                    return str(item["url"])
+        return ""
+
+    @staticmethod
+    def _snapshot_tmdb_id(snapshot: dict) -> str:
+        for ref in snapshot.get("refs") or []:
+            if isinstance(ref, dict) and ref.get("provider") == "tmdb":
+                return str(ref.get("external_id") or "")
+        return ""
+
+    def _snapshot_for(self, rss_info: dict, media_type: MediaType) -> dict | None:
+        if self._metadata is None:
+            return None
+        provider = str(rss_info.get("anchor_provider") or "").strip()
+        external = str(rss_info.get("anchor_external_id") or "").strip()
+        if not provider or not external:
+            return None
+        try:
+            return self._metadata.compose_for_ref(
+                provider,
+                external,
+                media_type=media_type,
+                content_profile=str(rss_info.get("content_profile") or "default"),
+                max_age_seconds=300,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug(f"[Subscribe]统一身份刷新失败 {provider}:{external}: {exc}")
+            return None
+
+    def _scope_kwargs(self, rss_info: dict, snapshot: dict) -> dict:
+        return {
+            "identity_id": snapshot.get("identity_id") or rss_info.get("identity_id"),
+            "anchor_provider": rss_info.get("anchor_provider"),
+            "anchor_external_id": rss_info.get("anchor_external_id"),
+            "content_profile": snapshot.get("content_profile") or rss_info.get("content_profile"),
+            "metadata_policy": rss_info.get("metadata_policy"),
+            "naming_profile": rss_info.get("naming_profile"),
+        }
+
+    def _refresh_anchor_movie(self, rss_info: dict) -> bool:
+        snapshot = self._snapshot_for(rss_info, MediaType.MOVIE)
+        if not snapshot:
+            return False
+        title = str(self._snapshot_value(snapshot, "title") or rss_info.get("name") or "")
+        year = str(self._snapshot_value(snapshot, "year") or rss_info.get("year") or "")
+        overview = str(self._snapshot_value(snapshot, "overview") or "")
+        poster = self._snapshot_poster(snapshot)
+        tmdb_id = self._snapshot_tmdb_id(snapshot)
+        media_info = meta_info(title=f"{title} {year}".strip())
+        media_info.title = title
+        media_info.year = year
+        media_info.type = MediaType.MOVIE
+        media_info.poster_path = poster
+        media_info.overview = overview
+        media_info.release_date = str(self._snapshot_value(snapshot, "release_date") or "")
+        try:
+            media_info.vote_average = float(self._snapshot_value(snapshot, "vote_average") or 0)
+        except (TypeError, ValueError):
+            media_info.vote_average = 0.0
+        media_info.anchor_provider = rss_info.get("anchor_provider")
+        media_info.anchor_external_id = rss_info.get("anchor_external_id")
+        media_info.identity_id = snapshot.get("identity_id")
+        media_info.content_profile = snapshot.get("content_profile") or "default"
+        self._movie_repo.update(
+            rss_info.get("id"),
+            name=title,
+            year=year,
+            tmdbid=tmdb_id or None,
+            image=poster,
+            desc=overview,
+            note=gen_rss_note(media_info),
+            **self._scope_kwargs(rss_info, snapshot),
+        )
+        return True
+
+    def _refresh_anchor_tv(self, rss_info: dict) -> bool:
+        snapshot = self._snapshot_for(rss_info, MediaType.TV)
+        if not snapshot:
+            return False
+        title = str(self._snapshot_value(snapshot, "title") or rss_info.get("name") or "")
+        year = str(self._snapshot_value(snapshot, "year") or rss_info.get("year") or "")
+        overview = str(self._snapshot_value(snapshot, "overview") or "")
+        poster = self._snapshot_poster(snapshot)
+        tmdb_id = self._snapshot_tmdb_id(snapshot)
+        season = int(str(rss_info.get("season") or 1).replace("S", ""))
+        total_episode = 0
+        for item in snapshot.get("seasons") or []:
+            if isinstance(item, dict) and int(item.get("season_number") or -1) == season:
+                total_episode = int(item.get("episode_count") or 0)
+                break
+        total_ep = rss_info.get("total_ep")
+        if total_ep:
+            total_episode = int(total_ep)
+        total = int(rss_info.get("total") or 0)
+        lack = int(rss_info.get("lack") or 0)
+        media_info = meta_info(title=f"{title} {year}".strip())
+        media_info.title = title
+        media_info.year = year
+        media_info.type = MediaType.TV
+        media_info.poster_path = poster
+        media_info.overview = overview
+        media_info.release_date = str(self._snapshot_value(snapshot, "first_air_date") or "")
+        try:
+            media_info.vote_average = float(self._snapshot_value(snapshot, "vote_average") or 0)
+        except (TypeError, ValueError):
+            media_info.vote_average = 0.0
+        media_info.anchor_provider = rss_info.get("anchor_provider")
+        media_info.anchor_external_id = rss_info.get("anchor_external_id")
+        media_info.identity_id = snapshot.get("identity_id")
+        media_info.content_profile = snapshot.get("content_profile") or "default"
+        updates = {
+            "name": title,
+            "year": year,
+            "tmdbid": tmdb_id or None,
+            "image": poster,
+            "desc": overview,
+            "note": gen_rss_note(media_info),
+            **self._scope_kwargs(rss_info, snapshot),
+        }
+        if total_episode:
+            lack_episode = max(total_episode - max(total - lack, 0), 0)
+            updates.update({"total": total_episode, "lack": lack_episode})
+            with transaction_scope():
+                self._tv_repo.update(rss_info.get("id"), **updates)
+                self._tv_episode_repo.update(
+                    rid=rss_info.get("id"),
+                    episodes=list(range(total_episode - lack_episode + 1, total_episode + 1)),
+                )
+        else:
+            self._tv_repo.update(rss_info.get("id"), **updates)
+        return True
+
     def __get_media_info(self, tmdbid, name, year, mtype, cache=True):
         """综合返回媒体信息"""
         if tmdbid and not str(tmdbid).startswith("DB:"):
             media_info = meta_info(title=("%s %s" % (name, year)).strip())
             tmdb_info = self._media.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
-            media_info.set_tmdb_info(tmdb_info)
+            media_info.set_provider_data(tmdb_info)
         else:
             media_info = self._media.get_media_info(
                 title=f"{name} {year}".strip(), mtype=mtype, strict=True, cache=cache

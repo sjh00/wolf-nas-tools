@@ -228,7 +228,6 @@ class TestEdgeCases:
         assert result is not None
         assert result.episode == 5
 
-
     def test_no_episode(self, parser):
         result = parser.parse("Movie Title 2008 1080p BluRay")
         assert result is not None
@@ -274,6 +273,98 @@ class TestRegressionIdentify:
         assert result.title_en == "Kaiju Girl Caramelise"
         assert result.year == "2026"
         assert result.season == 1
+
+    def test_platform_framerate_and_audio_channel_not_in_name(self, parser):
+        """TX/HFR 标记与 AAC2.0 的声道数字不应并入片名（2026-09 报告：无法识别媒体信息）"""
+        result = parser.parse("Against.the.Current.S01.2160p.TX.WEB-DL.AAC2.0.HDR.HFR.H.265-MWeb")
+        assert result is not None
+        assert result.title_en == "Against The Current"
+        assert result.season == 1
+        assert result.type == MediaType.TV
+        assert result.resource_pix == "2160p"
+        assert result.resource_team == "MWeb"
+
+    @pytest.mark.parametrize(
+        ("title", "expected", "season", "year"),
+        [
+            ("Show.Name.S02.1080p.WEB-DL.5.1.H.264-GRP", "Show Name", 2, None),
+            ("Show Name S01 2160p WEB-DL DDP5.1 HDR-GRP", "Show Name", 1, None),
+            ("Show Name S01 1080p BluRay TrueHD7.1 VFR-GRP", "Show Name", 1, None),
+            ("Some Show S03 1080p WEB-DL EAC3 2.0 H.264-NTb", "Some Show", 3, None),
+            ("Blue.Orbit.2024.2160p.WEB-DL.HDR.HFR.H.265-GRP", "Blue Orbit", None, "2024"),
+        ],
+    )
+    def test_channel_layout_and_framerate_tokens_stripped(self, parser, title, expected, season, year):
+        """声道布局（5.1/2.0/7.1）、帧率（HFR/VFR）与音频编码不应残留进片名"""
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en == expected
+        assert result.season == season
+        assert result.year == year
+
+
+class TestGenericTitleWordsPreserved:
+    """常见片名词（End/Game/Max/Final/MA…）不应被当作发布标签剥离"""
+
+    @pytest.mark.parametrize(
+        ("title", "expected", "year"),
+        [
+            (
+                "The.End.of.Oak.Street.2026.2160p.MA.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-TheEndOfTheFuckingWorld.mkv",
+                "The End Of Oak Street",
+                "2026",
+            ),
+            ("Game.of.Thrones.S01E01.1080p.BluRay.x264-GRP", "Game Of Thrones", None),
+            ("Mad.Max.Fury.Road.2015.1080p.BluRay.x264-GRP", "Mad Max Fury Road", "2015"),
+            ("Final.Destination.2000.1080p.BluRay.x264-GRP", "Final Destination", "2000"),
+            ("The.End.2024.1080p.WEB-DL-GRP", "The End", "2024"),
+        ],
+    )
+    def test_generic_title_words_preserved(self, parser, title, expected, year):
+        """位于元数据之前的歧义 token 属于片名，不应被剥离"""
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en == expected
+        assert result.year == year
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Some.Show.S01.1080p.WEB-DL.Movie.MA-GRP",
+            "Show.Name.S01.1080p.WEB-DL.TV.MA-GRP",
+        ],
+    )
+    def test_tag_after_metadata_still_stripped(self, parser, title):
+        """元数据之后的同类 token（Movie/TV/MA）仍按标签剥离"""
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en in ("Some Show", "Show Name")
+        assert result.season == 1
+
+
+class TestShortTitles:
+    """2 字符英文片名不应被短标题守卫丢弃"""
+
+    @pytest.mark.parametrize(
+        ("title", "expected", "year"),
+        [
+            ("It.2017.1080p.BluRay.x264-GRP", "It", "2017"),
+            ("Up.2009.1080p.BluRay.x264-GRP", "Up", "2009"),
+            ("Ma.2019.1080p.WEB-DL.H264-GRP", "Ma", "2019"),
+            ("Pi.1998.1080p.BluRay-GRP", "Pi", "1998"),
+        ],
+    )
+    def test_two_char_title_kept(self, parser, title, expected, year):
+        result = parser.parse(title)
+        assert result is not None
+        assert result.title_en == expected
+        assert result.year == year
+
+    @pytest.mark.parametrize("title", ["1080p.WEB-DL-GRP", "HD.1080p-GRP"])
+    def test_short_metadata_only_not_title(self, parser, title):
+        """纯元数据短串不应被识别为片名"""
+        result = parser.parse(title)
+        assert result is None or result.title_en is None
 
 
 class TestSiteMarkerStripping:
@@ -892,3 +983,21 @@ class TestCollectionNoise:
         assert MediaService._parent_context_for_identify("Sample.Action.Movie.I-VI", "") == ""
 
 
+class TestMultiSeasonRanges:
+    @pytest.mark.parametrize(
+        ("title", "start", "end"),
+        [
+            ("进击的巨人 全四季 1080p", 1, 4),
+            ("进击的巨人 S01-S02 1080p", 1, 2),
+            ("进击的巨人 S01+S02+S03 1080p", 1, 3),
+            ("Attack on Titan Season 1-4 1080p", 1, 4),
+            ("进击的巨人 1-4季 1080p", 1, 4),
+            ("进击的巨人 第1-4季 1080p", 1, 4),
+        ],
+    )
+    def test_multi_season_range(self, parser, title, start, end):
+        result = parser.parse(title)
+        assert result is not None
+        assert result.season == start
+        assert result.end_season == end
+        assert result.title_cn == "进击的巨人" or result.title_en == "Attack On Titan"

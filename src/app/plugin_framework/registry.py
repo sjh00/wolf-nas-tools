@@ -5,8 +5,8 @@ Plugin Registry - 插件注册表
 
 import os
 import shutil
+import threading
 import time
-import zipfile
 from typing import Any
 
 import log
@@ -14,6 +14,7 @@ from app.core.settings import settings
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
 from app.domain.entities.plugin import PluginConfigEntity, PluginManifestEntity
 from app.plugin_framework.dependency_manager import PluginDependencyManager
+from app.plugin_framework.private_pack import safe_extract, validate_private_manifest
 from app.schemas.plugin import PluginManifest, PluginState
 from app.utils.json_utils import JsonUtils
 
@@ -33,6 +34,8 @@ class PluginRegistry:
         self._manifest_cache: dict[str, PluginManifest] = {}
         self._state_cache: dict[str, PluginState] = {}
         self._last_builtin_scan: float = 0.0
+        self._scanning = False
+        self._scan_lock = threading.Lock()
         self._load_all()
         self._scan_builtin_plugins()
 
@@ -69,6 +72,29 @@ class PluginRegistry:
             self._last_builtin_scan = now
         return list(self._manifest_cache.values())
 
+    def scan_async(self) -> list[PluginManifest]:
+        """返回当前缓存，并在后台触发到期扫描，不阻塞请求线程."""
+        if not self._manifest_cache:
+            self._load_all()
+        now = time.time()
+        with self._scan_lock:
+            due = now - self._last_builtin_scan > 60 and not self._scanning
+            if due:
+                self._last_builtin_scan = now
+                self._scanning = True
+        if due:
+            threading.Thread(target=self._background_scan, daemon=True, name="plugin-registry-scan").start()
+        return list(self._manifest_cache.values())
+
+    def _background_scan(self) -> None:
+        try:
+            self._scan_builtin_plugins()
+        except Exception as e:  # noqa: BLE001 - 后台扫描失败保留现有缓存
+            log.warn(f"[PluginRegistry]后台扫描失败: {e}")
+        finally:
+            with self._scan_lock:
+                self._scanning = False
+
     def get(self, plugin_id: str) -> PluginManifest | None:
         """获取指定插件的清单"""
         return self._manifest_cache.get(plugin_id)
@@ -87,8 +113,7 @@ class PluginRegistry:
             shutil.rmtree(extract_dir)
         os.makedirs(extract_dir)
 
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(extract_dir)
+        safe_extract(zip_path, extract_dir)
 
         manifest_path = os.path.join(extract_dir, "manifest.json")
         if not os.path.exists(manifest_path):
@@ -99,6 +124,8 @@ class PluginRegistry:
             manifest_data = JsonUtils.load(f)
 
         manifest = PluginManifest.from_dict(manifest_data)
+        if manifest.backend.metadata.visibility == "private":
+            validate_private_manifest(manifest)
         if not manifest.id or not manifest.name:
             shutil.rmtree(extract_dir)
             raise ValueError("manifest.json 缺少 id 或 name")
@@ -253,7 +280,7 @@ class PluginRegistry:
                         else (existing_state.installed if existing_state else True)
                     )
                     new_manifest_dict = manifest.to_dict()
-                    stored_manifest_dict = JsonUtils.loads(existing_orm.MANIFEST_JSON or "{}")
+                    stored_manifest_dict = JsonUtils.loads(existing_orm.MANIFEST_JSON or "{}") if existing_orm else {}
                     normalized_stored = self._normalize_manifest_dict(stored_manifest_dict)
                     normalized_new = self._normalize_manifest_dict(new_manifest_dict)
                     if existing_orm and normalized_stored == normalized_new:
@@ -300,6 +327,34 @@ class PluginRegistry:
                     log.info(f"[PluginRegistry] 内置插件已注册: {manifest.id}@{manifest.version}")
             except Exception as e:
                 log.error(f"[PluginRegistry] 扫描内置插件 {entry} 失败: {e}")
+
+    def update_manifest_cache(
+        self,
+        manifest: PluginManifest,
+        *,
+        enabled: bool | None = None,
+        installed: bool = True,
+    ) -> None:
+        """安装/启用后同步内存缓存，避免运行中安装的插件必须重启才能加载."""
+        self._manifest_cache[manifest.id] = manifest
+        state = self._state_cache.get(manifest.id)
+        if state:
+            state.manifest = manifest
+            state.installed = installed
+            if enabled is not None:
+                state.enabled = enabled
+            return
+        self._state_cache[manifest.id] = PluginState(
+            id=manifest.id,
+            enabled=bool(enabled),
+            installed=installed,
+            manifest=manifest,
+        )
+
+    def remove_plugin_cache(self, plugin_id: str) -> None:
+        """卸载后移除内存缓存，避免已卸载插件仍能被加载."""
+        self._manifest_cache.pop(plugin_id, None)
+        self._state_cache.pop(plugin_id, None)
 
     def get_plugin_path(self, plugin_id: str) -> str | None:
         """获取插件目录路径"""

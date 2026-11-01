@@ -8,6 +8,7 @@ import log
 from app.core.exceptions import RepositoryError, ServiceError
 from app.core.settings import settings
 from app.domain.enums import SearchType, UserRssTaskUseType
+from app.domain.media_ref import media_identity_key
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType
 from app.events.bus import EventBus
@@ -71,7 +72,7 @@ def _check_task_rss(service, taskid: int | None, event_bus: EventBus | None = No
                     if not media_info:
                         log.warn(f"[RssTaskService]{title} 识别媒体信息出错！")
                         continue
-                    if not media_info.tmdb_info:
+                    if not media_info.provider_data:
                         log.info(f"[RssTaskService]{title} 识别为 {media_info.get_name()} 未匹配到媒体信息")
                         continue
                     if media_info.type == MediaType.MOVIE:
@@ -86,14 +87,14 @@ def _check_task_rss(service, taskid: int | None, event_bus: EventBus | None = No
                             meta_info=media_info, no_exists=no_exists
                         )
                         if exist_flag:
-                            if not no_exists or not no_exists.get(media_info.tmdb_id):
+                            if not no_exists or not no_exists.get(media_identity_key(media_info)):
                                 log.info(
                                     f"[RssTaskService]电视剧 {media_info.get_title_string()} "
                                     f"{media_info.get_season_episode_string()} 已存在"
                                 )
                             continue
-                        if no_exists.get(media_info.tmdb_id):
-                            missing = no_exists.get(media_info.tmdb_id)
+                        if no_exists.get(media_identity_key(media_info)):
+                            missing = no_exists.get(media_identity_key(media_info))
                             log.info(f"[RssTaskService]{media_info.get_title_string()} 缺失季集：{missing}")
                 media_info.set_torrent_info(
                     size=size, page_url=page_url, site=taskinfo.get("name"), enclosure=enclosure
@@ -116,8 +117,8 @@ def _check_task_rss(service, taskid: int | None, event_bus: EventBus | None = No
                             f"[RssTaskService]{title} 识别为 {media_info.get_title_string()} "
                             f"{media_info.get_season_episode_string()} 匹配成功"
                         )
-                        if not media_info.tmdb_info:
-                            media_info.set_tmdb_info(
+                        if not media_info.provider_data:
+                            media_info.set_provider_data(
                                 service.media.get_tmdb_info(mtype=media_info.type, tmdbid=media_info.tmdb_id)
                             )
                         if media_info.type != MediaType.MOVIE:

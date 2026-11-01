@@ -4,6 +4,7 @@ from typing import Any
 from urllib.parse import quote
 
 import log
+from app.core.exceptions import MediaServerError
 from app.core.settings import settings
 from app.db.repositories.config_repo_adapter import MediaServerRepositoryAdapter
 from app.mediaserver.schema import MediaServerConfigSchema
@@ -158,6 +159,30 @@ class _IMediaClient(metaclass=ABCMeta):
         """
         解析Webhook报文，获取消息内容结构
         """
+
+    @staticmethod
+    def validate_user_id(configured, users, client_name):
+        """校验配置的 user_id 是否为真实用户 Id。
+
+        常见误填：把登录用户名填进 user_id，会让媒体服务器对该 Id 的请求返回 500（如 Emby），
+        用户难以排错。users 为 None（无法获取用户列表）时不校验，避免误报。
+        """
+        if not configured or users is None:
+            return
+        configured = str(configured).strip()
+        ids = {str(u.get("Id")) for u in users if isinstance(u, dict)}
+        if configured in ids:
+            return
+        for u in users:
+            if isinstance(u, dict) and str(u.get("Name")) == configured:
+                raise MediaServerError(
+                    f"用户ID无效：填写的“{configured}”是 {client_name} 的登录用户名，不是用户 ID。"
+                    f"该用户的 Id 为 {u.get('Id')}，请改填它；或留空以自动使用管理员。"
+                )
+        raise MediaServerError(
+            f"用户ID无效：“{configured}”不是 {client_name} 的用户 Id。"
+            "请填写用户 ID（一串 32 位十六进制字符），不要填登录用户名；留空则自动使用管理员。"
+        )
 
     @staticmethod
     def get_nt_image_url(url, remote=False):

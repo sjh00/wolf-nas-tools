@@ -20,6 +20,7 @@ from app.services.download_core import DownloadCore
 from app.services.filetransfer_service import is_transfer_skip
 from app.services.transfer_coordinator import TransferCoordinator
 from app.services.transfer_pipeline import TransferPipeline
+from app.utils import PathUtils
 
 if TYPE_CHECKING:
     from app.services.download_monitor import DownloadMonitor
@@ -170,6 +171,9 @@ class DownloaderCore:
                     task_id = task.get("id")
                     task_path = task.get("path") or ""
                     if not task_id or not task_path:
+                        continue
+                    if PathUtils.is_incomplete_media_dir(task_path):
+                        log.info(f"[Downloader]任务 {task_id} 下载未完成，跳过转移：{task_path}")
                         continue
 
                     def _post_process(

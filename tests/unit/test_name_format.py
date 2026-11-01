@@ -27,6 +27,12 @@ def test_validate_unknown_field():
     assert any("foo" in p for p in res["problems"])
 
 
+def test_validate_numeric_padding():
+    res = nf.validate("{season:02d}/{episode:03d}")
+    assert res["ok"] is True
+    assert res["problems"] == []
+
+
 def test_render_default():
     d = {"title": "FBI", "year": "2018", "season_episode": "S08E07"}
     out = nf.render("{title} ({year})/{title} - {season_episode}", d)
@@ -38,6 +44,17 @@ def test_render_empty_year_drops_empty_parens():
     out = nf.render("{title} ({year})", d)
     assert out == "看见"
     assert "()" not in out
+def test_render_numeric_padding():
+    d = {"title": "凡人修仙传", "season": "2", "episode": "3"}
+    out = nf.render(
+        "{title}/Season {season:02d}/{title} - S{season:02d}E{episode:03d}",
+        d,
+    )
+    assert out == "凡人修仙传/Season 02/凡人修仙传 - S02E003"
+
+
+def test_render_numeric_padding_multiepisode():
+    assert nf.render("E{episode:03d}", {"episode": "8-11"}) == "E008-011"
 
 
 def test_render_optional_segment_filled():

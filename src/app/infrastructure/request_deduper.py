@@ -6,11 +6,15 @@
 """
 
 import threading
+import time
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
 import log
+
+# 去重结果保留时长（秒）：供稍晚到达的等待者复用，避免重复请求
+_RESULT_TTL = 5.0
 
 
 class RequestDeduper:
@@ -37,6 +41,7 @@ class RequestDeduper:
         3. 重复请求 → 锁外等待共享结果
         4. 新请求 → 锁外执行实际函数
         """
+        self._purge_expired()
         need_wait = False
         event = None
 
@@ -47,7 +52,7 @@ class RequestDeduper:
                 log.debug(f"[RequestDeduper]检测到重复请求，等待共享结果: {key}")
             else:
                 event = threading.Event()
-                self._pending_requests[key] = (event, None, None)
+                self._pending_requests[key] = (event, None, None, 0.0)
                 self._stats["actual_requests"] += 1
                 log.debug(f"[RequestDeduper]开始执行请求: {key}")
 
@@ -59,16 +64,26 @@ class RequestDeduper:
         try:
             result = func(*args, **kwargs)
             with self._lock:
-                self._pending_requests[key] = (event, result, None)  # type: ignore[arg-type]
+                self._pending_requests[key] = (event, result, None, time.time() + _RESULT_TTL)  # type: ignore[arg-type]
             event.set()  # type: ignore[union-attr]
             return result
         except Exception as e:
             with self._lock:
-                self._pending_requests[key] = (event, None, e)  # type: ignore[arg-type]
+                self._pending_requests[key] = (event, None, e, time.time() + _RESULT_TTL)  # type: ignore[arg-type]
             event.set()  # type: ignore[union-attr]
             raise
-        finally:
-            threading.Timer(5.0, self._cleanup, args=[key]).start()
+
+    def _purge_expired(self) -> None:
+        """惰性清理：删除已完成且超过保留期的条目（替代每次请求起一个 Timer 线程）."""
+        now = time.time()
+        with self._lock:
+            stale = [
+                k
+                for k, (event, _res, _err, expiry) in self._pending_requests.items()
+                if event.is_set() and expiry and expiry < now
+            ]
+            for k in stale:
+                self._pending_requests.pop(k, None)
 
     def _wait_for_result(self, key: str) -> Any:
         """等待请求完成并返回结果（全程遵循"锁内不阻塞"原则）"""
@@ -76,7 +91,7 @@ class RequestDeduper:
         with self._lock:
             if key not in self._pending_requests:
                 raise RuntimeError(f"请求 {key} 已被清理")
-            event, _, _ = self._pending_requests[key]
+            event, _, _, _ = self._pending_requests[key]
 
         # 阶段2：完全在锁外等待，不会阻塞其他任何线程
         if not event.wait(timeout=self._default_timeout):
@@ -86,7 +101,7 @@ class RequestDeduper:
         with self._lock:
             if key not in self._pending_requests:
                 raise RuntimeError(f"请求 {key} 已被清理")
-            _, result, error = self._pending_requests[key]
+            _, result, error, _ = self._pending_requests[key]
             if error is not None:
                 raise error
             return result

@@ -48,6 +48,7 @@ class HtmlSiteSearcher:
         page: int = 0,
         mtype: MediaType | None = None,
         page_size: int | None = None,
+        content_profile: str | None = None,
     ) -> list[dict[str, Any]]:
         if not self._site.html:
             return []
@@ -179,7 +180,7 @@ class HtmlSiteSearcher:
                 "chrome": True,
                 "ua": self._user_config.get("ua"),
                 "browser_render": True,
-                "browser_persistent": bool(self._user_config.get("browser_persistent")),
+                "browser_persistent": bool(self._user_config.get("browser_persistent", True)),
             },
             site_key=domain,
             proxy_url=proxy_url,
@@ -247,9 +248,9 @@ class HtmlSiteSearcher:
                         session.navigate(search_url, cookie=cookie)
                         return _accept_results(session.html())
                 finally:
-                    # 保留会话（clearance/Cookie 复用），仅关闭标签页，
-                    # 避免同一 Chrome 实例标签页长期堆积导致卡死
-                    session.close_tabs()
+                    # 保留会话（clearance/Cookie 复用）。标签页归会话/用户所有，
+                    # 这里不能 close_tabs()：会误删并发请求或用户正在看的页面。
+                    pass
         except Exception as e:  # noqa: BLE001
             log.warn(f"[HtmlSiteSearcher]{self._site.name} 浏览器搜索失败: {e}")
             return None
@@ -309,7 +310,7 @@ class HtmlSiteSearcher:
                     "ua": ua,
                     # 强制/内嵌验证场景需要渲染后再取 DOM（等待 JS/挑战完成）
                     "browser_render": True if (force_browser or has_pending_turnstile(html or "")) else render,
-                    "browser_persistent": bool(self._user_config.get("browser_persistent")),
+                    "browser_persistent": bool(self._user_config.get("browser_persistent", True)),
                 },
                 site_key=self._user_config.get("domain") or self._site.domain or "",
                 proxy_url=proxy_url,

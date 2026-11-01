@@ -5,10 +5,12 @@ Handles RSS movies, TV shows, episodes and history related database operations.
 
 from __future__ import annotations
 
+import difflib
+import re
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Integer, cast, or_
+from sqlalchemy import Integer, and_, cast, or_
 from sqlalchemy.exc import IntegrityError
 
 import log
@@ -17,11 +19,84 @@ from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.data_scope import apply_owner_scope
 from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
+from app.media.metadata.legacy import parse_legacy_ref
+from app.media.metadata.policy import ANCHOR_POLICY
 from app.schemas.auth import UserContext
 from app.utils.json_utils import JsonUtils
 
 if TYPE_CHECKING:
     from app.media.models import MediaInfo
+
+
+# DESC 列为 varchar(255)，存的是 TMDB 简介（可能超长）；SQLite 不校验长度，
+# PostgreSQL 严格校验会抛 StringDataRightTruncation，故所有写入路径统一截断。
+_DESC_MAX_LEN = 200
+
+
+def _trim_desc(desc: str | None) -> str:
+    """按仓库既有约定截断简介，保证新增/更新/历史各写入路径一致。"""
+    return (desc or "")[:_DESC_MAX_LEN]
+
+
+def _subscription_scope(row) -> dict[str, str | None]:
+    if row is None:
+        return {}
+    return {
+        "IDENTITY_ID": getattr(row, "IDENTITY_ID", None),
+        "ANCHOR_PROVIDER": getattr(row, "ANCHOR_PROVIDER", None),
+        "ANCHOR_EXTERNAL_ID": getattr(row, "ANCHOR_EXTERNAL_ID", None),
+        "CONTENT_PROFILE": getattr(row, "CONTENT_PROFILE", None),
+        "PROVIDER": getattr(row, "PROVIDER", None),
+        "METADATA_REF": getattr(row, "METADATA_REF", None),
+    }
+
+
+def _history_scope(
+    tmdbid: str | None,
+    rtype: str,
+    *,
+    anchor_provider: str | None = None,
+    anchor_external_id: str | None = None,
+    identity_id: str | None = None,
+    content_profile: str | None = None,
+    metadata_policy: str | None = None,
+    provider: str | None = None,
+    metadata_ref: str | None = None,
+    naming_profile: str | None = None,
+) -> dict[str, str | None]:
+    metadata_provider = str(provider or "").strip() or None
+    provider = str(anchor_provider or "").strip()
+    external = str(anchor_external_id or "").strip()
+    if not provider or not external:
+        media_type = MediaType.from_string(str(rtype or ""))
+        if media_type == MediaType.UNKNOWN:
+            media_type = MediaType.MOVIE
+        ref = parse_legacy_ref(tmdbid, media_type)
+        if ref is not None:
+            provider = provider or ref.provider
+            external = external or ref.external_id
+    if not provider or not external:
+        return {
+            "IDENTITY_ID": identity_id,
+            "ANCHOR_PROVIDER": None,
+            "ANCHOR_EXTERNAL_ID": None,
+            "CONTENT_PROFILE": content_profile,
+            "PROVIDER": metadata_provider,
+            "METADATA_REF": metadata_ref,
+            "METADATA_POLICY": metadata_policy,
+            "NAMING_PROFILE": naming_profile,
+        }
+    profile = content_profile or ("anime" if provider == "bangumi" else "default")
+    return {
+        "IDENTITY_ID": identity_id,
+        "ANCHOR_PROVIDER": provider,
+        "ANCHOR_EXTERNAL_ID": external,
+        "CONTENT_PROFILE": profile,
+        "PROVIDER": metadata_provider,
+        "METADATA_REF": metadata_ref,
+        "METADATA_POLICY": metadata_policy or ANCHOR_POLICY.get(provider),
+        "NAMING_PROFILE": naming_profile,
+    }
 
 
 class SubscribeRepository(BaseRepository):
@@ -54,53 +129,138 @@ class SubscribeRepository(BaseRepository):
         with self.session() as db:
             query = db.query(SubscribeMovies)
             if rssid:
-                query = query.filter(int(rssid) == SubscribeMovies.ID)
+                query = query.filter(SubscribeMovies.ID == int(rssid))
             elif state:
-                query = query.filter(state == SubscribeMovies.STATE)
+                query = query.filter(SubscribeMovies.STATE == state)
             if user is not None:
                 query = apply_owner_scope(query, SubscribeMovies, user)
             return query.all()
 
-    def get_rss_movie_id(self, title: str, year: str | None = None, tmdbid: str | None = None) -> int | str | None:
-        """
-        获取订阅电影ID
-        """
-        if not title:
-            return None
-        with self.session() as db:
-            if tmdbid:
-                ret = db.query(SubscribeMovies.ID).filter(str(tmdbid) == SubscribeMovies.TMDBID).first()
-                if ret:
-                    return ret[0]
-            query = db.query(SubscribeMovies.ID).filter(title == SubscribeMovies.NAME)
-            if year:
-                query = query.filter(str(year) == SubscribeMovies.YEAR)
-            ret = query.first()
-            return ret[0] if ret else None
-
-    def get_rss_tv_id(
-        self, title: str, year: str | None = None, season: str | None = None, tmdbid: str | None = None
+    def get_rss_movie_id(
+        self,
+        title: str,
+        year: str | None = None,
+        tmdbid: str | None = None,
+        user_id: int | None = None,
+        content_profile: str | None = None,
     ) -> int | str | None:
         """
-        获取订阅电视剧ID
+        获取订阅电影ID（按归属用户与内容画像收敛，避免返回他人/其他画像的订阅）
         """
         if not title:
             return None
         with self.session() as db:
+
+            def _scope(query):
+                if user_id is not None:
+                    query = query.filter(SubscribeMovies.USER_ID == user_id)
+                if content_profile == "default":
+                    query = query.filter(
+                        or_(
+                            SubscribeMovies.CONTENT_PROFILE == "default",
+                            SubscribeMovies.CONTENT_PROFILE.is_(None),
+                            SubscribeMovies.CONTENT_PROFILE == "",
+                        )
+                    )
+                elif content_profile:
+                    query = query.filter(SubscribeMovies.CONTENT_PROFILE == content_profile)
+                return query
+
             if tmdbid:
-                query = db.query(SubscribeTvs.ID).filter(str(tmdbid) == SubscribeTvs.TMDBID)
+                ret = _scope(db.query(SubscribeMovies.ID).filter(SubscribeMovies.TMDBID == str(tmdbid))).first()
+                if ret:
+                    return ret[0]
+            query = _scope(db.query(SubscribeMovies.ID).filter(SubscribeMovies.NAME == title))
+            if year:
+                query = query.filter(SubscribeMovies.YEAR == str(year))
+            ret = query.first()
+            if ret:
+                return ret[0]
+            return self._fuzzy_subscribe_id(db, SubscribeMovies, title, year)
+
+    def get_rss_tv_id(
+        self,
+        title: str,
+        year: str | None = None,
+        season: str | None = None,
+        tmdbid: str | None = None,
+        user_id: int | None = None,
+        content_profile: str | None = None,
+    ) -> int | str | None:
+        """
+        获取订阅电视剧ID（按归属用户与内容画像收敛）
+        """
+        if not title:
+            return None
+        with self.session() as db:
+
+            def _scope(query):
+                if user_id is not None:
+                    query = query.filter(SubscribeTvs.USER_ID == user_id)
+                if content_profile == "default":
+                    query = query.filter(
+                        or_(
+                            SubscribeTvs.CONTENT_PROFILE == "default",
+                            SubscribeTvs.CONTENT_PROFILE.is_(None),
+                            SubscribeTvs.CONTENT_PROFILE == "",
+                        )
+                    )
+                elif content_profile:
+                    query = query.filter(SubscribeTvs.CONTENT_PROFILE == content_profile)
+                return query
+
+            if tmdbid:
+                query = _scope(db.query(SubscribeTvs.ID).filter(SubscribeTvs.TMDBID == str(tmdbid)))
                 if season:
-                    query = query.filter(str(season) == SubscribeTvs.SEASON)
+                    query = query.filter(SubscribeTvs.SEASON == str(season))
                 ret = query.first()
                 if ret:
                     return ret[0]
-            query = db.query(SubscribeTvs.ID).filter(title == SubscribeTvs.NAME)
+            query = _scope(db.query(SubscribeTvs.ID).filter(SubscribeTvs.NAME == title))
             if season:
-                query = query.filter(str(season) == SubscribeTvs.SEASON)
+                query = query.filter(SubscribeTvs.SEASON == str(season))
             if year:
-                query = query.filter(str(year) == SubscribeTvs.YEAR)
+                query = query.filter(SubscribeTvs.YEAR == str(year))
             ret = query.first()
-            return ret[0] if ret else None
+            if ret:
+                return ret[0]
+            return self._fuzzy_subscribe_id(db, SubscribeTvs, title, year)
+
+    @staticmethod
+    def _normalize_title(value) -> str:
+        """标题归一化：去空白与常见标点，便于豆瓣/探索页标题与订阅名比对."""
+        return re.sub(r"""[\s~～\-—–:：·・,，.。!！?？'"“”()（）\[\]【】]""", "", str(value or "")).lower()
+
+    @classmethod
+    def _titles_match(cls, candidate, target) -> bool:
+        """标题匹配：归一化后互为子串，或相似度足够高（覆盖 我不是/我是不 之类差异）."""
+        left, right = cls._normalize_title(candidate), cls._normalize_title(target)
+        if not left or not right:
+            return False
+        if left in right or right in left:
+            return True
+        return difflib.SequenceMatcher(None, left, right).ratio() >= 0.85
+
+    @classmethod
+    def _fuzzy_subscribe_id(cls, db, model, title: str, year: str | None = None):
+        """精确标题未命中时的模糊回退（豆瓣/探索页标题与订阅名常不一致）.
+
+        先按年份优先做标题匹配，避免同名不同年误判。
+        """
+        base_title = str(title or "").split(" (")[0].strip()
+        if not base_title:
+            return None
+        ret = db.query(model.ID).filter(model.NAME.contains(base_title, autoescape=True)).first()
+        if ret:
+            return ret[0]
+        rows = db.query(model.ID, model.NAME, model.YEAR).all()
+        for year_first in (True, False):
+            for rid, name, row_year in rows:
+                if year_first and year and str(row_year) != str(year):
+                    continue
+                if cls._titles_match(name, base_title):
+                    return rid
+        return None
 
     def get_subscribe_id(self, mtype, title, year, tmdbid) -> int | None:
         """
@@ -121,7 +281,7 @@ class SubscribeRepository(BaseRepository):
         if not rssid:
             return ""
         with self.session() as db:
-            ret = db.query(SubscribeMovies.DESC).filter(int(rssid) == SubscribeMovies.ID).first()
+            ret = db.query(SubscribeMovies.DESC).filter(SubscribeMovies.ID == int(rssid)).first()
             if ret:
                 return ret[0]
             return ""
@@ -135,14 +295,14 @@ class SubscribeRepository(BaseRepository):
         if not tmdbid:
             return
         with self.session() as db:
-            db.query(SubscribeMovies).filter(int(rid) == SubscribeMovies.ID).update(
+            db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rid)).update(
                 {
                     "TMDBID": tmdbid,
                     "NAME": title,
                     "YEAR": year,
                     "IMAGE": image,
                     "NOTE": note,
-                    "DESC": desc,
+                    "DESC": _trim_desc(desc),
                 }
             )
 
@@ -151,7 +311,7 @@ class SubscribeRepository(BaseRepository):
         更新订阅电影的DESC
         """
         with self.session() as db:
-            db.query(SubscribeMovies).filter(int(rid) == SubscribeMovies.ID).update({"DESC": desc})
+            db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rid)).update({"DESC": _trim_desc(desc)})
 
     def update_rss_filter_order(self, rtype: str, rssid: int, res_order: str) -> None:
         """
@@ -159,9 +319,9 @@ class SubscribeRepository(BaseRepository):
         """
         with self.session() as db:
             if rtype == MediaType.MOVIE:
-                db.query(SubscribeMovies).filter(int(rssid) == SubscribeMovies.ID).update({"FILTER_ORDER": res_order})
+                db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid)).update({"FILTER_ORDER": res_order})
             else:
-                db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update({"FILTER_ORDER": res_order})
+                db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update({"FILTER_ORDER": res_order})
 
     def get_rss_overedition_order(self, rtype: str, rssid: int) -> int:
         """
@@ -169,9 +329,9 @@ class SubscribeRepository(BaseRepository):
         """
         with self.session() as db:
             if rtype == MediaType.MOVIE:
-                res = db.query(SubscribeMovies.FILTER_ORDER).filter(int(rssid) == SubscribeMovies.ID).first()
+                res = db.query(SubscribeMovies.FILTER_ORDER).filter(SubscribeMovies.ID == int(rssid)).first()
             else:
-                res = db.query(SubscribeTvs.FILTER_ORDER).filter(int(rssid) == SubscribeTvs.ID).first()
+                res = db.query(SubscribeTvs.FILTER_ORDER).filter(SubscribeTvs.ID == int(rssid)).first()
             if res and res[0]:
                 return int(res[0])
             return 0
@@ -186,11 +346,11 @@ class SubscribeRepository(BaseRepository):
             if year is not None:
                 count = (
                     db.query(SubscribeMovies)
-                    .filter(title == SubscribeMovies.NAME, str(year) == SubscribeMovies.YEAR)
+                    .filter(SubscribeMovies.NAME == title, SubscribeMovies.YEAR == str(year))
                     .count()
                 )
             else:
-                count = db.query(SubscribeMovies).filter(title == SubscribeMovies.NAME).count()
+                count = db.query(SubscribeMovies).filter(SubscribeMovies.NAME == title).count()
             return count > 0
 
     def insert_rss_movie(
@@ -214,6 +374,14 @@ class SubscribeRepository(BaseRepository):
         note: str | None = None,
         keyword: str | None = None,
         user_id: int | None = None,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> int:
         """
         新增RSS电影（user_id 为订阅归属用户，None 为系统/插件创建）
@@ -234,17 +402,25 @@ class SubscribeRepository(BaseRepository):
         save_path = save_path or ""
         note = note or ""
         keyword = keyword or (media_info.title if media_info else "")
-        desc = (desc or "")[:200]
+        desc = _trim_desc(desc)
         if not media_info:
             return -1
         if not media_info.title:
             return -1
 
         with self.session() as db:
-            # 重复判定按归属用户维度（跨用户订阅同媒体合法）
-            dup_query = db.query(SubscribeMovies).filter(media_info.title == SubscribeMovies.NAME)
-            if media_info.year is not None:
-                dup_query = dup_query.filter(str(media_info.year) == SubscribeMovies.YEAR)
+            # 重复判定按归属用户维度；有 provider 锚点时按锚点去重，避免同名不同来源互相覆盖
+            if anchor_provider and anchor_external_id:
+                dup_query = db.query(SubscribeMovies).filter(
+                    SubscribeMovies.ANCHOR_PROVIDER == anchor_provider,
+                    SubscribeMovies.ANCHOR_EXTERNAL_ID == anchor_external_id,
+                )
+                if content_profile:
+                    dup_query = dup_query.filter(SubscribeMovies.CONTENT_PROFILE == content_profile)
+            else:
+                dup_query = db.query(SubscribeMovies).filter(SubscribeMovies.NAME == media_info.title)
+                if media_info.year is not None:
+                    dup_query = dup_query.filter(SubscribeMovies.YEAR == str(media_info.year))
             if user_id is not None:
                 dup_query = dup_query.filter(SubscribeMovies.USER_ID == user_id)
             if dup_query.count() > 0:
@@ -254,7 +430,7 @@ class SubscribeRepository(BaseRepository):
                 movie = SubscribeMovies(
                     NAME=media_info.title,
                     YEAR=media_info.year,
-                    TMDBID=media_info.tmdb_id,
+                    TMDBID=media_info.tmdb_id or None,
                     IMAGE=media_info.get_poster_image(),
                     RSS_SITES=JsonUtils.dumps(rss_sites),
                     SEARCH_SITES=JsonUtils.dumps(search_sites),
@@ -271,11 +447,19 @@ class SubscribeRepository(BaseRepository):
                     DOWNLOAD_SETTING=download_setting,
                     FUZZY_MATCH=fuzzy_match,
                     STATE=state,
-                    DESC=desc,
+                    DESC=_trim_desc(desc),
                     NOTE=note,
                     KEYWORD=keyword,
                     ADD_DATE=time.strftime("%Y-%m-%d %H:%M:%S"),
                     USER_ID=user_id,
+                    IDENTITY_ID=identity_id,
+                    ANCHOR_PROVIDER=anchor_provider,
+                    ANCHOR_EXTERNAL_ID=anchor_external_id,
+                    CONTENT_PROFILE=content_profile,
+                    PROVIDER=provider,
+                    METADATA_REF=metadata_ref,
+                    METADATA_POLICY=metadata_policy,
+                    NAMING_PROFILE=naming_profile,
                 )
                 db.add(movie)
                 db.flush()
@@ -312,6 +496,14 @@ class SubscribeRepository(BaseRepository):
             "desc": "DESC",
             "note": "NOTE",
             "keyword": "KEYWORD",
+            "identity_id": "IDENTITY_ID",
+            "anchor_provider": "ANCHOR_PROVIDER",
+            "anchor_external_id": "ANCHOR_EXTERNAL_ID",
+            "content_profile": "CONTENT_PROFILE",
+            "provider": "PROVIDER",
+            "metadata_ref": "METADATA_REF",
+            "metadata_policy": "METADATA_POLICY",
+            "naming_profile": "NAMING_PROFILE",
         }
         for k, v in kwargs.items():
             col = field_map.get(k)
@@ -324,12 +516,14 @@ class SubscribeRepository(BaseRepository):
                 update_fields[col] = JsonUtils.dumps(v)
             elif k == "filter_free":
                 update_fields[col] = None if v is None else (1 if v else 0)
+            elif col == "DESC":
+                update_fields[col] = _trim_desc(v if isinstance(v, str) else str(v))
             else:
                 update_fields[col] = v
         if not update_fields:
             return 0
         with self.session() as db:
-            query = db.query(SubscribeMovies).filter(int(rssid) == SubscribeMovies.ID)
+            query = db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid))
             if user is not None and not user.is_superadmin:
                 query = query.filter(SubscribeMovies.USER_ID == user.user_id)
             query.update(update_fields)
@@ -342,15 +536,15 @@ class SubscribeRepository(BaseRepository):
         rssid: int | None = None,
         tmdbid: str | None = None,
         user: UserContext | None = None,
-    ) -> None:
+    ) -> int:
         """
-        删除RSS电影（user 非空且非超管时校验归属，越权为无操作）
+        删除RSS电影（user 非空且非超管时校验归属，越权为无操作），返回删除行数
         """
         if not title and not rssid:
-            return
+            return 0
         with self.session() as db:
             if rssid:
-                query = db.query(SubscribeMovies).filter(int(rssid) == SubscribeMovies.ID)
+                query = db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid))
                 if user is not None and not user.is_superadmin:
                     query = query.filter(SubscribeMovies.USER_ID == user.user_id)
                 movie = query.first()
@@ -363,12 +557,19 @@ class SubscribeRepository(BaseRepository):
                             SubscribeTorrents.YEAR == year_filter,
                         ).delete()
                     db.delete(movie)
+                    return 1
+                return 0
+            query = db.query(SubscribeMovies)
+            if tmdbid:
+                query = query.filter(SubscribeMovies.TMDBID == tmdbid)
             else:
-                if tmdbid:
-                    db.query(SubscribeMovies).filter(tmdbid == SubscribeMovies.TMDBID).delete()
-                db.query(SubscribeMovies).filter(
-                    title == SubscribeMovies.NAME, str(year) == SubscribeMovies.YEAR
-                ).delete()
+                query = query.filter(SubscribeMovies.NAME == title, SubscribeMovies.YEAR == str(year))
+            if user is not None and not user.is_superadmin:
+                query = query.filter(SubscribeMovies.USER_ID == user.user_id)
+            rows = query.all()
+            for movie in rows:
+                db.delete(movie)
+            return len(rows)
 
     def update_rss_movie_state(
         self,
@@ -384,10 +585,10 @@ class SubscribeRepository(BaseRepository):
             return
         with self.session() as db:
             if rssid:
-                db.query(SubscribeMovies).filter(int(rssid) == SubscribeMovies.ID).update({"STATE": state})
+                db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid)).update({"STATE": state})
             else:
                 db.query(SubscribeMovies).filter(
-                    title == SubscribeMovies.NAME, str(year) == SubscribeMovies.YEAR
+                    SubscribeMovies.NAME == title, SubscribeMovies.YEAR == str(year)
                 ).update({"STATE": state})
 
     # ==================== RSS TV Shows ====================
@@ -401,9 +602,9 @@ class SubscribeRepository(BaseRepository):
         with self.session() as db:
             query = db.query(SubscribeTvs)
             if rssid:
-                query = query.filter(int(rssid) == SubscribeTvs.ID)
+                query = query.filter(SubscribeTvs.ID == int(rssid))
             elif state:
-                query = query.filter(state == SubscribeTvs.STATE)
+                query = query.filter(SubscribeTvs.STATE == state)
             if user is not None:
                 query = apply_owner_scope(query, SubscribeTvs, user)
             return query.all()
@@ -417,7 +618,57 @@ class SubscribeRepository(BaseRepository):
             if season:
                 query = query.filter(SubscribeTvs.SEASON == str(season))
             row = query.order_by(SubscribeTvs.ID.desc()).first()
-            return int(row[0]) if row and row[0] is not None else None
+            value = row[0] if row else None
+            return int(value) if value is not None else None
+
+    def get_movie_subscription_hint(
+        self,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        keyword: str | None = None,
+        identity_id: str | None = None,
+    ) -> dict:
+        """按身份/锚点/名称取订阅海报与画像，供下载、转移阶段复用."""
+        conditions = []
+        identity = str(identity_id or "").strip()
+        if identity:
+            conditions.append(SubscribeMovies.IDENTITY_ID == identity)
+        provider = str(anchor_provider or "").strip()
+        external = str(anchor_external_id or "").strip()
+        if provider and external:
+            conditions.append(
+                and_(
+                    SubscribeMovies.ANCHOR_PROVIDER == provider,
+                    SubscribeMovies.ANCHOR_EXTERNAL_ID == external,
+                )
+            )
+        text = str(keyword or "").strip()
+        if not conditions and not text:
+            return {}
+        with self.session() as db:
+            row = None
+            # 身份/锚点精确优先，避免同名不同内容串图。
+            if conditions:
+                row = db.query(SubscribeMovies).filter(or_(*conditions)).order_by(SubscribeMovies.ID.desc()).first()
+            if row is None and text:
+                row = (
+                    db.query(SubscribeMovies)
+                    .filter(or_(SubscribeMovies.NAME == text, SubscribeMovies.KEYWORD == text))
+                    .order_by(SubscribeMovies.ID.desc())
+                    .first()
+                )
+            if row is None:
+                return {}
+            return {
+                "image": row.IMAGE or "",
+                "content_profile": row.CONTENT_PROFILE or "",
+                "anchor_provider": row.ANCHOR_PROVIDER or "",
+                "anchor_external_id": row.ANCHOR_EXTERNAL_ID or "",
+                "provider": row.PROVIDER or "",
+                "metadata_ref": row.METADATA_REF or "",
+                "identity_id": row.IDENTITY_ID or "",
+                "tmdbid": row.TMDBID or "",
+            }
 
     def find_movie_owner_user_id(self, tmdbid: str | None) -> int | None:
         """按 TMDB 反查电影订阅归属用户."""
@@ -430,7 +681,26 @@ class SubscribeRepository(BaseRepository):
                 .order_by(SubscribeMovies.ID.desc())
                 .first()
             )
-            return int(row[0]) if row and row[0] is not None else None
+            value = row[0] if row else None
+            return int(value) if value is not None else None
+
+    def find_owner_by_anchor(self, provider: str | None, external_id: str | None, mtype: MediaType) -> int | None:
+        """按豆瓣/Bangumi 等锚点反查订阅归属用户."""
+        if not provider or not external_id:
+            return None
+        model = SubscribeMovies if mtype == MediaType.MOVIE else SubscribeTvs
+        with self.session() as db:
+            row = (
+                db.query(model.USER_ID)
+                .filter(
+                    model.ANCHOR_PROVIDER == str(provider),
+                    model.ANCHOR_EXTERNAL_ID == str(external_id),
+                )
+                .order_by(model.ID.desc())
+                .first()
+            )
+            value = row[0] if row else None
+            return int(value) if value is not None else None
 
     def get_rss_tv_sites(self, rssid: int | None) -> SubscribeTvs | str:
         """
@@ -439,7 +709,7 @@ class SubscribeRepository(BaseRepository):
         if not rssid:
             return ""
         with self.session() as db:
-            ret = db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).first()
+            ret = db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).first()
             if ret:
                 return ret
             return ""
@@ -453,7 +723,7 @@ class SubscribeRepository(BaseRepository):
         if not tmdbid:
             return
         with self.session() as db:
-            db.query(SubscribeTvs).filter(int(rid) == SubscribeTvs.ID).update(
+            db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rid)).update(
                 {
                     "TMDBID": tmdbid,
                     "NAME": title,
@@ -461,7 +731,7 @@ class SubscribeRepository(BaseRepository):
                     "TOTAL": total,
                     "LACK": lack,
                     "IMAGE": image,
-                    "DESC": desc,
+                    "DESC": _trim_desc(desc),
                     "NOTE": note,
                 }
             )
@@ -471,7 +741,7 @@ class SubscribeRepository(BaseRepository):
         更新订阅电视剧的DESC
         """
         with self.session() as db:
-            db.query(SubscribeTvs).filter(int(rid) == SubscribeTvs.ID).update({"DESC": desc})
+            db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rid)).update({"DESC": _trim_desc(desc)})
 
     def is_exists_rss_tv(self, title: str, year: str | None = None, season: str | None = None) -> bool:
         """
@@ -483,12 +753,12 @@ class SubscribeRepository(BaseRepository):
             if season:
                 count = (
                     db.query(SubscribeTvs)
-                    .filter(title == SubscribeTvs.NAME, str(year) == SubscribeTvs.YEAR, season == SubscribeTvs.SEASON)
+                    .filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season)
                     .count()
                 )
             else:
                 count = (
-                    db.query(SubscribeTvs).filter(title == SubscribeTvs.NAME, str(year) == SubscribeTvs.YEAR).count()
+                    db.query(SubscribeTvs).filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year)).count()
                 )
             return count > 0
 
@@ -518,6 +788,14 @@ class SubscribeRepository(BaseRepository):
         keyword: str | None = None,
         rssid: int | None = None,
         user_id: int | None = None,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> int:
         """
         新增RSS电视剧（rssid 不为空时跳过 is_exists 检查，用于编辑替换场景；user_id 为订阅归属用户）
@@ -540,7 +818,7 @@ class SubscribeRepository(BaseRepository):
         keyword = keyword or (media_info.title if media_info else "")
         total_ep = int(total_ep) if total_ep else 0
         current_ep = int(current_ep) if current_ep else 0
-        desc = (desc or "")[:200]
+        desc = _trim_desc(desc)
         if not media_info:
             return -1
         if not media_info.title:
@@ -552,13 +830,23 @@ class SubscribeRepository(BaseRepository):
 
         with self.session() as db:
             if not rssid:
-                # 重复判定按归属用户维度（跨用户订阅同媒体合法）
-                dup_query = db.query(SubscribeTvs).filter(
-                    media_info.title == SubscribeTvs.NAME,
-                    str(media_info.year) == SubscribeTvs.YEAR,
-                )
-                if season_str:
-                    dup_query = dup_query.filter(season_str == SubscribeTvs.SEASON)
+                # 重复判定按归属用户维度；有 provider 锚点时优先按锚点去重
+                if anchor_provider and anchor_external_id:
+                    dup_query = db.query(SubscribeTvs).filter(
+                        SubscribeTvs.ANCHOR_PROVIDER == anchor_provider,
+                        SubscribeTvs.ANCHOR_EXTERNAL_ID == anchor_external_id,
+                    )
+                    if content_profile:
+                        dup_query = dup_query.filter(SubscribeTvs.CONTENT_PROFILE == content_profile)
+                    if season_str:
+                        dup_query = dup_query.filter(SubscribeTvs.SEASON == season_str)
+                else:
+                    dup_query = db.query(SubscribeTvs).filter(
+                        SubscribeTvs.NAME == media_info.title,
+                        SubscribeTvs.YEAR == str(media_info.year),
+                    )
+                    if season_str:
+                        dup_query = dup_query.filter(SubscribeTvs.SEASON == season_str)
                 if user_id is not None:
                     dup_query = dup_query.filter(SubscribeTvs.USER_ID == user_id)
                 if dup_query.count() > 0:
@@ -569,7 +857,7 @@ class SubscribeRepository(BaseRepository):
                     NAME=media_info.title,
                     YEAR=media_info.year,
                     SEASON=season_str,
-                    TMDBID=media_info.tmdb_id,
+                    TMDBID=media_info.tmdb_id or None,
                     IMAGE=media_info.get_poster_image(),
                     RSS_SITES=JsonUtils.dumps(rss_sites),
                     SEARCH_SITES=JsonUtils.dumps(search_sites),
@@ -590,11 +878,19 @@ class SubscribeRepository(BaseRepository):
                     TOTAL=total,
                     LACK=lack,
                     STATE=state,
-                    DESC=desc,
+                    DESC=_trim_desc(desc),
                     NOTE=note,
                     KEYWORD=keyword,
                     ADD_DATE=time.strftime("%Y-%m-%d %H:%M:%S"),
                     USER_ID=user_id,
+                    IDENTITY_ID=identity_id,
+                    ANCHOR_PROVIDER=anchor_provider,
+                    ANCHOR_EXTERNAL_ID=anchor_external_id,
+                    CONTENT_PROFILE=content_profile,
+                    PROVIDER=provider,
+                    METADATA_REF=metadata_ref,
+                    METADATA_POLICY=metadata_policy,
+                    NAMING_PROFILE=naming_profile,
                 )
                 db.add(tv)
                 db.flush()
@@ -636,6 +932,14 @@ class SubscribeRepository(BaseRepository):
             "desc": "DESC",
             "note": "NOTE",
             "keyword": "KEYWORD",
+            "identity_id": "IDENTITY_ID",
+            "anchor_provider": "ANCHOR_PROVIDER",
+            "anchor_external_id": "ANCHOR_EXTERNAL_ID",
+            "content_profile": "CONTENT_PROFILE",
+            "provider": "PROVIDER",
+            "metadata_ref": "METADATA_REF",
+            "metadata_policy": "METADATA_POLICY",
+            "naming_profile": "NAMING_PROFILE",
         }
         for k, v in kwargs.items():
             col = field_map.get(k)
@@ -648,6 +952,8 @@ class SubscribeRepository(BaseRepository):
                 update_fields[col] = JsonUtils.dumps(v)
             elif k == "filter_free":
                 update_fields[col] = None if v is None else (1 if v else 0)
+            elif col == "DESC":
+                update_fields[col] = _trim_desc(v if isinstance(v, str) else str(v))
             else:
                 update_fields[col] = v
         if not update_fields:
@@ -671,7 +977,7 @@ class SubscribeRepository(BaseRepository):
                     db.query(SubscribeTvEpisodes).filter(ep_filter).update({"EPISODES": episodes_str})
                 else:
                     db.add(SubscribeTvEpisodes(RSSID=rssid, EPISODES=episodes_str))
-            query = db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID)
+            query = db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid))
             if user is not None and not user.is_superadmin:
                 query = query.filter(SubscribeTvs.USER_ID == user.user_id)
             query.update(update_fields)
@@ -715,13 +1021,13 @@ class SubscribeRepository(BaseRepository):
                 update_fields: dict = {"LACK": lack}
                 if new_current_ep is not None:
                     update_fields["CURRENT_EP"] = new_current_ep
-                db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update(update_fields)
+                db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(update_fields)
             else:
                 update_fields = {"LACK": lack}
                 if new_current_ep is not None:
                     update_fields["CURRENT_EP"] = new_current_ep
                 db.query(SubscribeTvs).filter(
-                    title == SubscribeTvs.NAME, str(year) == SubscribeTvs.YEAR, season == SubscribeTvs.SEASON
+                    SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season
                 ).update(update_fields)
 
     def update_rss_tv_total(self, rssid: int, total_ep: int, lack_episodes: list | None = None) -> None:
@@ -731,11 +1037,11 @@ class SubscribeRepository(BaseRepository):
         lack = len(lack_episodes) if lack_episodes else 0
         episodes_str = ",".join(str(e) for e in lack_episodes) if lack_episodes else ""
         with self.session() as db:
-            db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update(
+            db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(
                 {"TOTAL_EP": total_ep, "TOTAL": total_ep, "LACK": lack}
             )
             if rssid:
-                existing = db.query(SubscribeTvEpisodes).filter(int(rssid) == SubscribeTvEpisodes.RSSID).first()
+                existing = db.query(SubscribeTvEpisodes).filter(SubscribeTvEpisodes.RSSID == int(rssid)).first()
                 if existing:
                     existing.EPISODES = episodes_str
                 else:
@@ -748,35 +1054,33 @@ class SubscribeRepository(BaseRepository):
         rssid: int | None = None,
         tmdbid: str | None = None,
         user: UserContext | None = None,
-    ) -> None:
+    ) -> int:
         """
-        删除RSS电视剧（user 非空且非超管时校验归属，越权为无操作）
+        删除RSS电视剧（user 非空且非超管时校验归属，越权为无操作），返回删除行数
         """
         if not title and not rssid:
-            return
+            return 0
         with self.session() as db:
+
+            def _scope(query):
+                if user is not None and not user.is_superadmin:
+                    query = query.filter(SubscribeTvs.USER_ID == user.user_id)
+                return query
+
             if not rssid:
-                # 内联 get_rss_tv_id 查找，确保后续删除在同一事务上下文
+                # 内联查找，确保后续删除在同一事务上下文，并先按归属收敛
                 if tmdbid:
+                    query = _scope(db.query(SubscribeTvs.ID).filter(SubscribeTvs.TMDBID == tmdbid))
                     if season:
-                        ret = (
-                            db.query(SubscribeTvs.ID)
-                            .filter(tmdbid == SubscribeTvs.TMDBID, season == SubscribeTvs.SEASON)
-                            .first()
-                        )
-                    else:
-                        ret = db.query(SubscribeTvs.ID).filter(tmdbid == SubscribeTvs.TMDBID).first()
+                        query = query.filter(SubscribeTvs.SEASON == season)
+                    ret = query.first()
                     if ret:
                         rssid = ret[0]
                 if not rssid:
+                    query = _scope(db.query(SubscribeTvs).filter(SubscribeTvs.NAME == title))
                     if season:
-                        items = (
-                            db.query(SubscribeTvs)
-                            .filter(title == SubscribeTvs.NAME, str(season) == SubscribeTvs.SEASON)
-                            .all()
-                        )
-                    else:
-                        items = db.query(SubscribeTvs).filter(title == SubscribeTvs.NAME).all()
+                        query = query.filter(SubscribeTvs.SEASON == str(season))
+                    items = query.all()
                     if items:
                         if tmdbid:
                             for item in items:
@@ -786,7 +1090,7 @@ class SubscribeRepository(BaseRepository):
                         else:
                             rssid = items[0].ID
             if rssid:
-                query = db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID)
+                query = db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid))
                 if user is not None and not user.is_superadmin:
                     query = query.filter(SubscribeTvs.USER_ID == user.user_id)
                 tv = query.first()
@@ -804,6 +1108,8 @@ class SubscribeRepository(BaseRepository):
                         cast(SubscribeTvEpisodes.RSSID, Integer) == int(rssid)
                     ).delete()
                     db.delete(tv)
+                    return 1
+            return 0
 
     def update_rss_tv_state(
         self,
@@ -820,10 +1126,10 @@ class SubscribeRepository(BaseRepository):
             return
         with self.session() as db:
             if rssid:
-                db.query(SubscribeTvs).filter(int(rssid) == SubscribeTvs.ID).update({"STATE": state})
+                db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update({"STATE": state})
             else:
                 db.query(SubscribeTvs).filter(
-                    title == SubscribeTvs.NAME, str(year) == SubscribeTvs.YEAR, season == SubscribeTvs.SEASON
+                    SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season
                 ).update({"STATE": state})
 
     # ==================== RSS TV Episodes ====================
@@ -849,12 +1155,18 @@ class SubscribeRepository(BaseRepository):
         else:
             episodes = [str(epi) for epi in episodes]
         with self.session() as db:
-            if db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rid)).count() > 0:
-                db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rid)).update(
-                    {"EPISODES": ",".join(episodes)}
-                )
+            subscription = db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rid)).first()
+            scope = _subscription_scope(subscription)
+            existing = (
+                db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rid)).first()
+            )
+            if existing:
+                existing.EPISODES = ",".join(episodes)
+                for key, value in scope.items():
+                    if value is not None:
+                        setattr(existing, key, value)
             else:
-                db.add(SubscribeTvEpisodes(RSSID=rid, EPISODES=",".join(episodes)))
+                db.add(SubscribeTvEpisodes(RSSID=rid, EPISODES=",".join(episodes), **scope))
 
     def get_rss_tv_episodes(self, rid: int | None) -> list[int] | None:
         """查询电视剧订阅缺失剧集。
@@ -915,7 +1227,11 @@ class SubscribeRepository(BaseRepository):
     # ==================== RSS History ====================
 
     def get_rss_history(
-        self, rtype: str | None = None, rid: int | None = None, user: UserContext | None = None
+        self,
+        rtype: str | None = None,
+        rid: int | None = None,
+        user: UserContext | None = None,
+        content_profile: str | None = None,
     ) -> list[SubscribeHistory]:
         """
         查询RSS历史（user=None 为系统上下文不过滤；否则按数据归属过滤）
@@ -923,12 +1239,43 @@ class SubscribeRepository(BaseRepository):
         with self.session() as db:
             query = db.query(SubscribeHistory)
             if rid:
-                query = query.filter(int(rid) == SubscribeHistory.ID)
+                query = query.filter(SubscribeHistory.ID == int(rid))
             elif rtype:
-                query = query.filter(rtype == SubscribeHistory.TYPE)
+                query = query.filter(SubscribeHistory.TYPE == rtype)
+            if content_profile:
+                if content_profile in ("default", "core"):
+                    query = query.filter(
+                        or_(
+                            SubscribeHistory.CONTENT_PROFILE.is_(None),
+                            SubscribeHistory.CONTENT_PROFILE == "",
+                            SubscribeHistory.CONTENT_PROFILE == "default",
+                        )
+                    )
+                else:
+                    query = query.filter(SubscribeHistory.CONTENT_PROFILE == content_profile)
             if user is not None:
                 query = apply_owner_scope(query, SubscribeHistory, user)
             return query.order_by(SubscribeHistory.FINISH_TIME.desc()).all()
+
+    def get_rss_history_id(self, rtype: str | None, title: str, year: str | None = None, tmdbid: str | None = None):
+        """按 TMDB/标题查询已完成的订阅历史 ID（用于展示"订阅完成"状态）."""
+        if not title:
+            return None
+        with self.session() as db:
+            query = db.query(SubscribeHistory.ID)
+            if rtype:
+                query = query.filter(SubscribeHistory.TYPE == rtype)
+            if tmdbid:
+                ret = query.filter(SubscribeHistory.TMDBID == str(tmdbid)).first()
+                if ret:
+                    return ret[0]
+            ret = query.filter(SubscribeHistory.NAME == title)
+            if year:
+                ret = ret.filter(SubscribeHistory.YEAR == str(year))
+            row = ret.first()
+            if row:
+                return row[0]
+            return self._fuzzy_subscribe_id(db, SubscribeHistory, title, year)
 
     def is_exists_rss_history(self, rssid: int | None) -> bool:
         """
@@ -948,10 +1295,10 @@ class SubscribeRepository(BaseRepository):
             count = (
                 db.query(SubscribeHistory)
                 .filter(
-                    type_str == SubscribeHistory.TYPE,
-                    name == SubscribeHistory.NAME,
-                    year == SubscribeHistory.YEAR,
-                    season == SubscribeHistory.SEASON,
+                    SubscribeHistory.TYPE == type_str,
+                    SubscribeHistory.NAME == name,
+                    SubscribeHistory.YEAR == year,
+                    SubscribeHistory.SEASON == season,
                 )
                 .count()
             )
@@ -971,10 +1318,35 @@ class SubscribeRepository(BaseRepository):
         start: str | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         """
         登记RSS历史（user_id 为归属用户）
         """
+        # SEASON/TOTAL/START 为 NOT NULL：电影等无季/集信息时兜底为空串/0，避免约束失败
+        season = season or ""
+        total = "0" if total is None else str(total)
+        start = "0" if start is None else str(start)
+        scope = _history_scope(
+            tmdbid,
+            rtype,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            provider=provider,
+            metadata_ref=metadata_ref,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
+        )
         with self.session() as db:
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
                 return
@@ -987,12 +1359,13 @@ class SubscribeRepository(BaseRepository):
                     TMDBID=tmdbid,
                     SEASON=season,
                     IMAGE=image,
-                    DESC=desc,
+                    DESC=_trim_desc(desc),
                     TOTAL=total,
                     START=start,
                     NOTE=note,
                     FINISH_TIME=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
                     USER_ID=user_id,
+                    **scope,
                 )
             )
 
@@ -1010,10 +1383,35 @@ class SubscribeRepository(BaseRepository):
         start: str | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         """
         登记或更新RSS历史：按媒体维度去重，同一 TMDB ID + 季的记录只保留一条
         """
+        # SEASON/TOTAL/START 为 NOT NULL：电影等无季/集信息时兜底为空串/0，避免约束失败
+        season = season or ""
+        total = "0" if total is None else str(total)
+        start = "0" if start is None else str(start)
+        scope = _history_scope(
+            tmdbid,
+            rtype,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            provider=provider,
+            metadata_ref=metadata_ref,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
+        )
         with self.session() as db:
             # 防御：同一 rssid 已完成过则跳过
             if db.query(SubscribeHistory).filter(cast(SubscribeHistory.RSSID, Integer) == rssid).count() > 0:
@@ -1044,13 +1442,16 @@ class SubscribeRepository(BaseRepository):
             existing = query.first()
             finish_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
             if existing:
-                existing.RSSID = rssid
+                existing.RSSID = str(rssid or "")
                 existing.IMAGE = image
-                existing.DESC = desc
-                existing.TOTAL = total
-                existing.START = start
+                existing.DESC = _trim_desc(desc)
+                existing.TOTAL = int(total or 0)
+                existing.START = int(start or 0)
                 existing.NOTE = note
                 existing.FINISH_TIME = finish_time
+                for key, value in scope.items():
+                    if value is not None:
+                        setattr(existing, key, value)
             else:
                 db.add(
                     SubscribeHistory(
@@ -1061,12 +1462,13 @@ class SubscribeRepository(BaseRepository):
                         TMDBID=tmdbid,
                         SEASON=season,
                         IMAGE=image,
-                        DESC=desc,
+                        DESC=_trim_desc(desc),
                         TOTAL=total,
                         START=start,
                         NOTE=note,
                         FINISH_TIME=finish_time,
                         USER_ID=user_id,
+                        **scope,
                     )
                 )
 
@@ -1077,7 +1479,7 @@ class SubscribeRepository(BaseRepository):
         if not rssid:
             return
         with self.session() as db:
-            db.query(SubscribeHistory).filter(int(rssid) == SubscribeHistory.ID).delete()
+            db.query(SubscribeHistory).filter(SubscribeHistory.ID == int(rssid)).delete()
 
     # ==================== RSS Torrents ====================
 
@@ -1105,10 +1507,22 @@ class SubscribeRepository(BaseRepository):
         if not torrent_name:
             return None
         with self.session() as db:
-            return db.query(SubscribeTorrents).filter(torrent_name == SubscribeTorrents.TORRENT_NAME).first()
+            return db.query(SubscribeTorrents).filter(SubscribeTorrents.TORRENT_NAME == torrent_name).first()
 
     def insert_rss_torrent(
-        self, torrent_name: str, enclosure: str, type_: str, title: str, year: str, season: str, episode: str
+        self,
+        torrent_name: str,
+        enclosure: str,
+        type_: str,
+        title: str,
+        year: str,
+        season: str,
+        episode: str,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
     ) -> None:
         """插入 RSS 种子记录"""
         if enclosure and enclosure.startswith("magnet:"):
@@ -1127,6 +1541,10 @@ class SubscribeRepository(BaseRepository):
                     YEAR=year,
                     SEASON=season,
                     EPISODE=episode,
+                    IDENTITY_ID=identity_id,
+                    ANCHOR_PROVIDER=anchor_provider,
+                    ANCHOR_EXTERNAL_ID=anchor_external_id,
+                    CONTENT_PROFILE=content_profile,
                 )
             )
 
@@ -1151,11 +1569,11 @@ class SubscribeRepository(BaseRepository):
         with self.session() as db:
             if enclosure:
                 db.query(SubscribeTorrents).filter(
-                    title == SubscribeTorrents.TORRENT_NAME,
-                    enclosure == SubscribeTorrents.ENCLOSURE,
+                    SubscribeTorrents.TORRENT_NAME == title,
+                    SubscribeTorrents.ENCLOSURE == enclosure,
                 ).delete()
             else:
-                db.query(SubscribeTorrents).filter(title == SubscribeTorrents.TORRENT_NAME).delete()
+                db.query(SubscribeTorrents).filter(SubscribeTorrents.TORRENT_NAME == title).delete()
 
     def truncate_rss_torrents(self) -> None:
         """清空 RSS 种子记录"""
