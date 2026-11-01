@@ -21,6 +21,9 @@ COPY alembic.ini run.py start-prod.sh start-dev.sh restart-server.sh stop-server
 ARG UV_INDEX_URL=https://pypi.org/simple
 ENV UV_INDEX_URL=${UV_INDEX_URL}
 
+# --no-install-package 的名字必须与 pyproject.toml 的 [project].name 一致，
+# 否则 --frozen 会报 "Missing workspace member"。本项目 package = false
+# （从源码运行），不为自身构建 wheel，因此排除掉项目自身即可。
 RUN uv venv .venv \
     && uv sync --frozen --no-cache --no-install-package wolfnas
 
