@@ -108,6 +108,33 @@ class TransferHistoryRepositoryAdapter:
     def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
         self._repo.update_transfer_history_poster(logid, poster)
 
+    def update_transfer_dest(self, logid: int, new_dest_path: str, new_dest_filename: str) -> bool:
+        """更新转移记录的目标路径（跨盘整理后同步新位置）。
+
+        媒体库一致性校验依赖此方法；缺失会在运行期抛 AttributeError
+        （单测用 MagicMock 时无法发现），故在此显式转发。
+        """
+        return self._repo.update_transfer_dest(
+            logid=logid, new_dest_path=new_dest_path, new_dest_filename=new_dest_filename
+        )
+
+    def update_transfer_paths(
+        self,
+        logid: int,
+        new_source_path: str,
+        new_source_filename: str,
+        new_dest_path: str,
+        new_dest_filename: str,
+    ) -> bool:
+        """更新转移记录的源与目标路径（作品级跨盘归档迁移后同步）。"""
+        return self._repo.update_transfer_paths(
+            logid=logid,
+            new_source_path=new_source_path,
+            new_source_filename=new_source_filename,
+            new_dest_path=new_dest_path,
+            new_dest_filename=new_dest_filename,
+        )
+
     def update_transfer_file_state(
         self,
         logid: int,

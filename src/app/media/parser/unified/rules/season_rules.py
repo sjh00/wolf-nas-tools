@@ -118,9 +118,7 @@ RULES: list[ExtractionRule] = [
         name="roman_season",
         # 动漫常见季标：Unicode 罗马数字（Ⅲ）或拉丁罗马数字（III/IV 等），排除单个 I/V/X。
         # 排除 "Part III"/"Part II" 电影分部标记，以及 "-XXX" 这类发布组后缀（全 IVX 字母）
-        pattern=re.compile(
-            r"(?<!Part[.\s-])(?<!-)\b([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]|[IVX]{2,5})\b(?!\s*[-~]\s*[SsEe]\s*\d)"
-        ),
+        pattern=re.compile(r"(?<!Part[.\s-])(?<!-)\b([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]|[IVX]{2,5})\b(?!\s*[-~]\s*[SsEe]\s*\d)"),
         category="season",
         priority=72,
         confidence=0.7,

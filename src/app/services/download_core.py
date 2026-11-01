@@ -171,9 +171,7 @@ class DownloadCore:
         if not total:
             return False, no_exists or {}, None
 
-        missing_episodes = self._filetransfer.get_no_exists_medias(
-            meta_info, season=season, total_num=int(total)
-        )
+        missing_episodes = self._filetransfer.get_no_exists_medias(meta_info, season=season, total_num=int(total))
         result = dict(no_exists or {})
         if missing_episodes:
             season_entry = {

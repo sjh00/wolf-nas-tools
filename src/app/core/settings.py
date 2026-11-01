@@ -424,12 +424,8 @@ class AppSettings(BaseSettings):
         env_nested_delimiter="__",
     )
 
-    wolfnas_config: str = Field(
-        default="", validation_alias="WOLFNAS_CONFIG"
-    )
-    wolfnas_data: str = Field(
-        default="", validation_alias="WOLFNAS_DATA"
-    )
+    wolfnas_config: str = Field(default="", validation_alias="WOLFNAS_CONFIG")
+    wolfnas_data: str = Field(default="", validation_alias="WOLFNAS_DATA")
     tz: str = "Asia/Shanghai"
 
     app: AppConfig = Field(default_factory=AppConfig)

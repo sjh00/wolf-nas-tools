@@ -185,9 +185,7 @@ class SystemLifecycleService:
         startup_tasks = [
             ("file_index", self._file_index.start) if self._file_index else None,
             ("sync", self._sync.init),
-            ("media_library_monitor", self._media_library_monitor.start)
-            if self._media_library_monitor
-            else None,
+            ("media_library_monitor", self._media_library_monitor.start) if self._media_library_monitor else None,
             ("brush", self._brush.start_service) if self._brush else None,
             ("rss_checker", self._rss_checker._refresh) if self._rss_checker else None,
             ("torrent_remover", self._torrent_remover.start_service) if self._torrent_remover else None,
@@ -231,9 +229,7 @@ class SystemLifecycleService:
             ("torrent_remover", self._torrent_remover.stop_service) if self._torrent_remover else None,
             ("downloader", self._downloader.stop_service) if self._downloader else None,
             ("file_index", self._file_index.stop) if self._file_index else None,
-            ("media_library_monitor", self._media_library_monitor.stop)
-            if self._media_library_monitor
-            else None,
+            ("media_library_monitor", self._media_library_monitor.stop) if self._media_library_monitor else None,
         ]
         futures = []
         if self._thread_executor:

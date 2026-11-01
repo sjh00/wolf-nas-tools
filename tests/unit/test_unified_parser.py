@@ -618,8 +618,7 @@ class TestTailMetadataLeftover:
     def test_version_phrase_stripped(self, parser):
         """Extended Version 版本短语应整体剥离"""
         title = (
-            "The Hobbit An Unexpected Journey 2012 Extended Version UHD Blu-ray "
-            "2160p HEVC Atmos TrueHD 7.1-CHDBits.iso"
+            "The Hobbit An Unexpected Journey 2012 Extended Version UHD Blu-ray 2160p HEVC Atmos TrueHD 7.1-CHDBits.iso"
         )
         result = parser.parse(title)
         assert result is not None
@@ -691,9 +690,7 @@ class TestTailMetadataLeftover:
 
     def test_large_ep_range_is_season_pack(self, parser):
         """EP001-EP131 是全集包，不应把 1-131 当成要入库的单集区间"""
-        result = parser.parse(
-            "Dragon.Ball.Super.EP001-EP131ed.2015.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS"
-        )
+        result = parser.parse("Dragon.Ball.Super.EP001-EP131ed.2015.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS")
         assert result is not None
         assert result.title_en == "Dragon Ball Super"
         assert result.year == "2015"
@@ -721,9 +718,7 @@ class TestTailMetadataLeftover:
 
     def test_broadcast_prefix_stripped(self, parser):
         """CCTV4K.Shan.He.Jin.Xiu 应去掉台标前缀再识别，He 不能当编码碎片丢掉"""
-        result = parser.parse(
-            "CCTV4K.Shan.He.Jin.Xiu.2022.E05.20230202.4K.UHDTV.HLG10.HEVC-HDCTV.ts"
-        )
+        result = parser.parse("CCTV4K.Shan.He.Jin.Xiu.2022.E05.20230202.4K.UHDTV.HLG10.HEVC-HDCTV.ts")
         assert result is not None
         assert "Cctv" not in (result.title_en or "")
         assert result.title_en == "Shan He Jin Xiu"

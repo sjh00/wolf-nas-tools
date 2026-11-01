@@ -77,9 +77,7 @@ def test_meta_cases(parser, case):
     exp_type = _norm_type(target.get("type", ""))
     if exp_type is not None:
         got_type = MediaType.TV if result.type in (MediaType.TV, MediaType.ANIME) else result.type
-        assert got_type == exp_type, (
-            f"类型不符: 期望 {exp_type}, 实际 {result.type} | {case['title']!r}"
-        )
+        assert got_type == exp_type, f"类型不符: 期望 {exp_type}, 实际 {result.type} | {case['title']!r}"
 
     # 年份
     exp_year = (target.get("year") or "").strip()
@@ -89,18 +87,14 @@ def test_meta_cases(parser, case):
     # 季（有集号但无季号时默认 S01 已在解析器内处理）
     exp_season, exp_end_season = _parse_season(target.get("season", ""))
     got_season = result.season
-    assert got_season == exp_season, (
-        f"季数不符: 期望 {exp_season!r}, 实际 {got_season!r} | {case['title']!r}"
-    )
+    assert got_season == exp_season, f"季数不符: 期望 {exp_season!r}, 实际 {got_season!r} | {case['title']!r}"
     if exp_end_season is not None:
         assert result.end_season == exp_end_season
 
     # 集
     exp_episode, exp_end_episode = _parse_episode(target.get("episode", ""))
     got_episode = result.episode
-    assert got_episode == exp_episode, (
-        f"集数不符: 期望 {exp_episode!r}, 实际 {got_episode!r} | {case['title']!r}"
-    )
+    assert got_episode == exp_episode, f"集数不符: 期望 {exp_episode!r}, 实际 {got_episode!r} | {case['title']!r}"
     if exp_end_episode is not None:
         assert result.end_episode == exp_end_episode
 

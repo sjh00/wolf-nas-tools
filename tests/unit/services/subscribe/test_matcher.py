@@ -382,11 +382,11 @@ class TestDefaultFilterRule:
             mock_g.return_value.get_by_id.return_value = None
             mock_g.return_value.get_all.return_value = [default_group]
             mock_r.return_value.get_by_group.return_value = [rule]
-            match_flag, msgs, _ = matcher.match(
-                media_info, rss_movies, {}, "test_site", None, "", False, "", {}, False
-            )
+            match_flag, msgs, _ = matcher.match(media_info, rss_movies, {}, "test_site", None, "", False, "", {}, False)
         assert match_flag is False
         assert any("过滤规则" in m for m in msgs)
+
+
 class TestSubscribeMediaTypePropagation:
     """订阅类型需在匹配阶段透传：动漫订阅→anime，且识别的动漫不被 tv 订阅降级."""
 

@@ -277,9 +277,10 @@ class DownloaderCore:
             return False
         ids = [ids] if isinstance(ids, str) else list(ids)
         try:
-            # 优先调用客户端自身方法
-            if hasattr(client, "move_torrents_location"):
-                return bool(client.move_torrents_location(ids, new_path))
+            # 优先调用客户端自身方法（接口未声明，按可选能力探测）
+            mover = getattr(client, "move_torrents_location", None)
+            if callable(mover):
+                return bool(mover(ids, new_path))
             # qbittorrent：底层 qbc 有 torrents_setLocation
             qbc = getattr(client, "qbc", None)
             if qbc is not None and hasattr(qbc, "torrents_setLocation"):

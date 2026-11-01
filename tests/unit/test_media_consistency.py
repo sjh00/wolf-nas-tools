@@ -47,9 +47,7 @@ class TestConsistency:
         new_path = str(tmp_path / "other" / "A")  # 新位置（模拟移动后）
         svc._history.get_transfer_history.return_value = (1, [rec])
         svc._history.update_transfer_dest.return_value = True
-        svc._file_index.find_by_name.return_value = [
-            {"name": "A.2020.mkv", "path": f"{new_path}/A.2020.mkv"}
-        ]
+        svc._file_index.find_by_name.return_value = [{"name": "A.2020.mkv", "path": f"{new_path}/A.2020.mkv"}]
 
         result = svc.check_library_consistency()
         assert result["fixed"] == 1

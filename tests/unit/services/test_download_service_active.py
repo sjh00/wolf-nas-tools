@@ -79,8 +79,7 @@ class TestMustQueryByIds:
         assert client.get_downloading_progress.call_count == 1
         kwargs = client.get_downloading_progress.call_args.kwargs
         assert kwargs.get("ids") == [_PUSHED_HASH], (
-            "必须按平台推送的 hash 查询；不限 ids 会全量拉取并逐个解析 tracker，"
-            "导致接口超过前端 30s 超时"
+            "必须按平台推送的 hash 查询；不限 ids 会全量拉取并逐个解析 tracker，导致接口超过前端 30s 超时"
         )
 
 

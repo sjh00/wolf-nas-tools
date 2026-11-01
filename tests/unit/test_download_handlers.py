@@ -1,4 +1,4 @@
-﻿"""涓嬭浇棰嗗煙浜嬩欢澶勭悊鍣ㄥ崟鍏冩祴璇?"""
+"""涓嬭浇棰嗗煙浜嬩欢澶勭悊鍣ㄥ崟鍏冩祴璇?"""
 
 from app.events import Event
 from app.events.constants import DOWNLOAD_COMPLETED, DOWNLOAD_FAILED, DOWNLOAD_STARTED

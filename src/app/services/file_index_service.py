@@ -437,6 +437,8 @@ class FileIndexService:
         """
         search = (search or "").strip().lower()
         items = []
+        if not self._history_manager:
+            return {"total": 0, "items": []}
         for p in range(1, max_pages + 1):
             _, records = self._history_manager.get_transfer_history(search=None, page=p, rownum=500)
             if not records:
@@ -465,9 +467,7 @@ class FileIndexService:
 
                 # 搜索过滤
                 if search:
-                    haystack = (
-                        f"{getattr(rec, 'TITLE', '')} {source_filename} {dest_filename}"
-                    ).lower()
+                    haystack = (f"{getattr(rec, 'TITLE', '')} {source_filename} {dest_filename}").lower()
                     if search not in haystack:
                         continue
                 if state and state != rel_state:

@@ -182,11 +182,7 @@ class DownloadMonitor:
     def _prune_processed(self, downloader_id: str, current_ids: set[str]) -> None:
         """移除已不在下载器中的已处理 ID，避免内存无限增长."""
         prefix = f"{downloader_id}:"
-        stale = {
-            uid
-            for uid in self._processed_ids
-            if uid.startswith(prefix) and uid[len(prefix) :] not in current_ids
-        }
+        stale = {uid for uid in self._processed_ids if uid.startswith(prefix) and uid[len(prefix) :] not in current_ids}
         if stale:
             self._processed_ids -= stale
 

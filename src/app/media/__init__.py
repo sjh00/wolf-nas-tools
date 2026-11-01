@@ -12,6 +12,8 @@
   - cache/           — 缓存层
 """
 
+from typing import TYPE_CHECKING
+
 from .batch import BatchProcessor
 from .cache import MediaCache
 from .external import Bangumi, DouBan
@@ -34,6 +36,10 @@ from .parser._customization import CustomizationMatcher
 from .parser._metainfo import meta_info
 from .parser._release_groups import ReleaseGroupsMatcher
 from .service import MediaService
+
+if TYPE_CHECKING:
+    # 仅用于类型检查与 __all__ 声明；运行期由下方 __getattr__ 延迟导入
+    from .scraper import Scraper
 
 __all__ = [
     "MediaService",

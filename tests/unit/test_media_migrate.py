@@ -211,4 +211,3 @@ class TestDetectOrphans:
         svc = _svc_with_downloader(records, torrents=torrents)
         result = svc.detect_orphans(tmdb_id=100)
         assert result["total"] == 0
-

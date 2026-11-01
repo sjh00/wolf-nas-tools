@@ -91,9 +91,7 @@ class _HistoryManagerStub:
         self._infos = infos
 
     def get_multi_version_groups(self, limit=100):
-        return [
-            {"tmdb_id": 100, "title": "A", "year": "2020", "dir_count": 1, "file_count": 2}
-        ]
+        return [{"tmdb_id": 100, "title": "A", "year": "2020", "dir_count": 1, "file_count": 2}]
 
     def get_transfer_info_by(self, tmdbid, season=None, season_episode=None):
         return [i for i in self._infos if int(getattr(i, "TMDBID", 0)) == int(tmdbid)]
