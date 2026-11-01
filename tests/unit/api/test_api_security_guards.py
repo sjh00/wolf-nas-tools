@@ -7,7 +7,7 @@ import pytest
 from api.routers.image import _guard_image_url, _is_blocked_ip
 from api.routers.rbac import _assert_role_assignment_allowed
 from api.routers.system import _config_for_user, _is_sensitive_key, _mask_sensitive, _strip_masked
-from app.core.exceptions import NexusError, PermissionDenied
+from app.core.exceptions import PermissionDenied, WolfNasError
 from app.schemas.auth import SUPERADMIN_ROLE_CODE, UserContext
 
 
@@ -20,7 +20,7 @@ class TestImageSSRF:
         assert _is_blocked_ip("1.1.1.1") is False
 
     def test_guard_blocks_non_http_scheme(self):
-        with pytest.raises(NexusError):
+        with pytest.raises(WolfNasError):
             _guard_image_url("file:///etc/passwd")
 
     def test_guard_blocks_internal_address(self, monkeypatch):
@@ -28,7 +28,7 @@ class TestImageSSRF:
             "api.routers.image.socket.getaddrinfo",
             lambda host, port: [(2, 1, 6, "", ("169.254.169.254", 0))],
         )
-        with pytest.raises(NexusError):
+        with pytest.raises(WolfNasError):
             _guard_image_url("http://metadata.local/latest")
 
     def test_guard_allows_public_address(self, monkeypatch):

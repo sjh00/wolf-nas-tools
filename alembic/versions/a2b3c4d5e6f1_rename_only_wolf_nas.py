@@ -7,6 +7,10 @@ Create Date: 2026-07-05 19:30:00
 Rename the ONLY_NEXUS_MEDIA column in DOWNLOADER and
 TORRENT_REMOVE_TASK to ONLY_WOLF_NAS.
 Provides backward compatibility for databases that still have the old column.
+
+注意：这里的 ONLY_NEXUS_MEDIA 是**数据库历史列名**（旧版本建的表），
+必须原样保留——它是从旧库升级到当前列名的唯一路径，删掉会导致
+老数据库升级失败（找不到列而崩溃）。这不是品牌残留。
 """
 
 import sqlalchemy as sa

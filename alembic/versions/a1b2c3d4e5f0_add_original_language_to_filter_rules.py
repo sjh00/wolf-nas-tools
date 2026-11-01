@@ -36,11 +36,7 @@ def upgrade() -> None:
         )
     # Backfill existing rows to empty string so the constraint is uniformly "no language".
     conn = op.get_bind()
-    conn.execute(
-        sa.text(
-            "UPDATE CONFIG_FILTER_RULES SET ORIGINAL_LANGUAGE = '' WHERE ORIGINAL_LANGUAGE IS NULL"
-        )
-    )
+    conn.execute(sa.text("UPDATE CONFIG_FILTER_RULES SET ORIGINAL_LANGUAGE = '' WHERE ORIGINAL_LANGUAGE IS NULL"))
 
 
 def downgrade() -> None:

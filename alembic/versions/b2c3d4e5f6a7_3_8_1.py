@@ -4,6 +4,8 @@ Revision ID: b2c3d4e5f6a7
 Revises: a3b4c5d6e7f8
 Create Date: 2026-05-18 04:00:00.000000
 
+注意：脚本中的 ONLY_NEXUS_MEDIA 是**数据库历史列名**，必须原样保留，
+否则老数据库无法沿迁移链升级。这不是品牌残留。
 """
 
 import sqlalchemy as sa

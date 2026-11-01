@@ -2,7 +2,7 @@
 WolfNas 统一异常体系
 
 层次结构：
-    NexusError (基类)
+    WolfNasError (基类)
     ├── DomainError          领域/业务逻辑异常
     │   ├── MediaError       媒体识别、刮削相关
     │   ├── BrushError       刷流任务相关
@@ -25,7 +25,7 @@ WolfNas 统一异常体系
 
 使用约定：
 - 捕获时优先捕获具体异常类型，避免裸 `except Exception`。
-- 如需统一兜底，捕获 `NexusError` 而非 `Exception`。
+- 如需统一兜底，捕获 `WolfNasError` 而非 `Exception`。
 - 异常消息应包含足够上下文，便于排查。
 """
 
@@ -34,7 +34,7 @@ from __future__ import annotations
 from app.core.error_codes import ErrorCode, default_http_status, default_message
 
 
-class NexusError(Exception):
+class WolfNasError(Exception):
     """应用根异常
 
     - errcode: 业务错误码（ErrorCode），用于前后端统一识别
@@ -84,7 +84,7 @@ class NexusError(Exception):
 # ------------------------------------------------------------------
 
 
-class DomainError(NexusError):
+class DomainError(WolfNasError):
     """领域逻辑异常"""
 
 
@@ -129,7 +129,7 @@ class SyncError(DomainError):
 # ------------------------------------------------------------------
 
 
-class RepositoryError(NexusError):
+class RepositoryError(WolfNasError):
     """数据仓储异常"""
 
 
@@ -156,7 +156,7 @@ class MigrationError(RepositoryError):
 # ------------------------------------------------------------------
 
 
-class ServiceError(NexusError):
+class ServiceError(WolfNasError):
     """服务层异常"""
 
 
@@ -189,7 +189,7 @@ class SchedulerError(ServiceError):
 # ------------------------------------------------------------------
 
 
-class InfrastructureError(NexusError):
+class InfrastructureError(WolfNasError):
     """基础设施/外部服务异常"""
 
 
@@ -264,7 +264,7 @@ class PluginHotReloadError(PluginError):
 # ------------------------------------------------------------------
 
 
-class ValidationError(NexusError):
+class ValidationError(WolfNasError):
     """输入参数校验失败"""
 
     errcode = ErrorCode.PARAM_VALIDATION_FAILED

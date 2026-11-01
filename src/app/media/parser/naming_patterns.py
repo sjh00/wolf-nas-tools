@@ -1,7 +1,7 @@
 """
 站点/字幕组命名模式库 — 规则引擎
 
-规则存放于 config/naming_patterns.yaml（可用 NEXUS_NAMING_PATTERNS 覆盖路径），
+规则存放于 config/naming_patterns.yaml（可用 WOLFNAS_NAMING_PATTERNS 覆盖路径），
 支持 mtime 热重载；单条规则编译失败仅跳过并告警，不影响整体。
 """
 
@@ -32,7 +32,13 @@ class NamingPatternLibrary:
     """有序规则匹配，先匹配先赢"""
 
     def __init__(self, path: str | Path | None = None):
-        self._path = Path(path or os.environ.get("NEXUS_NAMING_PATTERNS") or _DEFAULT_PATH)
+        # NEXUS_NAMING_PATTERNS 为旧品牌名，保留读取以兼容既有部署
+        self._path = Path(
+            path
+            or os.environ.get("WOLFNAS_NAMING_PATTERNS")
+            or os.environ.get("NEXUS_NAMING_PATTERNS")
+            or _DEFAULT_PATH
+        )
         self._rules: list[NamingRule] = []
         self._mtime = 0.0
         self._last_check = 0.0

@@ -20,7 +20,12 @@ _DEFAULT_PATH = Path(__file__).resolve().parents[4] / "config" / "edition_overri
 
 
 def _load_overrides(path: Path | None = None) -> dict:
-    p = Path(os.environ.get("NEXUS_EDITION_OVERRIDES") or (path or _DEFAULT_PATH))
+    # NEXUS_EDITION_OVERRIDES 为旧品牌名，保留读取以兼容既有部署
+    p = Path(
+        os.environ.get("WOLFNAS_EDITION_OVERRIDES")
+        or os.environ.get("NEXUS_EDITION_OVERRIDES")
+        or (path or _DEFAULT_PATH)
+    )
     try:
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except OSError:

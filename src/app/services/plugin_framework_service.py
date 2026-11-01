@@ -629,7 +629,7 @@ class PluginFrameworkService:
 
         返回 {plugin_id, name, version}；安装器已做 sha256/SAST 门禁，这里不再重复。
         """
-        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="nexus_market_")
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="wolfnas_market_")
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(zip_bytes)

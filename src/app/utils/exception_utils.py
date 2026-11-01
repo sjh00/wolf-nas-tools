@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Never
 import log
 
 if TYPE_CHECKING:
-    from app.core.exceptions import NexusError
+    from app.core.exceptions import WolfNasError
 
 
 class ExceptionUtils:
@@ -26,7 +26,7 @@ class ExceptionUtils:
         cls,
         exc: BaseException,
         *,
-        target: type["NexusError"] | None = None,
+        target: type["WolfNasError"] | None = None,
         message: str = "",
         code: str | None = None,
         details: dict | None = None,
@@ -35,7 +35,7 @@ class ExceptionUtils:
         记录异常并抛出类型化异常。
 
         :param exc:      原始异常
-        :param target:   要转换的目标 NexusError 子类
+        :param target:   要转换的目标 WolfNasError 子类
         :param message:  覆盖消息（留空则使用原始消息）
         :param code:     错误码
         :param details:  附加上下文

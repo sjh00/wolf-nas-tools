@@ -23,7 +23,7 @@ class TestDropScalarOverrides:
         assert result["database"] == {"type": "sqlite"}
 
     def test_non_model_fields_untouched(self):
-        data = {"nexus_media_config": "/tmp/x", "tz": "Asia/Shanghai"}
+        data = {"wolfnas_config": "/tmp/x", "tz": "Asia/Shanghai"}
         result = _drop_scalar_overrides(AppSettings, data)
         assert result == data
 

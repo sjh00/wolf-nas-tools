@@ -20,7 +20,7 @@ from starlette.responses import FileResponse, RedirectResponse, Response
 import log
 from app.core.constants import TMDB_IMAGE_DOMAIN
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import DomainError, NexusError, ServiceError
+from app.core.exceptions import DomainError, ServiceError, WolfNasError
 from app.core.settings import settings
 from app.db.repositories.config_repo_adapter import MediaServerRepositoryAdapter
 from app.infrastructure.image_proxy import (
@@ -111,16 +111,16 @@ def _guard_image_url(url: str) -> None:
     """SSRF 防护：仅允许 http(s)，且目标主机不得解析到内网/保留地址。"""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise NexusError("非法图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+        raise WolfNasError("非法图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
     host = (parsed.hostname or "").strip().strip("[]")
     if not host or host.lower() == "localhost":
-        raise NexusError("不允许访问的图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+        raise WolfNasError("不允许访问的图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as e:
-        raise NexusError("图片地址无法解析", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400) from e
+        raise WolfNasError("图片地址无法解析", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400) from e
     if not infos or any(_is_blocked_ip(str(info[4][0])) for info in infos):
-        raise NexusError("不允许访问的图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+        raise WolfNasError("不允许访问的图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
 
 
 async def _serve_image(
@@ -154,7 +154,7 @@ async def _serve_image(
         # 上游无此图（如媒体条目缺少对应图片）是正常的空结果，前端会走占位图。
         # 这里按 debug 记录，避免每张缺失图片刷两条 ERROR。
         log.debug(f"[ImageProxy]上游无此图（返回空或过小）: {image_url}")
-        raise NexusError(
+        raise WolfNasError(
             "获取图片失败",
             errcode=ErrorCode.IMAGE_FETCH_FAILED,
             http_status=404,
@@ -271,7 +271,7 @@ async def local_poster(path: str):
     """返回媒体目录内已裁剪的海报，仅允许安全的图片文件名."""
     decoded = _safe_local_poster(path)
     if not decoded:
-        raise NexusError("图片不存在", http_status=404)
+        raise WolfNasError("图片不存在", http_status=404)
     return FileResponse(decoded)
 
 
@@ -316,7 +316,7 @@ async def proxy_blur_image(url: str, radius: int = 20):
     """通用图片模糊代理，供插件实现 SFW 展示；不包含任何内容画像判断."""
     source, local_poster = _resolve_blur_source(url)
     if not source and not local_poster:
-        raise NexusError("非法图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
+        raise WolfNasError("非法图片地址", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=400)
     try:
         radius = max(1, min(int(radius or 20), 60))
     except (TypeError, ValueError):
@@ -334,7 +334,7 @@ async def proxy_blur_image(url: str, radius: int = 20):
         _guard_image_url(source)
         data = await download_image(source, referer=image_referer_registry.resolve(source))
     if not data:
-        raise NexusError("获取图片失败", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
+        raise WolfNasError("获取图片失败", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
 
     def _blur(payload: bytes) -> bytes:
         image = Image.open(io.BytesIO(payload)).convert("RGB")
@@ -359,7 +359,7 @@ def proxy_image_redirect(request: Request, url: str | None = None):
     2. /img?url=https://... -> 转换为代理路径后重定向
     """
     if not url:
-        raise NexusError("参数错误", errcode=ErrorCode.PARAM_VALIDATION_FAILED, http_status=400)
+        raise WolfNasError("参数错误", errcode=ErrorCode.PARAM_VALIDATION_FAILED, http_status=400)
 
     # 如果 url 是本地代理路径（以 /img/ 开头），重定向到新路由
     if url.startswith("/img/"):
@@ -377,7 +377,7 @@ def proxy_image_redirect(request: Request, url: str | None = None):
         return RedirectResponse(url=proxy_url, status_code=307)
 
     # 兜底：无法生成代理路径时，直接代理
-    raise NexusError("无法处理该图片 URL", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
+    raise WolfNasError("无法处理该图片 URL", errcode=ErrorCode.IMAGE_FETCH_FAILED, http_status=404)
 
 
 @router.get("/favicon/external/{encoded_url:path}", summary="代理外部 favicon URL")

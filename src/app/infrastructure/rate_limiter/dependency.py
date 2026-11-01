@@ -3,7 +3,7 @@
 from fastapi import Request
 
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import NexusError
+from app.core.exceptions import WolfNasError
 from app.infrastructure.rate_limiter import RateLimitEngine
 
 
@@ -40,7 +40,7 @@ class RateLimitDependency:
         key = f"rate_limit_dep:{client_ip}:{route}"
 
         if not RateLimitDependency._engine.try_acquire(key, rate=self.rate):
-            raise NexusError(
+            raise WolfNasError(
                 "请求过于频繁，请稍后再试",
                 errcode=ErrorCode.RATE_LIMITED,
                 http_status=429,

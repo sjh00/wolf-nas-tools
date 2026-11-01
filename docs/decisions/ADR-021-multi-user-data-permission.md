@@ -10,7 +10,7 @@ Accepted（已实施，见文末「实施记录」）
 
 ## Context
 
-Nexus Media 已具备基于 RBAC 的**功能权限**体系（`require_permission("x:view|manage")`，见 `src/api/deps.py:166`），但所有业务数据全局共享，属于"单实例多账号无隔离"模型：
+WolfNas 已具备基于 RBAC 的**功能权限**体系（`require_permission("x:view|manage")`，见 `src/api/deps.py:166`），但所有业务数据全局共享，属于"单实例多账号无隔离"模型：
 
 - **站点**：站点启用状态（`INDEXERSITECONFIG`）与凭据（`CONFIG_SITE`）全局共享，任何用户可搜索全部启用站点。搜索站点过滤在 `IndexerService._filter_indexers()`（`src/app/indexer/indexer.py:273`）无任何用户维度。
 - **订阅**：`SUBSCRIBE_MOVIES` / `SUBSCRIBE_TVS` / `SUBSCRIBE_HISTORY` / `CONFIG_USER_RSS` 均无 `USER_ID`，A 用户可见可改 B 用户的订阅。

@@ -117,13 +117,13 @@ class TestRedisCacheAdapterScopedClear:
 
             adapter.set("k1", "v1")
             store.set("cache:other:k2", "v2")  # 另一个缓存的键
-            store.set("nexus_media:message_queue", "stream")  # 消息队列等公共数据
+            store.set("wolfnas:message_queue", "stream")  # 消息队列等公共数据
 
             adapter.clear()
 
             assert adapter.get("k1") is None
             assert store.exists("cache:other:k2")  # 其他命名空间不受影响
-            assert store.exists("nexus_media:message_queue")  # 公共数据不受影响
+            assert store.exists("wolfnas:message_queue")  # 公共数据不受影响
 
     def test_keys_are_namespaced(self):
         from app.infrastructure.cache_system.adapters import RedisCacheAdapter

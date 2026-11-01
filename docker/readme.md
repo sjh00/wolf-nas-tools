@@ -5,7 +5,7 @@
 - 基于 Debian（`python:3.14-slim-trixie`）
 - 支持 amd64 / arm64 架构
 - 内嵌 nginx 反代，后端容器统一 **8080** 端口对外（内部服务监听 3000）
-- 非 root 用户运行（nexus:nexus，UID 911，可用 PUID/PGID 覆盖）
+- 非 root 用户运行（wolfnas:wolfnas，UID 911，可用 PUID/PGID 覆盖）
 - s6-overlay 进程管理，支持优雅退出
 - 数据库迁移在容器启动时自动执行（`alembic upgrade head`，幂等，无需独立 migration 容器）
 - ADR-025 之前的 TMDB/DB:/BG: 历史数据会在启动时自动补齐 anchor/identity；完成标记在 data/.migrations，重复启动不会重复扫全表
@@ -80,7 +80,7 @@ docker run -d \
   -e PUID=0 \
   -e PGID=0 \
   -e UMASK=000 \
-  -e NEXUS_PORT=3000 \
+  -e WOLFNAS_PORT=3000 \
   -e WOLFNAS_DATA=/data \
   sjh00/wolf-nas:latest
 ```
@@ -102,7 +102,7 @@ services:
       - PUID=0
       - PGID=0
       - UMASK=000
-      - NEXUS_PORT=3000
+      - WOLFNAS_PORT=3000
       - WOLFNAS_DATA=/data
     restart: always
     hostname: wolfnas
@@ -185,7 +185,7 @@ compose 中 Redis 服务已配置（无密码、使用 `./data/redis_data` 持�
 | `PUID` | 0 | 运行用户 UID |
 | `PGID` | 0 | 运行用户 GID |
 | `UMASK` | 000 | 文件权限掩码 |
-| `NEXUS_PORT` | 3000 | 容器内部后端服务端口（内嵌 nginx 每次启动按该值自动渲染 upstream，修改后需重建镜像/容器生效） |
+| `WOLFNAS_PORT` | 3000 | 容器内部后端服务端口（内嵌 nginx 每次启动按该值自动渲染 upstream，修改后需重建镜像/容器生效） |
 | `SKIP_MIGRATION` | false | 设为 `true` 跳过启动时数据库迁移（默认自动执行） |
 | `TZ` | Asia/Shanghai | 时区 |
 | `WOLFNAS_DATA` | /data | 数据目录（config.yaml、数据库、插件数据） |

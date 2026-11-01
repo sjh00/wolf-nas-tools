@@ -251,7 +251,7 @@
 ### 修复
 
 - 站点配置在线更新后不生效/新站点不出现：
-  - `SiteEngine` 优先加载“在线更新的用户配置目录”（`config_path/sites`，需存在版本标记且非 `builtin` 副本），`NEXUS_SITES_DIR` 仍最优先；此前只读内置目录，导致 `/data/sites` 的新站点被忽略
+  - `SiteEngine` 优先加载“在线更新的用户配置目录”（`config_path/sites`，需存在版本标记且非 `builtin` 副本），`WOLFNAS_SITES_DIR` 仍最优先；此前只读内置目录，导致 `/data/sites` 的新站点被忽略
   - 新增 `SiteEngine.reload()`；`POST /api/system/site-config/update` 成功后自动重载引擎并刷新 `SiteCache`，**无需重启**即可在「添加站点」定义列表看到新站点
 
 ## v4.26.0 (2026-10-17)
@@ -867,7 +867,7 @@
 
 ### 优化
 
-- 容器内嵌 nginx 上游端口随 `NEXUS_PORT` 每次启动自动渲染，修改端口后无需改 nginx 配置
+- 容器内嵌 nginx 上游端口随 `WOLFNAS_PORT` 每次启动自动渲染，修改端口后无需改 nginx 配置
 
 ## v4.19.0 (2026-09-08)
 
@@ -965,7 +965,7 @@
 - 站点抓取全面支持"直连优先 → 失败/反爬挑战自动 nexus-chrome 降级"：种子详情、用户信息、HTML 搜索统一口径；直连非 2xx（403/429）也视为失败触发降级；仅对已开启浏览器自动化的站点生效
 - 内置索引器 HTML 站点搜索同步"直连优先 → chrome 降级"（chrome 开启时）
 - 已下载列表接口开放 page_size（默认 30，上限 200）
-- 索引器单站搜索自适应超时支持环境变量调整（`NEXUS_MEDIA_INDEXER_TIMEOUT` 上限默认 45s、`NEXUS_MEDIA_INDEXER_TIMEOUT_MIN` 下限默认 15s）
+- 索引器单站搜索自适应超时支持环境变量调整（`WOLFNAS_INDEXER_TIMEOUT` 上限默认 45s、`WOLFNAS_INDEXER_TIMEOUT_MIN` 下限默认 15s）
 
 ### 修复
 - nexus-chrome 会话清理真正生效：`ChromeTransport.close()` 长期被 `httpx2.BaseTransport.close()`（空实现）遮蔽，非持久会话永不删除导致会话/标签页堆积；现降级请求完成后即关闭会话，用完即删
@@ -1405,7 +1405,7 @@
 - 签到：新增 FRDS（朋友）专属签到配置，访问首页 `index.php` 即完成签到（该站无 `attendance.php`），修复误走通用 fallback 的 `attendance.php` 导致 404「请检查站点连通性」
 
 ### 文档
-- 修正安装文档端口（前端 8080 / 后端 3000:8080）、Redis 配置（移除 redis.conf 挂载，改为实际命令）、数据库配置与迁移机制、目录挂载（NEXUS_MEDIA_DATA、/media）
+- 修正安装文档端口（前端 8080 / 后端 3000:8080）、Redis 配置（移除 redis.conf 挂载，改为实际命令）、数据库配置与迁移机制、目录挂载（WOLFNAS_DATA、/media）
 - 新增开箱即用的简单 docker-compose 示例（前后端+Redis+MySQL 推荐版 / 仅前后端 SQLite 体验版）
 - 同步修正 docker/readme.md、development.md、notifications.md、faq.md 中的端口引用
 
@@ -1689,7 +1689,7 @@
 ## v4.3.2 (2026-07-18)
 
 ### 新增
-- 下载器设置支持浏览选择目录：新增 `/download/downloaders/browse_dirs` 端点，通过下载器 API 读取默认保存路径、分类路径及已有种子保存路径；下载保存目录从下载器浏览选择，Nexus Media 访问目录支持本地/存储后端浏览选择
+- 下载器设置支持浏览选择目录：新增 `/download/downloaders/browse_dirs` 端点，通过下载器 API 读取默认保存路径、分类路径及已有种子保存路径；下载保存目录从下载器浏览选择，WolfNas 访问目录支持本地/存储后端浏览选择
 - 下载器客户端新增 `list_remote_dirs` 能力：qBittorrent（默认保存路径 + 分类路径 + 种子路径）、Transmission（会话目录 + 种子路径）、Aria2（全局下载目录）
 
 ### 修复
@@ -1733,7 +1733,7 @@
 ### 优化
 - 统一浏览器自动化传输：`HttpClient` 在 `is_browser` 模式下直接通过 `BrowserModeConfig` 访问浏览器，上层无需额外分支
 - 优化自动签到日志输出，包含站点解析、handler 选择、失败详情和重试名称
-- Docker 构建优化：使用 `uv sync --frozen --no-cache --no-install-package nexus-media` 避免构建挂起
+- Docker 构建优化：使用 `uv sync --frozen --no-cache --no-install-package wolfnas` 避免构建挂起
 - 容器服务命名规范化：`nexus-media-chrome` → `nexus-chrome`、`nexus-media-ocr` → `nexus-verify`
 - 实验室设置页布局优化：服务开关与地址输入成对展示，禁用态随开关联动
 
@@ -1756,7 +1756,7 @@
 ### 优化
 - 统一浏览器自动化传输：`HttpClient` 在 `is_browser` 模式下直接通过 `BrowserModeConfig` 访问浏览器，上层无需额外分支
 - 优化自动签到日志输出，包含站点解析、handler 选择、失败详情和重试名称
-- Docker 构建优化：使用 `uv sync --frozen --no-cache --no-install-package nexus-media` 避免构建挂起
+- Docker 构建优化：使用 `uv sync --frozen --no-cache --no-install-package wolfnas` 避免构建挂起
 - 容器服务命名规范化：`nexus-media-chrome` → `nexus-chrome`、`nexus-media-ocr` → `nexus-verify`
 - 实验室设置页布局优化：服务开关与地址输入成对展示，禁用态随开关联动
 
@@ -1986,7 +1986,7 @@
 - 修复 `ConfigRepository.execute` 暴露原始 SQL 执行接口
 - 修复 TransferPipeline 刮削使用下载源路径而非目标路径
 - 修复 DownloadMonitor 预热与正常检查使用不同过滤器
-- 修复下载器标签排序硬编码 "NEXUS_MEDIA" 而未使用 PT_TAG 常量
+- 修复下载器标签排序硬编码 "WOLFNAS" 而未使用 PT_TAG 常量
 - 修复 Scraper/FileTransferService `settings.get()` 链式调用无 None 保护导致 AttributeError
 - 修复 cleanup_service 解析 SEASON_EPISODE 时 `int("01E05")` 崩溃
 - 修复 StorageUsage 组件 usedPercent 类型为字符串触发 Vue prop 警告
@@ -2166,7 +2166,7 @@
 - 转移事件处理器 TypeError：`DownloadCompletedPayload(**event.payload)` 对 dataclass 实例用 `**` 解包崩溃，事件总线静默吞异常导致下载完成→转移链路从未触发
 - 下载监控多工厂实例缓存不同步：`DownloadCore`/`DownloaderCore`/`DownloadMonitor` 各持有独立 `DownloadClientFactory` 实例，CRUD 后只刷新前两个，`DownloadMonitor` 工厂永不过期
 - 下载器 `download_dir` 不生效：`DOWNLOAD_DIR` DB 列为空时直接取空值，忽略 `config.download_dir` JSON 中的实际配置，导致 `get_download_dir_info` 匹配失败、`match_path` 全部跳过
-- `only_nexus_media` 标签隔离：pipeline 未将 `PT_TAG` 注入种子标签，监控按 `NEXUS_MEDIA` 过滤时找不到已完成种子
+- `only_wolf_nas` 标签隔离：pipeline 未将 `PT_TAG` 注入种子标签，监控按 `WOLFNAS` 过滤时找不到已完成种子
 - 磁力链接 `save_path` 始终为空：`_stage_post` 对 magnet 链接显式设 `save_dir=None`
 - 图片代理 `/img?url=` 斜杠重定向死循环：前端 nginx 301 加斜杠，Starlette 307 去斜杠互斥，双路由注册消除重定向
 - 订阅电影/电视剧 INSERT 失败：`KEYWORD`/`FILTER_ORDER`/`FILTER_RESTYPE` 等可选列为 `NOT NULL` 但传 `None`，仓库层统一空值默认化
@@ -2324,7 +2324,7 @@
 - **settings.save 合并**：修复保存时只保留 database 节点导致其他配置（TMDB key 等）丢失
 - **配置保存触发重载**：/config/update 自动调用 ConfigReloader.reload()
 - **NOGROUP 根治**：RedisMessageQueue dispatch 循环幂等创建消费组
-- **static 目录持久化**：跟随 NEXUS_MEDIA_DATA 落到 /data/static
+- **static 目录持久化**：跟随 WOLFNAS_DATA 落到 /data/static
 - **过滤规则初始化**：首次启动从 init_filter.sql 导入默认规则，INSERT OR IGNORE 防覆盖
 - **TMDB 异常降级**：get_tmdb_new_movies/tvs 捕获异常返回 []，不抛 500
 
@@ -2363,10 +2363,10 @@
 **4.0.0 是 Nas-Tools 的全新重构版本，涵盖后端架构、前端框架、部署运行和代码质量的全面升级。**
 
 ### 架构重构
-- 项目重命名为 **Nexus Media**，全面替换旧品牌标识
+- 项目重命名为 **WolfNas**，全面替换旧品牌标识
 - 项目结构标准化为 `src/` layout，统一 `get_project_root()` 消除硬编码路径
 - 架构分层重构：消除 `helper/` 层、解除循环依赖、基础设施统一归位
-- 全面重构 DI 容器，引入 `ConfigReloader` 集中热重载，消灭 `NEXUS_MEDIA_CONFIG` 硬性依赖
+- 全面重构 DI 容器，引入 `ConfigReloader` 集中热重载，消灭 `WOLFNAS_CONFIG` 硬性依赖
 - 统一 Repository 适配层，移除 `MediaDb` 直接数据库操作，拆分 `engine/session/transaction` 模块
 - 拆分超大服务文件：`filetransfer_service.py` / `message.py` / `scheduler_core.py` / `rss_service.py`
 - 消息通知、下载器、索引器、媒体服务器模块重构为插件化扩展架构

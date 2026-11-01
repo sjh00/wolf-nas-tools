@@ -12,7 +12,7 @@ class TestEnvNotWrittenBack:
         config_file.write_text("database:\n  type: mysql\n  host: db.example.com\n", encoding="utf-8")
 
         env = dict(os.environ)
-        env["NEXUS_MEDIA_CONFIG"] = str(config_file)
+        env["WOLFNAS_CONFIG"] = str(config_file)
         env["DATABASE__TYPE"] = "sqlite"
         env["DATABASE__SQLITE_PATH"] = str(tmp_path / "x.db")
 

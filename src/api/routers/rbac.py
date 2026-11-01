@@ -15,11 +15,11 @@ from api.deps import (
 )
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import (
-    NexusError,
     PermissionDenied,
     ResourceAlreadyExistsError,
     ResourceNotFoundError,
     ServiceError,
+    WolfNasError,
 )
 from app.core.settings import settings
 from app.schemas.auth import SUPERADMIN_ROLE_CODE, UserContext
@@ -360,7 +360,7 @@ async def get_avatar(filename: str):
     avatar_dir = Path(settings.data_path) / "static" / "avatars"
     file_path = avatar_dir / filename
     if not file_path.exists():
-        raise NexusError("头像不存在", errcode=ErrorCode.RESOURCE_NOT_FOUND, http_status=404)
+        raise WolfNasError("头像不存在", errcode=ErrorCode.RESOURCE_NOT_FOUND, http_status=404)
     return FileResponse(file_path)
 
 

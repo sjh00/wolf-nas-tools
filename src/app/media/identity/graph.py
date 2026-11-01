@@ -48,7 +48,11 @@ class EditionGraph:
         if self._overrides_loaded:
             return
         self._overrides_loaded = True
-        path = Path(os.environ.get("NEXUS_EDITION_OVERRIDES") or _OVERRIDES_PATH)
+        path = Path(
+            os.environ.get("WOLFNAS_EDITION_OVERRIDES")
+            or os.environ.get("NEXUS_EDITION_OVERRIDES")  # 旧品牌名兼容
+            or _OVERRIDES_PATH
+        )
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except OSError:

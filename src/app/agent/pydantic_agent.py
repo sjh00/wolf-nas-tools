@@ -1,7 +1,7 @@
 """基于 pydantic-ai 的多步工具对话引擎（对齐 ADR-020：复用 pydantic-ai 原生多步工具调用）
 
 将项目自研 ChatAgent 的循环引擎替换为 pydantic-ai，同时保留项目能力：
-- 模型层：pydantic-ai `NexusModel` 适配器，内部复用项目 AgentService 的 provider 链/故障转移/缓存
+- 模型层：pydantic-ai `WolfNasModel` 适配器，内部复用项目 AgentService 的 provider 链/故障转移/缓存
 - 工具层：ToolExecutor 工具包装为 pydantic-ai Tool（平铺 JSON schema），RBAC/危险确认/幂等在工具内处理
 - 会话/记忆：ConversationStore 持久化 user/assistant 消息与工具轨迹
 - checkpoint：每次运行把 pydantic-ai 消息历史持久化，支持中断后续跑
@@ -85,7 +85,7 @@ def _part_content(content: Any) -> Any:
     return str(content or "")
 
 
-class NexusModel(Model):
+class WolfNasModel(Model):
     """pydantic-ai Model 适配器 — 内部调用项目 AgentService（复用 provider 故障转移链）"""
 
     def __init__(
@@ -110,11 +110,11 @@ class NexusModel(Model):
 
     @property
     def model_name(self) -> str:
-        return "nexus-media"
+        return "wolfnas"
 
     @property
     def system(self) -> str:
-        return "nexus-media"
+        return "wolfnas"
 
     async def request(
         self,
@@ -372,7 +372,7 @@ class PydanticChatAgent:
         if not get_provider():
             raise RuntimeError("Agent Provider 未配置")
         tools_schema = self._tool_executor.list_tools()
-        model = NexusModel(
+        model = WolfNasModel(
             self._svc,
             tools_schema,
             on_token=on_token,

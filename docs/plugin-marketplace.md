@@ -472,7 +472,7 @@ idle
 - [ ] **静态扫描实现归属**：SAST 规则清单仓库化（可随版本发布增删规则）、误报“人工豁免”流程、audit 报告 JSON Schema（前端直接渲染）
 - [ ] **插件状态机**：`available/installing/isolated/enabled/disabled/error` 与任务队列（防重复安装、更新排队）、多源同步并发锁与节流
 - [ ] **多源同名策略**：同一插件出现在多个源时展示/更新优先级规则（固定“先安装源为主”，允许切换来源需卸载重装）
-- [ ] **官方市场/审核运营**：第三方上架门槛（id 命名保留前缀如 `nexus_*`、license/icon/screenshot 校验）、恶意举报处理流、`verified` 授予标准
+- [ ] **官方市场/审核运营**：第三方上架门槛（id 命名保留前缀如 `wolfnas_*`、license/icon/screenshot 校验）、恶意举报处理流、`verified` 授予标准
 - [ ] **本地插件接入版本跟踪**：本地 zip 安装后可选择“关联到某市场源”从而获得更新
 - [ ] **UI 细节定稿**：见 §8（路由/组件树/状态机/视觉/缓存均已细化），排序仅“最新/最近更新”，不引入安装量统计与上报
 - [ ] **双端与 App 版本联动**：插件含前端资源时与主前端版本兼容声明；提示“升级 App 才能更新该插件”
@@ -485,4 +485,4 @@ idle
 2. 安全：签名校验 + SAST 规则引擎 + audit 报告 API + 黑名单/吊销
 3. 更新：compare/update/rollback/versions + 定时同步 + 通知
 4. 前端：市场页（浏览/详情/安装）+ “我的插件”分组 + 源管理抽屉 + 预检报告渲染
-5. 运营：示例源 + CLI `nexus-market build` + 官方源发布与 `verified` 流程
+5. 运营：示例源 + CLI `wolfnas-market build` + 官方源发布与 `verified` 流程

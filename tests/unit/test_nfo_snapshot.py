@@ -226,7 +226,7 @@ def test_movie_nfo_appends_real_streamdetails(tmp_path):
     import shutil
     from pathlib import Path
 
-    source = Path("/tmp/nexus_e2e2/av-library/ABP-566/ABP-566-流出-cd1.mp4")
+    source = Path("/tmp/wolfnas_e2e2/av-library/ABP-566/ABP-566-流出-cd1.mp4")
     if not source.exists():
         pytest.skip("缺少真实媒体样本")
     shutil.copy2(source, tmp_path / "sample.mp4")

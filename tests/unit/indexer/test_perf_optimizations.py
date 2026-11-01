@@ -83,24 +83,24 @@ class TestSiteLatencyTracker:
 
 class TestSiteTimeoutEnv:
     def test_missing_env_uses_default(self, monkeypatch):
-        monkeypatch.delenv("NEXUS_MEDIA_INDEXER_TIMEOUT", raising=False)
-        assert _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT", 45.0) == 45.0
+        monkeypatch.delenv("WOLFNAS_INDEXER_TIMEOUT", raising=False)
+        assert _env_float("WOLFNAS_INDEXER_TIMEOUT", 45.0) == 45.0
 
     def test_invalid_env_falls_back(self, monkeypatch):
-        monkeypatch.setenv("NEXUS_MEDIA_INDEXER_TIMEOUT", "abc")
-        assert _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT", 45.0) == 45.0
+        monkeypatch.setenv("WOLFNAS_INDEXER_TIMEOUT", "abc")
+        assert _env_float("WOLFNAS_INDEXER_TIMEOUT", 45.0) == 45.0
 
     def test_empty_env_falls_back(self, monkeypatch):
-        monkeypatch.setenv("NEXUS_MEDIA_INDEXER_TIMEOUT", "")
-        assert _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT", 45.0) == 45.0
+        monkeypatch.setenv("WOLFNAS_INDEXER_TIMEOUT", "")
+        assert _env_float("WOLFNAS_INDEXER_TIMEOUT", 45.0) == 45.0
 
     def test_non_positive_env_falls_back(self, monkeypatch):
-        monkeypatch.setenv("NEXUS_MEDIA_INDEXER_TIMEOUT", "0")
-        assert _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT", 45.0) == 45.0
+        monkeypatch.setenv("WOLFNAS_INDEXER_TIMEOUT", "0")
+        assert _env_float("WOLFNAS_INDEXER_TIMEOUT", 45.0) == 45.0
 
     def test_valid_env_parsed(self, monkeypatch):
-        monkeypatch.setenv("NEXUS_MEDIA_INDEXER_TIMEOUT", "60")
-        assert _env_float("NEXUS_MEDIA_INDEXER_TIMEOUT", 45.0) == 60.0
+        monkeypatch.setenv("WOLFNAS_INDEXER_TIMEOUT", "60")
+        assert _env_float("WOLFNAS_INDEXER_TIMEOUT", 45.0) == 60.0
 
     def test_min_above_max_aligns_to_max(self):
         assert _clamp_timeouts(60.0, 45.0) == (45.0, 45.0)

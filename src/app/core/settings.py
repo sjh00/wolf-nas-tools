@@ -56,6 +56,7 @@ _PROJECT_ROOT = get_project_root()
 _DOTENV_BOOTSTRAP_KEYS = (
     "WOLFNAS_CONFIG",
     "WOLFNAS_DATA",
+    # 旧品牌名（NEXUS_*）：仅用于兼容既有 .env，新部署请使用 WOLFNAS_*
     "NEXUS_MEDIA_CONFIG",
     "NEXUS_MEDIA_DATA",
     "TZ",
@@ -92,7 +93,7 @@ def _apply_bootstrap_env(values: dict[str, str], model_fields: dict[str, Any] | 
     """注入启动引导键与非配置字段键到 os.environ；已知配置字段交给 pydantic dotenv 源.
 
     - 启动引导键：需在 AppSettings 实例化前读取（配置路径/数据目录/时区/日志格式/SQLite 路径）
-    - 非配置字段键：代码用 os.getenv 直接读取但模型里没有对应字段（如 NEXUS_SITES_DIR）
+    - 非配置字段键：代码用 os.getenv 直接读取但模型里没有对应字段（如 WOLFNAS_SITES_DIR）
     """
     known = {name.upper() for name in (model_fields or {})}
     for key, value in values.items():
@@ -330,7 +331,7 @@ class DatabaseConfig(BaseModel):
     port: int = 0
     username: str = ""
     password: str = ""
-    database: str = "nexus_media"
+    database: str = "wolfnas"
 
 
 class RedisConfig(BaseModel):

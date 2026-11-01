@@ -9,7 +9,7 @@
 
 | 图元素 | 依据 |
 |---|---|
-| web → FastAPI | 前端 `nexus-media-web` 通过 REST 调 `/api/*`；后端入口 `api/main.py`，路由注册于 `api/routers/`（download/media/site/chat 等） |
+| web → FastAPI | 前端 `wolfnas-web` 通过 REST 调 `/api/*`；后端入口 `api/main.py`，路由注册于 `api/routers/`（download/media/site/chat 等） |
 | 安全层 | `api/routers/rbac.py`、`api/routers/auth.py`、`api/routers/apikey.py`；依赖注入鉴权在 `api/deps.py` |
 | DI 装配 | `app/di/builders/*`（facades/services/infrastructure/agent/context/coordinators）；无 DI 框架，`api/main.py` 通过 builders 装配 |
 | API→下载/索引/媒体 | `api/routers/download.py`、`api/routers/media.py`、`api/routers/sync.py`、`api/routers/subscription.py` 调用 `app/services/*` 与 `app/indexer/indexer.py` |
