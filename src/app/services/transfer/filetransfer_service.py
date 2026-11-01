@@ -1691,15 +1691,44 @@ class FileTransferService:
         except OSError:
             return 0
 
-    def _movie_duplicate_target(self, media, file_item: str, dst_backend=None) -> str:
-        """同一部电影是否已入库 —— 按 TMDB 身份判断，不依赖本次标题生成的路径.
+    @staticmethod
+    def _is_single_file_media(media) -> bool:
+        """该媒体是否为「单文件条目」（电影 / 动画剧场版等无集号内容）.
+
+        剧场版/动画电影 type 是 ANIME 且没有集号，既不走电影分支、也不满足
+        剧集分支的「有季有集」条件，此前两侧去重都不覆盖，同样会重复入库。
+        """
+        if media is None:
+            return False
+        if getattr(media, "type", None) == MediaType.MOVIE:
+            return True
+        getter = getattr(media, "get_episode_list", None)
+        try:
+            episodes = getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            episodes = None
+        if episodes:
+            return False
+        return getattr(media, "begin_episode", None) is None
+
+    @staticmethod
+    def _is_single_file_row(row) -> bool:
+        """转移历史记录是否为单文件条目（SEASON_EPISODE 不含集号）.
+
+        多集作品的记录形如 S01E01；单文件条目的记录是 ''（电影）或 'S01'（动画）。
+        只与同为单文件的记录比对，避免把「同剧其他集」误判成本条目的重复。
+        """
+        return "E" not in str(getattr(row, "season_episode", "") or "").upper()
+
+    def _identity_duplicate_target(self, media, file_item: str, dst_backend=None) -> str:
+        """该单文件条目是否已入库 —— 按 TMDB 身份判断，不依赖本次标题生成的路径.
 
         标题会随 TMDB 译名变化（社区改译名/被灌入广告）而漂移，路径比对会把「同一部片」
         判成「不存在」而重复转移。这里改为按 tmdb_id 查已入库版本，并用两个内容信号
         确认是同一份内容，避免误杀真正的多版本：
 
         1. 已入库文件与本次源文件大小完全一致 → 同一份文件被重复处理；
-        2. 规格签名一致（分辨率/版本/编码/音轨，不含标题）→ 仅标题不同的同一版本。
+        2. 规格签名一致（分辨率+版本标记，不含标题）→ 仅标题不同的同一版本。
 
         规格不同（如已入库 1080p、本次 2160p）视为多版本共存，返回空串放行。
         """
@@ -1709,11 +1738,13 @@ class FileTransferService:
         try:
             history = self._history.get_transfer_info_by(tmdbid=tmdb_id) or []
         except Exception as e:  # noqa: BLE001
-            log.debug(f"[Rmt]电影身份去重查询失败 tmdb={tmdb_id}: {e}")
+            log.debug(f"[Rmt]身份去重查询失败 tmdb={tmdb_id}: {e}")
             return ""
 
         existing: list[tuple[Any, str]] = []
         for row in history:
+            if not self._is_single_file_row(row):
+                continue
             if not self._history_dest_exists(row, dst_backend):
                 continue
             full = os.path.join(str(getattr(row, "dest_path", "") or ""), str(getattr(row, "dest_filename", "") or ""))
@@ -1800,13 +1831,13 @@ class FileTransferService:
                     os.path.dirname(transferred_path),
                 )
 
-        # 电影身份级去重：按 TMDB 身份查已入库版本。
-        # 剧集侧已有同类判断（tmdbid+季+集），电影此前只有路径比对——
+        # 单文件条目（电影 / 动画剧场版）身份级去重：按 TMDB 身份查已入库版本。
+        # 剧集侧已有同类判断（tmdbid+季+集），单文件条目此前只有路径比对——
         # 标题一旦漂移（TMDB 译名被改/被灌广告）目标路径就变，同一部片会被重复转移。
-        if media.type == MediaType.MOVIE and not udf_flag:
-            dup_path = self._movie_duplicate_target(media, file_item, dst_backend)
+        if not udf_flag and self._is_single_file_media(media):
+            dup_path = self._identity_duplicate_target(media, file_item, dst_backend)
             if dup_path:
-                log.warn(f"[Rmt]电影已入库（TMDB={media.tmdb_id}），跳过重复转移：{file_item} -> {dup_path}")
+                log.warn(f"[Rmt]单文件条目已入库（TMDB={media.tmdb_id}），跳过重复转移：{file_item} -> {dup_path}")
                 self._history.insert_transfer_blacklist(file_item)
                 return (
                     0,

@@ -1,12 +1,13 @@
-"""回归测试：电影按 TMDB 身份去重，杜绝「标题漂移导致同一部片重复入库」。
+"""回归测试：单文件条目按 TMDB 身份去重，杜绝「标题漂移导致同一部片重复入库」。
 
 真实故障：TMDB 社区译名被灌入广告（如「某片网：4488569.com 独行月球」），
 刮削后目录名随之变化——`独行月球 (2022)/` 变成 `淫片网… (2022)/`。
 转移侧此前只按「标题生成的目标路径」判存在，路径一变就判为不存在，
 于是同一部片被再次转移，媒体库里出现两份。
 
-修复：转移前按 tmdb_id 查已入库版本，并用「文件大小一致」或「分辨率+版本标记一致」
-确认是同一份内容；规格不同（1080p vs 2160p）仍按多版本放行。
+修复：转移前按 tmdb_id 查已入库版本，并用「文件大小一致」或
+「分辨率+版本标记一致」确认是同一份内容；规格不同（1080p vs 2160p）按多版本放行。
+覆盖范围含电影与动画剧场版（ANIME 且无集号）。
 """
 
 import os
@@ -33,8 +34,33 @@ def _media(pix="2160p", effect="", tmdb_id=801803, title="独行月球") -> Medi
     )
 
 
-def _row(dest_path: str, dest_filename: str, source_path: str = "/src/original.mkv"):
-    """构造历史记录替身（字段名与 adapter 暴露一致，均为小写）."""
+def _anime_movie(pix="1080p", tmdb_id=456, title="你的名字") -> MediaInfo:
+    """动画剧场版：type=ANIME、无集号。"""
+    return MediaInfo(
+        type=MediaType.ANIME,
+        tmdb_id=tmdb_id,
+        title=title,
+        year="2016",
+        resource_pix=pix,
+    )
+
+
+def _anime_episode(pix="1080p", tmdb_id=456, title="某番剧", episode=3) -> MediaInfo:
+    """普通动画剧集：type=ANIME、有集号。"""
+    return MediaInfo(
+        type=MediaType.ANIME,
+        tmdb_id=tmdb_id,
+        title=title,
+        year="2020",
+        resource_pix=pix,
+        begin_season=1,
+        begin_episode=episode,
+        end_episode=episode,
+    )
+
+
+def _row(dest_path: str, dest_filename: str, source_path: str = "/src/original.mkv", season_episode: str = ""):
+    """构造转移历史实体替身（字段名与 TransferHistoryEntity 一致，均为小写）。"""
 
     class _Row:
         pass
@@ -43,24 +69,29 @@ def _row(dest_path: str, dest_filename: str, source_path: str = "/src/original.m
     row.dest_path = dest_path
     row.dest_filename = dest_filename
     row.source_path = source_path
+    row.season_episode = season_episode
     return row
 
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    """最小可用服务：只装配去重所需的 history/existence。"""
+    """最小可用服务：只装配去重所需的 history。"""
     svc = FileTransferService.__new__(FileTransferService)
 
     class _History:
         def __init__(self):
             self.by_tmdb = []
             self.by_source = None
+            self.blacklisted = []
 
         def get_transfer_info_by(self, tmdbid, season=None, season_episode=None):
             return self.by_tmdb
 
         def get_by_source(self, source_full_path):
             return self.by_source
+
+        def insert_transfer_blacklist(self, path):
+            self.blacklisted.append(path)
 
     svc._history = _History()
     svc._existence = None
@@ -92,6 +123,26 @@ class TestSpecSignature:
         assert _spec_signature_from_filename("x") == ""
 
 
+class TestSingleFileClassification:
+    def test_movie_is_single_file(self, service):
+        assert service._is_single_file_media(_media())
+
+    def test_anime_movie_is_single_file(self, service):
+        """动画剧场版无集号，必须纳入身份去重"""
+        assert service._is_single_file_media(_anime_movie())
+
+    def test_anime_episode_is_not_single_file(self, service):
+        """普通剧集走 tmdbid+季+集 的去重分支，不能被当成单文件条目"""
+        assert not service._is_single_file_media(_anime_episode())
+
+    def test_row_without_episode_is_single_file(self, service):
+        assert service._is_single_file_row(_row("/lib", "a.mkv", season_episode=""))
+        assert service._is_single_file_row(_row("/lib", "a.mkv", season_episode="S01"))
+
+    def test_row_with_episode_is_not_single_file(self, service):
+        assert not service._is_single_file_row(_row("/lib", "a.mkv", season_episode="S01E03"))
+
+
 class TestMovieDuplicateTarget:
     def test_title_drift_same_spec_is_duplicate(self, service, tmp_path):
         """标题漂移 + 同分辨率 → 判重复（大小不同，走规格判定）"""
@@ -100,7 +151,7 @@ class TestMovieDuplicateTarget:
         service._history.by_tmdb = [_row(str(lib), "独行月球 (2022) - 2160p.mkv")]
 
         src = _touch(str(tmp_path / "src.mkv"), 777)
-        got = service._movie_duplicate_target(_media(pix="2160p"), src)
+        got = service._identity_duplicate_target(_media(pix="2160p"), src)
         assert got, "同规格应判为重复"
         assert got.endswith("独行月球 (2022) - 2160p.mkv")
 
@@ -111,7 +162,7 @@ class TestMovieDuplicateTarget:
         service._history.by_tmdb = [_row(str(lib), "some.mkv")]
 
         src = _touch(str(tmp_path / "src.mkv"), 1500)
-        assert service._movie_duplicate_target(_media(pix=""), src)
+        assert service._identity_duplicate_target(_media(pix=""), src)
 
     def test_different_spec_allows_multi_version(self, service, tmp_path):
         """1080p 相对已入库 2160p → 多版本，必须放行"""
@@ -120,22 +171,22 @@ class TestMovieDuplicateTarget:
         service._history.by_tmdb = [_row(str(lib), "独行月球 (2022) - 2160p.mkv")]
 
         src = _touch(str(tmp_path / "src.mkv"), 300)
-        assert service._movie_duplicate_target(_media(pix="1080p"), src) == ""
+        assert service._identity_duplicate_target(_media(pix="1080p"), src) == ""
 
     def test_no_history_allows(self, service, tmp_path):
         service._history.by_tmdb = []
         src = _touch(str(tmp_path / "src.mkv"), 100)
-        assert service._movie_duplicate_target(_media(), src) == ""
+        assert service._identity_duplicate_target(_media(), src) == ""
 
     def test_missing_target_allows_rebuild(self, service, tmp_path):
         """历史记录的目标已被删除 → 允许重新入库，不能永久挡住"""
         service._history.by_tmdb = [_row(str(tmp_path / "gone"), "gone.mkv")]
         src = _touch(str(tmp_path / "src.mkv"), 100)
-        assert service._movie_duplicate_target(_media(), src) == ""
+        assert service._identity_duplicate_target(_media(), src) == ""
 
     def test_no_tmdb_id_allows(self, service, tmp_path):
         src = _touch(str(tmp_path / "src.mkv"), 100)
-        assert service._movie_duplicate_target(_media(tmdb_id=0), src) == ""
+        assert service._identity_duplicate_target(_media(tmdb_id=0), src) == ""
 
     def test_history_query_failure_allows(self, service, tmp_path):
         """查历史异常时放行：宁可多转移一次，也不能误挡真实文件"""
@@ -145,7 +196,7 @@ class TestMovieDuplicateTarget:
 
         service._history.get_transfer_info_by = boom
         src = _touch(str(tmp_path / "src.mkv"), 100)
-        assert service._movie_duplicate_target(_media(), src) == ""
+        assert service._identity_duplicate_target(_media(), src) == ""
 
     def test_picks_existing_among_multiple(self, service, tmp_path):
         """多条历史中只要有一条同规格命中即判重复"""
@@ -157,7 +208,37 @@ class TestMovieDuplicateTarget:
             _row(str(lib), "独行月球 (2022) - 2160p.mkv"),
         ]
         src = _touch(str(tmp_path / "src.mkv"), 777)
-        assert service._movie_duplicate_target(_media(pix="2160p"), src)
+        assert service._identity_duplicate_target(_media(pix="2160p"), src)
+
+
+class TestAnimeMovieDedup:
+    """动画剧场版（ANIME 且无集号）此前两侧去重都不覆盖"""
+
+    def test_anime_movie_title_drift_is_duplicate(self, service, tmp_path):
+        lib = tmp_path / "你的名字 (2016)"
+        _touch(str(lib / "你的名字 (2016) - 1080p.mkv"), 1000)
+        service._history.by_tmdb = [_row(str(lib), "你的名字 (2016) - 1080p.mkv", season_episode="S01")]
+
+        src = _touch(str(tmp_path / "src.mkv"), 600)
+        got = service._identity_duplicate_target(_anime_movie(pix="1080p"), src)
+        assert got, "动画剧场版同样应按身份判重复"
+
+    def test_anime_movie_different_spec_allows(self, service, tmp_path):
+        lib = tmp_path / "你的名字 (2016)"
+        _touch(str(lib / "你的名字 (2016) - 1080p.mkv"), 1000)
+        service._history.by_tmdb = [_row(str(lib), "你的名字 (2016) - 1080p.mkv", season_episode="S01")]
+
+        src = _touch(str(tmp_path / "src.mkv"), 600)
+        assert service._identity_duplicate_target(_anime_movie(pix="2160p"), src) == ""
+
+    def test_episode_rows_are_ignored_for_anime_movie(self, service, tmp_path):
+        """同一 tmdb_id 下的剧集记录不得把剧场版误判为重复"""
+        lib = tmp_path / "某番剧 (2020)" / "Season 1"
+        _touch(str(lib / "某番剧 - S01E03 - 第3集.mkv"), 1000)
+        service._history.by_tmdb = [_row(str(lib), "某番剧 - S01E03 - 第3集.mkv", season_episode="S01E03")]
+
+        src = _touch(str(tmp_path / "src.mkv"), 600)
+        assert service._identity_duplicate_target(_anime_movie(pix="1080p"), src) == ""
 
 
 class TestPollutedTitleDuplicate:
@@ -171,5 +252,5 @@ class TestPollutedTitleDuplicate:
         src = _touch(str(tmp_path / "淫片网 4488329.com 黄漫片网 4488569.com.mkv"), 777)
         # 标题被污染，但 TMDB 身份与规格（2160p）都指向同一部片
         polluted = _media(pix="2160p", title="淫片网 448832𝟵.com  黄漫片网 448856𝟵.com")
-        got = service._movie_duplicate_target(polluted, src)
+        got = service._identity_duplicate_target(polluted, src)
         assert got, "被污染的标题不应导致重复入库"
