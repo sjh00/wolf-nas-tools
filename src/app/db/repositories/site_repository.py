@@ -363,9 +363,13 @@ class SiteRepository(BaseRepository):
     def get_site_seeding_info(self, site: str) -> tuple | None:
         """
         查询站点做种信息
+
+        返回单元素元组以保持调用方 `seeding_info[0]` 的既有用法；
+        ORM 返回的是 Row 对象，显式转成 tuple 既符合返回类型也便于序列化。
         """
         with self.session() as db:
-            return db.query(SITEUSERSEEDINGINFO.SEEDING_INFO).filter(SITEUSERSEEDINGINFO.SITE == site).first()
+            row = db.query(SITEUSERSEEDINGINFO.SEEDING_INFO).filter(SITEUSERSEEDINGINFO.SITE == site).first()
+            return tuple(row) if row is not None else None
 
     # ==================== Site Statistics History ====================
 

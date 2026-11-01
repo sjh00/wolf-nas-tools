@@ -92,9 +92,7 @@ class TestVisibleSitesCapability:
             indexer_service=SimpleNamespace(indexer=MagicMock()),
         )
         ctx.site_grant_service.get_visible_sites.return_value = None
-        ctx.indexer_service.indexer.get_indexers_with_source.side_effect = (
-            lambda check=True: [] if check else _INDEXERS
-        )
+        ctx.indexer_service.indexer.get_indexers_with_source.side_effect = lambda check=True: [] if check else _INDEXERS
         site_svc = MagicMock()
         site_svc.get_sites.return_value = [{"name": "siteA"}]
         app.dependency_overrides[get_app_context] = lambda: ctx
@@ -104,6 +102,7 @@ class TestVisibleSitesCapability:
         by_name = {d["name"]: d["permissions"] for d in data}
         assert by_name["siteA"] == ["rss"]
         assert "siteB" not in by_name
+
     def test_custom_rss_site_is_included_with_stable_ref(self):
         user = UserContext(user_id=2, username="u", level=100, permissions=[], role_codes=["user"])
         custom = [

@@ -505,15 +505,11 @@ class SubscribeService:
         current_missing = self._tv_episode_repo.get(int(rssid)) or []
         lack = sorted(set(int(e) for e in current_missing) - downloaded)
         if lack:
-            log.info(
-                f"[Subscribe]更新电视剧订阅 rssid={rssid} 缺失集数 {len(current_missing)} -> {len(lack)}"
-            )
+            log.info(f"[Subscribe]更新电视剧订阅 rssid={rssid} 缺失集数 {len(current_missing)} -> {len(lack)}")
             self._tv_repo.update_state(
                 title=None, year=None, season=None, rssid=rssid, state=SubscribeState.RUNNING.value
             )
-            self._tv_repo.update_lack(
-                title=None, year=None, season=None, rssid=rssid, lack_episodes=lack
-            )
+            self._tv_repo.update_lack(title=None, year=None, season=None, rssid=rssid, lack_episodes=lack)
             return False
         log.info(f"[Subscribe]电视剧订阅 rssid={rssid} 全部集数已下载完成")
         self._tv_repo.update_state(

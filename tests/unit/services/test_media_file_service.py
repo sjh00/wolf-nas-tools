@@ -159,6 +159,8 @@ class TestLibraryPathNames:
         assert "favorites/电影" in names
         assert "gof/TV" in names
         assert "tvandshows/TV" in names
+
+
 class TestDownloadPoster:
     def test_delegates_to_downloader(self, service, tmp_path):
         service._scraper._downloader.download.return_value = True

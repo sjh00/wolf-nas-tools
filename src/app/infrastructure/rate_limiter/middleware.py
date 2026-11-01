@@ -92,8 +92,7 @@ class RateLimitMiddleware:
             log.warn(f"[RateLimit]IP {client_ip} 请求 {path} 触发限流")
         else:
             log.debug(
-                f"[RateLimit]IP {client_ip} 请求 {path} 触发限流"
-                f"（{self._WARN_SUPPRESS_SECONDS}s 内重复触发，已抑制）"
+                f"[RateLimit]IP {client_ip} 请求 {path} 触发限流（{self._WARN_SUPPRESS_SECONDS}s 内重复触发，已抑制）"
             )
         # 防止键无限累积
         if len(self._warned_at) > 1000:

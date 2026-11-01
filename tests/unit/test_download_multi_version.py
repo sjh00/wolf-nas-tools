@@ -77,9 +77,18 @@ class TestDownloadFromLinkConfirm:
         svc = _make_svc(file_index=fi, downloader=down, media=media_svc)
 
         result = svc.download_from_link(
-            site="s", enclosure="http://x", title="Test.2020.1080p", description="",
-            page_url="", size="0", seeders="0", uploadvolumefactor="1",
-            downloadvolumefactor="1", dl_dir="", dl_setting="", user_name="u",
+            site="s",
+            enclosure="http://x",
+            title="Test.2020.1080p",
+            description="",
+            page_url="",
+            size="0",
+            seeders="0",
+            uploadvolumefactor="1",
+            downloadvolumefactor="1",
+            dl_dir="",
+            dl_setting="",
+            user_name="u",
         )
         assert result.need_confirm is True
         down.download.assert_not_called()
@@ -96,9 +105,18 @@ class TestDownloadFromLinkConfirm:
         svc = _make_svc(file_index=fi, downloader=down, media=media_svc)
 
         result = svc.download_from_link(
-            site="s", enclosure="http://x", title="Test.2020.1080p", description="",
-            page_url="", size="0", seeders="0", uploadvolumefactor="1",
-            downloadvolumefactor="1", dl_dir="", dl_setting="", user_name="u",
+            site="s",
+            enclosure="http://x",
+            title="Test.2020.1080p",
+            description="",
+            page_url="",
+            size="0",
+            seeders="0",
+            uploadvolumefactor="1",
+            downloadvolumefactor="1",
+            dl_dir="",
+            dl_setting="",
+            user_name="u",
         )
         assert result.success is True
         down.download.assert_called_once()

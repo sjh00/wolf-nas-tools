@@ -38,6 +38,7 @@ def make_lookup_cache_key(parsed, language: str | None, hint_type=None, strict=N
         f"|{hint_type.value if hint_type else ''}|{int(bool(strict))}|{(language or '').lower()}"
     )
 
+
 # 全局并发上限：避免大批量识别时大量线程同时打 TMDB 触发限流等待/超时重试
 _TMDB_LOOKUP_SEMAPHORE = threading.Semaphore(8)
 

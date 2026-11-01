@@ -121,9 +121,7 @@ class MediaCleanupService:
                 continue
             try:
                 # 复用删媒体文件（保留源，只删目标）
-                self._cleanup.delete_media_file(
-                    os.path.dirname(dest), os.path.basename(dest)
-                )
+                self._cleanup.delete_media_file(os.path.dirname(dest), os.path.basename(dest))
                 deleted.append(dest)
                 log.info(f"[Cleanup]已删除媒体库目标（保留源）：{dest}")
                 # 发布媒体库文件删除事件，供媒体服务器/下游感知
@@ -243,9 +241,7 @@ class MediaCleanupService:
         for downloader, ids in tasks.items():
             try:
                 # delete_file=True 连带删除已下载的媒体文件
-                self._downloader_core.delete_torrents(
-                    downloader_id=downloader, ids=list(ids), delete_file=True
-                )
+                self._downloader_core.delete_torrents(downloader_id=downloader, ids=list(ids), delete_file=True)
                 deleted.append({"downloader": downloader, "ids": list(ids)})
                 log.info(f"[Cleanup]已删除下载器 {downloader} 的任务：{list(ids)}")
             except Exception as e:  # noqa: BLE001

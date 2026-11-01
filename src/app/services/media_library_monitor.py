@@ -12,9 +12,11 @@
 
 import os
 import threading
+from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 
 import log
 from app.core.constants import RMT_MEDIAEXT
@@ -31,18 +33,23 @@ class _MediaLibraryEventHandler(FileSystemEventHandler):
         self._svc = monitor_service
         self._root = root
 
-    def _handle(self, path: str) -> None:
+    def _handle(self, path: str | bytes) -> None:
+        # watchdog 在部分平台（Linux inotify）以 bytes 投递路径，统一转成 str
+        if isinstance(path, bytes):
+            path = path.decode(errors="ignore")
+        if not path:
+            return
         self._svc.on_media_file_event(path)
 
-    def on_created(self, event) -> None:
+    def on_created(self, event: Any) -> None:
         if not event.is_directory:
             self._handle(event.src_path)
 
-    def on_moved(self, event) -> None:
+    def on_moved(self, event: Any) -> None:
         if not event.is_directory:
             self._handle(event.dest_path)
 
-    def on_modified(self, event) -> None:
+    def on_modified(self, event: Any) -> None:
         if not event.is_directory:
             self._handle(event.src_path)
 
@@ -53,7 +60,7 @@ class MediaLibraryMonitorService:
     def __init__(self, media_file_service, thread_executor=None):
         self._media_file = media_file_service
         self._thread_executor = thread_executor
-        self._observers: list[Observer] = []
+        self._observers: list[BaseObserver] = []
         self._seen: set[str] = set()  # 最近处理过的路径，去重（监控事件可能重复触发）
 
     # ---------- 生命周期 ----------

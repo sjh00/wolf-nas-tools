@@ -73,6 +73,8 @@ class TestCheckStopRuleKbFixes:
         )
         assert ok is True
         assert typ == BrushStopType.AVGUPSPEED
+
+
 # =========================================================================
 # check_range_rule
 # =========================================================================

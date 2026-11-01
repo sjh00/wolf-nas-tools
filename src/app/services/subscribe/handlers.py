@@ -89,9 +89,7 @@ def build_manual_download_subscribe_handler(subscribe_service: SubscribeService)
                 log.info(f"[Event]未找到电影订阅: rssid={rssid}")
                 return
             if rss_info.get("over_edition"):
-                subscribe_service.update_subscribe_over_edition(
-                    rtype=MediaType.MOVIE, rssid=rssid, media=media_info
-                )
+                subscribe_service.update_subscribe_over_edition(rtype=MediaType.MOVIE, rssid=rssid, media=media_info)
                 log.info(f"[Event]电影 {title} 更新为 over_edition 状态")
             else:
                 subscribe_service.finish_rss_subscribe(rssid=rssid, media=media_info)

@@ -555,8 +555,7 @@ class TestCookieAuthSurvivesRedirect:
                 f"原始请求应带 Cookie: {received[0].get('Cookie')!r}"
             )
             assert received[1].get("Cookie") == "session=abc; uid=42", (
-                "重定向后 Cookie 丢失（这是 PT 站被退到 login 页的根因）: "
-                f"{received[1].get('Cookie')!r}"
+                f"重定向后 Cookie 丢失（这是 PT 站被退到 login 页的根因）: {received[1].get('Cookie')!r}"
             )
         finally:
             srv.shutdown()

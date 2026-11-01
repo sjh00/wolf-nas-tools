@@ -116,6 +116,8 @@ class TestReuseSameContentTorrent:
         )
         assert hit is None
         downloader.set_torrents_tag.assert_not_called()
+
+
 class TestStagePostMagnetDetection:
     """回归 #192：磁力判定应基于实际下载内容，而非 media_info.enclosure（原始 http）。"""
 

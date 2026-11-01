@@ -152,9 +152,7 @@ class TestRateLimitWarnThrottling:
         assert client.get("/api/spam").status_code == 200
         warns = []
         debug_logs = []
-        with patch(
-            "app.infrastructure.rate_limiter.middleware.log"
-        ) as mock_log:
+        with patch("app.infrastructure.rate_limiter.middleware.log") as mock_log:
             mock_log.warn.side_effect = lambda m: warns.append(m)
             mock_log.debug.side_effect = lambda m: debug_logs.append(m)
             for _ in range(5):

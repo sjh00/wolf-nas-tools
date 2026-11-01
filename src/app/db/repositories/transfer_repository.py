@@ -320,8 +320,8 @@ class TransferRepository(BaseRepository):
         """
         if not limit or limit <= 0:
             limit = 100
-        file_key = func.coalesce(TRANSFERHISTORY.DEST_PATH, "") + "\0" + func.coalesce(
-            TRANSFERHISTORY.DEST_FILENAME, ""
+        file_key = (
+            func.coalesce(TRANSFERHISTORY.DEST_PATH, "") + "\0" + func.coalesce(TRANSFERHISTORY.DEST_FILENAME, "")
         )
         with self.session() as db:
             rows = (

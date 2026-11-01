@@ -17,9 +17,7 @@ def test_users_request_does_not_use_query_api_key():
         patch.object(Jellyfin, "get_user", return_value="u1"),
         patch.object(Jellyfin, "get_server_id", return_value="s1"),
     ):
-        client = Jellyfin(
-            config={"host": "http://127.0.0.1:8096", "api_key": "secret-key", "user_id": "u1"}
-        )
+        client = Jellyfin(config={"host": "http://127.0.0.1:8096", "api_key": "secret-key", "user_id": "u1"})
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"MovieCount": 1, "SeriesCount": 0, "SongCount": 0}
     with patch.object(client, "_http_get", return_value=mock_resp) as http_get:

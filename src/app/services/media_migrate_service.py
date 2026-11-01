@@ -346,9 +346,7 @@ class MediaMigrateService:
         if not self._downloader_core:
             return
         try:
-            self._downloader_core.move_torrents_location(
-                downloader_id=downloader, ids=[download_id], new_path=new_dir
-            )
+            self._downloader_core.move_torrents_location(downloader_id=downloader, ids=[download_id], new_path=new_dir)
         except Exception as e:  # noqa: BLE001
             log.warn(f"[Migrate]下载器 {downloader} 迁移任务 {download_id} 失败：{e}")
 

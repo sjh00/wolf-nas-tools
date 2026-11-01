@@ -557,14 +557,8 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
             # （The 100 Girlfriends）；末尾孤立数字视为解析残留丢弃（7.1 声道被拆成 "7 1"）。
             # 位于名称起始处的多位数字是片名本体（24 / 1917），需保留
             # 片名中的年份（Wonder Woman 1984）不是出品年时也保留
-            followed_by_title_word = any(
-                w[:1].isalpha() and not _META_TOKEN_RE.match(w) for w in words[idx + 1 :]
-            )
-            is_title_year = (
-                len(word) == 4
-                and 1900 <= int(word) <= 2030
-                and word != str(ctx.year or "")
-            )
+            followed_by_title_word = any(w[:1].isalpha() and not _META_TOKEN_RE.match(w) for w in words[idx + 1 :])
+            is_title_year = len(word) == 4 and 1900 <= int(word) <= 2030 and word != str(ctx.year or "")
             prev = words[idx - 1].lower() if idx > 0 else ""
             after_part_word = prev in {"part", "vol", "volume", "chapter", "pt"}
             if (

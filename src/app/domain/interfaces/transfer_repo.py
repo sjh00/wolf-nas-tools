@@ -57,6 +57,17 @@ class ITransferHistoryRepository(Protocol):
 
     def update_transfer_history_poster(self, logid: int | None, poster: str) -> None: ...
 
+    def update_transfer_dest(self, logid: int, new_dest_path: str, new_dest_filename: str) -> bool: ...
+
+    def update_transfer_paths(
+        self,
+        logid: int,
+        new_source_path: str,
+        new_source_filename: str,
+        new_dest_path: str,
+        new_dest_filename: str,
+    ) -> bool: ...
+
     def update_transfer_file_state(
         self,
         logid: int,

@@ -268,9 +268,7 @@ class RssFeedStrategy:
                     }
                 )
             if skipped_by_hour > 0:
-                log.info(
-                    f"[RssFeedStrategy] {site_name} 因限定小时 {site_withinhour}h 跳过 {skipped_by_hour} 条种子"
-                )
+                log.info(f"[RssFeedStrategy] {site_name} 因限定小时 {site_withinhour}h 跳过 {skipped_by_hour} 条种子")
 
         if not all_articles:
             log.info("[RssFeedStrategy] 所有站点 RSS 处理结束，无有效数据")
@@ -291,8 +289,7 @@ class RssFeedStrategy:
             if enclosure_key and enclosure_key in seen_enclosures:
                 continue
             if enclosure and (
-                self.rsshelper.is_rssd_by_enclosure(enclosure)
-                or self.rsshelper.is_rssd_by_simple(title, None)
+                self.rsshelper.is_rssd_by_enclosure(enclosure) or self.rsshelper.is_rssd_by_simple(title, None)
             ):
                 log.info(f"[RssFeedStrategy] {title} 已成功订阅过")
                 continue
@@ -485,8 +482,7 @@ class RssFeedStrategy:
                                 log.info(f"[RssFeedStrategy] {media_info.get_title_string()} 订阅缺失季集：{missing}")
                         if exist_flag:
                             log.info(
-                                f"[RssFeedStrategy] {media_info.get_title_string()} "
-                                f"媒体库已存在且未开洗版，完成订阅"
+                                f"[RssFeedStrategy] {media_info.get_title_string()} 媒体库已存在且未开洗版，完成订阅"
                             )
                             self.subscribe.finish_rss_subscribe(rssid=match_info.get("id"), media=media_info)
                             continue

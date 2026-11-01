@@ -35,6 +35,8 @@ def test_enabled_redis_connects_when_ping_ok():
         assert store.is_available() is True
         redis_cls.assert_called_once()
         client.ping.assert_called()
+
+
 def _store_with_client() -> tuple[RedisStore, MagicMock]:
     store = RedisStore()
     client = MagicMock()

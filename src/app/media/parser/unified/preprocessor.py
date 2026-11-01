@@ -129,15 +129,10 @@ _FIELD_LABEL_RE = re.compile(
     _FIELD_LABEL_BOUNDARY + r"(?:" + "|".join(_FIELD_LABEL_WORDS) + r")\s*[:：]"
     r"|"
     # 无冒号形态：`主演 张三` —— 要求标签右边也是词边界
-    + _FIELD_LABEL_BOUNDARY
-    + r"(?:"
-    + "|".join(_FIELD_LABEL_WORDS)
-    + r")(?=[\s._\-\[\]【】|/]|$)"
+     + _FIELD_LABEL_BOUNDARY + r"(?:" + "|".join(_FIELD_LABEL_WORDS) + r")(?=[\s._\-\[\]【】|/]|$)"
 )
 # 字段取值：标签后紧跟的中文词序列（人名列表），以空格/点号/顿号/斜杠分隔
-_FIELD_VALUE_TOKEN_RE = re.compile(
-    r"[\s._\-、,，/／|]*(?:[\u4e00-\u9fff\u00b7\u30fb]{1,8})"
-)
+_FIELD_VALUE_TOKEN_RE = re.compile(r"[\s._\-、,，/／|]*(?:[\u4e00-\u9fff\u00b7\u30fb]{1,8})")
 
 
 def strip_collection_noise(text: str) -> str:

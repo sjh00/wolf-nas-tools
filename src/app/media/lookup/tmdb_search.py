@@ -578,7 +578,7 @@ class TmdbSearch:
                 tmdb_id, mtype, append_to_response="alternative_titles,translations"
             )
         except Exception as err:
-            log.warning(f"[Meta]获取TMDB详情异常 tmdb_id={tmdb_id} mtype={mtype}: {err!s}")
+            log.warn(f"[Meta]获取TMDB详情异常 tmdb_id={tmdb_id} mtype={mtype}: {err!s}")
             return {}, []
         if not tmdb_info or not isinstance(tmdb_info, dict):
             return tmdb_info, []
@@ -618,7 +618,7 @@ class TmdbSearch:
                     if name and name not in ret_names:
                         ret_names.append(name)
         except Exception as err:
-            log.warning(f"[Meta]解析TMDB候选名异常 tmdb_id={tmdb_id}: {err!s}")
+            log.warn(f"[Meta]解析TMDB候选名异常 tmdb_id={tmdb_id}: {err!s}")
             return tmdb_info, []
         return tmdb_info, ret_names
 

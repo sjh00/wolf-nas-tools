@@ -257,9 +257,7 @@ class Jellyfin(_IMediaClient):
         if not self._host or not self._apikey:
             return []
         # 服务端按时间倒序取最近 num 条；结果仍本地再排一次，兼容不遵守排序参数的服务端
-        req_url = (
-            f"{self._host}System/ActivityLog/Entries?Limit={num}&SortBy=DateCreated&SortOrder=Descending"
-        )
+        req_url = f"{self._host}System/ActivityLog/Entries?Limit={num}&SortBy=DateCreated&SortOrder=Descending"
         ret_array = []
         try:
             res = self._http_get(req_url)
@@ -336,8 +334,7 @@ class Jellyfin(_IMediaClient):
         if not self._host or not self._apikey or not self._user:
             return None
         req_url = (
-            f"{self._host}Users/{self._user}/Items"
-            f"?searchTerm={name}&IncludeItemTypes=Series&Limit=10&Recursive=true"
+            f"{self._host}Users/{self._user}/Items?searchTerm={name}&IncludeItemTypes=Series&Limit=10&Recursive=true"
         )
         try:
             res = self._http_get(req_url)
@@ -367,8 +364,7 @@ class Jellyfin(_IMediaClient):
         if not self._host or not self._apikey or not self._user:
             return None
         req_url = (
-            f"{self._host}Users/{self._user}/Items"
-            f"?searchTerm={title}&IncludeItemTypes=Movie&Limit=10&Recursive=true"
+            f"{self._host}Users/{self._user}/Items?searchTerm={title}&IncludeItemTypes=Movie&Limit=10&Recursive=true"
         )
         try:
             res = self._http_get(req_url)
@@ -420,10 +416,7 @@ class Jellyfin(_IMediaClient):
                 return []
         if not season:
             season = ""
-        req_url = (
-            f"{self._host}Shows/{item_id}/Episodes?season={season}"
-            f"&userId={self._user}&isMissing=false"
-        )
+        req_url = f"{self._host}Shows/{item_id}/Episodes?season={season}&userId={self._user}&isMissing=false"
         try:
             res_json = self._http_get(req_url)
             if res_json:
@@ -478,10 +471,7 @@ class Jellyfin(_IMediaClient):
         if not self._host or not self._apikey or not self._user:
             return None
         # 查询所有剧集
-        req_url = (
-            f"{self._host}Shows/{item_id}/Episodes?season={season_id}"
-            f"&userId={self._user}&isMissing=false"
-        )
+        req_url = f"{self._host}Shows/{item_id}/Episodes?season={season_id}&userId={self._user}&isMissing=false"
         try:
             res_json = self._http_get(req_url)
             if res_json:
@@ -693,8 +683,7 @@ class Jellyfin(_IMediaClient):
         else:
             host = self._play_host or self._host
             image_url = (
-                f"{host}Items/{item_id}/Images/Primary"
-                f"?tag={image_tag}&fillWidth=666&quality=96&api_key={self._apikey}"
+                f"{host}Items/{item_id}/Images/Primary?tag={image_tag}&fillWidth=666&quality=96&api_key={self._apikey}"
             )
             if IpUtils.is_internal(host):
                 return self.get_nt_image_url(url=image_url, remote=True)

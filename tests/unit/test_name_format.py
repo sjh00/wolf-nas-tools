@@ -44,6 +44,8 @@ def test_render_empty_year_drops_empty_parens():
     out = nf.render("{title} ({year})", d)
     assert out == "看见"
     assert "()" not in out
+
+
 def test_render_numeric_padding():
     d = {"title": "凡人修仙传", "season": "2", "episode": "3"}
     out = nf.render(
