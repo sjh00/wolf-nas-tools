@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from app.domain.validators.media_title import clean_advertisement_title
 from app.utils import StringUtils
 
 _META_CHARS = set("粤日英简繁国台港双多单语字幕音轨声频道内嵌封挂压效硬软中外体转载自搬运蓝光高清")
@@ -196,6 +197,10 @@ def prepare_title(title: str) -> str:
     if not title:
         return title
     title = title.replace("[", "[").replace("]", "]").strip()
+    # 剥离推广广告片段（「站名：4488569.com」）：必须在裸域名规则之前，
+    # 否则域名先被剥掉、站名残留成「某某片网」，反而认不出来是广告。
+    # 这类水印用全角冒号连接数字域名，裸域名规则匹配不到，会整段混进片名并写入目录名/NFO
+    title = clean_advertisement_title(title) or ""
     # 剥离站点/发布站标记（[EZTVx.to]、www.UIndex.org、裸域名水印）
     title = _RE_SITE_MARKER.sub(" ", title)
     title = re.sub(r"\s+", " ", title).strip()

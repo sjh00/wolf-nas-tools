@@ -4,6 +4,11 @@ import re
 from app.core.settings import settings
 from app.db.repositories.plugin_repo_adapter import TmdbBlacklistRepositoryAdapter
 from app.domain.mediatypes import MediaType
+from app.domain.validators.media_title import (
+    clean_advertisement_title,
+    is_advertisement_title,
+    sanitize_title,
+)
 from app.infrastructure.cache_system import TMDBCache, get_cache_manager
 from app.infrastructure.external.tmdbv3api import (
     TV,
@@ -148,6 +153,9 @@ def get_tmdb_chinese_title(tmdbinfo):
         title = alternative_title.get("title")
         if not title or not StringUtils.is_chinese(title):
             continue
+        # 社区贡献的译名可能被灌入推广广告，含广告的条目直接跳过
+        if is_advertisement_title(title):
+            continue
         if iso_3166_1 in ("CN", "SG"):
             simplified = to_simplified(title)
             if simplified == title:
@@ -177,6 +185,9 @@ def _get_chinese_title_from_translations(tmdbinfo):
         title = data.get("title") or data.get("name")
         if not title or not StringUtils.is_chinese(title):
             continue
+        # 社区贡献的译名可能被灌入推广广告，含广告的条目直接跳过
+        if is_advertisement_title(title):
+            continue
         if iso.lower() in ("zh-cn", "zh-sg", "zh"):
             simplified = to_simplified(title)
             if simplified == title:
@@ -189,12 +200,21 @@ def _get_chinese_title_from_translations(tmdbinfo):
 
 def update_tmdbinfo_cn_title(tmdb_info, default_language):
     org_title = tmdb_info.get("title") if tmdb_info.get("media_type") == MediaType.MOVIE else tmdb_info.get("name")
-    # 中文语言配置（zh/zh-CN/zh-Hans...）下补全中文名；非中文配置保持原样
-    if not StringUtils.is_chinese(org_title) and str(default_language or "").lower().startswith("zh"):
+    # 中文语言配置（zh/zh-CN/zh-Hans...）下补全中文名；非中文配置保持原样。
+    # 「已被灌入广告的伪中文名」也要走补全：它虽然含中文，但不是可用标题。
+    needs_cn = not StringUtils.is_chinese(org_title) or is_advertisement_title(org_title)
+    if needs_cn and str(default_language or "").lower().startswith("zh"):
         cn_title = get_tmdb_chinese_title(tmdbinfo=tmdb_info)
         if cn_title and cn_title != org_title:
             if tmdb_info.get("media_type") == MediaType.MOVIE:
                 tmdb_info["title"] = cn_title
             else:
                 tmdb_info["name"] = cn_title
+    # 社区译名可能已被灌入推广广告，兜底剥离后再落库（整条是广告时回退原名）
+    if tmdb_info.get("media_type") == MediaType.MOVIE:
+        tmdb_info["title"] = sanitize_title(tmdb_info.get("title"), tmdb_info.get("original_title"))
+        tmdb_info["original_title"] = clean_advertisement_title(tmdb_info.get("original_title"))
+    else:
+        tmdb_info["name"] = sanitize_title(tmdb_info.get("name"), tmdb_info.get("original_name"))
+        tmdb_info["original_name"] = clean_advertisement_title(tmdb_info.get("original_name"))
     return tmdb_info

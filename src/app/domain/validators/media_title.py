@@ -50,6 +50,85 @@ _GARBAGE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# 上游（TMDB 社区贡献的译名、PT 种子名）会被灌入推广广告：「站名 + 数字域名」。
+# 数字常用 Unicode 数学数字（𝟲/𝟵）与全角数字伪装，站点名与域名之间用全角冒号连接，
+# 导致常规"裸域名"规则匹配不到。判定锚点取"纯数字标签域名"——真实片名不会包含
+# 4488569.com 这类主机名；同时不把"含 .com"本身当判据，以免误伤《Alibi.com》。
+_AD_TLD = r"(?:com|net|org|cc|tv|xyz|top|club|info|pw|me|io)"
+_AD_NUMERIC_DOMAIN_RE = re.compile(rf"\d{{3,}}\.{_AD_TLD}\b", re.IGNORECASE)
+_AD_ANY_DOMAIN_RE = re.compile(rf"[\w.-]+\.{_AD_TLD}\b", re.IGNORECASE)
+_AD_BARE_DOMAIN_RE = re.compile(rf"[\w-]+(?:\.[\w-]+)*\.{_AD_TLD}", re.IGNORECASE)
+_AD_SITE_WORD_RE = re.compile(r"(?:片网|操姦|操奸|黄漫|淫片|色情)")
+# 广告片段：站名（可带前后缀中文）+ 数字域名，整体移除
+_AD_FRAGMENT_RE = re.compile(
+    rf"(?:[一-鿿]{{0,6}}(?:片网|操姦|操奸|黄漫|淫片|色情)[一-鿿]{{0,4}}[\s:：]*)?"
+    rf"\d{{3,}}\.{_AD_TLD}\b",
+    re.IGNORECASE,
+)
+
+
+def is_advertisement_title(name: str | None) -> bool:
+    """
+    判断标题是否被灌入推广广告片段。
+
+    :param name: 待检查的标题
+    :return: 是否含广告片段
+    """
+    if not name:
+        return False
+    text = str(name)
+    if _AD_NUMERIC_DOMAIN_RE.search(text):
+        return True
+    return bool(_AD_SITE_WORD_RE.search(text) and _AD_ANY_DOMAIN_RE.search(text))
+
+
+def clean_advertisement_title(name: str | None) -> str | None:
+    """
+    剥离标题中的推广广告片段。
+
+    未含广告时原样返回；含广告时移除广告片段并返回剩余标题，
+    剩余为空返回空串（调用方需回退到其他名称来源）。
+
+    :param name: 待清洗的标题
+    :return: 清洗后的标题
+    """
+    if not name:
+        return name
+    text = str(name)
+    if not is_advertisement_title(text):
+        return text
+    # 先剥「站名 + 数字域名」粘连成段的情况（如 `某某片网：4488569.com片名`）
+    cleaned = _AD_FRAGMENT_RE.sub(" ", text)
+    # 再按空白切段，丢弃仍是广告的片段（含数字域名、含站名关键词、或本身就是一个裸域名）
+    kept = [
+        seg
+        for seg in cleaned.split()
+        if not (
+            _AD_NUMERIC_DOMAIN_RE.search(seg)
+            or _AD_SITE_WORD_RE.search(seg)
+            or _AD_BARE_DOMAIN_RE.fullmatch(seg.strip("（）()[]【】"))
+        )
+    ]
+    cleaned = re.sub(r"\s{2,}", " ", " ".join(kept))
+    return cleaned.strip(" \t:：,，;；-—")
+
+
+def sanitize_title(name: str | None, fallback: str | None = None) -> str | None:
+    """
+    清洗标题中的广告片段；清洗后为空时回退到 fallback。
+
+    整条标题都是广告（如「某片网 4488569.com」）时清洗结果为空，
+    此时直接置空会让条目失去名称，因此回退到调用方提供的备用名称。
+
+    :param name: 待清洗的标题
+    :param fallback: 清洗后为空时使用的备用名称
+    :return: 清洗结果或备用名称
+    """
+    if not name:
+        return fallback
+    cleaned = clean_advertisement_title(name)
+    return cleaned or fallback
+
 
 def is_valid_media_title(name: str | None) -> bool:
     """

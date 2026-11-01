@@ -4,6 +4,7 @@ import regex as re
 
 import log
 from app.domain.mediatypes import MediaType
+from app.domain.validators.media_title import clean_advertisement_title
 from app.domain.word_processor import get_words_info, process_title
 from app.media.models import MediaInfo
 from app.media.parser.unified import UnifiedParser
@@ -26,6 +27,11 @@ def meta_info(title: str, subtitle: str | None = None, mtype: MediaType | None =
             elif parent and parent not in (".", "/", ""):
                 subtitle = subtitle or parent
         title = re.sub(r"\|\d+(\|\d+)?$", "", title)
+        # 剥离推广广告片段（「站名：4488569.com」）：必须先于下方的裸域名规则，
+        # 否则域名先被剥掉、只留下站名（如「某某片网」），反而认不出是广告而混进片名
+        ad_cleaned = clean_advertisement_title(title)
+        if ad_cleaned is not None:
+            title = ad_cleaned
         # 剥离站点/发布站标记（www 前缀、[domain.tld]、裸域名水印）
         cleaned = re.sub(
             r"(?i)(?:"

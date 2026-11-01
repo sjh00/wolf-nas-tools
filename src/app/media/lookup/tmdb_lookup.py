@@ -21,6 +21,16 @@ _BATCH_KEYWORDS_RE = re.compile(r"(?i)\b(COMPLETE|全集|合集|全季|BATCH|PAC
 # 识别结果缓存：redis 持久化（重启不丢），7 天；未命中结果缓存 1 天，避免新入库条目长期被负缓存
 _LOOKUP_CACHE_TTL = 7 * 24 * 3600
 _NEGATIVE_CACHE_TTL = 24 * 3600
+# 缓存键版本：识别/标题清洗逻辑变更时递增，作废可能存有污染标题的旧结果
+_LOOKUP_CACHE_VERSION = "v3"
+
+
+def make_lookup_cache_key(parsed, language: str | None) -> str:
+    """构建识别结果缓存键（含版本号，便于整体作废旧结果）"""
+    return (
+        f"lookup:{_LOOKUP_CACHE_VERSION}|{parsed.title_cn or ''}|{parsed.title_en or ''}|{parsed.year or ''}"
+        f"|{parsed.season or ''}|{parsed.type.value if parsed.type else ''}|{(language or '').lower()}"
+    )
 
 # 全局并发上限：避免大批量识别时大量线程同时打 TMDB 触发限流等待/超时重试
 _TMDB_LOOKUP_SEMAPHORE = threading.Semaphore(8)
@@ -46,10 +56,7 @@ class TmdbLookup(BaseLookup):
         if not parsed.title_en and not parsed.title_cn:
             return None
 
-        cache_key = (
-            f"lookup:{parsed.title_cn or ''}|{parsed.title_en or ''}|{parsed.year or ''}"
-            f"|{parsed.season or ''}|{parsed.type.value if parsed.type else ''}|{(language or '').lower()}"
-        )
+        cache_key = make_lookup_cache_key(parsed, language)
         cached = self._lookup_cache.get(cache_key)
         if cached is not None:
             return cached if cached else None
