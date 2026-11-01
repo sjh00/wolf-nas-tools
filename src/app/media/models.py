@@ -8,6 +8,7 @@ import log
 from app.core.constants import ANIME_GENREIDS
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.domain.mediatypes import MediaType
+from app.domain.validators.media_title import clean_advertisement_title, sanitize_title
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.category_matcher import get_category
 from app.media.image_resolver import MediaImageResolver
@@ -495,11 +496,12 @@ class MediaInfo(BaseModel):
                 return
 
         if media_type == MediaType.MOVIE:
-            self.title = info.get("title")
-            self.original_title = info.get("original_title")
+            # 社区译名可能被灌入推广广告，落库前兜底清洗（整条是广告时回退原名）
+            self.title = sanitize_title(info.get("title"), info.get("original_title"))
+            self.original_title = clean_advertisement_title(info.get("original_title"))
             self.runtime = info.get("runtime")
             self.release_date = info.get("release_date")
-            title_val = info.get("title") or ""
+            title_val = self.title or ""
             self.cn_name = title_val if StringUtils.is_chinese(title_val) else None
             en_val = info.get("original_title") or ""
             # en_name 仅存真正的英文/拉丁名；中日韩原名不存（交给上层取 TMDB 英文标题），避免日语名污染英文名
@@ -526,12 +528,13 @@ class MediaInfo(BaseModel):
             if self.year and tmdb_year and str(self.year) != str(tmdb_year):
                 log.debug(f"[MediaInfo]TMDB年份不匹配: 种子={self.year}, TMDB={tmdb_year}, 保留种子元数据")
                 tmdb_year = ""  # 年份冲突时不覆盖
-            self.title = info.get("name")
-            self.original_title = info.get("original_name")
+            # 社区译名可能被灌入推广广告，落库前兜底清洗（整条是广告时回退原名）
+            self.title = sanitize_title(info.get("name"), info.get("original_name"))
+            self.original_title = clean_advertisement_title(info.get("original_name"))
             runtime_val = info.get("episode_run_time")
             self.runtime = int(runtime_val[0]) if runtime_val else None  # type: ignore[assignment]
             self.release_date = info.get("first_air_date")
-            name_val = info.get("name") or ""
+            name_val = self.title or ""
             self.cn_name = name_val if StringUtils.is_chinese(name_val) else None
             en_val = info.get("original_name") or ""
             # en_name 仅存真正的英文/拉丁名；中日韩原名不存（交给上层取 TMDB 英文标题），避免日语名污染英文名

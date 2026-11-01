@@ -6,7 +6,7 @@ import pytest
 
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system import get_cache_manager
-from app.media.lookup.tmdb_lookup import TmdbLookup
+from app.media.lookup.tmdb_lookup import TmdbLookup, make_lookup_cache_key
 from app.media.models import MediaInfo
 from app.media.parser import RegexParser
 
@@ -45,11 +45,8 @@ class TestNegativeLookupCache:
             assert lookup.lookup(parsed) is None
             first_call_count = mock_lookup.call_count
 
-            # 直接改写缓存 TTL 为 0 模拟过期
-            key = (
-                f"lookup:{parsed.title_cn or ''}|{parsed.title_en or ''}|{parsed.year or ''}"
-                f"|{parsed.season or ''}|{parsed.type.value if parsed.type else ''}|"
-            )
+            # 直接改写缓存 TTL 为 0 模拟过期（键构造与生产代码同一来源，避免格式漂移）
+            key = make_lookup_cache_key(parsed, None)
             lookup._lookup_cache.set(key, False, ttl=0)
             assert lookup.lookup(parsed) is None
             assert mock_lookup.call_count > first_call_count
