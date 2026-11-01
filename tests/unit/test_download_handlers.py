@@ -1,4 +1,4 @@
-"""下载领域事件处理器单元测试."""
+﻿"""涓嬭浇棰嗗煙浜嬩欢澶勭悊鍣ㄥ崟鍏冩祴璇?"""
 
 from app.events import Event
 from app.events.constants import DOWNLOAD_COMPLETED, DOWNLOAD_FAILED, DOWNLOAD_STARTED
@@ -47,14 +47,14 @@ class TestDownloadHandlers:
         try:
             event = Event(
                 event_type=DOWNLOAD_FAILED,
-                payload=DownloadFailedPayload(media_info={"title": "Test Movie"}, reason="连接超时"),
+                payload=DownloadFailedPayload(media_info={"title": "Test Movie"}, reason="杩炴帴瓒呮椂"),
             )
             handle_download_failed(event)
 
             item = q.get(timeout=1)
             assert item["event"] == DOWNLOAD_FAILED
             assert item["data"]["title"] == "Test Movie"
-            assert item["data"]["reason"] == "连接超时"
+            assert item["data"]["reason"] == "杩炴帴瓒呮椂"
         finally:
             unsubscribe_download_events(q)
 
@@ -86,7 +86,7 @@ class TestDownloadHandlers:
             unsubscribe_download_events(q)
 
     def test_handle_download_started_with_dict_payload(self):
-        """payload 是 dict 时也能正常处理."""
+        """payload 鏄?dict 鏃朵篃鑳芥甯稿鐞?"""
         from app.services.download.handlers import handle_download_started
 
         q = _with_sub()
@@ -113,7 +113,7 @@ class TestDownloadHandlers:
             unsubscribe_download_events(q)
 
     def test_handle_download_completed_with_dict_payload(self):
-        """payload 是 dict 时也能正常处理."""
+        """payload 鏄?dict 鏃朵篃鑳芥甯稿鐞?"""
         from app.services.download.handlers import handle_download_completed
 
         q = _with_sub()
@@ -136,18 +136,18 @@ class TestDownloadHandlers:
             unsubscribe_download_events(q)
 
     def test_handle_download_failed_with_dict_payload(self):
-        """payload 是 dict 时也能正常处理."""
+        """payload 鏄?dict 鏃朵篃鑳芥甯稿鐞?"""
         from app.services.download.handlers import handle_download_failed
 
         q = _with_sub()
         try:
             event = Event(
                 event_type=DOWNLOAD_FAILED,
-                payload={"media_info": {"title": "Bad Movie"}, "reason": "网络错误"},
+                payload={"media_info": {"title": "Bad Movie"}, "reason": "缃戠粶閿欒"},
             )
             handle_download_failed(event)
 
             item = q.get(timeout=1)
-            assert item["data"]["reason"] == "网络错误"
+            assert item["data"]["reason"] == "缃戠粶閿欒"
         finally:
             unsubscribe_download_events(q)

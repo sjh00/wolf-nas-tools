@@ -10,11 +10,14 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
+from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
 from app.domain.enums import OsType
 from app.domain.mediatypes import MediaType
 from app.events import Event
 from app.events.constants import SUBTITLE_DOWNLOAD
 from app.events.payloads import SubtitleDownloadPayload
+from app.media.category_contributions import get_category_tabs, update_category_contribution_by_tab
+from app.media.category_taxonomy import taxonomy_payload
 from app.storage import LocalStorageBackend, StorageBackendFactory
 from app.storage.backends.base import FileInfo, StorageBackend, StorageType
 from app.storage.config_models import LocalStorageConfig
@@ -33,12 +36,14 @@ class MediaFileService:
         media_service,
         thread_executor,
         scraper,
+        route_repo=None,
     ):
         self._event_bus = event_bus
         self._storage_backend_repo = storage_backend_repo
         self._media_service = media_service
         self._thread_executor = thread_executor
         self._scraper = scraper
+        self._route_repo = route_repo or MediaLibraryRouteRepositoryAdapter()
 
     def _resolve_backend(self, backend_id: str) -> StorageBackend:
         """按 backend_id 解析存储后端，空或 local 返回本地后端"""
@@ -171,6 +176,21 @@ class MediaFileService:
             )
             if item:
                 library_paths.append(item)
+        # 内容画像媒体库路由（如 adult → /Media/adult）同样应出现在文件管理。
+        try:
+            for route in self._route_repo.list():
+                if not route.enabled or not route.target_path:
+                    continue
+                item = _make_path(
+                    route.target_path,
+                    f"{route.content_profile or 'library'} 媒体库",
+                    route.content_profile or "library",
+                    route.backend_id or "local",
+                )
+                if item:
+                    library_paths.append(item)
+        except Exception as err:  # noqa: BLE001
+            log.debug(f"[MediaFile]读取媒体库路由失败: {err}")
         library_paths = _dedupe(library_paths, seen_lib)
 
         sync_source_paths = []
@@ -234,10 +254,10 @@ class MediaFileService:
     def download_subtitle(self, path: str, name: str) -> None:
         """下载字幕，失败时抛出异常"""
         media = self._media_service.get_media_info(title=name)
-        if not media or not media.tmdb_info:
+        if not media or not media.provider_data:
             raise ResourceNotFoundError(f"{name} 无法从TMDB查询到媒体信息")
         if not media.imdb_id:
-            media.set_tmdb_info(self._media_service.get_tmdb_info(mtype=media.type, tmdbid=media.tmdb_id))
+            media.set_provider_data(self._media_service.get_tmdb_info(mtype=media.type, tmdbid=media.tmdb_id))
         self._event_bus.publish(
             Event(
                 event_type=SUBTITLE_DOWNLOAD,
@@ -259,6 +279,13 @@ class MediaFileService:
             dst_backend = self._resolve_backend(backend_id)
         self._thread_executor.submit(self._scraper.folder_scraper, path, None, "force_all", dst_backend)
         return "刮削任务已提交，正在后台运行。"
+
+    def download_poster(self, url: str, media_dir: str) -> bool:
+        """从指定 URL 下载海报到媒体目录，供维护任务复用."""
+        if not url or not media_dir:
+            return False
+        self._scraper._init_config()
+        return bool(self._scraper._downloader.download(url, media_dir, "poster", force=True))
 
     def make_dir(self, parent: str, name: str, backend_id: str = "local") -> str:
         """在 parent 下创建目录，返回新目录路径"""
@@ -320,6 +347,15 @@ class MediaFileService:
         backend.write_stream(target, stream)
         return target
 
+    def get_category_taxonomy(self) -> dict:
+        """获取分类映射词表，供前端规则编辑器使用."""
+
+        return taxonomy_payload()
+
+    def get_category_tabs(self) -> list[dict]:
+        """分类页标签（含插件动态注入标签）."""
+        return get_category_tabs()
+
     def get_category_config(self) -> list[dict]:
         """获取二级分类配置（数据库）"""
         repo = CategoryConfigRepositoryAdapter()
@@ -336,5 +372,12 @@ class MediaFileService:
                 sort_order=item.get("sort_order", 0),
                 is_default=int(item.get("is_default", 0)),
                 rules=item.get("rules", {}),
+                enabled=int(item.get("enabled", 1)),
             )
+        for media_type in {str(item.get("media_type") or "") for item in items}:
+            if media_type not in {"movie", "tv", "anime"}:
+                update_category_contribution_by_tab(
+                    media_type,
+                    [item for item in items if str(item.get("media_type")) == media_type],
+                )
         return "保存成功"

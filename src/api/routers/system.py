@@ -6,6 +6,7 @@ System Router — FastAPI 迁移
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 
 import log
 from api.deps import (
+    get_app_context,
     get_backup_restore_service,
     get_config_reloader,
     get_config_service,
@@ -57,6 +59,7 @@ from app.infrastructure.temp import temp_manager
 from app.mediaserver.registry import get_all_clients as get_all_mediaservers
 from app.message.registry import get_all_clients
 from app.message.switches import MESSAGE_SWITCHES
+from app.message.template_registry import message_template_registry
 from app.message.templates import DEFAULT_MESSAGE_TEMPLATES
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
@@ -323,6 +326,18 @@ def get_message_client_default_templates(
     return success(data=DEFAULT_MESSAGE_TEMPLATES)
 
 
+@router.get(
+    "/message_clients/templates/profiles",
+    response_model=CommonResponse,
+    summary="获取插件内容画像消息模板",
+)
+def get_message_client_profile_templates(
+    current_user: UserContext = Depends(require_permission("setting:update")),
+):
+    """获取插件注入的画像模板；客户端可用 profile:msg_type 覆盖."""
+    return success(data={"profiles": message_template_registry.list_profiles()})
+
+
 @router.post("/net_test", response_model=CommonResponse, summary="网络连通性测试")
 def net_test(
     req: NetTestRequest,
@@ -378,7 +393,7 @@ async def backup_upload(
 ):
     """上传备份文件"""
     try:
-        file_path = Path(temp_manager.get_temp_path()) / (file.filename or "")
+        file_path = Path(temp_manager.get_temp_path()) / Path(file.filename or "").name
         contents = await file.read()
         with open(file_path, "wb") as f:
             f.write(contents)
@@ -533,6 +548,30 @@ def save_mediaserver_config(
     return fail(msg=result.msg)
 
 
+@router.post("/mediaservers/delete", response_model=CommonResponse, summary="删除媒体服务器实例")
+def delete_mediaserver(
+    req: dict,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+    svc=Depends(get_media_server_config_service),
+):
+    result = svc.delete_config(int(req.get("id") or 0))
+    if result.success:
+        return success()
+    return fail(msg=result.msg)
+
+
+@router.post("/mediaservers/default", response_model=CommonResponse, summary="设置默认媒体服务器")
+def set_default_mediaserver(
+    req: dict,
+    current_user: UserContext = Depends(require_permission("setting:update")),
+    svc=Depends(get_media_server_config_service),
+):
+    result = svc.set_default(int(req.get("id") or 0))
+    if result.success:
+        return success()
+    return fail(msg=result.msg)
+
+
 @router.post("/scheduler/run", response_model=CommonResponse, summary="运行定时任务")
 def sch(
     req: SchedulerRequest,
@@ -659,12 +698,47 @@ def _flatten_config(cfg: dict, prefix: str = "") -> dict:
     return result
 
 
+_MASK = "******"
+_SENSITIVE_KEY_RE = re.compile(
+    r"(password|passwd|secret|token|key$|apikey|cookie|jwt|private[_-]?key|access[_-]?key|bearer|credential)",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_key(key: str | None) -> bool:
+    return bool(_SENSITIVE_KEY_RE.search(key or ""))
+
+
+def _mask_sensitive(flat: dict) -> dict:
+    """对敏感配置值打码，避免只读角色读取密钥；写入时忽略打码值。"""
+    for key in list(flat.keys()):
+        if _is_sensitive_key(key) and flat[key] not in (None, "", [], {}):
+            flat[key] = _MASK
+    return flat
+
+
+def _strip_masked(value):
+    """递归移除等于打码值的字段，避免把 '******' 写回配置。"""
+    if isinstance(value, dict):
+        return {k: _strip_masked(v) for k, v in value.items() if v != _MASK}
+    return value
+
+
+def _config_for_user(flat: dict, user: UserContext) -> dict:
+    """按权限返回配置：只读用户脱敏，可修改配置的用户回显真实密钥。"""
+    if user.is_superadmin or user.has_permission("setting:update"):
+        return flat
+    return _mask_sensitive(flat)
+
+
 @router.post("/config", response_model=CommonResponse, summary="设置系统配置")
 def set_system_config(
     req: SystemConfigRequest,
     current_user: UserContext = Depends(require_permission("setting:update")),
     svc=Depends(get_system_config_service),
 ):
+    if _is_sensitive_key(req.key) and req.value == _MASK:
+        return success()  # 打码占位值不写回
     if svc.set_config(req.key, req.value):
         return success()
     return fail()
@@ -683,7 +757,7 @@ def get_all_config(
     http_proxy = proxies.get("http") if isinstance(proxies, dict) else None
     if http_proxy:
         flat["app.proxies"] = http_proxy.removeprefix("http://")
-    return success(data=flat)
+    return success(data=_config_for_user(flat, current_user))
 
 
 @router.post("/config/scraper", response_model=CommonResponse, summary="获取刮削配置")
@@ -734,7 +808,7 @@ def update_config(
     svc=Depends(get_config_update_service),
     reloader: ConfigReloader = Depends(get_config_reloader),
 ):
-    result = svc.update_config(req.data)
+    result = svc.update_config(_strip_masked(req.data))
     if result.success and not result.test_mode:
         reloader.reload()
     if result.success:
@@ -749,7 +823,7 @@ def list_agent_models(
 ):
     """查询 LLM Provider 支持的模型列表"""
 
-    if not req.api_url or not req.api_key:
+    if not req.api_url or (req.provider_name != "ollama" and not req.api_key):
         return success(data=[])
 
     try:
@@ -760,7 +834,7 @@ def list_agent_models(
     config = ProviderConfig(
         name=req.provider_name,
         api_url=req.api_url,
-        api_key=req.api_key,
+        api_key=req.api_key or "",
         model="",
     )
 
@@ -1059,6 +1133,7 @@ def get_site_config_version():
 def update_site_config(
     user: UserContext = Depends(get_current_user),
     payload: EmptyRequest | None = None,
+    app_context=Depends(get_app_context),
 ):
     """手动触发站点配置更新"""
     if "setting:update" not in user.permissions:
@@ -1068,6 +1143,12 @@ def update_site_config(
         force = bool(payload and payload.data and payload.data.get("force"))
         result = SiteConfigUpdater().update(force=force)
         if result["success"]:
+            # 热重载：在线配置写入用户目录后立即生效，无需重启
+            try:
+                app_context.site_engine.reload()
+                app_context.site_cache.refresh()
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[System]站点配置更新后重载失败: {e!s}")
             return success(result)
         return fail(msg=result.get("message", ""))
     except (ServiceError, DomainError) as e:

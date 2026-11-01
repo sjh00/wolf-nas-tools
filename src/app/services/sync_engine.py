@@ -2,6 +2,7 @@
 
 import os
 import threading
+import time
 import traceback
 from collections import OrderedDict
 from collections.abc import Callable
@@ -15,6 +16,8 @@ from watchdog.observers.polling import PollingObserver
 import log
 from app.core.constants import RMT_MEDIAEXT
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
+from app.core.settings import settings
+from app.db.database_factory import DatabaseFactory
 from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepositoryAdapter
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferHistoryRepositoryAdapter
@@ -23,6 +26,7 @@ from app.infrastructure.distributed_lock import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
 from app.services.filetransfer_service import is_soft_transfer_failure, is_transfer_skip
+from app.services.transfer.library_rename_backend import target_dir_lock_key
 from app.services.transfer_engine import TransferEngine
 from app.services.transfer_pipeline import TransferPipeline
 from app.storage.backends.base import StorageBackend, StorageConfig, StorageType
@@ -32,6 +36,9 @@ from app.storage.factory import StorageBackendFactory
 from app.utils import PathUtils
 
 _synced_lock = threading.Lock()
+
+# 目录同步并发任务等待上限（秒），超时按未完成处理避免永久挂起
+_SYNC_WAIT_TIMEOUT = 1800
 _observer_lock = threading.Lock()
 
 # 整批目录同步的分布式锁 TTL（秒）。由 lock_heartbeat 续期，故可取得较短：
@@ -93,7 +100,6 @@ class SyncEngine:
         sync_path_repo: SyncPathRepositoryAdapter,
         storage_backend_repo: StorageBackendRepositoryAdapter,
         thread_executor: ThreadExecutor | None = None,
-        sync_workers: int = 4,
     ):
         self._transfer = transfer_engine
         self._pipeline = transfer_pipeline
@@ -101,7 +107,6 @@ class SyncEngine:
         self._history_repo = TransferHistoryRepositoryAdapter()
         self._backend_repo = storage_backend_repo
         self._thread_executor = thread_executor
-        self._sync_workers = sync_workers
         self._configs: dict[str, SyncPathConfig] = {}
         self._monitor_ids: list[str] = []
         self._observers: list = []
@@ -109,6 +114,9 @@ class SyncEngine:
         self._synced_files: OrderedDict[str, None] = OrderedDict()
         self._synced_files_max_size = 10000
         self._backend_cache: dict[str, StorageBackend] = {}
+        # 槽位耗尽告警按时间窗口限流，覆盖事件/手动/批量所有入口
+        self._slot_exhausted_lock = threading.Lock()
+        self._slot_exhausted_last = 0.0
         self._reload()
 
     def init(self) -> None:
@@ -257,13 +265,23 @@ class SyncEngine:
                 return cfg
         return None
 
+    def _sync_target_exists(self, dst: str, dst_backend: StorageBackend | None) -> bool:
+        """同步目标文件是否真实存在（用于识别已删除的目标，触发重新链接）."""
+        try:
+            if dst_backend is not None:
+                return bool(dst_backend.exists(dst))
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]检查目标存在性失败，回退本地判断: {e}")
+        return os.path.exists(dst)
+
     def _do_link(self, event_path: str, cfg: SyncPathConfig) -> None:
-        if self._history_repo.is_sync_in_history(event_path, cfg.dest):
-            return
         rel = os.path.relpath(event_path, cfg.source)
         dst = os.path.join(cfg.dest, rel)
         try:
             dst_backend = self._resolve_backend(cfg.dst_backend_id) if cfg.dst_backend_id != "local" else None
+            if self._history_repo.is_sync_in_history(event_path, cfg.dest):
+                # 用户删除目标文件不解除同步历史；只有显式清除历史才允许重新链接。
+                return
             self._transfer._execute(event_path, dst, cfg.operation, dst_backend)
             self._history_repo.insert_sync_history(event_path, cfg.source, cfg.dest)
             self._transfer._blacklist.insert(event_path)
@@ -271,21 +289,110 @@ class SyncEngine:
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
-            log.error(f"[Sync]{event_path} 同步失败：{e}")
+            self._report_transfer_error(event_path, e, action="同步")
+
+    def _resolve_dst_backend(self, cfg: SyncPathConfig) -> StorageBackend | None:
+        """解析同步目标后端；本地返回 None（由本地存在性判断兜底）."""
+        try:
+            if cfg.dst_backend_id and cfg.dst_backend_id != "local":
+                return self._resolve_backend(cfg.dst_backend_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]解析目标后端失败，回退本地判断: {e}")
+        return None
+
+    def _history_dest_exists(self, rec: Any, dst_backend: StorageBackend | None) -> bool:
+        """转移历史记录的目标文件是否仍实际存在."""
+        dest_path = str(getattr(rec, "dest_path", "") or "")
+        dest_filename = str(getattr(rec, "dest_filename", "") or "")
+        if not dest_path or not dest_filename:
+            return False
+        return self._sync_target_exists(os.path.join(dest_path, dest_filename), dst_backend)
+
+    def _directory_destination_exists(self, source_dir: str, cfg: SyncPathConfig) -> bool:
+        """据转移历史逐源文件校验目录来源的目标是否仍存在（任一目标缺失即返回 False）.
+
+        目录同步批量传入的可能是种子目录（文件直接在其中），也可能是分类目录
+        （媒体文件在更深层），因此按目录及其子目录下的全部历史记录，逐个源文件取
+        最近一次转移核对目标：全部仍在才视为已同步，避免删除目标后不再重建。
+        """
+        try:
+            records = self._history_repo.get_by_source_dir(source_dir)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]查询目录转移历史失败，回退按存在处理: {e}")
+            return True
+        valid = [r for r in records if getattr(r, "dest_path", "") and getattr(r, "dest_filename", "")]
+        if not valid:
+            return True
+        latest: dict[str, Any] = {}
+        for rec in valid:
+            key = os.path.join(str(getattr(rec, "source_path", "")), str(getattr(rec, "source_filename", "")))
+            prev = latest.get(key)
+            if prev is None or str(getattr(rec, "date", "")) >= str(getattr(prev, "date", "")):
+                latest[key] = rec
+        dst_backend = self._resolve_dst_backend(cfg)
+        return all(self._history_dest_exists(rec, dst_backend) for rec in latest.values())
+
+    def _destination_exists_for_source(self, source_path: str, cfg: SyncPathConfig) -> bool:
+        """据转移历史校验该源（文件/目录）的目标是否仍实际存在（目标被删则返回 False）。"""
+        if os.path.isdir(source_path):
+            return self._directory_destination_exists(source_path, cfg)
+        try:
+            rec = self._history_repo.get_by_source(source_path)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Sync]查询转移历史失败，回退按存在处理: {e}")
+            return True
+        if not rec:
+            return False
+        return self._history_dest_exists(rec, self._resolve_dst_backend(cfg))
+
+    def _clear_dir_blacklist(self, source_dir: str) -> None:
+        """清理目录来源（含内部文件）的转移黑名单，避免流水线按黑名单过滤掉需重建的文件."""
+        self._transfer._blacklist.delete(source_dir)
+        for path in PathUtils.get_dir_files(source_dir):
+            self._transfer._blacklist.delete(path)
 
     def _do_transfer(self, event_path: str, cfg: SyncPathConfig) -> None:
+        # 下载未完成的目录（迅雷 .xltd / 以媒体后缀命名的临时目录）不进入识别与转移
+        if PathUtils.is_incomplete_media_dir(event_path):
+            log.info(f"[Sync]{event_path} 下载未完成，跳过")
+            return
+        # 同步历史、转移历史或黑名单命中即永久跳过，不再检查目标是否存在。
+        # 用户删除目标文件不会解除记录；只有显式清除历史/黑名单才允许重新转移。
+        in_history = self._history_repo.is_sync_in_history(event_path, cfg.dest)
+        in_blacklist = self._transfer._blacklist.is_exists(event_path)
+        is_dir = os.path.isdir(event_path)
+        if not is_dir:
+            try:
+                transfer_record = self._history_repo.get_by_source(event_path)
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[Sync]查询转移历史失败，继续检查: {e}")
+                transfer_record = None
+            if transfer_record is not None or in_history or in_blacklist:
+                return
+        elif in_history or in_blacklist:
+            # 目录本身已有同步/转移记录时整目录跳过；目录内新文件由流水线按文件记录过滤，
+            # 不能因为某个子目标缺失就清理整目录历史并重新同步。
+            return
         if os.path.isdir(event_path):
             # 目录：仅当包含真实媒体文件时才交给转移流水线，
             # 避免空目录/仍在下载（仅 .part/.!qb）的目录每周期反复报错
-            if not PathUtils.get_dir_files(in_path=event_path, exts=RMT_MEDIAEXT):
+            min_filesize = PathUtils.resolve_min_filesize((settings.get("media") or {}).get("min_filesize"))
+            if not PathUtils.get_dir_files(in_path=event_path, exts=RMT_MEDIAEXT, filesize=min_filesize):
                 return
         else:
-            # 单个媒体文件才校验扩展名
+            # 单个媒体文件才校验扩展名，并按同一最小大小限制过滤广告/样本文件
             name = os.path.basename(event_path)
             if name.lower() != "index.bdmv":
                 ext = os.path.splitext(name)[-1].lower()
                 if ext not in RMT_MEDIAEXT:
                     return
+            min_filesize = PathUtils.resolve_min_filesize((settings.get("media") or {}).get("min_filesize"))
+            try:
+                if os.path.getsize(event_path) < min_filesize:
+                    log.info(f"[Sync]{event_path} 小于最小文件大小限制，跳过")
+                    return
+            except OSError:
+                return
         task = TransferTask(
             source_type=SourceType.DIRECTORY,
             source_id=cfg.id,
@@ -309,7 +416,25 @@ class SyncEngine:
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
-            log.error(f"[Sync]{event_path} 转移异常：{e}")
+            self._report_transfer_error(event_path, e)
+
+    def _report_transfer_error(self, path: str, exc: Exception, action: str = "转移") -> None:
+        """记录转移失败；槽位耗尽按 60 秒窗口限流，覆盖所有入口。"""
+        if not DatabaseFactory.is_connection_slot_exhausted(exc):
+            log.error(f"[Sync]{path} {action}异常：{exc}")
+            return
+        now = time.monotonic()
+        with self._slot_exhausted_lock:
+            should_report = now - self._slot_exhausted_last >= 60
+            if should_report:
+                self._slot_exhausted_last = now
+        if should_report:
+            log.error(
+                f"[Sync]数据库连接槽位耗尽，{action}任务无法获取连接：{str(exc).strip().splitlines()[0]}。"
+                f"请检查连接预算与数据库 max_connections；当前{DatabaseFactory.describe_pool_budget()}"
+            )
+        else:
+            log.debug(f"[Sync]{path} {action}跳过：数据库连接槽位耗尽")
 
     def transfer_sync(self, sid: str | None = None) -> None:
         lock_key = f"sync:transfer_sync:{sid or 'all'}"
@@ -355,20 +480,33 @@ class SyncEngine:
 
         def _link_one(path: str) -> None:
             if self._history_repo.is_sync_in_history(path, cfg.dest):
+                # 目标缺失仍跳过；历史只能由用户显式清除。
                 return
             try:
                 self._do_link_with_backend(path, cfg, src_backend, dst_backend)
             except (ServiceError, RepositoryError, DomainError):
                 raise
             except Exception as e:
-                log.error(f"[Sync]{path} 同步失败：{e}")
+                self._report_transfer_error(path, e, action="同步")
 
         self._run_parallel(pending, _link_one)
+
+    def _expand_downloader_roots(self, paths: list[str]) -> list[str]:
+        """展开迅雷等下载器根目录，避免一个 .xltd 阻断整个下载器目录."""
+        expanded: list[str] = []
+        for path in paths:
+            nested = os.path.join(path, "downloads")
+            if os.path.isdir(nested):
+                expanded.extend(PathUtils.get_dir_level1_medias(nested, RMT_MEDIAEXT))
+            else:
+                expanded.append(path)
+        return expanded
 
     def _batch_transfer(self, cfg: SyncPathConfig, src_backend: StorageBackend) -> None:
         paths = PathUtils.get_dir_level1_medias(cfg.source, RMT_MEDIAEXT)
         if not paths:
             return
+        paths = self._expand_downloader_roots(paths)
         pending = [p for p in paths if not PathUtils.is_invalid_path(p)]
         pending = self._filter_pending(pending)
         if not pending:
@@ -405,13 +543,22 @@ class SyncEngine:
         futures = []
         for item in items:
             futures.append(self._thread_executor.submit(func, item))
-        wait(futures)
+        # 加超时：避免同池嵌套提交时 worker 全部阻塞在 wait() 造成进程级挂起
+        _done, not_done = wait(futures, timeout=_SYNC_WAIT_TIMEOUT)
+        if not_done:
+            log.error(f"[Sync]并发任务超时，{len(not_done)} 个未完成")
 
     def _do_link_with_backend(
         self, event_path: str, cfg: SyncPathConfig, src_backend: StorageBackend, dst_backend: StorageBackend
     ) -> None:
         rel = os.path.relpath(event_path, cfg.source)
         dst = os.path.join(cfg.dest, rel)
+        target_lock = get_lock_manager().create_lock(
+            target_dir_lock_key(cfg.dst_backend_id, os.path.dirname(dst)), ttl_seconds=1800
+        )
+        if not target_lock.acquire():
+            log.warn(f"[Sync]{dst} 目标目录正在被其他任务修改，跳过")
+            return
         try:
             dst_backend_to_use = dst_backend if cfg.dst_backend_id != "local" else None
             self._transfer._execute(event_path, dst, cfg.operation, dst_backend_to_use)
@@ -421,7 +568,9 @@ class SyncEngine:
         except (ServiceError, RepositoryError, DomainError):
             raise
         except Exception as e:
-            log.error(f"[Sync]{event_path} 同步失败：{e}")
+            self._report_transfer_error(event_path, e, action="同步")
+        finally:
+            target_lock.release()
 
     def transfer_mon_files(self) -> None:
         self.transfer_sync()

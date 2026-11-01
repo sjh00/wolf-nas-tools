@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool, QueuePool, StaticPool
 
 import log
 from app.core.settings import settings
+from app.db.connection_budget import ConnectionBudget, load_connection_budget
 
 # 环境变量名称映射
 ENV_VAR_MAP = {
@@ -33,7 +34,16 @@ ENV_VAR_MAP = {
     "password": "DATABASE__PASSWORD",
     "database": "DATABASE__DATABASE",
     "sqlite_path": "DATABASE__SQLITE_PATH",
+    "pool_size": "DATABASE__POOL_SIZE",
+    "max_overflow": "DATABASE__MAX_OVERFLOW",
+    "pool_timeout": "DATABASE__POOL_TIMEOUT",
+    "scheduler_pool_size": "DATABASE__SCHEDULER_POOL_SIZE",
+    "scheduler_max_overflow": "DATABASE__SCHEDULER_MAX_OVERFLOW",
+    "scheduler_pool_timeout": "DATABASE__SCHEDULER_POOL_TIMEOUT",
 }
+
+
+_connection_budget: ConnectionBudget | None = None
 
 
 class DatabaseFactory:
@@ -43,6 +53,34 @@ class DatabaseFactory:
     SQLITE = "sqlite"
     MYSQL = "mysql"
     POSTGRESQL = "postgresql"
+
+    # 连接池默认值（MySQL/PostgreSQL）。
+    # 进程连接上限 = 主池(pool_size + max_overflow) + 调度池(scheduler_*)，默认合计 30 条。
+    # 取值依据：PostgreSQL 官方默认 max_connections=100（另保留 superuser_reserved_connections=3），
+    # 但数据库实例常被多个服务共用（同机的 odoo、备份工具等），且不少部署会把它收紧到 40~60。
+    # 应用默认只占 30%（主池 20 + 调度池 10），给同实例的其他客户端留出空间，避免 nexus 的
+    # overflow 新建连接被服务端 FATAL 拒绝（remaining connection slots are reserved）。
+    # 注意 pool_size 只决定常驻连接数、max_overflow 提供峰值弹性，因此「常驻 10 + 溢出 10」
+    # 比原来「常驻 20」在同等峰值下少占一半空闲槽位。
+    # 实例容量更大时可用 DATABASE__POOL_SIZE / DATABASE__MAX_OVERFLOW 等环境变量放大，
+    # 但必须保证「主池 + 调度池 + 其他客户端」不超过 max_connections。
+    DEFAULT_POOL_SIZE = 10
+    DEFAULT_MAX_OVERFLOW = 10
+    DEFAULT_POOL_TIMEOUT = 15
+    # 调度任务独立连接池（比 API 小，隔离同时不使总连接数翻倍）
+    DEFAULT_SCHEDULER_POOL_SIZE = 5
+    DEFAULT_SCHEDULER_MAX_OVERFLOW = 5
+    DEFAULT_SCHEDULER_POOL_TIMEOUT = 15
+
+    # PostgreSQL 连接标识（pg_stat_activity.application_name）
+    PG_APPLICATION_NAME = "nexus_media"
+
+    # 服务端连接槽位耗尽的特征串（PostgreSQL / MySQL）
+    SLOT_EXHAUSTED_MARKERS = (
+        "remaining connection slots are reserved",
+        "too many clients already",
+        "too many connections",
+    )
 
     @staticmethod
     def get_database_url(
@@ -116,6 +154,7 @@ class DatabaseFactory:
             # SQLite 数据库文件会在首次连接时自动创建
             return
 
+        engine: Engine | None = None
         try:
             if db_type == DatabaseFactory.MYSQL:
                 # 获取连接参数（不指定数据库）
@@ -126,7 +165,7 @@ class DatabaseFactory:
 
                 # 连接到 MySQL 服务器（不指定数据库）
                 server_url = f"mysql+pymysql://{quote_plus(str(username))}:{quote_plus(str(password))}@{host}:{port}"
-                engine = sa_create_engine(server_url)
+                engine = sa_create_engine(server_url, poolclass=NullPool)
 
                 with engine.connect() as conn:
                     # 创建数据库（如果不存在）
@@ -135,8 +174,6 @@ class DatabaseFactory:
                             f"CREATE DATABASE IF NOT EXISTS {database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                         )
                     )
-
-                engine.dispose()
 
             elif db_type == DatabaseFactory.POSTGRESQL:
                 # 获取连接参数（不指定数据库）
@@ -147,7 +184,7 @@ class DatabaseFactory:
 
                 # 连接到 PostgreSQL 服务器（使用 postgres 数据库）
                 server_url = f"postgresql+psycopg2://{quote_plus(str(username))}:{quote_plus(str(password))}@{host}:{port}/postgres"
-                engine = sa_create_engine(server_url, isolation_level="AUTOCOMMIT")
+                engine = sa_create_engine(server_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
 
                 with engine.connect() as conn:
                     # 检查数据库是否存在
@@ -159,11 +196,13 @@ class DatabaseFactory:
                         # 创建数据库
                         conn.execute(text(f"CREATE DATABASE {database}"))
 
-                engine.dispose()
-
         except (OSError, ValueError) as e:
             # 记录错误但不抛出，让后续连接尝试决定最终成败
             log.warn(f"[DatabaseFactory]自动创建数据库 {database} 失败: {e}")
+        finally:
+            # 异常路径也必须释放，否则每次建库检查都会残留一条到 postgres 库的连接（占用 max_connections）
+            if engine is not None:
+                engine.dispose()
 
     @staticmethod
     def create_engine(db_type: str | None = None, db_path: str | None = None, **kwargs) -> Engine:
@@ -214,11 +253,37 @@ class DatabaseFactory:
         else:
             # MySQL/PostgreSQL 连接池配置
             engine_kwargs["poolclass"] = QueuePool
-            engine_kwargs["pool_size"] = kwargs.get("pool_size", 10)
-            engine_kwargs["max_overflow"] = kwargs.get("max_overflow", 10)
-            engine_kwargs["pool_timeout"] = kwargs.get("pool_timeout", 60)
+            budget = DatabaseFactory.get_connection_budget()
+            is_scheduler = "scheduler" in str(kwargs.get("application_name") or "")
+            default_pool_size = budget.scheduler_pool_size if is_scheduler else budget.main_pool_size
+            default_max_overflow = budget.scheduler_max_overflow if is_scheduler else budget.main_max_overflow
+            engine_kwargs["pool_size"] = (
+                kwargs["pool_size"] if kwargs.get("pool_size") is not None else default_pool_size
+            )
+            engine_kwargs["max_overflow"] = (
+                kwargs["max_overflow"] if kwargs.get("max_overflow") is not None else default_max_overflow
+            )
+            engine_kwargs["pool_timeout"] = kwargs.get("pool_timeout") or DatabaseFactory._get_int_config(
+                "pool_timeout", DatabaseFactory.DEFAULT_POOL_TIMEOUT
+            )
             engine_kwargs["pool_recycle"] = kwargs.get("pool_recycle", 1800)
             engine_kwargs["pool_pre_ping"] = True
+            # LIFO 让连接尽快自然过期，空闲池不会长期占满 pool_size 条槽位
+            engine_kwargs["pool_use_lifo"] = True
+            log.info(
+                f"[DatabaseFactory]连接池 {kwargs.get('application_name') or DatabaseFactory.PG_APPLICATION_NAME}: "
+                f"pool_size={engine_kwargs['pool_size']} max_overflow={engine_kwargs['max_overflow']} "
+                f"上限={engine_kwargs['pool_size'] + engine_kwargs['max_overflow']} 条"
+            )
+            if db_type == DatabaseFactory.POSTGRESQL:
+                # 标明连接归属，便于在 pg_stat_activity 中区分主池/调度池/临时引擎。
+                # 合并调用方 connect_args，避免覆盖 sslmode 等驱动参数。
+                connect_args = dict(kwargs.get("connect_args") or {})
+                connect_args.setdefault(
+                    "application_name",
+                    kwargs.get("application_name") or DatabaseFactory.PG_APPLICATION_NAME,
+                )
+                engine_kwargs["connect_args"] = connect_args
 
         engine = create_engine(url, **engine_kwargs)
 
@@ -238,7 +303,7 @@ class DatabaseFactory:
             dbapi_conn.execute("PRAGMA cache_size=-64000;")
             dbapi_conn.execute("PRAGMA temp_store=MEMORY;")
             dbapi_conn.execute("PRAGMA mmap_size=268435456;")
-            dbapi_conn.execute("PRAGMA busy_timeout=30000;")
+            dbapi_conn.execute("PRAGMA busy_timeout=5000;")
             dbapi_conn.execute("PRAGMA wal_autocheckpoint=1000;")
 
     @staticmethod
@@ -269,6 +334,81 @@ class DatabaseFactory:
     def is_postgresql(engine: Engine) -> bool:
         """检查是否是PostgreSQL数据库"""
         return "postgresql" in engine.url.drivername.lower()
+
+    @staticmethod
+    def is_connection_slot_exhausted(exc: BaseException | None) -> bool:
+        """判断异常是否由数据库服务端连接槽位耗尽引起。
+
+        PostgreSQL 报 "remaining connection slots are reserved for roles with the SUPERUSER attribute"，
+        MySQL 报 "Too many connections"。这类错误说明进程连接池上限超出了服务端可用槽位，
+        属于配置问题，重试同一时刻无法解决，需要区分出来避免逐条刷屏。
+        """
+        if exc is None:
+            return False
+        message = str(getattr(exc, "orig", exc)).lower()
+        return any(marker in message for marker in DatabaseFactory.SLOT_EXHAUSTED_MARKERS)
+
+    @staticmethod
+    def prepare_connection_budget() -> ConnectionBudget:
+        """检测服务端容量并生成本进程统一连接预算."""
+        global _connection_budget
+        if _connection_budget is not None:
+            return _connection_budget
+        db_type = DatabaseFactory._get_config_db_type()
+        server_max: int | None = None
+        if db_type != DatabaseFactory.SQLITE:
+            engine: Engine | None = None
+            try:
+                engine = sa_create_engine(
+                    DatabaseFactory.get_main_db_url(),
+                    poolclass=NullPool,
+                    connect_args={"application_name": "nexus_media-budget-probe"}
+                    if db_type == DatabaseFactory.POSTGRESQL
+                    else {},
+                )
+                with engine.connect() as conn:
+                    if db_type == DatabaseFactory.POSTGRESQL:
+                        server_max = int(conn.execute(text("SHOW max_connections")).scalar() or 0)
+                    elif db_type == DatabaseFactory.MYSQL:
+                        row = conn.execute(text("SHOW VARIABLES LIKE 'max_connections'")).first()
+                        server_max = int(row[1]) if row else None
+            except Exception as exc:  # noqa: BLE001 - 探测失败时使用保守默认值
+                log.warn(f"[DatabaseFactory]无法探测服务端 max_connections，使用默认预算: {exc}")
+            finally:
+                if engine is not None:
+                    engine.dispose()
+        _connection_budget = load_connection_budget(db_type, server_max)
+        if not _connection_budget.is_valid:
+            log.error(f"[DatabaseFactory]连接预算超出服务端可用槽位: {_connection_budget.describe()}")
+        else:
+            log.info(f"[DatabaseFactory]连接预算: {_connection_budget.describe()}")
+        return _connection_budget
+
+    @staticmethod
+    def get_connection_budget() -> ConnectionBudget:
+        return DatabaseFactory.prepare_connection_budget()
+
+    @staticmethod
+    def reset_connection_budget() -> None:
+        """测试用：清除已探测预算."""
+        global _connection_budget
+        _connection_budget = None
+
+    @staticmethod
+    def get_main_pool_capacity() -> int:
+        return DatabaseFactory.get_connection_budget().main_capacity
+
+    @staticmethod
+    def get_scheduler_pool_capacity() -> int:
+        return DatabaseFactory.get_connection_budget().scheduler_capacity
+
+    @staticmethod
+    def get_sync_workers() -> int:
+        return DatabaseFactory.get_connection_budget().sync_workers
+
+    @staticmethod
+    def describe_pool_budget() -> str:
+        return DatabaseFactory.get_connection_budget().describe()
 
     @staticmethod
     def _get_env_value(key: str, default: Any = None) -> Any:
@@ -323,6 +463,25 @@ class DatabaseFactory:
             db_config = config.get("database", {})
             return db_config.get(key, default)
         except (AttributeError, KeyError, TypeError):
+            return default
+
+    @staticmethod
+    def _get_int_config(key: str, default: int) -> int:
+        """从环境变量或配置读取整数配置（环境变量优先）"""
+        env_var = ENV_VAR_MAP.get(key)
+        if env_var:
+            raw = os.environ.get(env_var)
+            if raw:
+                try:
+                    return int(raw)
+                except ValueError:
+                    return default
+        try:
+            config = settings.get()
+            db_config = config.get("database", {})
+            value = db_config.get(key)
+            return int(value) if value is not None else default
+        except (AttributeError, KeyError, TypeError, ValueError):
             return default
 
     @staticmethod

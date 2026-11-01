@@ -12,8 +12,10 @@ import time
 # Cloudflare / 雷池强特征：仅整页拦截（interstitial）签名。
 # 注意不能用裸 cf-chl / turnstile：正常页面内嵌 Turnstile 组件会生成
 # cf-chl-widget-* 元素 id（如观众签到页），匹配会把正常页面误判为挑战页。
+# 注意不能包含 challenge-platform：Cloudflare 会在已放行的正常页面里注入
+# challenge-platform 脚本，用它判断会把正常页误判为挑战页并空等超时。
 CHALLENGE_INDICATORS = re.compile(
-    r"_cf_chl_opt|cf-browser-verification|cf-im-under-attack|challenge-form|challenge-platform|"
+    r"_cf_chl_opt|cf-browser-verification|cf-im-under-attack|challenge-form|"
     r"Checking your browser|Just a moment|Ray ID|slg-bg|slg-box",
     re.IGNORECASE,
 )
@@ -25,7 +27,7 @@ EMBEDDED_TURNSTILE = re.compile(
 )
 
 # 雷池（SafeLine）等 WAF：仅页面标题命中才算（与 nexus-chrome leichi.py 口径一致）
-CHALLENGE_TITLES = ("雷池", "安全拦截", "访问验证")
+CHALLENGE_TITLES = ("雷池", "安全拦截", "访问验证", "Just a moment", "请稍候", "Checking your browser")
 
 CHALLENGE_WAIT_TIMEOUT = 60
 CHALLENGE_POLL_INTERVAL = 2
@@ -54,14 +56,19 @@ def has_pending_turnstile(html_text: str) -> bool:
     return bool(html_text) and bool(EMBEDDED_TURNSTILE.search(html_text))
 
 
-def wait_challenge_clear(session, initial_html: str = "", timeout: int = CHALLENGE_WAIT_TIMEOUT) -> str:
-    """等待人机验证通过：挑战页特征消失即视为通过；返回最终页面 HTML"""
+def wait_challenge_clear(
+    session,
+    initial_html: str = "",
+    timeout: int = CHALLENGE_WAIT_TIMEOUT,
+    tab_name: str | None = None,
+) -> str:
+    """等待指定标签页的人机验证通过；tab_name 为空时才读活动页."""
     html_text = initial_html
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _is_challenge(html_text):
             time.sleep(CHALLENGE_POLL_INTERVAL)
-            html_text = session.html()
+            html_text = session.html(tab_name) if tab_name else session.html()
             continue
         return html_text
     return html_text

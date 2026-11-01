@@ -116,3 +116,62 @@ class TestReuseSameContentTorrent:
         )
         assert hit is None
         downloader.set_torrents_tag.assert_not_called()
+class TestStagePostMagnetDetection:
+    """回归 #192：磁力判定应基于实际下载内容，而非 media_info.enclosure（原始 http）。"""
+
+    @staticmethod
+    def _pipeline():
+        from unittest.mock import MagicMock
+
+        pipe = DownloadPipeline.__new__(DownloadPipeline)
+        factory = MagicMock()
+        factory.get_download_visit_dir.return_value = "/visit"
+        pipe._client_factory = factory
+        pipe._download_history_repo = MagicMock()
+        pipe._sitesubtitle = MagicMock()
+        pipe._message = MagicMock()
+        return pipe, factory
+
+    def _call(self, pipe, media, content):
+        pipe._stage_post(
+            media_info=media,
+            downloader_id="d1",
+            download_id="id1",
+            page_url=None,
+            content=content,
+            dl_files_folder="",
+            dl_files=[],
+            download_dir="/dl",
+            downloader_name="qb",
+            download_setting_name="s",
+            site_info={},
+            torrent_attr={},
+            in_from="sub",
+            user_name="u",
+        )
+
+    def test_magnet_content_sets_visit_dir_and_keeps_task(self):
+        from unittest.mock import MagicMock
+
+        pipe, factory = self._pipeline()
+        media = MagicMock()
+        # enclosure 仍是 http（Prowlarr/Jackett 下载接口），实际内容才是 magnet
+        media.enclosure = "https://prowlarr.example/download?link=xxx"
+
+        self._call(pipe, media, "magnet:?xt=urn:btih:ABC123")
+
+        factory.get_client.return_value.delete_torrents.assert_not_called()
+        pipe._download_history_repo.insert_download_history.assert_called_once()
+        assert pipe._download_history_repo.insert_download_history.call_args.kwargs["save_dir"] == "/visit"
+
+    def test_enclosure_magnet_still_supported(self):
+        from unittest.mock import MagicMock
+
+        pipe, factory = self._pipeline()
+        media = MagicMock()
+        media.enclosure = "magnet:?xt=urn:btih:XYZ"
+
+        self._call(pipe, media, b"d8:announce...")  # content 非 magnet，但 enclosure 是
+
+        factory.get_client.return_value.delete_torrents.assert_not_called()
+        pipe._download_history_repo.insert_download_history.assert_called_once()

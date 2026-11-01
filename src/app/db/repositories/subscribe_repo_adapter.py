@@ -28,8 +28,15 @@ class SubscribeMovieRepositoryAdapter:
             return []
         return [entity for entity in [SubscribeMovieEntity.from_orm(r) for r in rows] if entity is not None]
 
-    def get_id(self, title: str, year: str | None = None, tmdbid: str | None = None) -> str | int | None:
-        return self._repo.get_rss_movie_id(title, year, tmdbid)
+    def get_id(
+        self,
+        title: str,
+        year: str | None = None,
+        tmdbid: str | None = None,
+        user_id: int | None = None,
+        content_profile: str | None = None,
+    ) -> str | int | None:
+        return self._repo.get_rss_movie_id(title, year, tmdbid, user_id, content_profile)
 
     def is_exists(self, title: str, year: str) -> bool:
         return self._repo.is_exists_rss_movie(title, year)
@@ -75,8 +82,8 @@ class SubscribeMovieRepositoryAdapter:
         rssid: int | None = None,
         tmdbid: str | None = None,
         user: UserContext | None = None,
-    ) -> None:
-        self._repo.delete_rss_movie(title, year, rssid, tmdbid, user=user)
+    ) -> int:
+        return self._repo.delete_rss_movie(title, year, rssid, tmdbid, user=user)
 
     def insert(
         self,
@@ -99,6 +106,14 @@ class SubscribeMovieRepositoryAdapter:
         note=None,
         keyword=None,
         user_id: int | None = None,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> int:
         return self._repo.insert_rss_movie(
             media_info=media_info,
@@ -120,6 +135,14 @@ class SubscribeMovieRepositoryAdapter:
             note=note,
             keyword=keyword,
             user_id=user_id,
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            content_profile=content_profile,
+            provider=provider,
+            metadata_ref=metadata_ref,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
 
@@ -138,9 +161,15 @@ class SubscribeTvRepositoryAdapter:
         return [entity for entity in [SubscribeTvEntity.from_orm(r) for r in rows] if entity is not None]
 
     def get_id(
-        self, title: str, year: str | None = None, season: str | None = None, tmdbid: str | None = None
+        self,
+        title: str,
+        year: str | None = None,
+        season: str | None = None,
+        tmdbid: str | None = None,
+        user_id: int | None = None,
+        content_profile: str | None = None,
     ) -> int | str | None:
-        return self._repo.get_rss_tv_id(title, year, season, tmdbid)
+        return self._repo.get_rss_tv_id(title, year, season, tmdbid, user_id, content_profile)
 
     def is_exists(self, title: str, year: str, season: str | None = None) -> bool:
         return self._repo.is_exists_rss_tv(title, year, season)
@@ -197,8 +226,8 @@ class SubscribeTvRepositoryAdapter:
         rssid: int | None = None,
         tmdbid: str | None = None,
         user: UserContext | None = None,
-    ) -> None:
-        self._repo.delete_rss_tv(title, season, rssid, tmdbid, user=user)
+    ) -> int:
+        return self._repo.delete_rss_tv(title, season, rssid, tmdbid, user=user)
 
     def update(self, rssid: int, user: UserContext | None = None, **kwargs) -> int:
         return self._repo.update_rss_tv(rssid, user=user, **kwargs)
@@ -228,6 +257,14 @@ class SubscribeTvRepositoryAdapter:
         note=None,
         keyword=None,
         user_id: int | None = None,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> int:
         return self._repo.insert_rss_tv(
             media_info=media_info,
@@ -253,6 +290,14 @@ class SubscribeTvRepositoryAdapter:
             note=note,
             keyword=keyword,
             user_id=user_id,
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            content_profile=content_profile,
+            provider=provider,
+            metadata_ref=metadata_ref,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
 
@@ -302,9 +347,21 @@ class SubscribeHistoryRepositoryAdapter:
 
     # 兼容旧Repository方法名
     def insert_rss_history(
-        self, rssid, rtype, name, year, tmdbid, image, desc, season=None, total=None, start=None, note=""
+        self,
+        rssid,
+        rtype,
+        name,
+        year,
+        tmdbid,
+        image,
+        desc,
+        season=None,
+        total=None,
+        start=None,
+        note="",
+        **scope,
     ) -> None:
-        self.insert(rssid, rtype, name, year, tmdbid, image, desc, season, total, start, note)
+        self.insert(rssid, rtype, name, year, tmdbid, image, desc, season, total, start, note, **scope)
 
     # 兼容旧Repository方法名
     def check_rss_history(self, type_str, name, year, season) -> bool:
@@ -317,9 +374,13 @@ class SubscribeHistoryRepositoryAdapter:
         self.delete(rssid)
 
     def get_all(
-        self, rtype: str | None = None, rid: int | None = None, user: UserContext | None = None
+        self,
+        rtype: str | None = None,
+        rid: int | None = None,
+        user: UserContext | None = None,
+        content_profile: str | None = None,
     ) -> list[SubscribeHistoryEntity]:
-        rows = self._repo.get_rss_history(rtype=rtype, rid=rid, user=user)
+        rows = self._repo.get_rss_history(rtype=rtype, rid=rid, user=user, content_profile=content_profile)
         if not rows:
             return []
         return [entity for entity in [SubscribeHistoryEntity.from_orm(r) for r in rows] if entity is not None]
@@ -346,6 +407,15 @@ class SubscribeHistoryRepositoryAdapter:
         start: int | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         self._repo.insert_rss_history(
             rssid,
@@ -360,6 +430,14 @@ class SubscribeHistoryRepositoryAdapter:
             str(start) if start is not None else None,
             note,
             user_id=user_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            provider=provider,
+            metadata_ref=metadata_ref,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
     def upsert(
@@ -376,6 +454,15 @@ class SubscribeHistoryRepositoryAdapter:
         start: int | None = None,
         note: str = "",
         user_id: int | None = None,
+        *,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        identity_id: str | None = None,
+        content_profile: str | None = None,
+        provider: str | None = None,
+        metadata_ref: str | None = None,
+        metadata_policy: str | None = None,
+        naming_profile: str | None = None,
     ) -> None:
         self._repo.upsert_rss_history(
             rssid,
@@ -390,6 +477,14 @@ class SubscribeHistoryRepositoryAdapter:
             str(start) if start is not None else None,
             note,
             user_id=user_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            identity_id=identity_id,
+            content_profile=content_profile,
+            provider=provider,
+            metadata_ref=metadata_ref,
+            metadata_policy=metadata_policy,
+            naming_profile=naming_profile,
         )
 
     def delete(self, rssid: int | None) -> None:

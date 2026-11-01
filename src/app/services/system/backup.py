@@ -34,6 +34,8 @@ class BackupRestoreService:
         data_path = settings.data_path
         file_path = temp_manager.get_temp_path(filename)
         temp_dir = None
+        target_engine = None
+        source_engine = None
 
         try:
             # 1. 解压到临时目录
@@ -50,7 +52,7 @@ class BackupRestoreService:
             json_backup = os.path.join(temp_dir, "user_db_export.json")
             sqlite_backup = os.path.join(temp_dir, "user.db")
 
-            target_engine = DatabaseFactory.create_engine()
+            target_engine = DatabaseFactory.create_engine(pool_size=1, max_overflow=0)
 
             if os.path.exists(json_backup):
                 import_from_file(target_engine, json_backup)
@@ -58,11 +60,9 @@ class BackupRestoreService:
                 source_engine = create_engine(f"sqlite:///{sqlite_backup}?check_same_thread=False")
                 migrate_data = export_database(source_engine)
                 import_database(target_engine, migrate_data)
-                source_engine.dispose()
             else:
                 return BackupRestoreResultDTO(success=False, message="备份文件中未找到数据库文件")
 
-            target_engine.dispose()
             return BackupRestoreResultDTO(success=True, message="恢复成功")
 
         except (ServiceError, RepositoryError, DomainError):
@@ -72,6 +72,11 @@ class BackupRestoreService:
             return BackupRestoreResultDTO(success=False, message=str(e))
 
         finally:
+            # 恢复失败同样要释放连接池，避免残留连接占用 max_connections
+            if target_engine is not None:
+                target_engine.dispose()
+            if source_engine is not None:
+                source_engine.dispose()
             if os.path.exists(file_path):
                 os.remove(file_path)
             if temp_dir and os.path.exists(temp_dir):
@@ -96,11 +101,14 @@ def backup(full_backup=False, bk_path=None):
             shutil.copy(str(config_file), backup_path)
 
         db_type = DatabaseFactory._get_config_db_type()
-        engine = DatabaseFactory.create_engine()
-        if db_type == DatabaseFactory.SQLITE:
-            shutil.copy(f"{data_path}/user.db", backup_path)
-        export_to_file(engine, str(backup_path / "user_db_export.json"))
-        engine.dispose()
+        engine = DatabaseFactory.create_engine(pool_size=1, max_overflow=0)
+        try:
+            if db_type == DatabaseFactory.SQLITE:
+                shutil.copy(f"{data_path}/user.db", backup_path)
+            export_to_file(engine, str(backup_path / "user_db_export.json"))
+        finally:
+            # 备份失败也必须释放连接池，否则每次失败都会叠一层完整连接池（pool_size + max_overflow 条槽位）
+            engine.dispose()
 
         zip_file = str(backup_path) + ".zip"
         if os.path.exists(zip_file):

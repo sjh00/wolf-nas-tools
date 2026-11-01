@@ -75,9 +75,10 @@ class TestSubscribeFinishService:
         rss.NAME = "Test TV"
         rss.YEAR = "2024"
         rss.TMDBID = "456"
-        rss.TOTAL_EP = 10
+        rss.TOTAL = 12  # 该季总集数（历史展示取此值）
+        rss.TOTAL_EP = None  # 用户未填"总集数"
         rss.SEASON = "S01"
-        rss.CURRENT_EP = 1
+        rss.CURRENT_EP = 12  # 完成时已推进到末集
         tv_repo.get_all.return_value = [rss]
         history_repo = MagicMock()
         event_bus = MagicMock()
@@ -91,7 +92,30 @@ class TestSubscribeFinishService:
         media.to_dict.return_value = {}
         svc.finish_rss_subscribe(1, media, delete_fn)
         history_repo.upsert.assert_called_once()
+        upsert_kwargs = history_repo.upsert.call_args.kwargs
+        assert upsert_kwargs["total"] == 12  # 回归：此前取 TOTAL_EP(None) → 历史显示"共 0 集"
+        assert upsert_kwargs["start"] == 12
         delete_fn.assert_called_once_with(mtype=MediaType.TV, rssid=1)
+
+    def test_finish_tv_legacy_total_ep_fallback(self):
+        """TOTAL 为空（历史数据）时回退用 TOTAL_EP"""
+        tv_repo = MagicMock()
+        rss = MagicMock()
+        rss.NAME = "Legacy TV"
+        rss.YEAR = "2020"
+        rss.TMDBID = "789"
+        rss.TOTAL = None
+        rss.TOTAL_EP = 10
+        rss.SEASON = "S01"
+        rss.CURRENT_EP = 3
+        tv_repo.get_all.return_value = [rss]
+        history_repo = MagicMock()
+        svc = SubscribeFinishService(MagicMock(), tv_repo, history_repo, MagicMock(), MagicMock())
+        media = MagicMock()
+        media.type = MediaType.TV
+        media.to_dict.return_value = {}
+        svc.finish_rss_subscribe(1, media, MagicMock())
+        assert history_repo.upsert.call_args.kwargs["total"] == 10
 
     def test_finish_no_rss_found(self):
         movie_repo = MagicMock()
@@ -119,7 +143,7 @@ class TestSubscribeUpdateService:
         movie_repo.update.return_value = 0
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.title = "Test"
         media_info.year = "2024"
@@ -145,7 +169,7 @@ class TestSubscribeUpdateService:
         tv_repo = MagicMock()
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.TV
         media_info.title = "Test"
         media_info.year = "2024"
@@ -189,7 +213,7 @@ class TestSubscribeAddService:
         movie_repo.insert.return_value = 1
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.title = "Test"
         media_info.year = "2024"
@@ -218,7 +242,7 @@ class TestSubscribeAddService:
         tv_repo.insert.return_value = 2
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.TV
         media_info.title = "Test"
         media_info.year = "2024"
@@ -255,7 +279,7 @@ class TestSubscribeAddService:
         movie_repo.insert.return_value = 0
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.title = "Test"
         media_info.year = "2024"
@@ -281,7 +305,7 @@ class TestSubscribeAddService:
         movie_repo.insert.return_value = 9
         media_service = MagicMock()
         media_info = MagicMock()
-        media_info.tmdb_info = {"id": 1}
+        media_info.provider_data = {"id": 1}
         media_info.type = MediaType.MOVIE
         media_info.to_dict.return_value = {}
         media_service.get_media_info.return_value = media_info
@@ -426,8 +450,25 @@ class TestSubscribeService:
         media.res_order = 10
         media.filter_rule = "1"
         svc = _make_subscribe_service(movie_repo=movie_repo, filter_service=filter_service)
-        with patch.object(svc, "finish_rss_subscribe") as mock_finish:
+        with (
+            patch.object(svc, "finish_rss_subscribe") as mock_finish,
+            patch.object(svc, "update_rss_state") as mock_update,
+        ):
             result = svc.update_subscribe_over_edition(MediaType.MOVIE, 1, media)
+            assert result is True
+            mock_finish.assert_not_called()
+            mock_update.assert_called_once_with(rtype=MediaType.MOVIE, rssid=1, state="C")
+
+    def test_update_subscribe_over_edition_tv_still_finishes(self):
+        tv_repo = MagicMock()
+        filter_service = MagicMock()
+        filter_service.get_rule_first_order.return_value = 5
+        media = MagicMock()
+        media.res_order = 10
+        media.filter_rule = "1"
+        svc = _make_subscribe_service(tv_repo=tv_repo, filter_service=filter_service)
+        with patch.object(svc, "finish_rss_subscribe") as mock_finish:
+            result = svc.update_subscribe_over_edition(MediaType.TV, 1, media)
             assert result is True
             mock_finish.assert_called_once()
 

@@ -4,6 +4,7 @@ Handles brush task and torrent related database operations.
 """
 
 import time
+import typing
 from typing import Any
 
 from sqlalchemy import BigInteger, Integer, and_, case, cast, func, or_
@@ -46,11 +47,12 @@ class BrushRepository(BaseRepository):
                         DAILY_DELETE_LIMIT=item.get("daily_delete_limit", ""),
                         MAX_SEEDING=item.get("max_seeding", ""),
                         HR_LIMIT=item.get("hr_limit", ""),
-                        RSSURL=item.get("rssurl"),
+                        RSSURL=item.get("rssurl") or "",
                         INTEVAL=item.get("interval"),
                         DOWNLOADER=item.get("downloader"),
-                        LABEL=item.get("label"),
-                        SAVEPATH=item.get("savepath"),
+                        LABEL=item.get("label") or "",
+                        # NOT NULL 列：None 会触发约束错误（如「保存目录」留空）
+                        SAVEPATH=item.get("savepath") or "",
                         TRANSFER=item.get("transfer"),
                         DOWNLOAD_COUNT=0,
                         REMOVE_COUNT=0,
@@ -62,7 +64,7 @@ class BrushRepository(BaseRepository):
                     )
                 )
             else:
-                db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).update(
+                db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(brush_id)).update(
                     {
                         "NAME": item.get("name"),
                         "SITE": item.get("site"),
@@ -82,11 +84,12 @@ class BrushRepository(BaseRepository):
                         "DAILY_DELETE_LIMIT": item.get("daily_delete_limit", ""),
                         "MAX_SEEDING": item.get("max_seeding", ""),
                         "HR_LIMIT": item.get("hr_limit", ""),
-                        "RSSURL": item.get("rssurl"),
+                        "RSSURL": item.get("rssurl") or "",
                         "INTEVAL": item.get("interval"),
                         "DOWNLOADER": item.get("downloader"),
-                        "LABEL": item.get("label"),
-                        "SAVEPATH": item.get("savepath"),
+                        "LABEL": item.get("label") or "",
+                        # NOT NULL 列：None 会触发约束错误（如「保存目录」留空）
+                        "SAVEPATH": item.get("savepath") or "",
                         "TRANSFER": item.get("transfer"),
                         "STATE": item.get("state"),
                         "LST_MOD_DATE": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
@@ -99,7 +102,7 @@ class BrushRepository(BaseRepository):
         删除刷流任务
         """
         with self.session() as db:
-            db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).delete()
+            db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(brush_id)).delete()
             db.query(SITEBRUSHTORRENTS).filter(cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == brush_id).delete()
             db.query(BRUSHEVENTLOG).filter(cast(BRUSHEVENTLOG.TASK_ID, Integer) == brush_id).delete()
 
@@ -109,7 +112,7 @@ class BrushRepository(BaseRepository):
         """
         with self.session() as db:
             if brush_id:
-                return db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).first()
+                return db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(brush_id)).first()
             else:
                 # LEFT JOIN：站点被删除或 ID 不匹配时任务仍须返回，
                 # 否则重启后 load_brushtasks 查不到该任务（新建任务丢失）
@@ -142,7 +145,7 @@ class BrushRepository(BaseRepository):
     def update_brushtask_site(self, brush_id: int, site_id: str) -> None:
         """修正刷流任务站点标识为 DB 主键 id（历史配置 id 数据迁移）."""
         with self.session() as db:
-            db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).update({"SITE": site_id})
+            db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(brush_id)).update({"SITE": site_id})
 
     def update_brushtask_state(self, state: str, tid: int | None = None) -> None:
         """
@@ -151,7 +154,7 @@ class BrushRepository(BaseRepository):
         normalized = BrushTaskState.from_value(state).value
         with self.session() as db:
             if tid:
-                db.query(SITEBRUSHTASK).filter(int(tid) == SITEBRUSHTASK.ID).update({"STATE": normalized})
+                db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(tid)).update({"STATE": normalized})
             else:
                 db.query(SITEBRUSHTASK).update({"STATE": normalized})
 
@@ -162,14 +165,14 @@ class BrushRepository(BaseRepository):
         if not brush_id:
             return
         with self.session() as db:
-            db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).update(
+            db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(brush_id)).update(
                 {
                     "DOWNLOAD_COUNT": SITEBRUSHTASK.DOWNLOAD_COUNT + 1,
                     "LST_MOD_DATE": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
                 }
             )
 
-    def get_brushtask_remove_size(self, brush_id: int | None) -> list[tuple]:
+    def get_brushtask_remove_size(self, brush_id: int | None) -> list:
         """
         获取已删除种子的上传量
         """
@@ -205,7 +208,7 @@ class BrushRepository(BaseRepository):
                 delete_upsize += int(remove_size[0])
 
         with self.session() as db:
-            db.query(SITEBRUSHTASK).filter(int(brush_id) == SITEBRUSHTASK.ID).update(
+            db.query(SITEBRUSHTASK).filter(SITEBRUSHTASK.ID == int(brush_id)).update(
                 {
                     "REMOVE_COUNT": SITEBRUSHTASK.REMOVE_COUNT + remove_count,
                     "UPLOAD_SIZE": int(upload_size) + delete_upsize,
@@ -282,7 +285,7 @@ class BrushRepository(BaseRepository):
             return (
                 db.query(SITEBRUSHTORRENTS)
                 .filter(
-                    enclosure == SITEBRUSHTORRENTS.ENCLOSURE,
+                    SITEBRUSHTORRENTS.ENCLOSURE == enclosure,
                     SITEBRUSHTORRENTS.DOWNLOAD_ID != "0",
                 )
                 .first()
@@ -315,8 +318,8 @@ class BrushRepository(BaseRepository):
                 db.query(SITEBRUSHTORRENTS)
                 .filter(
                     cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == brush_id,
-                    title == SITEBRUSHTORRENTS.TORRENT_NAME,
-                    enclosure == SITEBRUSHTORRENTS.ENCLOSURE,
+                    SITEBRUSHTORRENTS.TORRENT_NAME == title,
+                    SITEBRUSHTORRENTS.ENCLOSURE == enclosure,
                     SITEBRUSHTORRENTS.DOWNLOAD_ID != "0",
                 )
                 .count()
@@ -344,6 +347,14 @@ class BrushRepository(BaseRepository):
                 {"TORRENT_SIZE": case_stmt, "DOWNLOAD_ID": "0"}, synchronize_session=False
             )
 
+    def update_brushtask_torrent_pause_reason(self, brush_id: int, download_id: str, reason: str) -> None:
+        """记录系统暂停原因，仅 free_end 种子允许自动恢复。"""
+        with self.session() as db:
+            db.query(SITEBRUSHTORRENTS).filter(
+                cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == int(brush_id),
+                SITEBRUSHTORRENTS.DOWNLOAD_ID == download_id,
+            ).update({"PAUSE_REASON": reason or ""}, synchronize_session=False)
+
     def delete_brushtask_torrent(self, brush_id: int | None, download_id: str | None) -> None:
         """
         删除刷流种子记录
@@ -352,7 +363,7 @@ class BrushRepository(BaseRepository):
             return
         with self.session() as db:
             db.query(SITEBRUSHTORRENTS).filter(
-                cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == brush_id, download_id == SITEBRUSHTORRENTS.DOWNLOAD_ID
+                cast(SITEBRUSHTORRENTS.TASK_ID, Integer) == brush_id, SITEBRUSHTORRENTS.DOWNLOAD_ID == download_id
             ).delete()
 
     # ---------- 刷流规则模板 ----------
@@ -394,13 +405,13 @@ class BrushRepository(BaseRepository):
         if updates:
             updates["LST_MOD_DATE"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
             with self.session() as db:
-                db.query(SITEBRUSHRULE).filter(int(rule_id) == SITEBRUSHRULE.ID).update(updates)
+                db.query(SITEBRUSHRULE).filter(SITEBRUSHRULE.ID == int(rule_id)).update(typing.cast(Any, updates))
 
     def get_brushrules(self, rule_id: int | None = None, rule_type: str | None = None):
         """查询刷流规则模板。"""
         with self.session() as db:
             if rule_id:
-                return db.query(SITEBRUSHRULE).filter(int(rule_id) == SITEBRUSHRULE.ID).first()
+                return db.query(SITEBRUSHRULE).filter(SITEBRUSHRULE.ID == int(rule_id)).first()
             query = db.query(SITEBRUSHRULE).order_by(SITEBRUSHRULE.ID.desc())
             if rule_type:
                 query = query.filter(SITEBRUSHRULE.TYPE == rule_type)
@@ -411,7 +422,7 @@ class BrushRepository(BaseRepository):
         with self.session() as db:
             for col in ["RSS_RULE_ID", "REMOVE_RULE_ID", "STOP_RULE_ID"]:
                 db.query(SITEBRUSHTASK).filter(int(rule_id) == getattr(SITEBRUSHTASK, col)).update({col: None})
-            db.query(SITEBRUSHRULE).filter(int(rule_id) == SITEBRUSHRULE.ID).delete()
+            db.query(SITEBRUSHRULE).filter(SITEBRUSHRULE.ID == int(rule_id)).delete()
 
     # ---------- 事件日志 ----------
 

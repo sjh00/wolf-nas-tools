@@ -313,7 +313,7 @@ class TestTransferCleanupService:
         backend = MagicMock()
         backend.exists.return_value = True
 
-        with patch.object(cleanup, "_resolve_backend_by_id", return_value=backend):
+        with patch.object(cleanup._files, "resolve_backend_by_id", return_value=backend):
             cleanup.delete_media_file("/movies", "movie.mp4", "local")
 
         backend.remove.assert_called_once()
@@ -334,7 +334,7 @@ class TestTransferCleanupService:
         backend = MagicMock()
         backend.exists.return_value = False
 
-        with patch.object(cleanup, "_resolve_backend_by_id", return_value=backend):
+        with patch.object(cleanup._files, "resolve_backend_by_id", return_value=backend):
             with pytest.raises(ResourceNotFoundError):
                 cleanup.delete_media_file("/movies", "movie.mp4", "local")
 
@@ -361,8 +361,137 @@ class TestTransferCleanupService:
             mock_delete.return_value = (True, "deleted")
             cleanup.delete_history([1], flag="del_source")
 
-        history.delete_transfer_logs.assert_called_once_with([1])
+        # 删除源文件必须保留历史，避免同步任务把仍在下载目录的源文件重新转移。
+        history.delete_transfer_logs.assert_not_called()
         mock_delete.assert_called_once_with("/src", "file.mkv")
+
+    def test_delete_records_only_removes_database_rows(self):
+        history = MagicMock()
+        record = MagicMock()
+        record.ID = 1
+        record.SOURCE_PATH = "/src"
+        record.SOURCE_FILENAME = "file.mkv"
+        history.get_transfer_info_by_id.return_value = record
+        cleanup = TransferCleanupService(
+            history,
+            MagicMock(),
+            media_service=MagicMock(),
+            message=MagicMock(),
+            event_bus=MagicMock(),
+        )
+
+        with patch.object(cleanup, "delete_media_file") as mock_delete:
+            result = cleanup.delete_records([1])
+
+        assert result == [{"id": 1, "status": "deleted", "message": ""}]
+        history.delete_transfer_logs.assert_called_once_with([1])
+        history.delete_transfer_blacklist.assert_called_once_with("/src/file.mkv")
+        mock_delete.assert_not_called()
+
+    def test_delete_record_files_keeps_history_and_updates_state(self, tmp_path):
+        source = tmp_path / "source.mkv"
+        source.write_bytes(b"x")
+        dest_dir = tmp_path / "library"
+        dest_dir.mkdir()
+        dest = dest_dir / "dest.mkv"
+        dest.write_bytes(b"x")
+
+        history = MagicMock()
+        record = MagicMock()
+        record.ID = 7
+        record.SOURCE_PATH = str(tmp_path)
+        record.SOURCE_FILENAME = "source.mkv"
+        record.DEST_PATH = str(dest_dir)
+        record.DEST_FILENAME = "dest.mkv"
+        record.DST_BACKEND = "local"
+        record.SOURCE_STATE = "present"
+        record.DEST_STATE = "present"
+        record.SOURCE_DELETED_AT = None
+        record.DEST_DELETED_AT = None
+        record.SOURCE = "local"
+        record.media_type = "movie"
+        record.CATEGORY = "movie"
+        record.TITLE = "Movie"
+        record.YEAR = "2024"
+        record.tmdb_id = 1
+        record.SEASON_EPISODE = ""
+        record.DEST = ""
+        history.get_transfer_info_by_id.return_value = record
+
+        cleanup = TransferCleanupService(
+            history,
+            MagicMock(is_target_dir_path=lambda _path: True),
+            media_service=MagicMock(),
+            message=MagicMock(),
+            event_bus=MagicMock(),
+        )
+
+        result = cleanup.delete_record_files([7], ["source"])
+
+        assert not source.exists()
+        assert dest.exists()
+        assert result[0]["status"] == "deleted"
+        history.delete_transfer_logs.assert_not_called()
+        kwargs = history.update_transfer_file_state.call_args.kwargs
+        assert kwargs["source_state"] == "deleted"
+        assert kwargs["source_deleted_at"]
+
+    def test_check_record_files_persists_checked_at(self, tmp_path):
+        source = tmp_path / "present.mkv"
+        source.write_bytes(b"x")
+
+        history = MagicMock()
+        record = MagicMock()
+        record.ID = 10
+        record.SOURCE_PATH = str(tmp_path)
+        record.SOURCE_FILENAME = "present.mkv"
+        record.DEST_PATH = ""
+        record.DEST_FILENAME = ""
+        record.SOURCE_STATE = "present"
+        record.DEST_STATE = "unknown"
+        record.SOURCE_DELETED_AT = None
+        record.DEST_DELETED_AT = None
+        record.DEST = ""
+        history.get_transfer_info_by_id.return_value = record
+
+        cleanup = TransferCleanupService(
+            history,
+            MagicMock(),
+            media_service=MagicMock(),
+            message=MagicMock(),
+            event_bus=MagicMock(),
+        )
+
+        result = cleanup.check_record_files([10])
+
+        assert result[0]["state"] == "present"
+        assert any(call.kwargs.get("files_checked_at") for call in history.update_transfer_file_state.call_args_list)
+
+    def test_delete_record_files_skips_missing_file(self, tmp_path):
+        history = MagicMock()
+        record = MagicMock()
+        record.ID = 8
+        record.SOURCE_PATH = str(tmp_path)
+        record.SOURCE_FILENAME = "missing.mkv"
+        record.SOURCE_STATE = "present"
+        record.SOURCE_DELETED_AT = None
+        record.DEST_PATH = ""
+        record.DEST_FILENAME = ""
+        history.get_transfer_info_by_id.return_value = record
+
+        cleanup = TransferCleanupService(
+            history,
+            MagicMock(),
+            media_service=MagicMock(),
+            message=MagicMock(),
+            event_bus=MagicMock(),
+        )
+
+        result = cleanup.delete_record_files([8], ["source"])
+
+        assert result[0]["status"] == "skipped"
+        history.delete_transfer_logs.assert_not_called()
+        history.update_transfer_file_state.assert_called_once_with(8, source_state="missing", source_deleted_at=None)
 
 
 class TestFileTransferService:
@@ -442,10 +571,62 @@ class TestFileTransferService:
         assert "没有新文件需要处理" in msg
 
     def test_discover_files_single_media_file(self, mock_service):
-        with patch("os.path.isdir", return_value=False), patch("os.path.exists", return_value=True):
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=200 * 1024 * 1024),
+        ):
             bluray, files = mock_service._discover_files("/downloads/movie.mkv", None, (None, False), None)
         assert bluray is None
         assert files == ["/downloads/movie.mkv"]
+
+    def test_discover_files_single_small_file_skipped(self, mock_service):
+        """单个广告/样本文件低于最小限制时不得进入识别与转移."""
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=15 * 1024 * 1024),
+        ):
+            bluray, files = mock_service._discover_files("/downloads/ad.mp4", None, (None, False), None)
+        assert bluray is None
+        assert files == []
+
+    def test_discover_files_explicit_small_file_skipped(self, mock_service, tmp_path):
+        """显式文件列表也必须执行最小大小过滤，避免广告文件进入识别."""
+        small = tmp_path / "ad.mp4"
+        small.write_bytes(b"x")
+        big = tmp_path / "movie.mkv"
+        big.write_bytes(b"x" * (151 * 1024 * 1024))
+        bluray, files = mock_service._discover_files(str(tmp_path), [str(small), str(big)], (None, False), None)
+        assert bluray is None
+        assert files == [str(big)]
+
+    def test_discover_files_explicit_incomplete_dir_skipped(self, mock_service, tmp_path):
+        """显式列表中的未完成目录（.xltd）同样跳过."""
+        incomplete = tmp_path / "Movie.mp4"
+        incomplete.mkdir()
+        (incomplete / "part.xltd").write_bytes(b"x")
+        bluray, files = mock_service._discover_files(str(tmp_path), [str(incomplete)], (None, False), None)
+        assert bluray is None
+        assert files == []
+
+    def test_discover_files_xunlei_incomplete_dir(self, mock_service, tmp_path):
+        """迅雷未完成目录（媒体后缀目录 + .xltd）不得进入识别."""
+        source = tmp_path / "incomplete.mp4"
+        source.mkdir()
+        (source / "part.xltd").write_text("", encoding="utf-8")
+        (source / "ad.mp4").write_text("", encoding="utf-8")
+        bluray, files = mock_service._discover_files(str(source), None, (None, False), None)
+        assert bluray is None
+        assert files == []
+
+    def test_filter_obvious_extras_keeps_main_feature(self, mock_service):
+        files = ["/d/Movie.mkv", "/d/Movie.sample.mkv", "/d/Movie-trailer.mkv"]
+        assert mock_service._filter_obvious_extras(files) == ["/d/Movie.mkv"]
+
+    def test_filter_obvious_extras_keeps_list_when_all_are_extras(self, mock_service):
+        files = ["/d/sample.mkv", "/d/trailer.mkv"]
+        assert mock_service._filter_obvious_extras(files) == files
 
     def test_discover_files_directory(self, mock_service):
         with (
@@ -503,6 +684,36 @@ class TestFileTransferService:
         mock_service._transfer_post_process(result, SyncType.MAN, "/src", "copy", False)
         mock_service._event_bus.publish.assert_called()
         mock_service.message.send_transfer_fail_message.assert_called_once()
+
+    def test_transfer_post_process_fills_missing_reason(self, mock_service):
+        """失败分支未写 error_message 时用 alert_messages 兜底，避免上游日志出现空原因."""
+        result = {
+            "total_count": 2,
+            "failed_count": 2,
+            "alert_count": 2,
+            "alert_messages": ["无法识别媒体信息", "无法识别媒体信息"],
+            "message_medias": {},
+            "success_flag": False,
+            "error_message": "",
+        }
+        ok, msg = mock_service._transfer_post_process(result, SyncType.MAN, "/src", "link", False)
+        assert ok is False
+        assert msg == "无法识别媒体信息"
+
+    def test_transfer_post_process_reason_fallback_without_alerts(self, mock_service):
+        """既无 error_message 也无 alert_messages 时，仍给出可读的失败原因."""
+        result = {
+            "total_count": 3,
+            "failed_count": 3,
+            "alert_count": 0,
+            "alert_messages": [],
+            "message_medias": {},
+            "success_flag": False,
+            "error_message": "",
+        }
+        ok, msg = mock_service._transfer_post_process(result, SyncType.MAN, "/src", "link", False)
+        assert ok is False
+        assert msg == "3 个文件转移失败"
 
     def test_transfer_post_process_success_move_cleanup(self, mock_service):
         result = {
@@ -626,7 +837,7 @@ class TestFileTransferService:
         media.type = MediaType.ANIME
         media.begin_season = 1
         media.begin_episode = None
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
 
         captured = {}
 
@@ -658,7 +869,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
                 fallback_episode=7,
@@ -674,7 +885,7 @@ class TestFileTransferService:
         media.type = MediaType.ANIME
         media.begin_season = 1
         media.begin_episode = 6
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
 
         captured = {}
 
@@ -706,7 +917,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
                 fallback_episode=7,
@@ -723,7 +934,7 @@ class TestFileTransferService:
         media.begin_season = 1
         media.begin_episode = None
         media.tmdb_id = 1
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
         media.get_title_string.return_value = "Some Anime"
 
         with (
@@ -747,7 +958,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
             )
@@ -763,7 +974,7 @@ class TestFileTransferService:
         media.begin_season = 1
         media.begin_episode = 6
         media.tmdb_id = 1
-        media.tmdb_info = {"id": 1}
+        media.provider_data = {"id": 1}
         media.get_title_string.return_value = "Some Anime"
 
         with (
@@ -787,7 +998,7 @@ class TestFileTransferService:
                 SyncType.MAN,
                 unique_path,
                 operation="copy",
-                tmdb_info={"id": 1},
+                provider_data={"id": 1},
                 media_type="tv",
                 season=1,
             )

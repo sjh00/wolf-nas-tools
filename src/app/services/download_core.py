@@ -13,6 +13,7 @@ DownloadCore - 下载核心业务逻辑
 
 import os
 import threading
+import time
 from typing import Any
 
 import log
@@ -56,6 +57,9 @@ _EPISODE_CACHE_TTL = 300
 _DOWNLOAD_FAIL_TTL = 600
 # 站点明确拒绝（如限额/不可重试）后的短路时长（秒），避免持续消耗站点配额
 _DOWNLOAD_UNRETRYABLE_TTL = 6 * 3600
+
+# 链接单飞锁数量上限，超过后清理未占用的锁避免字典无限增长
+_LINK_LOCKS_MAX = 1024
 
 
 class DownloadCore:
@@ -125,6 +129,10 @@ class DownloadCore:
         with self._link_locks_guard:
             lock = self._link_locks.get(key)
             if lock is None:
+                # 上限保护：超过阈值时清理未被占用的锁，避免长期运行字典无限增长
+                if len(self._link_locks) >= _LINK_LOCKS_MAX:
+                    for k in [k for k, v in self._link_locks.items() if not v.locked()]:
+                        self._link_locks.pop(k, None)
                 lock = threading.Lock()
                 self._link_locks[key] = lock
             return lock
@@ -353,6 +361,10 @@ class DownloadCore:
                     downloader_id=downloader_id, ids=ids
                 ),
                 return_items=download_items,
+                get_torrent_episodes_by_tid_callback=self.get_torrent_episodes_by_tid,
+                remove_torrents_callback=lambda ids, downloader_id: self.delete_torrents(
+                    downloader_id=downloader_id, ids=ids, delete_file=False
+                ),
             )
 
         left_medias = [item for item in media_list if item not in download_items]
@@ -601,7 +613,11 @@ class DownloadCore:
                 proxy=site_info.get("proxy") or False,
             )
             if not files:
-                log.error(f"[Downloader]读取种子文件集数出错：{retmsg}")
+                if str(url).startswith("magnet:"):
+                    # 磁力链接无文件清单属正常情况：加入下载器后再读取（见 get_torrent_episodes_by_tid）
+                    log.debug(f"[Downloader]磁力链接无文件清单，跳过预解析：{str(url)[:80]}...")
+                else:
+                    log.error(f"[Downloader]读取种子文件集数出错：{retmsg}")
                 if file_path:
                     Torrent.delete_torrent_file(file_path)
                 self._episode_cache.set(cache_key, ([], None))
@@ -616,6 +632,33 @@ class DownloadCore:
                 episodes = list(set(episodes).union(set(meta.get_episode_list())))
             self._episode_cache.set(cache_key, (list(episodes), file_path))
             return episodes, file_path
+
+    def get_torrent_episodes_by_tid(self, tid, downloader_id=None, page_url=None, timeout: float = 15.0) -> list:
+        """磁力等无文件清单的场景：任务加入下载器后读取其解析出的文件清单并解析集数。
+
+        轮询等待下载器取回元数据（默认最多 15s），解析不到则返回空列表（调用方按整包处理）。
+        """
+        delay = 0.5
+        waited = 0.0
+        files = None
+        while waited < timeout:
+            files = self.get_files(tid=tid, downloader_id=downloader_id)
+            if files:
+                break
+            time.sleep(delay)
+            waited += delay
+        if not files:
+            return []
+        episodes: list = []
+        for f in files:
+            name = f.get("name") if isinstance(f, dict) else None
+            if not name or os.path.splitext(name)[-1].lower() not in RMT_MEDIAEXT:
+                continue
+            meta = meta_info(name)
+            if not meta.begin_episode:
+                continue
+            episodes = list(set(episodes).union(set(meta.get_episode_list())))
+        return episodes
 
     # ---------- 历史记录 / 配置 CRUD 代理 ----------
 

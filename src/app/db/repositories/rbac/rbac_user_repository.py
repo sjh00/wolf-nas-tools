@@ -177,7 +177,7 @@ class RBACUserRepository(BaseRepository):
         password_hash: str,
         email: str | None = None,
         nickname: str | None = None,
-    ) -> RBACUser:
+    ) -> RBACUser | None:
         """
         创建新用户
 

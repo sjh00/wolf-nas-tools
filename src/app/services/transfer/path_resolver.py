@@ -8,9 +8,13 @@ from typing import Any
 import log
 from app.core.constants import DEFAULT_MOVIE_FORMAT, DEFAULT_TV_FORMAT
 from app.core.settings import settings
-from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepositoryAdapter
 from app.domain.mediatypes import MediaType
+from app.media.metadata.naming import (
+    list_naming_profiles,
+    naming_field_keys,
+    render_naming_fields,
+)
 from app.services.media_config_service import MediaConfigService
 from app.services.transfer.name_format import render
 from app.storage import StorageBackendFactory
@@ -18,6 +22,17 @@ from app.storage.backends.base import StorageConfig, StorageType
 from app.storage.backends.local import LocalStorageBackend
 from app.storage.config_models import LocalStorageConfig
 from app.utils import NumberUtils, PathUtils, StringUtils, SystemUtils
+
+
+def safe_category_name(value: Any) -> str:
+    """分类目录只允许单段相对名称，避免子目录/路径穿越."""
+    category = str(value or "").strip()
+    if not category or category in {".", ".."}:
+        return ""
+    if "/" in category or "\\" in category or ":" in category:
+        log.warn(f"[TransferPathResolver]忽略非法分类目录名: {category!r}")
+        return ""
+    return category
 
 
 class TransferPathResolver:
@@ -72,12 +87,10 @@ class TransferPathResolver:
         storage_backend_repo: StorageBackendRepositoryAdapter | None = None,
     ) -> "TransferPathResolver":
         """从全局配置构造解析器."""
-        adapter = CategoryConfigRepositoryAdapter()
-        entities = adapter.get_all()
-        movie_flag = any(e.media_type == "movie" for e in entities)
-        tv_flag = any(e.media_type == "tv" for e in entities)
-        anime_flag = any(e.media_type == "anime" for e in entities)
         media_cfg = media_config_service.get_config()
+        movie_flag = media_cfg.get("movie_layout") == MediaConfigService.LAYOUT_CATEGORY
+        tv_flag = media_cfg.get("tv_layout") == MediaConfigService.LAYOUT_CATEGORY
+        anime_flag = media_cfg.get("anime_layout") == MediaConfigService.LAYOUT_CATEGORY
         media = settings.get("media")
 
         movie_path = media_cfg.get("movie_path") or []
@@ -201,6 +214,18 @@ class TransferPathResolver:
     @property
     def anime_category_flag(self):
         return self._anime_category_flag
+
+    @property
+    def movie_layout(self) -> str:
+        return MediaConfigService.LAYOUT_CATEGORY if self._movie_category_flag else MediaConfigService.LAYOUT_FLAT
+
+    @property
+    def tv_layout(self) -> str:
+        return MediaConfigService.LAYOUT_CATEGORY if self._tv_category_flag else MediaConfigService.LAYOUT_FLAT
+
+    @property
+    def anime_layout(self) -> str:
+        return MediaConfigService.LAYOUT_CATEGORY if self._anime_category_flag else MediaConfigService.LAYOUT_FLAT
 
     # ---------- 路径判断 ----------
 
@@ -372,8 +397,8 @@ class TransferPathResolver:
 
     # ---------- 格式化 ----------
 
-    def get_format_dict(self, media, media_service=None) -> dict:
-        """根据媒体信息，返回 Format 字典."""
+    def get_format_dict(self, media, media_service=None, snapshot=None) -> dict:
+        """根据媒体信息/快照，返回 Format 字典."""
         if not media:
             return {}
         if media_service is None and re.search(
@@ -394,46 +419,68 @@ class TransferPathResolver:
             )
         episode_title = media_service.get_episode_title(media) if media_service else ""
         en_title = media_service.get_tmdb_en_title(media) if media_service else ""
-        media_format_dict = {
-            "title": StringUtils.clear_file_name(media.title),
-            "en_title": StringUtils.clear_file_name(en_title),
-            "original_name": StringUtils.clear_file_name(os.path.splitext(media.org_string or "")[0]),
-            "rev_name": StringUtils.clear_file_name(os.path.splitext(media.rev_string or "")[0]),
-            "original_title": StringUtils.clear_file_name(media.original_title),
-            "name": StringUtils.clear_file_name(media.get_name()),
-            "year": self._resolve_year(media),
-            "edition": media.get_edtion_string() or None,
-            "videoFormat": media.resource_pix,
-            "source": media.resource_type,
-            "releaseGroup": media.resource_team,
-            "customization": media.customization,
-            "effect": media.resource_effect,
-            "videoCodec": media.video_encode,
-            "audioCodec": media.audio_encode,
-            "tmdbid": media.tmdb_id,
-            "imdbid": media.imdb_id,
-            "media_type": media.type.value if media.type else None,
-            "category": media.category,
-            "season": media.get_season_seq(),
-            "episode": media.get_episode_seqs(),
-            "episode_title": StringUtils.clear_file_name(episode_title),
-            "season_episode": f"{media.get_season_item()}{media.get_episode_items()}",
-            "part": media.part,
-        }
+        provider, provider_id = _snapshot_provider(snapshot) if snapshot else _media_provider(media)
+        media_format_dict = render_naming_fields(media, snapshot)
+        media_format_dict.update(
+            {
+                "title": StringUtils.clear_file_name(_snapshot_value(snapshot, "title", media.title)),
+                "en_title": StringUtils.clear_file_name(en_title),
+                "original_name": StringUtils.clear_file_name(os.path.splitext(media.org_string or "")[0]),
+                "rev_name": StringUtils.clear_file_name(os.path.splitext(media.rev_string or "")[0]),
+                "original_title": StringUtils.clear_file_name(
+                    _snapshot_value(snapshot, "original_title", media.original_title)
+                ),
+                "name": StringUtils.clear_file_name(media.get_name()),
+                "year": self._resolve_year(media, snapshot),
+                "edition": media.get_edtion_string() or None,
+                "videoFormat": media.resource_pix,
+                "source": media.resource_type,
+                "releaseGroup": media.resource_team,
+                "customization": media.customization,
+                "effect": media.resource_effect,
+                "videoCodec": media.video_encode,
+                "audioCodec": media.audio_encode,
+                "tmdbid": _snapshot_ref(snapshot, "tmdb") or media.tmdb_id,
+                "imdbid": _snapshot_ref(snapshot, "imdb") or media.imdb_id,
+                "doubanid": _snapshot_ref(snapshot, "douban") or getattr(media, "douban_id", None),
+                "bgmid": provider_id if provider == "bangumi" else _snapshot_ref(snapshot, "bangumi"),
+                "provider": provider,
+                "provider_id": provider_id,
+                "content_profile": (
+                    snapshot.content_profile if snapshot else ("anime" if media.type == MediaType.ANIME else "default")
+                ),
+                "release_date": _snapshot_value(snapshot, "release_date", getattr(media, "release_date", None)),
+                "rating_douban": _snapshot_rating(snapshot, "douban"),
+                "rating_tmdb": _snapshot_rating(snapshot, "tmdb"),
+                "media_type": media.type.value if media.type else None,
+                "category": media.category,
+                "season": media.get_season_seq(),
+                "episode": media.get_episode_seqs(),
+                "episode_title": StringUtils.clear_file_name(episode_title),
+                "season_episode": f"{media.get_season_item()}{media.get_episode_items()}",
+                "part": media.part,
+            }
+        )
+        for key in naming_field_keys():
+            media_format_dict.setdefault(key, "\t")
+        for i in media_format_dict:
+            if not media_format_dict[i]:
+                media_format_dict[i] = "\t"
+        return media_format_dict
         for i in media_format_dict:
             if not media_format_dict[i]:
                 media_format_dict[i] = "\t"
         return media_format_dict
 
     @staticmethod
-    def _resolve_year(media) -> str | None:
-        """优先用已识别年份；缺失时从 TMDB 详情/上映日补齐，避免目录变成「片名 ()」。"""
-        year = getattr(media, "year", None)
+    def _resolve_year(media, snapshot=None) -> str | None:
+        """优先用已识别/快照年份；缺失时从 TMDB 详情/上映日补齐，避免目录变成「片名 ()」。"""
+        year = _snapshot_value(snapshot, "year", getattr(media, "year", None))
         if year and str(year).strip() not in ("", "\t"):
             return str(year).strip()
         info = getattr(media, "tmdb_info", None) or {}
         date = (
-            getattr(media, "release_date", None)
+            _snapshot_value(snapshot, "release_date", getattr(media, "release_date", None))
             or info.get("release_date")
             or info.get("first_air_date")
             or ""
@@ -446,9 +493,31 @@ class TransferPathResolver:
             return filled
         return year
 
-    def get_movie_dest_path(self, media_info, media_service=None):
+    def _profile_movie_format(self, media_info) -> str:
+        profile_key = str(getattr(media_info, "content_profile", "") or "")
+        if profile_key in ("", "default"):
+            return ""
+        for profile in list_naming_profiles():
+            if profile.content_profile != profile_key:
+                continue
+            return profile.templates.get("movie") or profile.default_movie
+        return ""
+
+    def get_movie_dest_path(self, media_info, media_service=None, snapshot=None):
         """计算电影文件路径."""
-        format_dict = self.get_format_dict(media_info, media_service)
+        format_dict = self.get_format_dict(media_info, media_service, snapshot)
+        profile_format = self._profile_movie_format(media_info)
+        if profile_format:
+            rendered = render(profile_format, format_dict).strip("/")
+            dir_name, file_name = os.path.split(rendered)
+            source = str(getattr(media_info, "org_string", "") or "")
+            part = re.search(
+                r"(?i)((?:cd|part|pt|disk|disc|dvd)[1-9a-d])$",
+                os.path.splitext(os.path.basename(source))[0],
+            )
+            if part and not file_name.lower().endswith(part.group(1).lower()):
+                file_name = f"{file_name}-{part.group(1)}"
+            return dir_name, file_name
         dir_name = render(self._movie_dir_rmt_format, format_dict)
         file_name = render(self._movie_file_rmt_format, format_dict)
         # 额外内容/花絮：归档到 <主目录>/extras/ 子目录，与正片分离
@@ -457,9 +526,14 @@ class TransferPathResolver:
             dir_name = os.path.join(dir_name, "extras")
         return dir_name, file_name
 
-    def get_tv_dest_path(self, media_info, media_service=None):
+    @staticmethod
+    def _set_naming_default(format_dict: dict, key: str, value: str) -> None:
+        if format_dict.get(key) in (None, "", "\t"):
+            format_dict[key] = value
+
+    def get_tv_dest_path(self, media_info, media_service=None, snapshot=None):
         """计算电视剧文件路径."""
-        format_dict = self.get_format_dict(media_info, media_service)
+        format_dict = self.get_format_dict(media_info, media_service, snapshot)
         dir_name = render(self._tv_dir_rmt_format, format_dict)
         season_name = render(self._tv_season_rmt_format, format_dict)
         file_name = render(self._tv_file_rmt_format, format_dict)
@@ -469,26 +543,74 @@ class TransferPathResolver:
             season_name = "extras"
         return dir_name, season_name, file_name
 
-    def get_dest_path_by_info(self, dest, meta_info, media_service):
+    def get_dest_path_by_info(self, dest, meta_info, media_service, snapshot=None):
         """拼装转移重命名后的新文件地址."""
         if not dest or not meta_info:
             return None
+        category = safe_category_name(getattr(meta_info, "category", ""))
         if meta_info.type == MediaType.MOVIE:
-            dir_name, _ = self.get_movie_dest_path(meta_info, media_service)
-            if self._movie_category_flag:
-                return os.path.join(dest, meta_info.category, dir_name)
-            else:
-                return os.path.join(dest, dir_name)
-        else:
-            dir_name, season_name, _ = self.get_tv_dest_path(meta_info, media_service)
-            if meta_info.type == MediaType.TV:
-                if self._tv_category_flag:
-                    return os.path.join(dest, meta_info.category, dir_name, season_name)
-                return os.path.join(dest, dir_name, season_name)
-            # 动漫：专用动漫目录时不加分类子目录；回退 TV 目录时按分类进子目录
-            is_dedicated_anime = any(PathUtils.is_path_in_path(p, dest) for p in self._anime_path)
-            if is_dedicated_anime:
-                return os.path.join(dest, dir_name, season_name)
-            if self._tv_category_flag:
-                return os.path.join(dest, meta_info.category, dir_name, season_name)
+            dir_name, _ = self.get_movie_dest_path(meta_info, media_service, snapshot)
+            if self._movie_category_flag and category:
+                return os.path.join(dest, category, dir_name)
+            return os.path.join(dest, dir_name)
+        dir_name, season_name, _ = self.get_tv_dest_path(meta_info, media_service, snapshot)
+        if meta_info.type == MediaType.TV:
+            if self._tv_category_flag and category:
+                return os.path.join(dest, category, dir_name, season_name)
             return os.path.join(dest, dir_name, season_name)
+        if self._anime_category_flag and category:
+            return os.path.join(dest, category, dir_name, season_name)
+        return os.path.join(dest, dir_name, season_name)
+
+
+def _media_provider(media) -> tuple[str | None, str | None]:
+    anchor_provider = str(getattr(media, "anchor_provider", "") or "")
+    anchor_external = str(getattr(media, "anchor_external_id", "") or "")
+    if anchor_provider and anchor_external:
+        return anchor_provider, anchor_external
+    raw = str(getattr(media, "tmdb_id", "") or "")
+    if raw.startswith("DB:"):
+        return "douban", raw[3:] or None
+    if raw.startswith("BG:"):
+        return "bangumi", raw[3:] or None
+    if raw.startswith("TMDB:"):
+        return "tmdb", raw[5:] or None
+    if raw.isdigit():
+        return "tmdb", raw
+    douban_id = getattr(media, "douban_id", None)
+    if douban_id:
+        return "douban", str(douban_id)
+    return None, None
+
+
+def _snapshot_value(snapshot, name, fallback):
+    if snapshot is None:
+        return fallback
+    field = snapshot.fields.get(name)
+    if field is None or field.value in (None, ""):
+        return fallback
+    return field.value
+
+
+def _snapshot_ref(snapshot, provider):
+    if snapshot is None:
+        return None
+    for ref in snapshot.refs:
+        if ref.provider == provider:
+            return ref.external_id
+    return None
+
+
+def _snapshot_provider(snapshot):
+    provider = snapshot.primary_provider
+    if not provider and snapshot.refs:
+        provider = snapshot.refs[0].provider
+    if not provider:
+        return None, None
+    return provider, _snapshot_ref(snapshot, provider)
+
+
+def _snapshot_rating(snapshot, provider):
+    if snapshot is None:
+        return None
+    return snapshot.ratings.get(provider)

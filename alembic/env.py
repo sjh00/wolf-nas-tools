@@ -6,6 +6,7 @@ from alembic.script import ScriptDirectory
 import log
 from alembic import context
 from app.db.database_factory import DatabaseFactory
+from app.db.migration_guard import install_idempotent_ddl
 from app.db.models import Base
 
 # this is the Alembic Config object, which provides
@@ -27,6 +28,13 @@ target_metadata = Base.metadata
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """忽略迁移过程专用表，避免 alembic check 误报漂移。"""
+    if type_ == "table" and name and name.startswith("MIGRATION_"):
+        return False
+    return True
 
 
 def get_database_url():
@@ -65,6 +73,7 @@ def run_migrations_offline() -> None:
         render_as_batch=True,  # 支持SQLite的批量操作
         compare_type=False,  # 不比较列类型，避免历史遗留类型差异产生垃圾迁移
         compare_server_default=False,  # 不比较默认值
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -88,6 +97,7 @@ def run_migrations_online() -> None:
             render_as_batch=True,  # 支持SQLite的批量操作
             compare_type=False,  # 不比较列类型，避免历史遗留类型差异产生垃圾迁移
             compare_server_default=False,  # 不比较默认值
+            include_object=include_object,
         )
 
         # 全新库判定：无 alembic_version 且无任何业务表 → 用模型直接建最新 schema 并 stamp 到 head。
@@ -138,4 +148,6 @@ def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
+    # create_all() 可能已先于迁移建好对象，装上幂等守卫避免 DuplicateTable / DuplicateColumn
+    install_idempotent_ddl()
     run_migrations_online()

@@ -11,15 +11,27 @@ Session 管理器
 import os
 import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 import log
 from app.core.root_path import get_project_root
 from app.core.settings import settings
-from app.db.engine import get_engine, get_session_factory
+from app.db.engine import (
+    get_engine,
+    get_engine_override,
+    get_session_factory,
+    get_session_factory_override,
+)
 from app.db.models import Base
 from app.db.sql_adapter import get_sql_adapter
+
+# 显式事务上下文：transaction_scope() 内所有仓储的 session 复用它，保证真正的原子性。
+# 值携带属主线程 id：ThreadExecutor 会 contextvars.copy_context() 复制到子线程，
+# 若不校验线程，子线程会复用父线程的事务 Session 且 session_scope 命中共享时不关闭 → 连接泄漏。
+_tx_session: ContextVar[tuple[int, Session] | None] = ContextVar("db_tx_session", default=None)
 
 
 class SessionManager:
@@ -42,22 +54,52 @@ class SessionManager:
         self._engine = get_engine()
         self._factory = get_session_factory()
 
+    def _resolve_factory(self):
+        """调度任务上下文存在时使用其专用工厂，否则用本实例的工厂"""
+        override = get_session_factory_override()
+        return override if override is not None else self._factory
+
     @property
     def engine(self):
-        return self._engine
+        override = get_engine_override()
+        return override if override is not None else self._engine
 
     @property
     def session(self):
-        """创建一个新的 Session。调用方必须负责 close。"""
-        return self._factory()
+        """创建一个新的 Session。调用方必须负责 close。
+
+        处于 transaction_scope() 内（同一线程）时返回共享 Session（由外层统一提交/关闭）。
+        """
+        shared = self.current_tx_session()
+        if shared is not None:
+            return shared
+        return self._resolve_factory()()
+
+    def current_tx_session(self):
+        """当前上下文共享的事务 Session（仅限属主线程，无则 None）"""
+        holder = _tx_session.get()
+        if holder is None:
+            return None
+        owner_tid, sess = holder
+        # 跨线程（经 contextvars 复制）不得复用，避免复用后不关闭导致连接泄漏
+        if owner_tid != threading.get_ident():
+            return None
+        return sess
 
     @contextmanager
     def session_scope(self):
         """
         事务范围的 session 上下文管理器。
         自动 commit/rollback/close，确保连接及时归还连接池。
+
+        处于 transaction_scope() 内时复用共享 Session 且不提交/关闭（由外层统一处理），
+        从而让多个仓储操作真正处于同一事务。
         """
-        sess = self._factory()
+        shared = self.current_tx_session()
+        if shared is not None:
+            yield shared
+            return
+        sess = self._resolve_factory()()
         try:
             yield sess
             sess.commit()
@@ -71,10 +113,21 @@ class SessionManager:
     def transaction_scope(self):
         """
         显式事务上下文管理器。
-        供 Service 层组合多个 Repository 操作，保证原子性。
+        供 Service 层组合多个 Repository 操作，保证原子性：
+        期间（同一线程内）仓储的 session/session_scope 均复用本 Session，仅在退出时统一提交。
+        跨线程（线程池）不复用，避免复制到子线程后不关闭导致连接泄漏。
         """
-        with self.session_scope() as session:
-            yield session
+        sess = self._resolve_factory()()
+        token = _tx_session.set((threading.get_ident(), sess))
+        try:
+            yield sess
+            sess.commit()
+        except Exception:
+            sess.rollback()
+            raise
+        finally:
+            _tx_session.reset(token)
+            sess.close()
 
     def remove(self):
         """

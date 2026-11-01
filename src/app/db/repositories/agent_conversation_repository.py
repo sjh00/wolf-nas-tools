@@ -53,6 +53,16 @@ class AgentConversationRepository(BaseRepository):
                 .first()
             )
 
+    def list_conversations(self, user_id: str, channel: str, limit: int = 100) -> list[AGENTCONVERSATION]:
+        with self.session() as db:
+            return (
+                db.query(AGENTCONVERSATION)
+                .filter(AGENTCONVERSATION.USER_ID == user_id, AGENTCONVERSATION.CHANNEL == channel)
+                .order_by(AGENTCONVERSATION.UPDATED_AT.desc())
+                .limit(limit)
+                .all()
+            )
+
     def get_messages(self, conversation_id: int, limit: int = 50) -> list[AGENTMESSAGE]:
         """返回最早 limit 条消息（升序）——供滚动摘要归档使用"""
         with self.session() as db:
@@ -77,8 +87,25 @@ class AgentConversationRepository(BaseRepository):
             rows.reverse()
             return rows
 
+    def get_checkpoint(self, conversation_id: int) -> dict:
+        with self.session() as db:
+            row = db.query(AGENTCONVERSATION.CHECKPOINT).filter(AGENTCONVERSATION.ID == conversation_id).first()
+            return (row[0] if row else None) or {}
+
+    def update_checkpoint(self, conversation_id: int, checkpoint: dict) -> None:
+        with self.session() as db:
+            db.query(AGENTCONVERSATION).filter(AGENTCONVERSATION.ID == conversation_id).update(
+                {"CHECKPOINT": checkpoint, "UPDATED_AT": datetime.now()}
+            )
+
     def append_message(
-        self, conversation_id: int, role: str, content: str, tokens: int = 0, tool_calls: dict | None = None
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        tokens: int = 0,
+        tool_calls: dict | None = None,
+        title: str = "",
     ) -> None:
         with self.session() as db:
             db.add(
@@ -86,8 +113,23 @@ class AgentConversationRepository(BaseRepository):
                     CONVERSATION_ID=conversation_id, ROLE=role, CONTENT=content, TOKENS=tokens, TOOL_CALLS=tool_calls
                 )
             )
+            values: dict = {"UPDATED_AT": datetime.now()}
+            if title:
+                values["TITLE"] = title
+            db.query(AGENTCONVERSATION).filter(AGENTCONVERSATION.ID == conversation_id).update(values)
+            db.commit()
+
+    def update_title(self, conversation_id: int, title: str) -> None:
+        with self.session() as db:
             db.query(AGENTCONVERSATION).filter(AGENTCONVERSATION.ID == conversation_id).update(
-                {"UPDATED_AT": datetime.now()}
+                {"TITLE": title[:120], "UPDATED_AT": datetime.now()}
+            )
+            db.commit()
+
+    def add_token_usage(self, conversation_id: int, tokens: int) -> None:
+        with self.session() as db:
+            db.query(AGENTCONVERSATION).filter(AGENTCONVERSATION.ID == conversation_id).update(
+                {"TOKEN_USAGE": AGENTCONVERSATION.TOKEN_USAGE + max(0, int(tokens))}
             )
             db.commit()
 

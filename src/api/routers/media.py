@@ -1,7 +1,5 @@
-import contextlib
 import os
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -9,8 +7,10 @@ from pydantic import BaseModel, Field
 
 import log
 from api.deps import (
+    get_discovery_service,
     get_downloader_service,
     get_file_index_service,
+    get_filetransfer_service,
     get_media_cleanup_service,
     get_media_config_service,
     get_media_consistency_service,
@@ -19,8 +19,10 @@ from api.deps import (
     get_media_library_service,
     get_media_migrate_service,
     get_media_recommendation_service,
+    get_metadata_service,
     get_search_result_service,
     get_searcher_service,
+    get_subscribe_service,
     get_sync_service,
     get_tmdb_blacklist_service,
     get_transfer_history_service,
@@ -34,8 +36,11 @@ from app.core.exceptions import (
     ServiceError,
     ValidationError,
 )
-from app.domain.mediatypes import MediaType
+from app.domain.mediatypes import MediaType, normalize_media_type_input
 from app.infrastructure.cache_system import TokenCache
+from app.media.metadata import ProviderError, ProviderRef
+from app.media.metadata.naming import naming_field_catalog, naming_field_keys
+from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.common import CommonResponse
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.file_index_service import FileIndexService
@@ -48,11 +53,22 @@ from app.services.media_service import (
     SearchResultService,
     TransferHistoryService,
 )
+from app.services.metadata_service import MetadataService
 from app.services.search_service import Searcher
+from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
+from app.utils import StringUtils
 from app.utils.response import fail, success
 
 router = APIRouter()
+
+
+def _private_scope(current_user) -> tuple[bool, set[str] | None]:
+    """返回私有来源访问开关与权限集；超管不受显式权限码限制."""
+    if bool(getattr(current_user, "is_superadmin", False)):
+        return True, None
+    permissions = set(getattr(current_user, "permissions", []) or [])
+    return "metadata:private:view" in permissions, permissions
 
 
 # ---------- Request Models ----------
@@ -68,11 +84,56 @@ class GetSeasonEpisodesRequest(BaseModel):
     title: str | None = None
     year: str | None = None
     season: int | None = None
+    content_profile: str | None = None
 
 
 class GetTvSeasonListRequest(BaseModel):
     tmdbid: str | int
     title: str | None = None
+
+
+class MetadataPreviewRef(BaseModel):
+    provider: str
+    external_id: str
+    media_type: str | None = None
+    scope: str = "default"
+
+
+class MetadataSearchRequest(BaseModel):
+    query: str
+    provider: str | None = None
+    media_type: str | None = None
+    content_profile: str = "default"
+    limit: int = 20
+
+
+class IdentityMergeRequest(BaseModel):
+    source_id: str
+    target_id: str
+
+
+class IdentityReviewRequest(BaseModel):
+    identity_id: str
+    provider: str
+    external_id: str
+    scope: str = "default"
+    approve: bool = True
+    confidence: float = 1.0
+
+
+class DiscoveryItemsRequest(BaseModel):
+    provider: str
+    feed: str
+    page: int = 1
+    filters: dict = Field(default_factory=dict)
+
+
+class MetadataPreviewRequest(BaseModel):
+    refs: list[MetadataPreviewRef] = Field(default_factory=list)
+    policy: str | None = None
+    anchor_provider: str | None = None
+    content_profile: str = "default"
+    media_type: str | None = None
 
 
 class MediaInfoRequest(BaseModel):
@@ -125,6 +186,25 @@ class PersonMediasRequest(BaseModel):
 
 class StartMediasyncRequest(BaseModel):
     librarys: list[str] | None = None
+    server_id: int | None = None
+
+
+class LibraryTargetRequest(BaseModel):
+    server_id: int | None = None
+
+
+class RefreshLibraryRequest(LibraryTargetRequest):
+    items: list[dict] | None = None
+
+
+class SaveLibraryRouteRequest(BaseModel):
+    content_profile: str = ""
+    target_path: str | None = None
+    server_id: int
+    backend_id: str = "local"
+    library_id: str | None = None
+    enabled: bool = True
+    note: str = ""
 
 
 class TvCalendarRequest(BaseModel):
@@ -157,10 +237,23 @@ class GetTransferHistoryRequest(BaseModel):
     keyword: str | None = None
     page: int | None = None
     pagenum: int | None = None
+    type: str | None = None
 
 
 class GetTransferStatisticsRequest(BaseModel):
     days: int | None = None
+
+
+class HistoryIdsRequest(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
+class HistoryFilesDeleteRequest(HistoryIdsRequest):
+    targets: list[str] = Field(default_factory=list)
+
+
+class HistoryFilesCheckRequest(HistoryIdsRequest):
+    targets: list[str] | None = None
 
 
 class GetUnknownListByPageRequest(BaseModel):
@@ -172,6 +265,20 @@ class GetUnknownListByPageRequest(BaseModel):
 class MediaDetailRequest(BaseModel):
     tmdbid: str
     type: str | None = None
+
+
+class MediaDetailByRefRequest(BaseModel):
+    provider: str
+    external_id: str
+    media_type: str | None = None
+    content_profile: str = "default"
+    content_id: str | None = None
+
+
+class FieldOverrideRequest(BaseModel):
+    field_name: str
+    value: str
+    locked: bool = True
 
 
 class SearchMediaInfosRequest(BaseModel):
@@ -206,6 +313,83 @@ class TmdbBlacklistRequest(BaseModel):
     media_type: str | None = None
 
 
+def _field_value(fields: dict, name: str):
+    item = fields.get(name)
+    return item.get("value") if isinstance(item, dict) else None
+
+
+def _record_detail_data(record: dict, media_type: MediaType, status: dict | None) -> dict:
+    """非默认画像直接使用 provider 记录，避免通用合成丢失私有来源图片."""
+    provider = str(record.get("provider") or "")
+    external_id = str(record.get("external_id") or "")
+
+    def image(name: str) -> str:
+        assets = (record.get("images") or {}).get(name) or []
+        return next(
+            (str(item.get("url")) for item in assets if isinstance(item, dict) and item.get("url")),
+            "",
+        )
+
+    poster = image("poster")
+    backdrop = image("background") or image("backdrop") or image("fanart") or poster
+    genres = [str(item) for item in (record.get("genres") or []) if item]
+    credits = [item for item in (record.get("credits") or []) if isinstance(item, dict)]
+    crews = [{item.get("name"): item.get("character") or "演员"} for item in credits[:12] if item.get("name")]
+    actor_profiles = [
+        {
+            "name": item.get("name"),
+            "aliases": list(item.get("aliases") or []),
+            "image_url": item.get("image_url") or "",
+        }
+        for item in credits[:24]
+        if item.get("name") and str(item.get("role") or "actor") == "actor"
+    ]
+    release_date = str(record.get("release_date") or "")
+    runtime = record.get("runtime")
+    runtime_text = StringUtils.str_timehours(runtime) if isinstance(runtime, int) and runtime else ""
+    facts = []
+    for label, value in (
+        ("类型", " / ".join(genres)),
+        ("发行", release_date),
+        ("片长", runtime_text),
+        ("片商", " / ".join(record.get("studios") or [])),
+        ("系列", str(record.get("series") or "")),
+    ):
+        if value:
+            facts.append({label: value})
+    return {
+        "id": external_id,
+        "mediaid": external_id,
+        "tmdbid": "",
+        "provider": provider,
+        "anchor_provider": provider,
+        "anchor_external_id": external_id,
+        "douban_id": "",
+        "title": record.get("title") or "",
+        "original_title": record.get("original_title") or "",
+        "year": record.get("year") or "",
+        "overview": record.get("overview") or "",
+        "type": media_type.value,
+        "image": poster,
+        "poster": poster,
+        "background": backdrop,
+        "backdrop": backdrop,
+        "genres": genres,
+        "runtime": runtime_text,
+        "vote": next(iter((record.get("ratings") or {}).values()), None),
+        "crews": crews,
+        "actor_profiles": actor_profiles,
+        "fact": facts,
+        "seasons": [],
+        "links": [],
+        "link": "",
+        "similar": [],
+        "fav": (status or {}).get("fav", "0"),
+        "rssid": (status or {}).get("rssid", ""),
+        "sub_seasons": (status or {}).get("sub_seasons", []),
+    }
+
+
 # ---------- Endpoints ----------
 
 
@@ -231,7 +415,13 @@ def get_season_episodes(
     if not req.tmdbid:
         return fail(msg="TMDBID为空")
     season = 1 if req.season is None else req.season
-    result = svc.get_season_episodes(tmdbid=req.tmdbid, title=req.title, year=req.year, season=season)
+    result = svc.get_season_episodes(
+        tmdbid=req.tmdbid,
+        title=req.title,
+        year=req.year,
+        season=season,
+        content_profile=req.content_profile,
+    )
     return success(data=result.episodes)
 
 
@@ -355,7 +545,7 @@ def name_test(
 ):
     if not req.name:
         return fail(code=ErrorCode.PARAM_VALIDATION_FAILED)
-    result = svc.name_test(name=req.name, subtitle=req.subtitle)
+    result = svc.name_test(name=req.name, subtitle=req.subtitle, user=current_user)
     return success(data=result)
 
 
@@ -377,8 +567,72 @@ def start_mediasync(
     current_user=Depends(require_permission("library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    svc.start_sync(librarys=req.librarys or [])
+    svc.start_sync(librarys=req.librarys or [], server_id=req.server_id)
     return success()
+
+
+@router.post("/library/libraries", response_model=CommonResponse, summary="获取指定实例的媒体库")
+def get_media_libraries(
+    req: LibraryTargetRequest,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    try:
+        return success(data=svc.get_libraries(req.server_id))
+    except Exception as err:  # noqa: BLE001
+        log.debug(f"[MediaLibrary]获取实例媒体库失败: {err}")
+        return fail(msg="无法连接媒体服务器，请检查实例配置")
+
+
+@router.post("/library/refresh", response_model=CommonResponse, summary="刷新指定媒体服务器")
+def refresh_library(
+    req: RefreshLibraryRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    svc.refresh_library(server_id=req.server_id, items=req.items)
+    return success()
+
+
+@router.post("/library/routes", response_model=CommonResponse, summary="获取媒体库画像路由")
+def get_library_routes(
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    return success(data=svc.get_routes())
+
+
+@router.post("/library/routes/save", response_model=CommonResponse, summary="保存媒体库画像路由")
+def save_library_route(
+    req: SaveLibraryRouteRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    try:
+        return success(data=svc.save_route(req.model_dump()))
+    except ValueError as err:
+        return fail(msg=str(err))
+
+
+@router.post("/library/routes/update", response_model=CommonResponse, summary="更新媒体库画像路由")
+def update_library_route(
+    req: dict,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    try:
+        return success(data=svc.save_route(req, route_id=int(req.get("id") or 0)))
+    except ValueError as err:
+        return fail(msg=str(err))
+
+
+@router.post("/library/routes/delete", response_model=CommonResponse, summary="删除媒体库画像路由")
+def delete_library_route(
+    req: dict,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    return success(data=svc.delete_route(int(req.get("id") or 0)))
 
 
 @router.post("/calendar/tv", response_model=CommonResponse, summary="获取电视剧日历")
@@ -444,6 +698,7 @@ def get_downloaded(
                     "season_episode": item.SE or "",
                     "date": item.DATE,
                     "site": item.SITE,
+                    "content_profile": getattr(item, "CONTENT_PROFILE", "") or "",
                     "history_id": item.ID,
                 }
                 for item in items
@@ -481,12 +736,21 @@ def delete_all_downloaded(
     return success(data={"count": count})
 
 
-@router.post("/library/count", response_model=CommonResponse, summary="获取媒体库统计")
-def get_library_mediacount(
+@router.post("/library/servers", response_model=CommonResponse, summary="获取媒体服务器实例")
+def get_library_servers(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    result = svc.get_media_count()
+    return success(data=svc.get_servers())
+
+
+@router.post("/library/count", response_model=CommonResponse, summary="获取媒体库统计")
+def get_library_mediacount(
+    server_id: int | None = None,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MediaLibraryService = Depends(get_media_library_service),
+):
+    result = svc.get_media_count(server_id)
     if result:
         return success(data=result)
     return fail(code=ErrorCode.MEDIA_SERVER_ERROR, msg="媒体库服务器连接失败")
@@ -518,85 +782,14 @@ def get_library_spacesize(
 
 @router.post("/library/home", response_model=CommonResponse, summary="获取媒体库首页")
 def get_library_home(
+    req: LibraryTargetRequest | None = None,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
     svc: MediaLibraryService = Depends(get_media_library_service),
 ):
-    # 6 项数据均为独立的媒体服务器请求，并发获取以降低整体耗时
-    def _media_counts():
-        try:
-            return svc.get_media_count() or None
-        except Exception as e:  # noqa: BLE001
-            log.debug(f"[MediaLibrary]获取媒体数量失败: {e}")
-            return None
-
-    def _activity():
-        with contextlib.suppress(Exception):
-            return svc.get_play_history() or []
-        return []
-
-    def _spaces():
-        try:
-            space_info = svc.get_space_info()
-            return {
-                "UsedPercent": space_info.used_percent,
-                "FreeSpace": space_info.free_space,
-                "UsedSpace": space_info.used_space,
-                "TotalSpace": space_info.total_space,
-            }
-        except Exception as e:  # noqa: BLE001
-            log.debug(f"[MediaLibrary]获取空间信息失败: {e}")
-            return {}
-
-    def _libraries():
-        with contextlib.suppress(Exception):
-            return svc.get_libraries() or []
-        return []
-
-    def _resumes():
-        with contextlib.suppress(Exception):
-            return svc.get_resume() or []
-        return []
-
-    def _latests():
-        with contextlib.suppress(Exception):
-            return svc.get_latest() or []
-        return []
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        f_counts = executor.submit(_media_counts)
-        f_activity = executor.submit(_activity)
-        f_spaces = executor.submit(_spaces)
-        f_libraries = executor.submit(_libraries)
-        f_resumes = executor.submit(_resumes)
-        f_latests = executor.submit(_latests)
-
-        counts_result = f_counts.result()
-        server_success = counts_result is not None
-        media_counts = counts_result or {}
-        activity = f_activity.result()
-        library_spaces = f_spaces.result()
-        libraries = f_libraries.result()
-        resumes = f_resumes.result()
-        latests = f_latests.result()
-
-    return success(
-        data={
-            "server_success": server_success,
-            "media_counts": {
-                "Movie": media_counts.get("Movie", 0),
-                "Series": media_counts.get("Series", 0),
-                "Music": media_counts.get("Music", 0),
-                "Episodes": media_counts.get("Episodes", 0),
-                "User": media_counts.get("User", 0),
-            },
-            "user_count": media_counts.get("User", 0),
-            "activitys": activity,
-            "library_spaces": library_spaces,
-            "librarys": libraries,
-            "resumes": resumes,
-            "latests": latests,
-        }
-    )
+    requested_id = req.server_id if req else None
+    if requested_id is not None and requested_id not in {item["id"] for item in svc.get_servers()}:
+        return fail(msg="媒体服务器不存在或未启用")
+    return success(data=svc.get_home_data(requested_id))
 
 
 @router.post("/recommend", response_model=CommonResponse, summary="获取推荐")
@@ -631,7 +824,9 @@ def get_transfer_history(
     current_user=Depends(require_any_permission("transfer:view", "library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
 ):
-    result = svc.get_transfer_history_page(search_str=req.keyword, page=req.page, page_num=req.pagenum)
+    result = svc.get_transfer_history_page(
+        search_str=req.keyword, page=req.page, page_num=req.pagenum, media_type=req.type
+    )
     return success(
         data={
             "total": result.total,
@@ -651,6 +846,53 @@ def get_transfer_statistics(
 ):
     result = svc.get_transfer_statistics(days=req.days if req.days is not None else 90)
     return success(data=result)
+
+
+@router.post("/history/records/delete", response_model=CommonResponse, summary="删除识别记录（不删除文件）")
+def delete_history_records(
+    req: HistoryIdsRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+    ft: FileTransferService = Depends(get_filetransfer_service),
+):
+    ids = [int(item) for item in req.ids if item is not None]
+    if not ids:
+        return fail(msg="未选择要删除的记录")
+    results = ft.delete_records(ids)
+    svc.invalidate_cache()
+    deleted = sum(1 for item in results if item.get("status") == "deleted")
+    return success(data={"results": results, "deleted": deleted, "total": len(ids)})
+
+
+@router.post("/history/files/delete", response_model=CommonResponse, summary="删除识别记录关联文件（保留记录）")
+def delete_history_files(
+    req: HistoryFilesDeleteRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+    ft: FileTransferService = Depends(get_filetransfer_service),
+):
+    ids = [int(item) for item in req.ids if item is not None]
+    targets = [target for target in req.targets if target in ("source", "library")]
+    if not ids or not targets:
+        return fail(msg="未选择记录或删除目标")
+    results = ft.delete_record_files(ids, targets)
+    svc.invalidate_cache()
+    return success(data={"results": results})
+
+
+@router.post("/history/files/check", response_model=CommonResponse, summary="检测识别记录关联文件状态")
+def check_history_files(
+    req: HistoryFilesCheckRequest,
+    current_user=Depends(require_any_permission("transfer:view", "library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+    ft: FileTransferService = Depends(get_filetransfer_service),
+):
+    ids = [int(item) for item in req.ids if item is not None]
+    if not ids:
+        return fail(msg="未选择记录")
+    results = ft.check_record_files(ids, req.targets)
+    svc.invalidate_cache()
+    return success(data={"results": results})
 
 
 @router.post("/unknown", response_model=CommonResponse, summary="获取未识别列表")
@@ -695,6 +937,301 @@ def media_detail(
     return success(data=result)
 
 
+@router.post("/detail_by_ref", response_model=CommonResponse, summary="按外部锚点获取媒体详情")
+def media_detail_by_ref(
+    req: MediaDetailByRefRequest,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+    sub_svc=Depends(get_subscribe_service),
+):
+    allow_private, permissions = _private_scope(current_user)
+    request_type, content_profile = normalize_media_type_input(req.media_type, req.content_profile)
+    media_type = MediaType.from_string(request_type) if request_type else None
+    if media_type == MediaType.UNKNOWN:
+        media_type = None
+    try:
+        record = svc.lookup(
+            req.provider,
+            req.external_id,
+            media_type=media_type,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    except Exception:  # noqa: BLE001 - 上游抓取/熔断返回明确错误
+        return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
+    is_custom_profile = content_profile != "default"
+    if is_custom_profile and req.content_id:
+        # 前端已知道内容编号时，优先按编号取聚合详情，避免来源 slug 失效。
+        try:
+            aggregate = svc.lookup(
+                content_profile,
+                req.content_id,
+                media_type=media_type,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+            if aggregate:
+                record = aggregate
+        except Exception:  # noqa: BLE001, S110 - 聚合失败继续用来源记录
+            pass
+    if not record and is_custom_profile:
+        # 源 provider 使用 slug 或临时失效时，回退到该内容画像的聚合 provider。
+        try:
+            record = svc.lookup(
+                content_profile,
+                req.external_id,
+                media_type=media_type,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+        except Exception:  # noqa: BLE001 - 聚合回退失败按原错误处理
+            record = None
+    if not record:
+        return fail(msg="无法获取媒体详情")
+    if is_custom_profile:
+        content_id = str((record.get("extra") or {}).get("adult.content_id") or "")
+        if not content_id:
+            content_id = next(
+                (
+                    str(ref.get("external_id") or "")
+                    for ref in record.get("refs") or []
+                    if ref.get("provider") == "content_id"
+                ),
+                "",
+            )
+        if content_id and req.provider != content_profile:
+            try:
+                aggregate = svc.lookup(
+                    content_profile,
+                    content_id,
+                    media_type=media_type,
+                    allow_private=allow_private,
+                    permissions=permissions,
+                )
+                if aggregate:
+                    record = aggregate
+            except Exception:  # noqa: BLE001, S110 - 聚合失败保留来源记录
+                pass
+        status = sub_svc.get_subscribe_by_anchor(
+            str(record.get("provider") or req.provider),
+            str(record.get("external_id") or req.external_id),
+            media_type or MediaType.MOVIE,
+            user=current_user,
+        )
+        return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
+    snapshot = svc.compose_for_ref(
+        req.provider,
+        req.external_id,
+        media_type=media_type or MediaType.MOVIE,
+        content_profile=content_profile,
+        include_tmdb=True,
+        user_id=current_user.user_id,
+        allow_private=allow_private,
+        permissions=permissions,
+    )
+    if not snapshot:
+        if is_custom_profile:
+            status = sub_svc.get_subscribe_by_anchor(
+                str(record.get("provider") or req.provider),
+                str(record.get("external_id") or req.external_id),
+                media_type or MediaType.MOVIE,
+                user=current_user,
+            )
+            return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
+        return fail(msg="无法获取媒体详情")
+    fields = snapshot.get("fields") or {}
+    images = snapshot.get("images") or {}
+    poster = next(
+        (item.get("url") for item in images.get("poster", []) if item.get("url")),
+        "",
+    )
+    backdrop = (
+        next(
+            (item.get("url") for item in images.get("backdrop", []) if item.get("url")),
+            "",
+        )
+        or poster
+    )
+    if is_custom_profile:
+        # 自定义画像的 provider 记录可能包含主项目快照未映射的图片，做通用兜底。
+        record_images = record.get("images") or {}
+        if not poster:
+            poster = next(
+                (item.get("url") for item in record_images.get("poster", []) if item.get("url")),
+                "",
+            )
+        if not backdrop:
+            for key in ("background", "backdrop", "fanart"):
+                backdrop = next(
+                    (item.get("url") for item in record_images.get(key, []) if item.get("url")),
+                    "",
+                )
+                if backdrop:
+                    break
+    ratings = snapshot.get("ratings") or {}
+    rating = next(iter(ratings.values()), None)
+    runtime = fields.get("runtime", {}).get("value") if isinstance(fields.get("runtime"), dict) else None
+    release_date = _field_value(fields, "release_date")
+    genres = snapshot.get("genres") or []
+    countries = snapshot.get("countries") or []
+    languages = snapshot.get("spoken_languages") or []
+    studios = snapshot.get("studios") or []
+    credits = snapshot.get("credits") or []
+    role_labels = {
+        "director": "导演",
+        "actor": "演员",
+        "writer": "编剧",
+        "music": "音乐",
+        "studio": "制作",
+    }
+    crews = [
+        {item.get("name"): role_labels.get(str(item.get("role") or ""), item.get("character") or "演员")}
+        for item in credits[:12]
+        if item.get("name")
+    ]
+    actor_profiles = [
+        {
+            "name": item.get("name"),
+            "aliases": list(item.get("aliases") or []),
+            "image_url": item.get("image_url") or "",
+        }
+        for item in credits[:24]
+        if item.get("name") and str(item.get("role") or "actor") == "actor"
+    ]
+    extra = snapshot.get("extra") or {}
+    aliases = snapshot.get("aliases") or []
+    seasons = []
+    for item in snapshot.get("seasons") or []:
+        number = item.get("season_number")
+        if not isinstance(number, int):
+            continue
+        seasons.append(
+            {
+                "season_number": number,
+                "name": item.get("title") or f"第 {number} 季",
+                "episode_count": item.get("episode_count"),
+                "air_date": item.get("air_date"),
+                "poster_path": item.get("poster"),
+            }
+        )
+    episodes = snapshot.get("episodes") or []
+    if not seasons and episodes:
+        number = int(extra.get("douban.season") or episodes[0].get("season_number") or 1)
+        seasons.append(
+            {
+                "season_number": number,
+                "name": f"第 {number} 季",
+                "episode_count": len(episodes),
+                "air_date": episodes[0].get("air_date"),
+            }
+        )
+    elif not seasons and (extra.get("douban.episodes_count") or extra.get("bangumi.eps")):
+        count_value = extra.get("douban.episodes_count") or extra.get("bangumi.eps")
+        episodes_count = int(str(count_value))
+        if episodes_count > 0:
+            number = int(extra.get("douban.season") or 1)
+            seasons.append(
+                {
+                    "season_number": number,
+                    "name": f"第 {number} 季",
+                    "episode_count": episodes_count,
+                }
+            )
+    facts = []
+    episodes_count = extra.get("douban.episodes_count") or extra.get("bangumi.eps") or ""
+    imdb = extra.get("douban.imdb") or ""
+    for label, value in (
+        ("类型", " / ".join(genres)),
+        ("首播", release_date),
+        ("集数", str(episodes_count) if episodes_count else ""),
+        ("单集片长", StringUtils.str_timehours(runtime) if runtime else ""),
+        ("地区", " / ".join(countries)),
+        ("语言", " / ".join(languages)),
+        ("又名", " / ".join(aliases[:6])),
+        ("IMDb", str(imdb)),
+        ("制片公司", " / ".join(studios)),
+        ("评分", str(rating) if rating is not None else ""),
+        ("季数", str(len(seasons)) if seasons else ""),
+    ):
+        if value:
+            facts.append({label: value})
+    provider = str(record.get("provider") or req.provider)
+    external_id = str(record.get("external_id") or req.external_id)
+    links = []
+    provider_url = metadata_registry.provider_detail_url(provider, external_id, media_type or MediaType.MOVIE)
+    if provider_url:
+        label = {
+            "douban": "豆瓣",
+            "bangumi": "Bangumi",
+            "tmdb": "TMDB",
+        }.get(provider, provider)
+        links.append({"provider": provider, "label": label, "url": provider_url})
+    tmdb_ref = next(
+        (item for item in snapshot.get("refs", []) if item.get("provider") == "tmdb"),
+        None,
+    )
+    if tmdb_ref and str(tmdb_ref.get("external_id") or "").isdigit():
+        tmdb_id = str(tmdb_ref["external_id"])
+        links.append(
+            {
+                "provider": "tmdb",
+                "label": "TMDB",
+                "url": f"https://www.themoviedb.org/{'movie' if (media_type == MediaType.MOVIE) else 'tv'}/{tmdb_id}",
+            }
+        )
+    status = sub_svc.get_subscribe_by_anchor(
+        provider,
+        external_id,
+        media_type or MediaType.MOVIE,
+        user=current_user,
+    )
+    data = {
+        "id": external_id,
+        "mediaid": (
+            f"DB:{external_id}"
+            if provider == "douban"
+            else f"BG:{external_id}"
+            if provider == "bangumi"
+            else external_id
+        ),
+        "tmdbid": tmdb_ref.get("external_id", "") if tmdb_ref else "",
+        "provider": provider,
+        "anchor_provider": provider,
+        "anchor_external_id": external_id,
+        "douban_id": external_id if provider == "douban" else "",
+        "title": _field_value(fields, "title") or record.get("title") or "",
+        "original_title": _field_value(fields, "original_title") or "",
+        "year": _field_value(fields, "year") or record.get("year") or "",
+        "overview": _field_value(fields, "overview") or record.get("overview") or "",
+        "type": (media_type or MediaType.MOVIE).value,
+        "image": poster,
+        "poster": poster,
+        "background": backdrop,
+        "backdrop": backdrop,
+        "genres": genres,
+        "runtime": StringUtils.str_timehours(runtime) if runtime else "",
+        "vote": rating,
+        "crews": crews,
+        "actor_profiles": actor_profiles,
+        "fact": facts,
+        "seasons": seasons,
+        "links": links,
+        "link": links[0]["url"] if links else "",
+        "similar": svc.similar_for_ref(
+            provider,
+            external_id,
+            media_type=media_type or MediaType.MOVIE,
+            title=str(_field_value(fields, "title") or record.get("title") or ""),
+            allow_private=allow_private,
+            permissions=permissions,
+        ),
+        "fav": (status or {}).get("fav", "0"),
+        "rssid": (status or {}).get("rssid", ""),
+        "sub_seasons": (status or {}).get("sub_seasons", []),
+    }
+    return success(data=data)
+
+
 @router.post("/search", response_model=CommonResponse, summary="搜索媒体")
 def search_media_infos(
     req: SearchMediaInfosRequest,
@@ -707,6 +1244,241 @@ def search_media_infos(
     return success(data=result)
 
 
+@router.post("/metadata/search", response_model=CommonResponse, summary="多源元数据搜索")
+def metadata_search(
+    req: MetadataSearchRequest,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    allow_private, permissions = _private_scope(current_user)
+    request_type, content_profile = normalize_media_type_input(req.media_type, req.content_profile)
+    media_type = MediaType.from_string(request_type) if request_type else None
+    if media_type == MediaType.UNKNOWN:
+        media_type = None
+    return success(
+        data=svc.search(
+            query=req.query,
+            provider=req.provider,
+            media_type=media_type,
+            content_profile=content_profile,
+            limit=req.limit,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    )
+
+
+@router.get("/lookup", response_model=CommonResponse, summary="统一元数据查询")
+def metadata_lookup(
+    provider: str,
+    external_id: str,
+    media_type: str | None = None,
+    scope: str = "default",
+    allow_missing: bool = False,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    allow_private, permissions = _private_scope(current_user)
+    request_type, _profile = normalize_media_type_input(media_type, scope)
+    ref_type = MediaType.from_string(request_type) if request_type else None
+    if ref_type == MediaType.UNKNOWN:
+        ref_type = None
+    try:
+        data = svc.lookup(
+            provider,
+            external_id,
+            media_type=ref_type,
+            scope=scope,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    except ProviderError as exc:
+        # 单源 404/抓取失败不应变成 500；允许多源回退时返回空结果。
+        if allow_missing:
+            return success(data=None)
+        return fail(msg=f"元数据查询失败: {exc}")
+    if data is None:
+        return success(data=None) if allow_missing else fail(msg="未找到元数据")
+    if isinstance(data, dict):
+        images = data.get("images") or {}
+        if not data.get("poster"):
+            data["poster"] = next(
+                (item.get("url") for item in images.get("poster", []) if item.get("url")),
+                "",
+            )
+        if not data.get("backdrop"):
+            for image_type in ("background", "backdrop", "fanart"):
+                data["backdrop"] = next(
+                    (item.get("url") for item in images.get(image_type, []) if item.get("url")),
+                    "",
+                )
+                if data["backdrop"]:
+                    break
+    return success(data=data)
+
+
+@router.get("/metadata/metrics", response_model=CommonResponse, summary="元数据链路指标")
+def metadata_metrics(
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    return success(data=svc.metrics())
+
+
+@router.get("/providers", response_model=CommonResponse, summary="元数据 provider 能力与健康状态")
+def metadata_providers(
+    include_health: bool = Query(True),
+    provider: str | None = Query(None),
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    allow_private, permissions = _private_scope(current_user)
+    return success(
+        data=svc.list_providers(
+            allow_private=allow_private,
+            permissions=permissions,
+            probe_health=include_health,
+            provider_key=provider,
+        )
+    )
+
+
+@router.get("/person/{person_id}", response_model=CommonResponse, summary="人员实体详情")
+def person_detail(
+    person_id: str,
+    current_user=Depends(require_permission("metadata:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    data = svc.person_detail(person_id)
+    return success(data=data) if data else fail(msg="人员不存在")
+
+
+@router.post("/identity/merge", response_model=CommonResponse, summary="合并重复身份")
+def identity_merge(
+    req: IdentityMergeRequest,
+    current_user=Depends(require_permission("metadata:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    return success(data={"merged": svc.merge_identity(req.source_id, req.target_id)})
+
+
+@router.get("/identity/conflicts", response_model=CommonResponse, summary="待审核的跨源链接")
+def identity_conflicts(
+    limit: int = 100,
+    current_user=Depends(require_permission("metadata:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    return success(data=svc.pending_links(limit=limit))
+
+
+@router.get("/identity/{identity_id}", response_model=CommonResponse, summary="作品身份详情")
+def identity_detail(
+    identity_id: str,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    allow_private, _permissions = _private_scope(current_user)
+    data = svc.identity_detail(identity_id, allow_private=allow_private)
+    return success(data=data) if data else fail(msg="身份不存在")
+
+
+@router.post("/identity/link/review", response_model=CommonResponse, summary="审核跨源链接")
+def identity_review_link(
+    req: IdentityReviewRequest,
+    current_user=Depends(require_permission("metadata:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    result = svc.review_link(
+        req.identity_id,
+        provider=req.provider,
+        external_id=req.external_id,
+        approve=req.approve,
+        confidence=req.confidence,
+        scope=req.scope,
+    )
+    return success(data=result) if result is not None else fail(msg="链接不存在或已处理")
+
+
+@router.get("/discovery/providers", response_model=CommonResponse, summary="探索页来源与 feed")
+def discovery_providers(
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc=Depends(get_discovery_service),
+):
+    allow_private, permissions = _private_scope(current_user)
+    return success(data=svc.list_sources(allow_private=allow_private, permissions=permissions))
+
+
+@router.post("/discovery/items", response_model=CommonResponse, summary="获取探索 feed 内容")
+def discovery_items(
+    req: DiscoveryItemsRequest,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc=Depends(get_discovery_service),
+):
+    allow_private, permissions = _private_scope(current_user)
+    try:
+        page = svc.items(
+            req.provider,
+            req.feed,
+            page=req.page,
+            filters=req.filters,
+            allow_private=allow_private,
+            permissions=permissions,
+        )
+    except ValidationError as exc:
+        return fail(msg=exc.message)
+    return success(data=page.model_dump(mode="json"))
+
+
+@router.post("/metadata/preview", response_model=CommonResponse, summary="预览多源元数据合成")
+def metadata_preview(
+    req: MetadataPreviewRequest,
+    current_user=Depends(require_any_permission("library:view", "library:manage")),
+    svc: MetadataService = Depends(get_metadata_service),
+):
+    if not req.refs:
+        return fail(msg="未指定元数据引用")
+    private_allowed, permissions = _private_scope(current_user)
+    request_type, content_profile = normalize_media_type_input(req.media_type, req.content_profile)
+    refs = []
+    for item in req.refs:
+        ref_type_value, _profile = normalize_media_type_input(item.media_type, content_profile)
+        ref_type = MediaType.from_string(ref_type_value) if ref_type_value else None
+        if ref_type == MediaType.UNKNOWN:
+            ref_type = None
+        refs.append(
+            ProviderRef(
+                provider=item.provider,
+                external_id=item.external_id,
+                media_type=ref_type,
+                scope=item.scope,
+            )
+        )
+    media_type = MediaType.from_string(request_type) if request_type else None
+    if media_type == MediaType.UNKNOWN:
+        media_type = None
+    try:
+        result = svc.preview(
+            refs,
+            policy=req.policy,
+            anchor_provider=req.anchor_provider,
+            content_profile=content_profile,
+            media_type=media_type,
+            allow_private=private_allowed,
+            permissions=permissions,
+        )
+    except ValidationError as exc:
+        return fail(msg=exc.message)
+    if result.metadata is None:
+        return fail(msg="元数据合成失败，请检查引用或主源可用性")
+    return success(
+        data={
+            "metadata": result.metadata.model_dump(mode="json"),
+            "degraded": result.degraded,
+            "errors": [{"provider": error.provider, "message": error.message} for error in result.errors],
+        }
+    )
+
+
 @router.post("/unknown/list", response_model=CommonResponse, summary="重新识别未识别项")
 def unidentification(
     current_user=Depends(require_any_permission("transfer:view", "library:manage")),
@@ -714,6 +1486,22 @@ def unidentification(
 ):
     svc.re_identify_unknown()
     return success()
+
+
+@router.get("/category/tabs", response_model=CommonResponse, summary="获取分类页标签")
+def get_category_tabs(
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    return success(data=svc.get_category_tabs())
+
+
+@router.get("/category/taxonomy", response_model=CommonResponse, summary="获取分类映射词表")
+def get_category_taxonomy(
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaFileService = Depends(get_media_file_service),
+):
+    return success(data=svc.get_category_taxonomy())
 
 
 @router.post("/category/config/update", response_model=CommonResponse, summary="更新分类配置")
@@ -1141,6 +1929,12 @@ class MediaPathUpdateRequest(BaseModel):
     backend: str = "local"
 
 
+class MediaLayoutRequest(BaseModel):
+    movie_layout: str = "category"
+    tv_layout: str = "category"
+    anime_layout: str = "flat"
+
+
 @router.post("/library/path", response_model=CommonResponse, summary="获取媒体库配置")
 def get_media_library_config(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
@@ -1148,6 +1942,17 @@ def get_media_library_config(
 ):
     """获取媒体库路径配置（DB 优先，YAML 回退）"""
     return success(data=svc.get_config())
+
+
+@router.post("/library/layout", response_model=CommonResponse, summary="更新媒体库目录结构")
+def update_media_layout(
+    req: MediaLayoutRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: MediaConfigService = Depends(get_media_config_service),
+):
+    """更新电影/电视剧/动漫的目录结构；动漫默认平铺."""
+    svc.set_layouts(req.movie_layout, req.tv_layout, req.anime_layout)
+    return success()
 
 
 @router.post("/library/path/add", response_model=CommonResponse, summary="添加媒体库路径")
@@ -1201,7 +2006,16 @@ def name_format_fields(
     current_user=Depends(require_any_permission("setting:view", "setting:update")),
 ):
     """返回可按分组插入的占位符字段目录。"""
-    return success(data={"groups": field_groups(), "fields": FIELD_CATALOG})
+    extra_fields = naming_field_catalog()
+    groups = field_groups()
+    if extra_fields:
+        groups.append({"group": "插件字段", "fields": extra_fields})
+    return success(
+        data={
+            "groups": groups,
+            "fields": FIELD_CATALOG + extra_fields,
+        }
+    )
 
 
 @router.post("/name_format/validate", response_model=CommonResponse, summary="校验重命名格式")
@@ -1209,7 +2023,7 @@ def name_format_validate(
     req: NameFormatValidateRequest,
     current_user=Depends(require_any_permission("setting:view", "setting:update")),
 ):
-    return success(data=validate(req.format))
+    return success(data=validate(req.format, naming_field_keys()))
 
 
 @router.post("/name_format/preview", response_model=CommonResponse, summary="预览重命名格式")
@@ -1221,6 +2035,6 @@ def name_format_preview(
     return success(
         data={
             "segments": render_path(req.format, mtype, req.values),
-            "validate": validate(req.format),
+            "validate": validate(req.format, naming_field_keys() | set(req.values.keys())),
         }
     )

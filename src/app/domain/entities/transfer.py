@@ -27,6 +27,17 @@ class TransferHistoryEntity:
     dest_path: str
     dest_filename: str
     date: str
+    poster: str | None = None
+    dst_backend: str | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
+    source_state: str | None = None
+    source_deleted_at: str | None = None
+    dest_state: str | None = None
+    dest_deleted_at: str | None = None
+    files_checked_at: str | None = None
 
     @property
     def is_renamed(self) -> bool:
@@ -78,6 +89,17 @@ class TransferHistoryEntity:
             dest_path=orm_model.DEST_PATH or "",
             dest_filename=orm_model.DEST_FILENAME or "",
             date=orm_model.DATE or "",
+            poster=getattr(orm_model, "POSTER", None),
+            dst_backend=getattr(orm_model, "DST_BACKEND", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
+            source_state=getattr(orm_model, "SOURCE_STATE", None),
+            source_deleted_at=getattr(orm_model, "SOURCE_DELETED_AT", None),
+            dest_state=getattr(orm_model, "DEST_STATE", None),
+            dest_deleted_at=getattr(orm_model, "DEST_DELETED_AT", None),
+            files_checked_at=getattr(orm_model, "FILES_CHECKED_AT", None),
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -107,6 +129,16 @@ class TransferHistoryEntity:
             "dest_path": self.dest_path,
             "dest_filename": self.dest_filename,
             "date": self.date,
+            "poster": self.poster,
+            "identity_id": self.identity_id,
+            "anchor_provider": self.anchor_provider,
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
+            "source_state": self.source_state,
+            "source_deleted_at": self.source_deleted_at,
+            "dest_state": self.dest_state,
+            "dest_deleted_at": self.dest_deleted_at,
+            "files_checked_at": self.files_checked_at,
         }
 
 

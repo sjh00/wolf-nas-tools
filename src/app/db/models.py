@@ -24,6 +24,8 @@
 
 # 从新的子模块导入所有模型，保持向后兼容
 from app.db.models import (
+    AGENTPENDINGACTION,
+    AGENTTURN,
     # 配置
     CONFIGFILTERGROUP,
     CONFIGFILTERRULES,
@@ -41,7 +43,6 @@ from app.db.models import (
     DOWNLOADSETTING,
     # 索引器
     INDEXERSTATISTICS,
-    # 媒体同步
     MEDIASYNCITEMS,
     MEDIASYNCSTATISTIC,
     # 消息
@@ -73,6 +74,9 @@ from app.db.models import (
     Base,
     BaseMedia,
     # RSS
+    CustomRssSource,
+    # 媒体同步
+    MediaLibraryRoute,
     SubscribeHistory,
     SubscribeMovies,
     SubscribeTorrents,
@@ -85,6 +89,8 @@ __all__ = [
     # 基础
     "Base",
     "BaseMedia",
+    "AGENTPENDINGACTION",
+    "AGENTTURN",
     # 配置
     "CONFIGFILTERGROUP",
     "CONFIGFILTERRULES",
@@ -103,6 +109,7 @@ __all__ = [
     # 消息
     "MESSAGECLIENT",
     # RSS
+    "CustomRssSource",
     "SubscribeHistory",
     "SubscribeMovies",
     "SubscribeTorrents",
@@ -128,6 +135,7 @@ __all__ = [
     "TORRENTREMOVETASK",
     "USERRSSTASKHISTORY",
     # 媒体同步
+    "MediaLibraryRoute",
     "MEDIASYNCITEMS",
     "MEDIASYNCSTATISTIC",
     # 搜索

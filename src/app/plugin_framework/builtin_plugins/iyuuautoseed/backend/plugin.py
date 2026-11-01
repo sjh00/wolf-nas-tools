@@ -101,7 +101,7 @@ class IYUUAutoSeedPlugin:
 
     def on_enable(self):
         self.ctx.info("IYUU自动辅种插件已启用")
-        self.ctx.register_api("bindable_sites", self._api_bindable_sites)
+        self.ctx.register_api("bindable_sites", self._api_bindable_sites, methods=("GET",))
         self.ctx.register_api("bind_site", self._api_bind_site)
         self._start_service()
 

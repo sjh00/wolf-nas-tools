@@ -67,6 +67,24 @@ database:
   username:
   password:
   database: nexus_media
+  # 【连接池】：MySQL/PostgreSQL 生效。默认主池 10+10、调度池 5+5，进程最多占用 30 条连接，
+  # 其中常驻不超过 15 条（pool_size 决定常驻，max_overflow 提供峰值弹性）。
+  # PostgreSQL 官方默认 max_connections=100（另保留 3 条给超级用户），但实例常被多个服务共用，
+  # 也可能被收紧到 40~60；调大前请确认「主池 + 调度池 + 其他客户端」仍有余量，
+  # 否则会报 remaining connection slots are reserved for roles with the SUPERUSER attribute
+  # pool_size: 10
+  # max_overflow: 10
+  # pool_timeout: 15
+  # scheduler_pool_size: 5
+  # scheduler_max_overflow: 5
+  # scheduler_pool_timeout: 15
+  # 连接预算的自动探测与并发上限（一般无需修改）
+  # max_connections: 100
+  # connection_reserve: 3
+  # external_reserve: 5
+  # api_connection_reserve: 8
+  # sync_workers: 4
+  # sync_workers_max: 8
 log:
   # 【日志记录类型】：file、console
   # 如果是使用Docker安装建议设置为console，通过Docker管理器查看日志
@@ -139,6 +157,15 @@ media:
   default_rmt_mode: copy
   # 默认TMDB信息语种
   tmdb_language: zh
+  # 默认元数据策略：tmdb_primary / douban_primary / bangumi_primary
+  # 仅在未显式指定策略时使用，订阅自身配置优先
+  metadata_default_policy: tmdb_primary
+  # 多源元数据不可用时是否回退旧 TMDB 刮削链路（默认开启）
+  legacy_tmdb_fallback: true
+  # 豆瓣 HTML 分集补全（PoW + Cookie，较慢，仅电视/动漫启用）
+  douban_html_episodes: true
+  # 豆瓣 HTML 分集后台队列并发数（默认 1，建议保持 1 避免风控）
+  douban_html_episodes_workers: 1
 
 # 【订阅监控调度配置】（ADR-007 统一配置）
 subscribe:

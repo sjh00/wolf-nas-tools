@@ -1,5 +1,6 @@
 """任务注册与管理组件."""
 
+import threading
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -8,6 +9,7 @@ from apscheduler.jobstores.base import JobLookupError
 
 import log
 from app.core.exceptions import RepositoryError, ServiceError
+from app.db.engine import scheduler_engine_context
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.services.scheduler.models import TaskConfig
 from app.utils import ExceptionUtils
@@ -32,9 +34,25 @@ class JobRegistry:
             if not acquired:
                 log.info(f"[Scheduler]任务 {job_id} 跳过执行（锁被占用）")
                 return None
+            # 后台续租：长任务超过 TTL 时锁不会失效，避免其它实例并发执行同一任务
+            stop_event = threading.Event()
+
+            def _renew():
+                interval = max(10, lock_ttl // 3)
+                while not stop_event.wait(interval):
+                    try:
+                        lock.extend(lock_ttl)
+                    except Exception as e:
+                        log.warn(f"[Scheduler]任务 {job_id} 续租锁失败: {e}")
+
+            renewer = threading.Thread(target=_renew, name=f"sched-lock-{job_id}", daemon=True)
+            renewer.start()
             try:
-                return func(*args, **kwargs)
+                # 调度任务使用独立连接池，避免与 API 请求争用同一连接池
+                with scheduler_engine_context():
+                    return func(*args, **kwargs)
             finally:
+                stop_event.set()
                 try:
                     lock.release()
                 except Exception as e:

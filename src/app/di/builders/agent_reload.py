@@ -14,6 +14,8 @@ from app.services.transfer.kb_ingest_handler import register_kb_ingest_handler
 
 def rebuild_agent_rag(context: AppContext) -> dict[str, bool]:
     """重建 Agent RAG + 记忆 + 工具层，返回各能力是否可用。"""
+    old_chat_agent = getattr(context.agent_service, "_chat_agent", None)
+    old_vector_store = context.vector_store
     rag = build_agent_rag(context.agent_service, context.media_library_service)
     object.__setattr__(context, "embedding_service", rag.embedding_service)
     object.__setattr__(context, "vector_store", rag.vector_store)
@@ -56,6 +58,7 @@ def rebuild_agent_rag(context: AppContext) -> dict[str, bool]:
         semantic_memory=rag.semantic_memory,
         rbac_service=context.rbac_service,
         site_grant_service=context.site_grant_service,
+        metadata_service=context.metadata_service,
     )
     plugin_svc = context.plugin_framework_service
     object.__setattr__(
@@ -77,6 +80,12 @@ def rebuild_agent_rag(context: AppContext) -> dict[str, bool]:
         knowledge_ingestor=rag.knowledge_ingestor,
         thread_executor=context.thread_executor,
     )
+    for resource in (old_chat_agent, old_vector_store):
+        try:
+            if resource is not None and hasattr(resource, "close"):
+                resource.close()
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"[DI]Agent 旧资源释放失败: {e}")
     log.info(
         f"[DI]Agent RAG 热重建完成: retriever={rag.retriever is not None}, "
         f"ingestor={rag.knowledge_ingestor is not None}, memory={rag.semantic_memory is not None}"

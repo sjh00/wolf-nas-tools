@@ -75,6 +75,7 @@ class SITEBRUSHTORRENTS(Base):
     DOWNLOADER: Mapped[str] = mapped_column(String(255))
     DOWNLOAD_ID: Mapped[str] = mapped_column(String(255), index=True)
     PAGE_URL: Mapped[str] = mapped_column(String(1024), default="")
+    PAUSE_REASON: Mapped[str] = mapped_column(String(32), default="", server_default="")
     LST_MOD_DATE: Mapped[str] = mapped_column(String(255))
 
     def as_dict(self) -> dict[str, Any]:

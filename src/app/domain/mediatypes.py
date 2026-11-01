@@ -3,6 +3,15 @@
 from enum import Enum
 
 
+def normalize_media_type_input(
+    value: str | None,
+    content_profile: str | None = None,
+) -> tuple[str | None, str]:
+    """归一化 API 入参中的展示类型别名，返回 (media_type, content_profile)."""
+    profile = str(content_profile or "").strip() or "default"
+    return value, profile
+
+
 class MediaType(Enum):
     TV = "tv"
     MOVIE = "movie"
@@ -22,6 +31,9 @@ class MediaType(Enum):
             "series": cls.TV,
             "show": cls.TV,
             "anime": cls.ANIME,
+            "电影": cls.MOVIE,
+            "电视剧": cls.TV,
+            "动漫": cls.ANIME,
         }
         return aliases.get(normalized, cls.UNKNOWN)
 

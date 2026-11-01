@@ -121,6 +121,12 @@ class DownloadHistoryEntity:
     download_id: str
     save_path: str
     date: str
+    state: str = ""
+    user_id: int | None = None
+    identity_id: str | None = None
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    content_profile: str | None = None
 
     @property
     def is_movie(self) -> bool:
@@ -173,6 +179,12 @@ class DownloadHistoryEntity:
             download_id=orm_model.DOWNLOAD_ID or "",
             save_path=orm_model.SAVE_PATH or "",
             date=orm_model.DATE or "",
+            state=getattr(orm_model, "STATE", None) or "",
+            user_id=getattr(orm_model, "USER_ID", None),
+            identity_id=getattr(orm_model, "IDENTITY_ID", None),
+            anchor_provider=getattr(orm_model, "ANCHOR_PROVIDER", None),
+            anchor_external_id=getattr(orm_model, "ANCHOR_EXTERNAL_ID", None),
+            content_profile=getattr(orm_model, "CONTENT_PROFILE", None),
         )
 
     def to_dict(self) -> dict[str, Any]:

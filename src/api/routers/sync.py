@@ -13,6 +13,7 @@ from api.deps import (
     get_filetransfer_service,
     get_sync_service,
     get_thread_executor,
+    get_transfer_history_service,
     require_any_permission,
     require_permission,
 )
@@ -27,6 +28,7 @@ from app.core.exceptions import (
 from app.schemas.common import CommonResponse
 from app.services.filetransfer_service import FileTransferService as FileTransfer
 from app.services.sync_service import SyncService
+from app.services.transfer_history_service import TransferHistoryService
 from app.utils import ExceptionUtils
 from app.utils.response import fail, success
 
@@ -87,6 +89,9 @@ class RenameRequest(BaseModel):
     syncmod: str | None = None
     tmdb: int | None = None
     type: str | None = None
+    content_profile: str | None = None
+    provider: str | None = None
+    external_id: str | None = None
     season: int | None = None
     episode_format: str | None = None
     episode_details: str | None = None
@@ -106,6 +111,9 @@ class RenameUdfRequest(BaseModel):
     syncmod: str | None = None
     tmdb: int | None = None
     type: str | None = None
+    content_profile: str | None = None
+    provider: str | None = None
+    external_id: str | None = None
     season: int | None = None
     episode_format: str | None = None
     episode_details: str | None = None
@@ -143,6 +151,14 @@ class GetSyncPathRequest(BaseModel):
 class ReIdentificationRequest(BaseModel):
     flag: str | None = None
     ids: list[int] | None = None
+
+
+def _private_provider_scope(user) -> tuple[bool, set[str] | None]:
+    """私有插件的访问开关与权限集；超管不受显式权限码限制."""
+    if bool(getattr(user, "is_superadmin", False)):
+        return True, None
+    permissions = set(getattr(user, "permissions", []) or [])
+    return "metadata:private:view" in permissions, permissions
 
 
 # ---------------------------------------------------------------------------
@@ -197,16 +213,19 @@ def del_unknown_path(
     req: DelUnknownPathRequest,
     user: str = Depends(require_permission("setting:update")),
     ft: FileTransfer = Depends(get_filetransfer_service),
+    history: TransferHistoryService = Depends(get_transfer_history_service),
 ):
     tid = req.id if req.id is not None else req.ids
     if isinstance(tid, list):
         valid_tids = [t for t in tid if t]
         if valid_tids:
             ft.delete_transfer_unknowns(valid_tids)
+            history.invalidate_cache()
         return success()
     else:
         retcode = ft.delete_transfer_unknown(tid)
         if retcode == 0:
+            history.invalidate_cache()
             return success()
         return fail(code=ErrorCode.SYNC_FAILED)
 
@@ -262,7 +281,7 @@ def get_sub_path(
 @router.post("/rename", response_model=CommonResponse, summary="手动转移")
 def rename(
     req: RenameRequest,
-    user: str = Depends(require_permission("setting:update")),
+    current_user=Depends(require_permission("setting:update")),
     svc: SyncService = Depends(get_sync_service),
     ft: FileTransfer = Depends(get_filetransfer_service),
 ):
@@ -304,6 +323,7 @@ def rename(
         path = os.path.dirname(path)
         need_fix_all = True
 
+    allow_private, permissions = _private_provider_scope(current_user)
     result = svc.manual_transfer(
         inpath=path,
         syncmod=syncmod,
@@ -317,6 +337,11 @@ def rename(
         tmdbid=tmdbid,
         season=season,
         need_fix_all=need_fix_all,
+        content_profile=req.content_profile,
+        provider=req.provider,
+        external_id=req.external_id,
+        allow_private=allow_private,
+        permissions=permissions,
     )
     if result.success:
         if not need_fix_all and not logid:
@@ -340,7 +365,7 @@ def rename_file(
 @router.post("/rename/udf", response_model=CommonResponse, summary="自定义转移")
 def rename_udf(
     req: RenameUdfRequest,
-    user: str = Depends(require_permission("setting:update")),
+    current_user=Depends(require_permission("setting:update")),
     svc: SyncService = Depends(get_sync_service),
 ):
     inpath = req.inpath
@@ -364,6 +389,7 @@ def rename_udf(
     min_filesize = req.min_filesize
     media_type = svc.build_media_type(mtype or "")
 
+    allow_private, permissions = _private_provider_scope(current_user)
     result = svc.manual_transfer(
         inpath=inpath or "",
         syncmod=syncmod,
@@ -378,6 +404,11 @@ def rename_udf(
         season=season,
         src_backend_id=src_backend_id,
         dst_backend_id=dst_backend_id,
+        content_profile=req.content_profile,
+        provider=req.provider,
+        external_id=req.external_id,
+        allow_private=allow_private,
+        permissions=permissions,
     )
     if result.success:
         return success(message="转移成功")

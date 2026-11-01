@@ -48,13 +48,11 @@ class TransferHistoryManager:
     def get_transfer_info_by(self, tmdbid, season=None, season_episode=None):
         return self.transfer_repo.get_transfer_info_by(tmdbid=tmdbid, season=season, season_episode=season_episode)
 
-    def get_multi_version_groups(self, limit: int = 100):
-        """统计同一作品存在多个版本/重复文件的作品列表"""
-        return self.transfer_repo.get_multi_version_groups(limit=limit)
+    def get_transfer_info_by_path(self, dest_path, filename=None):
+        return self.transfer_repo.get_transfer_info_by_dest_path(dest_path, filename)
 
-    def get_transfer_logs_by_paths(self, paths: list[str]):
-        """按一组文件路径（源或目标）匹配全部转移记录（按文件锚点清理用）"""
-        return self.transfer_repo.get_transfer_logs_by_paths(paths=paths)
+    def get_by_source(self, source_full_path):
+        return self.transfer_repo.get_by_source(source_full_path)
 
     def get_contiguous_transferred_episode_by_tmdb(self, tmdbid, season: int | None = None, start: int = 1) -> int:
         """查询某季已成功转移的连续集数（重订阅续订用，季包保守记 start）."""
@@ -63,8 +61,30 @@ class TransferHistoryManager:
     def get_transfer_info_by_id(self, logid):
         return self.transfer_repo.get_transfer_info_by_id(logid=logid)
 
-    def get_transfer_history(self, search, page, rownum):
-        return self.transfer_repo.get_transfer_history(search=search, page=page, rownum=rownum)
+    def get_transfer_history(self, search, page, rownum, media_type=None):
+        return self.transfer_repo.get_transfer_history(search=search, page=page, rownum=rownum, media_type=media_type)
+
+    def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
+        return self.transfer_repo.update_transfer_history_poster(logid=logid, poster=poster)
+
+    def update_transfer_file_state(
+        self,
+        logid: int,
+        *,
+        source_state: str | None = None,
+        source_deleted_at: str | None = None,
+        dest_state: str | None = None,
+        dest_deleted_at: str | None = None,
+        files_checked_at: str | None = None,
+    ) -> None:
+        return self.transfer_repo.update_transfer_file_state(
+            logid,
+            source_state=source_state,
+            source_deleted_at=source_deleted_at,
+            dest_state=dest_state,
+            dest_deleted_at=dest_deleted_at,
+            files_checked_at=files_checked_at,
+        )
 
     def delete_transfer_log_by_id(self, logid):
         return self.transfer_repo.delete_transfer_log_by_id(logid=logid)

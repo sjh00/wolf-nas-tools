@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from app.core.settings import settings
 
-_DEFAULT_LIMIT = 2
+_DEFAULT_LIMIT = 4
 
 
 def _resolve_limit() -> int:
@@ -24,9 +24,10 @@ _browser_semaphore = threading.BoundedSemaphore(_resolve_limit())
 
 
 @contextmanager
-def browser_slot():
-    """获取一个浏览器并发槽位；占满时阻塞等待，退出时释放。"""
-    _browser_semaphore.acquire()
+def browser_slot(timeout: float = 30.0):
+    """获取浏览器并发槽；占满时最多等待 timeout，避免请求永久排队."""
+    if not _browser_semaphore.acquire(timeout=timeout):
+        raise TimeoutError("浏览器并发槽等待超时")
     try:
         yield
     finally:

@@ -135,6 +135,8 @@ class AppConfig(BaseModel):
     ssl_key: str = ""
     rmt_tmdbkey: str = ""
     rmt_match_mode: str = "normal"
+    # TMDB 请求速率（令牌桶，按 API Key 限流）；默认 40/10s ≈ 4/s，兼容历史行为
+    tmdb_rate: str = "40/10s"
     proxies: dict = Field(default_factory=lambda: {"https": None, "http": None})
     domain: str = ""
     user_agent: str = (
@@ -168,6 +170,7 @@ class MediaConfig(BaseModel):
     media_default_path: str = ""
     default_rmt_mode: str = "link"
     tmdb_language: str = "zh"
+    metadata_default_policy: str = "tmdb_primary"
     episode_mapping_enabled: bool = True
 
 

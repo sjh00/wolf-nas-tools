@@ -71,7 +71,7 @@ class SyncRepository(BaseRepository):
         if not sid:
             return
         with self.session() as db:
-            db.query(CONFIGSYNCPATHS).filter(int(sid) == CONFIGSYNCPATHS.ID).delete()
+            db.query(CONFIGSYNCPATHS).filter(CONFIGSYNCPATHS.ID == int(sid)).delete()
             db.commit()
 
     def get_config_sync_paths(self, sid=None):
@@ -86,7 +86,7 @@ class SyncRepository(BaseRepository):
         """
         with self.session() as db:
             if sid:
-                return db.query(CONFIGSYNCPATHS).filter(int(sid) == CONFIGSYNCPATHS.ID).all()
+                return db.query(CONFIGSYNCPATHS).filter(CONFIGSYNCPATHS.ID == int(sid)).all()
             return db.query(CONFIGSYNCPATHS).order_by(CONFIGSYNCPATHS.SOURCE).all()
 
     def check_config_sync_paths(self, sid=None, compatibility=None, rename=None, enabled=None):
@@ -101,11 +101,11 @@ class SyncRepository(BaseRepository):
         """
         with self.session() as db:
             if sid and rename is not None:
-                db.query(CONFIGSYNCPATHS).filter(int(sid) == CONFIGSYNCPATHS.ID).update({"RENAME": int(rename)})
+                db.query(CONFIGSYNCPATHS).filter(CONFIGSYNCPATHS.ID == int(sid)).update({"RENAME": int(rename)})
             elif sid and enabled is not None:
-                db.query(CONFIGSYNCPATHS).filter(int(sid) == CONFIGSYNCPATHS.ID).update({"ENABLED": int(enabled)})
+                db.query(CONFIGSYNCPATHS).filter(CONFIGSYNCPATHS.ID == int(sid)).update({"ENABLED": int(enabled)})
             elif sid and compatibility is not None:
-                db.query(CONFIGSYNCPATHS).filter(int(sid) == CONFIGSYNCPATHS.ID).update(
+                db.query(CONFIGSYNCPATHS).filter(CONFIGSYNCPATHS.ID == int(sid)).update(
                     {"COMPATIBILITY": int(compatibility)}
                 )
             db.commit()

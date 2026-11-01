@@ -123,8 +123,9 @@ class Emby(_IMediaClient):
 
     def get_status(self):
         """
-        测试连通性
+        测试连通性；若配置了 user_id，先校验其为真实用户 Id（常见误填登录用户名会导致服务器 500）
         """
+        self.validate_user_id(self._client_config.get("user_id"), self.get_users(), self.client_name)
         return bool(self.get_medias_count())
 
     def __get_emby_folders(self):
@@ -169,9 +170,9 @@ class Emby(_IMediaClient):
             log.error(f"[{self.client_name}]连接User/Views 出错：" + str(e))
             return []
 
-    def get_user(self, user_name=None):
+    def get_users(self):
         """
-        获得管理员用户
+        获取用户列表（用于校验配置的 user_id）
         """
         if not self._host or not self._apikey:
             return None
@@ -179,23 +180,31 @@ class Emby(_IMediaClient):
         try:
             res = HttpClient().get(req_url)
             if res:
-                users = res.json()
-                # 先查询是否有与当前用户名称匹配的
-                if user_name:
-                    for user in users:
-                        if user.get("Name") == user_name:
-                            return user.get("Id")
-                # 查询管理员
-                for user in users:
-                    if user.get("Policy", {}).get("IsAdministrator"):
-                        return user.get("Id")
-            else:
-                log.error(f"[{self.client_name}]Users 未获取到返回数据")
+                return res.json()
+            log.error(f"[{self.client_name}]Users 未获取到返回数据")
         except (InfrastructureError, NetworkError, MediaServerError):
             raise
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
             log.error(f"[{self.client_name}]连接Users出错：" + str(e))
+        return None
+
+    def get_user(self, user_name=None):
+        """
+        获得管理员用户
+        """
+        users = self.get_users()
+        if not users:
+            return None
+        # 先查询是否有与当前用户名称匹配的
+        if user_name:
+            for user in users:
+                if user.get("Name") == user_name:
+                    return user.get("Id")
+        # 查询管理员
+        for user in users:
+            if user.get("Policy", {}).get("IsAdministrator"):
+                return user.get("Id")
         return None
 
     def __get_backdrop_url(self, item_id, image_tag, remote=True, inner=False):
@@ -301,7 +310,10 @@ class Emby(_IMediaClient):
         """
         if not self._host or not self._apikey:
             return []
-        req_url = f"{self._host}emby/System/ActivityLog/Entries?api_key={self._apikey}&"
+        req_url = (
+            f"{self._host}emby/System/ActivityLog/Entries?api_key={self._apikey}"
+            f"&Limit={num}&SortBy=DateCreated&SortOrder=Descending"
+        )
         ret_array = []
         try:
             res = HttpClient().get(req_url)
@@ -309,13 +321,23 @@ class Emby(_IMediaClient):
                 ret_json = res.json()
                 items = ret_json.get("Items")
                 for item in items:
-                    if item.get("Type") == "AuthenticationSucceeded":
+                    item_type = str(item.get("Type") or "")
+                    if item_type in ("AuthenticationSucceeded", "SessionStarted", "user.authenticated"):
                         event_type = "LG"
                         event_date = SystemUtils.get_local_time(item.get("Date"))
-                        event_str = "{}, {}".format(item.get("Name"), item.get("ShortOverview"))
+                        event_str = ", ".join(
+                            str(part) for part in (item.get("Name"), item.get("ShortOverview")) if part
+                        )
                         activity = {"type": event_type, "event": event_str, "date": event_date}
                         ret_array.append(activity)
-                    if item.get("Type") in ["VideoPlayback", "VideoPlaybackStopped"]:
+                    if item_type in (
+                        "VideoPlayback",
+                        "VideoPlaybackStopped",
+                        "PlaybackStart",
+                        "PlaybackStop",
+                        "playback.start",
+                        "playback.stop",
+                    ):
                         event_type = "PL"
                         event_date = SystemUtils.get_local_time(item.get("Date"))
                         event_str = item.get("Name")
@@ -331,6 +353,7 @@ class Emby(_IMediaClient):
             ExceptionUtils.exception_traceback(e)
             log.error(f"[{self.client_name}]连接System/ActivityLog/Entries出错：" + str(e))
             return []
+        ret_array = sorted(ret_array, key=lambda item: str(item.get("date") or ""), reverse=True)
         return ret_array[:num]
 
     def get_medias_count(self):
@@ -415,6 +438,7 @@ class Emby(_IMediaClient):
                         ):
                             ret_movies.append(
                                 {
+                                    "id": res_item.get("Id"),
                                     "title": res_item.get("Name"),
                                     "year": str(res_item.get("ProductionYear")),
                                 }
@@ -428,6 +452,109 @@ class Emby(_IMediaClient):
             log.error(f"[{self.client_name}]连接Items出错：" + str(e))
             return None
         return []
+
+    def get_item_id_by_path(self, path: str) -> str | None:
+        """按文件/目录名反查 Emby 条目 ID，兼容 NFO 标题与文件名不一致的情况."""
+        if not self._host or not self._apikey or not path:
+            return None
+        target = str(path).replace("\\", "/").rstrip("/")
+        base = os.path.basename(target)
+        stem = os.path.splitext(base)[0]
+        terms = [stem, base]
+        parent = os.path.basename(os.path.dirname(target))
+        if parent and parent not in terms:
+            terms.append(parent)
+        for term in terms:
+            if not term:
+                continue
+            req_url = (
+                f"{self._host}emby/Items?IncludeItemTypes=Movie&Fields=Path,Name"
+                f"&StartIndex=0&Recursive=true&SearchTerm={quote(str(term))}&Limit=20"
+                f"&IncludeSearchTypes=false&api_key={self._apikey}"
+            )
+            try:
+                res = HttpClient().get(req_url)
+                if not res:
+                    continue
+                for item in res.json().get("Items") or []:
+                    item_path = str(item.get("Path") or "").replace("\\", "/")
+                    item_base = os.path.basename(item_path)
+                    item_stem = os.path.splitext(item_base)[0]
+                    if (
+                        item_path.endswith(target)
+                        or target.endswith(item_path)
+                        or item_stem.lower() == stem.lower()
+                        or item_base.lower() == base.lower()
+                    ):
+                        item_id = str(item.get("Id") or "").strip()
+                        if item_id:
+                            return item_id
+            except (InfrastructureError, NetworkError, MediaServerError):
+                raise
+            except Exception as e:  # noqa: BLE001
+                ExceptionUtils.exception_traceback(e)
+                log.error(f"[{self.client_name}]按路径查询条目出错：" + str(e))
+        return None
+
+    def list_persons(self, limit: int = 10000) -> list[dict]:
+        """列出演员/人物条目，供上层同步别名等人物元数据."""
+        if not self._host or not self._apikey:
+            return []
+        req_url = (
+            f"{self._host}emby/Items?Recursive=true&IncludeItemTypes=Person"
+            f"&Fields=Tags,Name&Limit={int(limit)}&api_key={self._apikey}"
+        )
+        try:
+            res = HttpClient().get(req_url)
+            return list((res.json() or {}).get("Items") or []) if res else []
+        except (InfrastructureError, NetworkError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]查询演员列表出错：" + str(e))
+            return []
+
+    def add_person_tags(self, person_id: str, tags: list[str]) -> bool:
+        """给人物条目添加标签（Emby 不支持 alias 字段，用 Tags 承载别名）."""
+        if not self._host or not self._apikey or not person_id:
+            return False
+        names = [str(tag).strip() for tag in tags if str(tag).strip()]
+        if not names:
+            return True
+        req_url = f"{self._host}emby/Items/{person_id}/Tags/Add?api_key={self._apikey}"
+        try:
+            res = HttpClient().post(req_url, json={"Tags": [{"Name": name} for name in names]})
+            return bool(res)
+        except (InfrastructureError, NetworkError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]添加演员标签出错：" + str(e))
+            return False
+
+    def search_movie_keyword(self, keyword: str) -> bool:
+        """按名称/路径关键字检查电影是否存在（用于番号等非标题场景）."""
+        if not self._host or not self._apikey or not keyword:
+            return False
+        req_url = (
+            f"{self._host}emby/Items?IncludeItemTypes=Movie&Fields=Path,Name"
+            f"&StartIndex=0&Recursive=true&SearchTerm={quote(str(keyword))}&Limit=20"
+            f"&IncludeSearchTypes=false&api_key={self._apikey}"
+        )
+        try:
+            res = HttpClient().get(req_url)
+            if not res:
+                return False
+            for item in res.json().get("Items") or []:
+                text = f"{item.get('Name') or ''} {item.get('Path') or ''}".lower()
+                if keyword.lower() in text:
+                    return True
+        except (InfrastructureError, NetworkError, MediaServerError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"[{self.client_name}]关键字检查出错：" + str(e))
+        return False
 
     def get_tv_episodes(self, item_id=None, title=None, year=None, tmdbid=None, season=None):
         """
@@ -598,13 +725,18 @@ class Emby(_IMediaClient):
                 return self.get_nt_image_url(url=image_url, remote=True)
             return image_url
 
-    def __refresh_emby_library_by_id(self, item_id):
+    def __refresh_emby_library_by_id(self, item_id, replace_images: bool = False):
         """
         通知Emby刷新一个项目的媒体库
         """
         if not self._host or not self._apikey:
             return False
-        req_url = f"{self._host}emby/Items/{item_id}/Refresh?Recursive=true&api_key={self._apikey}"
+        if replace_images:
+            suffix = "&MetadataRefreshMode=FullRefresh&ImageRefreshMode=FullRefresh&ReplaceAllImages=true"
+        else:
+            # 刷新本地图片，但绝不 ReplaceAllImages=true（会删掉/替换本地 poster）。
+            suffix = "&MetadataRefreshMode=Default&ImageRefreshMode=FullRefresh&ReplaceAllImages=false"
+        req_url = f"{self._host}emby/Items/{item_id}/Refresh?Recursive=true{suffix}&api_key={self._apikey}"
         try:
             res = HttpClient().post(req_url)
             if res:
@@ -619,6 +751,10 @@ class Emby(_IMediaClient):
             log.error(f"[{self.client_name}]连接Items/Id/Refresh出错：" + str(e))
             return False
         return False
+
+    def refresh_library(self, item_id):
+        """按媒体库 ID 刷新指定媒体库。"""
+        return self.__refresh_emby_library_by_id(item_id)
 
     def refresh_root_library(self):
         """
@@ -649,15 +785,32 @@ class Emby(_IMediaClient):
         """
         if not items:
             return
-        # 收集要刷新的媒体库信息
+        # 收集要刷新的媒体条目/媒体库信息
         log.info(f"[{self.client_name}]开始刷新Emby媒体库...")
         library_ids = []
+        item_ids = []
         for item in items:
             if not item:
                 continue
+            if item.get("type") == MediaType.MOVIE.value:
+                movies = self.get_movies(item.get("title"), item.get("year")) or []
+                movie_id = next((m.get("id") for m in movies if m.get("id")), None)
+                if not movie_id:
+                    # 插件/番号场景下 NFO 标题常与 Emby 条目名不一致，按路径兜底。
+                    item_path = str(item.get("file_path") or item.get("target_path") or "")
+                    movie_id = self.get_item_id_by_path(item_path)
+                    if movie_id:
+                        log.info(f"[{self.client_name}]按路径命中条目 {movie_id}: {item_path}")
+                if movie_id:
+                    # 已入库电影必须刷新条目，才会重读新的 NFO/海报。
+                    if movie_id not in item_ids:
+                        item_ids.append(movie_id)
+                    continue
             library_id = self.__get_emby_library_id_by_item(item)
             if library_id and library_id not in library_ids:
                 library_ids.append(library_id)
+        for item_id in item_ids:
+            self.__refresh_emby_library_by_id(item_id, replace_images=False)
         # 开始刷新媒体库
         if "/" in library_ids:
             self.refresh_root_library()
@@ -672,7 +825,9 @@ class Emby(_IMediaClient):
         根据媒体信息查询在哪个媒体库，返回要刷新的位置的ID
         :param item: 由title、year、type组成的字典
         """
-        if not item.get("title") or not item.get("year") or not item.get("type"):
+        if item.get("library_id"):
+            return str(item["library_id"])
+        if not item.get("title") or not item.get("type"):
             return None
         if item.get("type") != MediaType.MOVIE.value:
             item_id = self.__get_emby_series_id_by_name(item.get("title"), item.get("year"))

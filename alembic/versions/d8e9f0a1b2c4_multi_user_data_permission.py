@@ -208,18 +208,36 @@ def upgrade() -> None:
             )
 
 
+def _index_names(table: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    if table not in inspector.get_table_names():
+        return set()
+    return {str(item["name"]) for item in inspector.get_indexes(table) if item.get("name")}
+
+
+def _fk_names(table: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    if table not in inspector.get_table_names():
+        return set()
+    return {str(item["name"]) for item in inspector.get_foreign_keys(table) if item.get("name")}
+
+
 def downgrade() -> None:
     for index, table in [
         ("UQ_SUBSCRIBE_TVS_USER_TMDB_SEASON", "SUBSCRIBE_TVS"),
         ("UQ_SUBSCRIBE_MOVIES_USER_TMDB", "SUBSCRIBE_MOVIES"),
     ]:
-        if has_table(table):
+        if has_table(table) and index in _index_names(table):
             op.drop_index(index, table_name=table)
     for table in USER_ID_TABLES:
         if has_table(table) and has_column(table, "USER_ID"):
+            index_name = f"ix_{table}_USER_ID"
+            if index_name in _index_names(table):
+                op.drop_index(index_name, table_name=table)
             with op.batch_alter_table(table) as batch_op:
-                batch_op.drop_constraint(f"fk_{table}_USER_ID", type_="foreignkey")
-                batch_op.drop_index(f"ix_{table}_USER_ID")
+                fk_name = f"fk_{table}_USER_ID"
+                if fk_name in _fk_names(table):
+                    batch_op.drop_constraint(fk_name, type_="foreignkey")
                 batch_op.drop_column("USER_ID")
     for table in ["RBAC_USER_CHANNELS", "RBAC_USER_SITES", "RBAC_ROLE_SITES"]:
         if has_table(table):

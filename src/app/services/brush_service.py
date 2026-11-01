@@ -104,22 +104,23 @@ class BrushService:
             "name": data.get("brushtask_name"),
             "site": data.get("brushtask_site"),
             "free": data.get("brushtask_free") or "",
-            "rssurl": data.get("brushtask_rssurl"),
+            "rssurl": data.get("brushtask_rssurl") or "",
             "interval": data.get("brushtask_interval"),
             "downloader": data.get("brushtask_downloader"),
             "seed_size": seed_size_bytes,
-            "time_range": data.get("brushtask_time_range"),
-            "active_weekdays": data.get("brushtask_active_weekdays"),
+            "time_range": data.get("brushtask_time_range") or "",
+            "active_weekdays": data.get("brushtask_active_weekdays") or "",
             "download_switch": data.get("brushtask_download_switch", "Y"),
             "remove_switch": data.get("brushtask_remove_switch", "Y"),
             "stop_switch": data.get("brushtask_stop_switch", "Y"),
             "daily_delete_limit": data.get("brushtask_daily_delete_limit", ""),
             "max_seeding": data.get("brushtask_max_seeding", ""),
             "hr_limit": data.get("brushtask_hr_limit", ""),
-            "label": data.get("brushtask_label"),
-            "savepath": data.get("brushtask_savepath"),
+            "label": data.get("brushtask_label") or "",
+            # DB 列为 NOT NULL：前端「保存目录」清空后传 null，需落库为空串，否则保存报错
+            "savepath": data.get("brushtask_savepath") or "",
             "transfer": SwitchState.ON.value if data.get("brushtask_transfer") else SwitchState.OFF.value,
-            "state": data.get("brushtask_state"),
+            "state": data.get("brushtask_state") or "",
             "rss_rule": rss_rule,
             "remove_rule": remove_rule,
             "stop_rule": stop_rule,
@@ -214,14 +215,14 @@ class BrushService:
         )
 
     @staticmethod
-    def check_remove_rule(remove_rule: dict | None, params: dict):
+    def check_remove_rule(remove_rule: dict | None, params: dict, attr_unknown: bool = False):
         """委托给领域规则引擎：检查是否符合删种规则"""
-        return BrushRuleEngine.check_remove_rule(remove_rule=remove_rule, params=params)
+        return BrushRuleEngine.check_remove_rule(remove_rule=remove_rule, params=params, attr_unknown=attr_unknown)
 
     @staticmethod
-    def check_stop_rule(stop_rule: dict | None, params: dict):
+    def check_stop_rule(stop_rule: dict | None, params: dict, attr_unknown: bool = False):
         """委托给领域规则引擎：检查是否符合停种规则"""
-        return BrushRuleEngine.check_stop_rule(stop_rule=stop_rule, params=params)
+        return BrushRuleEngine.check_stop_rule(stop_rule=stop_rule, params=params, attr_unknown=attr_unknown)
 
     @staticmethod
     def format_rule_html(rules: dict | None) -> str:

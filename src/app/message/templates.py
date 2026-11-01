@@ -6,6 +6,8 @@ DEFAULT_MESSAGE_TEMPLATES = {
     "download_start": {
         "title": "⬇️ {{ title_ep_string|default(item.get_title_ep_string()) }} 开始下载",
         "text": (
+            "{% if keyword %}🔢 关键词：{{ keyword }}\n{% endif %}"
+            "{% if source_provider %}📡 来源：{{ source_provider }}\n{% endif %}"
             "🌐 站点：{{ site|default(item.site)|default('未知') }}\n"
             "📦 质量：{{ resource_type|default(item.get_resource_type_string())|default('未知') }}\n"
             "💾 大小：{{ size_str|default(item.size|filesize)|default('未知') }}\n"
@@ -26,10 +28,15 @@ DEFAULT_MESSAGE_TEMPLATES = {
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
-            "📺 类型：{{ media_info.type.value }}\n"
+            "📺 类型："
+            "{% if content_profile and content_profile != 'default' %}"
+            "{{ profile_label|default(content_profile) }}"
+            "{% else %}{{ media_info.type.value }}{% endif %}\n"
             "{% if media_info.category and category_flag %}📁 类别：{{ media_info.category }}\n{% endif %}"
             "{% if media_info.get_resource_type_string() %}"
             "📦 质量：{{ media_info.get_resource_type_string() }}\n{% endif %}"
+            "{% if keyword %}🔢 关键词：{{ keyword }}\n{% endif %}"
+            "{% if source_provider %}📡 来源：{{ source_provider }}\n{% endif %}"
             "💾 大小：{{ media_info.size|filesize }}\n"
             "📥 来自：{{ in_from }}"
             "{% if exist_filenum != 0 %}\n⚠️ 已有 {{ exist_filenum }} 个文件存在{% endif %}"
@@ -38,6 +45,8 @@ DEFAULT_MESSAGE_TEMPLATES = {
     "download_fail": {
         "title": "❌ {{ item.get_title_string() }} {{ item.get_season_episode_string() }} 添加下载失败",
         "text": (
+            "{% if keyword %}🔢 关键词：{{ keyword }}\n{% endif %}"
+            "{% if source_provider %}📡 来源：{{ source_provider }}\n{% endif %}"
             "🌐 站点：{{ item.site|default('未知') }}\n"
             "🎬 种子：{{ item.org_string|truncatestr(60) }}\n"
             "❗ 原因：{{ error_msg }}"
@@ -51,7 +60,18 @@ DEFAULT_MESSAGE_TEMPLATES = {
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
-            "📺 类型：{{ media_info.type.value }}\n"
+            "📺 类型："
+            "{% if content_profile and content_profile != 'default' %}"
+            "{{ profile_label|default(content_profile) }}"
+            "{% else %}{{ media_info.type.value }}{% endif %}\n"
+            "{% if keyword %}🔢 关键词：{{ keyword }}\n{% endif %}"
+            "{% if source_provider %}📡 来源：{{ source_provider }}\n{% endif %}"
+            "{% if filter_restype or filter_pix or filter_team or filter_include or filter_exclude %}"
+            "🎯 过滤：{{ filter_restype }}{% if filter_pix %} / {{ filter_pix }}{% endif %}"
+            "{% if filter_team %} / {{ filter_team }}{% endif %}"
+            "{% if filter_include %} / +{{ filter_include }}{% endif %}"
+            "{% if filter_exclude %} / -{{ filter_exclude }}{% endif %}\n"
+            "{% endif %}"
             "📥 来自：{{ in_from }}"
             "{% if media_info.user_name %}\n👤 用户：{{ media_info.user_name }}{% endif %}"
         ),
@@ -63,7 +83,12 @@ DEFAULT_MESSAGE_TEMPLATES = {
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
-            "📺 类型：{{ media_info.type.value }}"
+            "📺 类型："
+            "{% if content_profile and content_profile != 'default' %}"
+            "{{ profile_label|default(content_profile) }}"
+            "{% else %}{{ media_info.type.value }}{% endif %}"
+            "{% if keyword %}\n🔢 关键词：{{ keyword }}{% endif %}"
+            "{% if source_provider %}\n📡 来源：{{ source_provider }}{% endif %}"
         ),
     },
     "site_signin": {"title": "📊 站点签到", "text": "{{ msgs|join('\\n') }}"},

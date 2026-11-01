@@ -4,7 +4,9 @@ Handles configuration related database operations.
 Includes: Message Client, Torrent Remove Task, Downloader, User RSS, Filter Rules
 """
 
+import json
 import time
+from typing import Any
 
 from sqlalchemy import Integer, cast, text
 
@@ -46,12 +48,12 @@ class ConfigRepository(BaseRepository):
         if not cid:
             return 0
         with self.session() as db:
-            return db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).delete()
+            return db.query(MESSAGECLIENT).filter(MESSAGECLIENT.ID == int(cid)).delete()
 
     def get_message_client(self, cid: int | None = None) -> list[MESSAGECLIENT]:
         with self.session() as db:
             if cid:
-                return db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).all()
+                return db.query(MESSAGECLIENT).filter(MESSAGECLIENT.ID == int(cid)).all()
             return db.query(MESSAGECLIENT).all()
 
     def insert_message_client(
@@ -94,7 +96,7 @@ class ConfigRepository(BaseRepository):
     ) -> int:
         """更新消息客户端配置，返回客户端 ID."""
         with self.session() as db:
-            client = db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).first()
+            client = db.query(MESSAGECLIENT).filter(MESSAGECLIENT.ID == int(cid)).first()
             if not client:
                 return 0
             client.NAME = name
@@ -104,7 +106,7 @@ class ConfigRepository(BaseRepository):
             client.INTERACTIVE = int(interactive)
             client.ENABLED = int(enabled)
             client.NOTE = note
-            client.TEMPLATES = JsonUtils.dumps(templates) if templates else None
+            client.TEMPLATES = JsonUtils.dumps(templates) if templates else ""
             db.flush()
             return int(client.ID)
 
@@ -126,11 +128,11 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if cid and interactive is not None:
-                db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).update({"INTERACTIVE": int(interactive)})
+                db.query(MESSAGECLIENT).filter(MESSAGECLIENT.ID == int(cid)).update({"INTERACTIVE": int(interactive)})
             elif cid and enabled is not None:
-                db.query(MESSAGECLIENT).filter(int(cid) == MESSAGECLIENT.ID).update({"ENABLED": int(enabled)})
+                db.query(MESSAGECLIENT).filter(MESSAGECLIENT.ID == int(cid)).update({"ENABLED": int(enabled)})
             elif not cid and int(interactive or 0) == 0 and ctype:
-                db.query(MESSAGECLIENT).filter(MESSAGECLIENT.INTERACTIVE == 1, ctype == MESSAGECLIENT.TYPE).update(
+                db.query(MESSAGECLIENT).filter(MESSAGECLIENT.INTERACTIVE == 1, MESSAGECLIENT.TYPE == ctype).update(
                     {"INTERACTIVE": 0}
                 )
 
@@ -146,7 +148,7 @@ class ConfigRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            db.query(TORRENTREMOVETASK).filter(int(tid) == TORRENTREMOVETASK.ID).delete()
+            db.query(TORRENTREMOVETASK).filter(TORRENTREMOVETASK.ID == int(tid)).delete()
 
     def get_torrent_remove_tasks(self, tid: int | None = None) -> list[TORRENTREMOVETASK]:
         """
@@ -160,7 +162,7 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if tid:
-                return db.query(TORRENTREMOVETASK).filter(int(tid) == TORRENTREMOVETASK.ID).all()
+                return db.query(TORRENTREMOVETASK).filter(TORRENTREMOVETASK.ID == int(tid)).all()
             return db.query(TORRENTREMOVETASK).order_by(TORRENTREMOVETASK.NAME).all()
 
     def update_torrent_remove_task(
@@ -191,7 +193,7 @@ class ConfigRepository(BaseRepository):
         with self.session() as db:
             count = (
                 db.query(TORRENTREMOVETASK)
-                .filter(int(tid) == TORRENTREMOVETASK.ID)
+                .filter(TORRENTREMOVETASK.ID == int(tid))
                 .update(
                     {
                         TORRENTREMOVETASK.NAME: name,
@@ -281,7 +283,7 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if did:
-                db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update(
+                db.query(DOWNLOADER).filter(DOWNLOADER.ID == int(did)).update(
                     {
                         "NAME": name,
                         "ENABLED": int(enabled),
@@ -319,7 +321,7 @@ class ConfigRepository(BaseRepository):
         if not did:
             return
         with self.session() as db:
-            db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).delete()
+            db.query(DOWNLOADER).filter(DOWNLOADER.ID == int(did)).delete()
 
     def check_downloader(
         self,
@@ -343,15 +345,13 @@ class ConfigRepository(BaseRepository):
             return
         with self.session() as db:
             if transfer is not None:
-                db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update({"TRANSFER": int(transfer)})
+                db.query(DOWNLOADER).filter(DOWNLOADER.ID == int(did)).update({"TRANSFER": int(transfer)})
             elif only_wolf_nas is not None:
-                db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update(
-                    {"ONLY_WOLF_NAS": int(only_wolf_nas)}
-                )
+                db.query(DOWNLOADER).filter(DOWNLOADER.ID == int(did)).update({"ONLY_WOLF_NAS": int(only_wolf_nas)})
             elif match_path is not None:
-                db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update({"MATCH_PATH": int(match_path)})
+                db.query(DOWNLOADER).filter(DOWNLOADER.ID == int(did)).update({"MATCH_PATH": int(match_path)})
             elif enabled is not None:
-                db.query(DOWNLOADER).filter(int(did) == DOWNLOADER.ID).update({"ENABLED": int(enabled)})
+                db.query(DOWNLOADER).filter(DOWNLOADER.ID == int(did)).update({"ENABLED": int(enabled)})
 
     def get_downloaders(self) -> list[DOWNLOADER]:
         """
@@ -372,7 +372,7 @@ class ConfigRepository(BaseRepository):
         with self.session() as db:
             query = db.query(CONFIGUSERRSS)
             if tid:
-                query = query.filter(int(tid) == CONFIGUSERRSS.ID)
+                query = query.filter(CONFIGUSERRSS.ID == int(tid))
             if user is not None:
                 query = apply_owner_scope(query, CONFIGUSERRSS, user)
             return query.order_by(CONFIGUSERRSS.STATE.desc()).all()
@@ -384,7 +384,7 @@ class ConfigRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            query = db.query(CONFIGUSERRSS).filter(int(tid) == CONFIGUSERRSS.ID)
+            query = db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.ID == int(tid))
             if user is not None and not user.is_superadmin:
                 query = query.filter(CONFIGUSERRSS.USER_ID == user.user_id)
             query.delete()
@@ -400,7 +400,7 @@ class ConfigRepository(BaseRepository):
         if not tid:
             return
         with self.session() as db:
-            db.query(CONFIGUSERRSS).filter(int(tid) == CONFIGUSERRSS.ID).update(
+            db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.ID == int(tid)).update(
                 {
                     "PROCESS_COUNT": CONFIGUSERRSS.PROCESS_COUNT + count,
                     "UPDATE_TIME": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
@@ -415,7 +415,7 @@ class ConfigRepository(BaseRepository):
         with self.session() as db:
             existing = self.get_userrss_tasks(item.get("id"), user=user) if item.get("id") else []
             if item.get("id") and existing:
-                db.query(CONFIGUSERRSS).filter(int(item.get("id") or 0) == CONFIGUSERRSS.ID).update(
+                db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.ID == int(item.get("id") or 0)).update(
                     {
                         "NAME": item.get("name"),
                         "ADDRESS": JsonUtils.dumps(item.get("address")),
@@ -475,7 +475,7 @@ class ConfigRepository(BaseRepository):
             return
         with self.session() as db:
             if tid:
-                db.query(CONFIGUSERRSS).filter(int(tid) == CONFIGUSERRSS.ID).update({"STATE": state})
+                db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.ID == int(tid)).update({"STATE": state})
             else:
                 db.query(CONFIGUSERRSS).update({"STATE": state})
 
@@ -490,7 +490,7 @@ class ConfigRepository(BaseRepository):
         if not tid or not mediainfo:
             return
         with self.session() as db:
-            taskinfo = db.query(CONFIGUSERRSS).filter(int(tid) == CONFIGUSERRSS.ID).all()
+            taskinfo = db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.ID == int(tid)).all()
             if not taskinfo:
                 return
 
@@ -506,7 +506,7 @@ class ConfigRepository(BaseRepository):
                 {"id": tmdbid, "rssid": "", "season": season, "name": getattr(mediainfo, "title", "") or ""}
             )
 
-            db.query(CONFIGUSERRSS).filter(int(tid) == CONFIGUSERRSS.ID).update(
+            db.query(CONFIGUSERRSS).filter(CONFIGUSERRSS.ID == int(tid)).update(
                 {"MEDIAINFOS": JsonUtils.dumps(mediainfos)}
             )
 
@@ -534,7 +534,7 @@ class ConfigRepository(BaseRepository):
         if not task_id:
             return []
         with self.session() as db:
-            query = db.query(USERRSSTASKHISTORY).filter(task_id == USERRSSTASKHISTORY.TASK_ID)
+            query = db.query(USERRSSTASKHISTORY).filter(USERRSSTASKHISTORY.TASK_ID == task_id)
             if user is not None:
                 query = apply_owner_scope(query, USERRSSTASKHISTORY, user)
             return query.order_by(USERRSSTASKHISTORY.DATE.desc()).all()
@@ -553,7 +553,7 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if pid:
-                return db.query(CONFIGRSSPARSER).filter(int(pid) == CONFIGRSSPARSER.ID).first()
+                return db.query(CONFIGRSSPARSER).filter(CONFIGRSSPARSER.ID == int(pid)).first()
             else:
                 return db.query(CONFIGRSSPARSER).all()
 
@@ -567,7 +567,7 @@ class ConfigRepository(BaseRepository):
         if not pid:
             return
         with self.session() as db:
-            db.query(CONFIGRSSPARSER).filter(int(pid) == CONFIGRSSPARSER.ID).delete()
+            db.query(CONFIGRSSPARSER).filter(CONFIGRSSPARSER.ID == int(pid)).delete()
 
     def update_userrss_parser(self, item: dict) -> None:
         """
@@ -580,7 +580,7 @@ class ConfigRepository(BaseRepository):
             return
         with self.session() as db:
             if item.get("id") and self.get_userrss_parser(item.get("id")):
-                db.query(CONFIGRSSPARSER).filter(int(item.get("id") or 0) == CONFIGRSSPARSER.ID).update(
+                db.query(CONFIGRSSPARSER).filter(CONFIGRSSPARSER.ID == int(item.get("id") or 0)).update(
                     {
                         "NAME": item.get("name"),
                         "TYPE": item.get("type"),
@@ -612,7 +612,7 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if gid:
-                return db.query(CONFIGFILTERGROUP).filter(int(gid) == CONFIGFILTERGROUP.ID).all()
+                return db.query(CONFIGFILTERGROUP).filter(CONFIGFILTERGROUP.ID == int(gid)).all()
             return db.query(CONFIGFILTERGROUP).all()
 
     def get_config_filter_rule(self, groupid: int | None = None) -> list[CONFIGFILTERRULES]:
@@ -635,7 +635,7 @@ class ConfigRepository(BaseRepository):
             else:
                 return (
                     db.query(CONFIGFILTERRULES)
-                    .filter(int(groupid) == CONFIGFILTERRULES.GROUP_ID)
+                    .filter(CONFIGFILTERRULES.GROUP_ID == int(groupid))
                     .order_by(CONFIGFILTERRULES.GROUP_ID, cast(CONFIGFILTERRULES.PRIORITY, Integer))
                     .all()
                 )
@@ -653,7 +653,7 @@ class ConfigRepository(BaseRepository):
         group_id = self.get_filter_groupid_by_name(name)
         with self.session() as db:
             if group_id:
-                db.query(CONFIGFILTERGROUP).filter(int(group_id) == CONFIGFILTERGROUP.ID).update(
+                db.query(CONFIGFILTERGROUP).filter(CONFIGFILTERGROUP.ID == int(group_id)).update(
                     {"IS_DEFAULT": default}
                 )
             else:
@@ -670,7 +670,7 @@ class ConfigRepository(BaseRepository):
             组ID
         """
         with self.session() as db:
-            ret = db.query(CONFIGFILTERGROUP.ID).filter(name == CONFIGFILTERGROUP.GROUP_NAME).first()
+            ret = db.query(CONFIGFILTERGROUP.ID).filter(CONFIGFILTERGROUP.GROUP_NAME == name).first()
             if ret:
                 return ret[0]
             else:
@@ -684,8 +684,8 @@ class ConfigRepository(BaseRepository):
             groupid: 组ID
         """
         with self.session() as db:
-            db.query(CONFIGFILTERGROUP).filter(int(groupid) == CONFIGFILTERGROUP.ID).update({"IS_DEFAULT": "Y"})
-            db.query(CONFIGFILTERGROUP).filter(int(groupid) != CONFIGFILTERGROUP.ID).update({"IS_DEFAULT": "N"})
+            db.query(CONFIGFILTERGROUP).filter(CONFIGFILTERGROUP.ID == int(groupid)).update({"IS_DEFAULT": "Y"})
+            db.query(CONFIGFILTERGROUP).filter(CONFIGFILTERGROUP.ID != int(groupid)).update({"IS_DEFAULT": "N"})
 
     def delete_filtergroup(self, groupid: int) -> None:
         """
@@ -695,8 +695,8 @@ class ConfigRepository(BaseRepository):
             groupid: 组ID
         """
         with self.session() as db:
-            db.query(CONFIGFILTERRULES).filter(groupid == CONFIGFILTERRULES.GROUP_ID).delete()
-            db.query(CONFIGFILTERGROUP).filter(int(groupid) == CONFIGFILTERGROUP.ID).delete()
+            db.query(CONFIGFILTERRULES).filter(CONFIGFILTERRULES.GROUP_ID == groupid).delete()
+            db.query(CONFIGFILTERGROUP).filter(CONFIGFILTERGROUP.ID == int(groupid)).delete()
 
     def delete_filterrule(self, ruleid: int) -> None:
         """
@@ -706,7 +706,7 @@ class ConfigRepository(BaseRepository):
             ruleid: 规则ID
         """
         with self.session() as db:
-            db.query(CONFIGFILTERRULES).filter(int(ruleid) == CONFIGFILTERRULES.ID).delete()
+            db.query(CONFIGFILTERRULES).filter(CONFIGFILTERRULES.ID == int(ruleid)).delete()
 
     def insert_filter_rule(self, item: dict, ruleid: int | None = None) -> None:
         """
@@ -718,7 +718,7 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if ruleid:
-                db.query(CONFIGFILTERRULES).filter(int(ruleid) == CONFIGFILTERRULES.ID).update(
+                db.query(CONFIGFILTERRULES).filter(CONFIGFILTERRULES.ID == int(ruleid)).update(
                     {
                         "ROLE_NAME": item.get("name") or "",
                         "PRIORITY": item.get("pri") or "",
@@ -757,7 +757,7 @@ class ConfigRepository(BaseRepository):
         """
         with self.session() as db:
             if sid:
-                return db.query(MEDIASERVER).filter(int(sid) == MEDIASERVER.ID).all()
+                return db.query(MEDIASERVER).filter(MEDIASERVER.ID == int(sid)).all()
             return db.query(MEDIASERVER).all()
 
     def get_media_server_by_name(self, name: str) -> MEDIASERVER | None:
@@ -773,10 +773,17 @@ class ConfigRepository(BaseRepository):
         if not name:
             return None
         with self.session() as db:
-            return db.query(MEDIASERVER).filter(name == MEDIASERVER.NAME).first()
+            return db.query(MEDIASERVER).filter(MEDIASERVER.NAME == name).first()
 
     def update_media_server(
-        self, sid: int | None, name: str, enabled: int, config: str, is_default: int = 0, note: str | None = None
+        self,
+        sid: int | None,
+        name: str,
+        enabled: int,
+        config: str,
+        is_default: int = 0,
+        note: str | None = None,
+        server_type: str | None = None,
     ) -> None:
         """
         更新或插入媒体服务器配置
@@ -793,9 +800,10 @@ class ConfigRepository(BaseRepository):
             if sid:
                 item = self.get_media_servers(sid)
                 if item:
-                    db.query(MEDIASERVER).filter(int(sid) == MEDIASERVER.ID).update(
+                    db.query(MEDIASERVER).filter(MEDIASERVER.ID == int(sid)).update(
                         {
                             "NAME": name,
+                            "TYPE": server_type or name,
                             "ENABLED": int(enabled),
                             "CONFIG": config,
                             "IS_DEFAULT": int(is_default),
@@ -806,6 +814,7 @@ class ConfigRepository(BaseRepository):
             db.add(
                 MEDIASERVER(
                     NAME=name,
+                    TYPE=server_type or name,
                     ENABLED=int(enabled),
                     CONFIG=config,
                     IS_DEFAULT=int(is_default),
@@ -823,7 +832,7 @@ class ConfigRepository(BaseRepository):
         if not sid:
             return
         with self.session() as db:
-            db.query(MEDIASERVER).filter(int(sid) == MEDIASERVER.ID).delete()
+            db.query(MEDIASERVER).filter(MEDIASERVER.ID == int(sid)).delete()
 
     def set_default_media_server(self, name: str) -> None:
         """
@@ -835,7 +844,13 @@ class ConfigRepository(BaseRepository):
         with self.session() as db:
             db.query(MEDIASERVER).update({"IS_DEFAULT": 0})
             if name:
-                db.query(MEDIASERVER).filter(name == MEDIASERVER.NAME).update({"IS_DEFAULT": 1})
+                db.query(MEDIASERVER).filter(MEDIASERVER.NAME == name).update({"IS_DEFAULT": 1})
+
+    def set_default_media_server_id(self, sid: int) -> None:
+        """按实例 ID 设置默认媒体服务器。"""
+        with self.session() as db:
+            db.query(MEDIASERVER).update({"IS_DEFAULT": 0})
+            db.query(MEDIASERVER).filter(MEDIASERVER.ID == int(sid)).update({"IS_DEFAULT": 1})
 
     def get_default_media_server(self) -> MEDIASERVER | None:
         """
@@ -903,6 +918,9 @@ class ConfigRepository(BaseRepository):
         tv_backend: str = "",
         anime_backend: str = "",
         unknown_backend: str = "",
+        movie_layout: str = "category",
+        tv_layout: str = "category",
+        anime_layout: str = "flat",
     ) -> None:
         """设置媒体库路径配置（单条记录）"""
         with self.session() as db:
@@ -916,6 +934,9 @@ class ConfigRepository(BaseRepository):
                 existing.TV_BACKEND = tv_backend or existing.TV_BACKEND or ""
                 existing.ANIME_BACKEND = anime_backend or existing.ANIME_BACKEND or ""
                 existing.UNKNOWN_BACKEND = unknown_backend or existing.UNKNOWN_BACKEND or ""
+                existing.MOVIE_LAYOUT = movie_layout
+                existing.TV_LAYOUT = tv_layout
+                existing.ANIME_LAYOUT = anime_layout
             else:
                 config = CONFIGMEDIA(
                     MOVIE_PATH=movie_path or "",
@@ -926,8 +947,27 @@ class ConfigRepository(BaseRepository):
                     TV_BACKEND=tv_backend or "",
                     ANIME_BACKEND=anime_backend or "",
                     UNKNOWN_BACKEND=unknown_backend or "",
+                    MOVIE_LAYOUT=movie_layout,
+                    TV_LAYOUT=tv_layout,
+                    ANIME_LAYOUT=anime_layout,
                 )
                 db.add(config)
+
+    def set_media_layouts(self, movie_layout: str, tv_layout: str, anime_layout: str) -> None:
+        """只更新媒体库目录结构，不动路径和后端配置."""
+        with self.session() as db:
+            existing = db.query(CONFIGMEDIA).first()
+            if existing is None:
+                existing = CONFIGMEDIA(
+                    MOVIE_LAYOUT=movie_layout,
+                    TV_LAYOUT=tv_layout,
+                    ANIME_LAYOUT=anime_layout,
+                )
+                db.add(existing)
+                return
+            existing.MOVIE_LAYOUT = movie_layout
+            existing.TV_LAYOUT = tv_layout
+            existing.ANIME_LAYOUT = anime_layout
 
     # ==================== Category Config ====================
 
@@ -940,7 +980,13 @@ class ConfigRepository(BaseRepository):
             return db.query(CONFIGCATEGORYRULE).all()
 
     def save_category_config(
-        self, media_type: str, name: str, sort_order: int, is_default: int, rules: dict[str, str]
+        self,
+        media_type: str,
+        name: str,
+        sort_order: int,
+        is_default: int,
+        rules: dict[str, str] | list[dict[str, Any]],
+        enabled: int = 1,
     ) -> int:
         with self.session() as db:
             existing = (
@@ -954,16 +1000,36 @@ class ConfigRepository(BaseRepository):
             if existing:
                 existing.SORT_ORDER = sort_order
                 existing.IS_DEFAULT = is_default
+                existing.ENABLED = enabled
                 cid = existing.ID
             else:
-                cat = CONFIGCATEGORY(MEDIA_TYPE=media_type, NAME=name, SORT_ORDER=sort_order, IS_DEFAULT=is_default)
+                cat = CONFIGCATEGORY(
+                    MEDIA_TYPE=media_type,
+                    NAME=name,
+                    SORT_ORDER=sort_order,
+                    IS_DEFAULT=is_default,
+                    ENABLED=enabled,
+                )
                 db.add(cat)
                 db.flush()
                 cid = cat.ID
 
             db.query(CONFIGCATEGORYRULE).filter(CONFIGCATEGORYRULE.CATEGORY_ID == cid).delete()
-            for field, value in rules.items():
-                db.add(CONFIGCATEGORYRULE(CATEGORY_ID=cid, FIELD=field, VALUE=value))
+            if isinstance(rules, list):
+                for rule in rules:
+                    if not isinstance(rule, dict):
+                        continue
+                    db.add(
+                        CONFIGCATEGORYRULE(
+                            CATEGORY_ID=cid,
+                            FIELD=str(rule.get("field") or ""),
+                            VALUE=json.dumps(rule.get("value"), ensure_ascii=False),
+                            RULE_JSON=json.dumps(rule, ensure_ascii=False),
+                        )
+                    )
+            else:
+                for field, value in rules.items():
+                    db.add(CONFIGCATEGORYRULE(CATEGORY_ID=cid, FIELD=field, VALUE=value))
             return int(cid)
 
     def delete_category_config(self, cid: int) -> None:

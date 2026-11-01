@@ -97,3 +97,19 @@ class TestRulePatternSplit:
         ]
         match, _, _ = IndexerFilterEngine.check_rules(meta, {"name": "日常观影-免费"}, filters)
         assert match is True
+class TestAudioFilter:
+    def test_video_with_flac_audio_is_not_rejected(self):
+        meta = _meta("[DBD-Raws][肖申克的救赎/The Shawshank Redemption][1080P][BDRip][HEVC-10bit][中英外挂][FLAC][MKV]")
+        match, _, _ = IndexerFilterEngine.check_torrent_filter(meta, {"type": MediaType.MOVIE})
+        assert match
+
+    def test_audio_only_flac_is_rejected(self):
+        meta = _meta("[FLAC] Some Artist - Some Album")
+        match, _, msg = IndexerFilterEngine.check_torrent_filter(meta, {"type": MediaType.MOVIE})
+        assert not match
+        assert "音频文件" in msg
+
+    def test_audio_extension_is_rejected(self):
+        meta = _meta("Some Artist - Some Album.flac")
+        match, _, _ = IndexerFilterEngine.check_torrent_filter(meta, {"type": MediaType.MOVIE})
+        assert not match

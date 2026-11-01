@@ -83,6 +83,8 @@ class AppContext:
     site_resolver: Any
     site_favicon_service: Any
     media_info_service: Any
+    metadata_service: Any
+    discovery_service: Any
     media_config_service: Any
     media_file_service: Any
     media_library_service: Any
@@ -138,8 +140,13 @@ class AppContext:
     knowledge_ingestor: Any = None
     conversation_store: Any = None
     semantic_memory: Any = None
+    agent_runtime: Any = None
 
     # 站点授权服务（L3，默认 None 兼容未装配场景）
     site_grant_service: Any = None
     # 渠道身份绑定服务
     channel_binding_service: Any = None
+    # 自定义 RSS 源服务
+    custom_rss_service: Any = None
+    # 媒体库批量重命名服务（默认 None 兼容最小构造）
+    library_rename_service: Any = None

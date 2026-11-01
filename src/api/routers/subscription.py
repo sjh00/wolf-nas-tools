@@ -20,9 +20,12 @@ from api.deps import (
 )
 from app.core.error_codes import ErrorCode
 from app.core.system_config import SystemConfig
+from app.domain.entities.custom_rss import custom_rss_id
 from app.domain.enums import SystemConfigKey
-from app.domain.mediatypes import MediaType
+from app.domain.media_type_utils import MediaTypeMapper
+from app.domain.mediatypes import MediaType, normalize_media_type_input
 from app.media import meta_info
+from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
 from app.services.apikey_service import APIKeyService
@@ -40,9 +43,15 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+class MovieListRequest(BaseModel):
+    user_id: int | None = None
+    content_profile: str | None = None
+
+
 class EmptyRequest(BaseModel):
     data: dict | None = None
     user_id: int | None = None  # superadmin 按归属用户过滤订阅列表
+    content_profile: str | None = None
 
 
 class AddRssMediaRequest(BaseModel):
@@ -56,6 +65,8 @@ class AddRssMediaRequest(BaseModel):
     keyword: str | None = None
     fuzzy_match: bool | None = None
     mediaid: str | int | None = None
+    metadata_ref: str | None = None
+    provider: str | None = None
     rss_sites: list | None = None
     search_sites: list | None = None
     over_edition: bool | None = None
@@ -71,6 +82,9 @@ class AddRssMediaRequest(BaseModel):
     total_ep: int | None = None
     current_ep: int | None = None
     image: str | None = None
+    metadata_policy: str | None = None
+    content_profile: str | None = None
+    naming_profile: str | None = None
     tmdbid: str | int | None = None
 
 
@@ -81,12 +95,14 @@ class SubscribeIdRequest(BaseModel):
 class RedoHistoryRequest(BaseModel):
     rssid: int | None = None
     type: str | None = None
+    content_profile: str | None = None
 
 
 class RefreshRssRequest(BaseModel):
     type: str | None = None
     rssid: int | None = None
     page: str | None = None
+    content_profile: str | None = None
 
 
 class RemoveRssMediaRequest(BaseModel):
@@ -97,11 +113,13 @@ class RemoveRssMediaRequest(BaseModel):
     rssid: int | None = None
     tmdbid: str | int | None = None
     page: str | None = None
+    content_profile: str | None = None
 
 
 class SubscribeDetailRequest(BaseModel):
     rssid: int | None = None
     rsstype: str | None = None
+    content_profile: str | None = None
 
 
 class SubscribeSeasonsRequest(BaseModel):
@@ -112,10 +130,12 @@ class SubscribeSeasonsRequest(BaseModel):
 
 class GetDefaultSubscribeSettingRequest(BaseModel):
     mtype: str | None = None
+    content_profile: str | None = None
 
 
 class DefaultSubscribeSettingSaveRequest(BaseModel):
     mtype: str | None = None
+    content_profile: str | None = None
     over_edition: str | None = None
     restype: str | None = None
     pix: str | None = None
@@ -131,6 +151,7 @@ class DefaultSubscribeSettingSaveRequest(BaseModel):
 
 class GetSubscribeHistoryRequest(BaseModel):
     type: str | None = None
+    content_profile: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +159,24 @@ class GetSubscribeHistoryRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_type_and_profile(type_str: str | None, content_profile: str | None) -> tuple[MediaType, str]:
+    """统一解析展示类型与内容画像：支持 av 等插件展示别名，未知类型回退到载体默认."""
+    normalized, profile = normalize_media_type_input(type_str, content_profile)
+    parsed = MediaType.from_string(normalized or "")
+    if parsed in (MediaType.MOVIE, MediaType.TV, MediaType.ANIME):
+        return parsed, profile
+    if profile not in ("", "default"):
+        return MediaType.MOVIE, profile
+    return MediaType.TV, profile
+
+
+def _resolve_mtype(type_str: str | None) -> MediaType:
+    """兼容旧调用：仅解析载体媒体类型。"""
+    return _resolve_type_and_profile(type_str, None)[0]
+
+
 def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
-    mtype = MediaType.MOVIE if MediaType.from_string(req.type or "") == MediaType.MOVIE else MediaType.TV
+    mtype, profile = _resolve_type_and_profile(req.type, req.content_profile)
     channel = "R" if req.in_form == "manual" else "D"
     return {
         "mtype": mtype,
@@ -149,6 +186,8 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "keyword": req.keyword,
         "fuzzy_match": req.fuzzy_match,
         "mediaid": req.mediaid,
+        "metadata_ref": req.metadata_ref,
+        "provider": req.provider,
         "rss_sites": req.rss_sites,
         "search_sites": req.search_sites,
         "over_edition": req.over_edition,
@@ -159,13 +198,17 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "filter_include": req.filter_include,
         "filter_exclude": req.filter_exclude,
         "filter_free": req.filter_free,
+        "image": req.image,
         "save_path": req.save_path,
         "download_setting": req.download_setting,
+        "metadata_policy": req.metadata_policy,
+        "content_profile": profile,
+        "naming_profile": req.naming_profile,
     }
 
 
 def _build_update_kwargs(req: AddRssMediaRequest) -> dict:
-    mtype = MediaType.MOVIE if MediaType.from_string(req.type or "") == MediaType.MOVIE else MediaType.TV
+    mtype, profile = _resolve_type_and_profile(req.type, req.content_profile)
     return {
         "mtype": mtype,
         "rssid": req.rssid,
@@ -174,6 +217,11 @@ def _build_update_kwargs(req: AddRssMediaRequest) -> dict:
         "keyword": req.keyword,
         "fuzzy_match": req.fuzzy_match,
         "mediaid": req.mediaid,
+        "metadata_ref": req.metadata_ref,
+        "provider": req.provider,
+        "content_profile": profile,
+        "metadata_policy": req.metadata_policy,
+        "naming_profile": req.naming_profile,
         "rss_sites": req.rss_sites,
         "search_sites": req.search_sites,
         "over_edition": req.over_edition,
@@ -184,9 +232,9 @@ def _build_update_kwargs(req: AddRssMediaRequest) -> dict:
         "filter_include": req.filter_include,
         "filter_exclude": req.filter_exclude,
         "filter_free": req.filter_free,
+        "image": req.image,
         "save_path": req.save_path,
         "download_setting": req.download_setting,
-        "image": req.image,
     }
 
 
@@ -248,18 +296,26 @@ def _check_site_grants(app_context, user: UserContext, kwargs: dict) -> list[str
 
     返回未授权站点名列表（空列表=通过）。open 策略或 superadmin 直接通过。
     """
-    grant_service = getattr(app_context, "site_grant_service", None)
-    if grant_service is None:
-        return []
-    visible = grant_service.get_visible_sites(user)
-    if visible is None:
-        return []
     denied: list[str] = []
+    custom_service = getattr(app_context, "custom_rss_service", None)
     for site in kwargs.get("rss_sites") or []:
-        if not grant_service.is_site_name_allowed(visible, site, usage="rss"):
+        if custom_rss_id(site) is not None and (custom_service is None or not custom_service.can_use_ref(user, site)):
             denied.append(site)
     for site in kwargs.get("search_sites") or []:
-        if not grant_service.is_site_name_allowed(visible, site, usage="search"):
+        if custom_rss_id(site) is not None:
+            denied.append(site)
+
+    grant_service = getattr(app_context, "site_grant_service", None)
+    if grant_service is None:
+        return denied
+    visible = grant_service.get_visible_sites(user)
+    if visible is None:
+        return denied
+    for site in kwargs.get("rss_sites") or []:
+        if custom_rss_id(site) is None and not grant_service.is_site_name_allowed(visible, site, usage="rss"):
+            denied.append(site)
+    for site in kwargs.get("search_sites") or []:
+        if custom_rss_id(site) is None and not grant_service.is_site_name_allowed(visible, site, usage="search"):
             denied.append(site)
     return denied
 
@@ -272,12 +328,27 @@ def _check_site_grants(app_context, user: UserContext, kwargs: dict) -> list[str
 @router.post("/add", response_model=CommonResponse, summary="添加 RSS 订阅")
 def add_rss_media(
     req: AddRssMediaRequest,
-    user: UserContext = Depends(require_any_permission("subscription:manage", "subscription:view")),
+    user: UserContext = Depends(require_permission("subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
     app_context=Depends(get_app_context),
 ):
     kwargs = _build_add_kwargs(req)
     kwargs["user_id"] = user.user_id
+    permissions = set(getattr(user, "permissions", []) or [])
+    allow_private = bool(getattr(user, "is_superadmin", False)) or "metadata:private:view" in permissions
+    profile = str(kwargs.get("content_profile") or "").strip()
+    # core 画像（default/anime）是公共能力；其余画像与 private provider 需要显式授权。
+    provider_key = str(req.provider or "").strip().lower()
+    if not provider_key:
+        metadata_ref = str(req.metadata_ref or "")
+        if ":" in metadata_ref:
+            provider_key = metadata_ref.split(":", 1)[0].strip().lower()
+    descriptor = getattr(metadata_registry.get_provider(provider_key), "descriptor", None) if provider_key else None
+    private_provider = getattr(descriptor, "visibility", "public") == "private"
+    if not allow_private and (private_provider or profile not in ("", "default", "anime")):
+        return fail(msg="无权创建该内容画像的订阅")
+    kwargs["allow_private"] = allow_private
+    kwargs["permissions"] = None if getattr(user, "is_superadmin", False) else permissions
     denied = _check_site_grants(app_context, user, kwargs)
     if denied:
         return fail(
@@ -287,7 +358,7 @@ def add_rss_media(
             name=req.name,
             rssid=None,
         )
-    code, msg, media_info = _invoke_for_seasons(req.season, kwargs, svc.add_rss_subscribe)
+    code, msg, media_info = _invoke_for_seasons(req.season, kwargs, svc.add_rss_subscribe, req.total_ep, req.current_ep)
 
     # code 0=成功, 9=订阅已存在(幂等)；其余为真实失败，需上报而非伪装成功
     if code not in (0, 9):
@@ -301,7 +372,13 @@ def add_rss_media(
 
     rssid = None
     if media_info:
-        rssid = svc.get_subscribe_id(mtype=kwargs["mtype"], title=req.name or "", tmdbid=media_info.tmdb_id)
+        rssid = svc.get_subscribe_id(
+            mtype=kwargs["mtype"],
+            title=req.name or "",
+            tmdbid=media_info.tmdb_id,
+            user_id=user.user_id,
+            content_profile=kwargs.get("content_profile"),
+        )
 
     return success(
         data={
@@ -366,9 +443,10 @@ def re_rss_history(
     user: UserContext = Depends(require_permission("subscription:manage")),
     svc: SubscribeHistoryService = Depends(get_subscribe_history_service),
 ):
-    parsed = MediaType.from_string(req.type or "")
-    rtype = MediaType.MOVIE.value if parsed == MediaType.MOVIE else MediaType.TV.value
-    code, msg = svc.redo(rssid=req.rssid, rtype=rtype, user=user)
+    mtype, profile = _resolve_type_and_profile(req.type, req.content_profile)
+    # 动漫订阅历史存于电视剧表：按 to_tmdb 映射（ANIME -> tv），避免误判为电影
+    rtype = MediaTypeMapper.to_tmdb(mtype) or MediaType.TV.value
+    code, msg = svc.redo(rssid=req.rssid, rtype=rtype, user=user, content_profile=profile)
     if code == 0:
         return success(message=msg)
     return fail(code=ErrorCode.SUBSCRIPTION_FAILED, msg=msg)
@@ -380,14 +458,15 @@ def refresh_rss(
     user: UserContext = Depends(require_permission("subscription:manage")),
     monitor: SubscriptionMonitor = Depends(get_subscription_monitor),
 ):
-    monitor.refresh_subscription(mtype=req.type or "", rssid=req.rssid)
+    mtype, _profile = _resolve_type_and_profile(req.type, req.content_profile)
+    monitor.refresh_subscription(mtype=mtype.value, rssid=req.rssid)
     return success(data=req.page)
 
 
 @router.post("/remove", response_model=CommonResponse, summary="移除 RSS 订阅")
 def remove_rss_media(
     req: RemoveRssMediaRequest,
-    user: UserContext = Depends(require_any_permission("subscription:manage", "subscription:view")),
+    user: UserContext = Depends(require_permission("subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
     tmdbid = req.tmdbid
@@ -397,38 +476,42 @@ def remove_rss_media(
     if name:
         name = meta_info(title=name).get_name()
     rssid = req.rssid
-    mtype = MediaType.from_string(req.type or "")
-    if mtype == MediaType.MOVIE:
-        svc.delete_subscribe(
-            mtype=MediaType.MOVIE,
-            title=name or "",
-            year=req.year,
-            rssid=rssid,
-            tmdbid=tmdbid,
-            user=user,
+    mtype, _profile = _resolve_type_and_profile(req.type, req.content_profile)
+    deleted = 0
+    if not str(req.type or "").strip() and not str(req.content_profile or "").strip() and rssid:
+        # 简化接口只传 rssid：尝试两张表都删除（历史行为）。
+        deleted = int(svc.delete_subscribe(mtype=MediaType.MOVIE, rssid=rssid, user=user) or 0)
+        deleted += int(svc.delete_subscribe(mtype=MediaType.TV, rssid=rssid, user=user) or 0)
+    elif mtype == MediaType.MOVIE:
+        deleted = int(
+            svc.delete_subscribe(
+                mtype=MediaType.MOVIE,
+                title=name or "",
+                year=req.year,
+                rssid=rssid,
+                tmdbid=tmdbid,
+                user=user,
+            )
+            or 0
         )
-    elif mtype == MediaType.TV:
-        svc.delete_subscribe(
-            mtype=MediaType.TV,
-            title=name or "",
-            season=_normalize_season(req.season),
-            rssid=rssid,
-            tmdbid=tmdbid,
-            user=user,
+    elif mtype in (MediaType.TV, MediaType.ANIME):
+        # 动漫订阅存于电视剧表，删除同样走 TV
+        deleted = int(
+            svc.delete_subscribe(
+                mtype=MediaType.TV,
+                title=name or "",
+                season=_normalize_season(req.season),
+                rssid=rssid,
+                tmdbid=tmdbid,
+                user=user,
+            )
+            or 0
         )
     elif rssid:
-        # 前端简化接口只传了 rssid 时，尝试两边都删除
-        svc.delete_subscribe(
-            mtype=MediaType.MOVIE,
-            rssid=rssid,
-            user=user,
-        )
-        svc.delete_subscribe(
-            mtype=MediaType.TV,
-            rssid=rssid,
-            user=user,
-        )
-    return success(data=req.page)
+        # 未能解析载体时尝试两边都删除
+        deleted = int(svc.delete_subscribe(mtype=MediaType.MOVIE, rssid=rssid, user=user) or 0)
+        deleted += int(svc.delete_subscribe(mtype=MediaType.TV, rssid=rssid, user=user) or 0)
+    return success(data={"page": req.page, "deleted": deleted, "rssid": rssid})
 
 
 @router.post("/detail", response_model=CommonResponse, summary="获取 RSS 订阅详情")
@@ -437,7 +520,7 @@ def rss_detail(
     user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
-    parsed = MediaType.from_string(req.rsstype or "")
+    parsed, _profile = _resolve_type_and_profile(req.rsstype, req.content_profile)
     if parsed == MediaType.MOVIE:
         rssdetail = svc.get_subscribe_movies(rid=req.rssid, user=user)
         mtype_value = MediaType.MOVIE.value
@@ -457,11 +540,14 @@ def get_default_rss_setting(
     user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
-    parsed = MediaType.from_string(req.mtype or "")
+    parsed, profile = _resolve_type_and_profile(req.mtype, req.content_profile)
     if parsed in (MediaType.TV, MediaType.ANIME):
         setting = svc.default_subscribe_setting_tv
     elif parsed == MediaType.MOVIE:
-        setting = svc.default_subscribe_setting_mov
+        if profile and profile != "default":
+            setting = SystemConfig().get(f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}") or {}
+        else:
+            setting = svc.default_subscribe_setting_mov
     else:
         setting = {}
     if setting:
@@ -478,9 +564,13 @@ def save_default_rss_setting(
     mtype = req.mtype
     data = req.model_dump()
     data.pop("mtype", None)
-    parsed = MediaType.from_string(mtype or "")
-    if parsed == MediaType.TV:
+    profile = (data.pop("content_profile", None) or "").strip()
+    parsed, profile = _resolve_type_and_profile(mtype, profile)
+    # 动漫与电视剧共用一份默认设置（读取侧同样把 ANIME 归到 TV），否则动漫页保存会被静默丢弃
+    if parsed in (MediaType.TV, MediaType.ANIME):
         cfg.set(key=SystemConfigKey.DefaultSubscribeSettingTV, value=data)
+    elif parsed == MediaType.MOVIE and profile and profile != "default":
+        cfg.set(key=f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}", value=data)
     elif parsed == MediaType.MOVIE:
         cfg.set(key=SystemConfigKey.DefaultSubscribeSettingMOV, value=data)
     return success()
@@ -511,7 +601,7 @@ def webcal_ical(
     user: UserContext = Depends(get_current_user),
     svc: SubscribeCalendarService = Depends(get_subscribe_calendar_service),
 ):
-    ics = svc.generate_ics()
+    ics = svc.generate_ics(user=user)
     return Response(
         content=ics,
         media_type="text/calendar; charset=utf-8",
@@ -539,12 +629,28 @@ def get_movie_rss_items(
 
 @router.post("/movie/list", response_model=CommonResponse, summary="获取电影 RSS 订阅列表")
 def get_movie_rss_list(
-    req: EmptyRequest = EmptyRequest(),
+    req: MovieListRequest = MovieListRequest(),
     user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
     result = svc.get_subscribe_movies(user=_scoped_user(user, req.user_id))
-    return success(data=list(result.values()) if isinstance(result, dict) else result)
+    items = list(result.values()) if isinstance(result, dict) else result
+    profile = (req.content_profile or "").strip()
+    if profile == "default":
+        return success(data=[item for item in items if item.get("content_profile") in (None, "", "default")])
+    if profile:
+        return success(data=[item for item in items if item.get("content_profile") == profile])
+    # 默认只返回默认内容画像；插件自定义画像由插件页面按 content_profile 查询
+    return success(data=[item for item in items if item.get("content_profile") in (None, "", "default")])
+
+
+@router.post("/count", response_model=CommonResponse, summary="获取订阅统计")
+def get_subscription_count(
+    req: EmptyRequest = EmptyRequest(),
+    user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
+    svc: SubscribeService = Depends(get_subscribe_service),
+):
+    return success(data=svc.get_subscription_count(user=_scoped_user(user, req.user_id)))
 
 
 @router.post("/history", response_model=CommonResponse, summary="获取 RSS 历史")
@@ -553,9 +659,9 @@ def get_rss_history(
     user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
     svc: SubscribeHistoryService = Depends(get_subscribe_history_service),
 ):
-    parsed = MediaType.from_string(req.type or "")
+    parsed, profile = _resolve_type_and_profile(req.type, req.content_profile)
     mtype = MediaType.MOVIE.value if parsed == MediaType.MOVIE else MediaType.TV.value
-    return success(data=svc.get_history(mtype=mtype, user=user))
+    return success(data=svc.get_history(mtype=mtype, user=user, content_profile=profile))
 
 
 @router.post("/tv/items", response_model=CommonResponse, summary="获取电视剧 RSS 订阅项")
@@ -574,7 +680,13 @@ def get_tv_rss_list(
     svc: SubscribeService = Depends(get_subscribe_service),
 ):
     result = svc.get_subscribe_tvs(user=_scoped_user(user, req.user_id))
-    return success(data=list(result.values()) if isinstance(result, dict) else result)
+    items = list(result.values()) if isinstance(result, dict) else result
+    profile = (req.content_profile or "").strip()
+    if profile == "default":
+        return success(data=[item for item in items if item.get("content_profile") in (None, "", "default")])
+    if profile:
+        return success(data=[item for item in items if item.get("content_profile") == profile])
+    return success(data=items)
 
 
 @router.post("/tv/seasons", response_model=CommonResponse, summary="获取电视剧已订阅季列表")

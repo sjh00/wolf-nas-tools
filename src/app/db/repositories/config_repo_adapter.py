@@ -318,6 +318,9 @@ class MediaServerRepositoryAdapter(IMediaServerRepository):
     def delete(self, sid: int) -> None:
         self._repo.delete_media_server(sid)
 
+    def delete_media_server(self, sid: int) -> None:
+        self._repo.delete_media_server(sid)
+
     # 兼容旧 ConfigRepository 方法
     def get_media_servers(self, sid: int | None = None) -> list[MEDIASERVER]:
         return self._repo.get_media_servers(sid)
@@ -326,12 +329,22 @@ class MediaServerRepositoryAdapter(IMediaServerRepository):
         return self._repo.get_media_server_by_name(name)
 
     def update_media_server(
-        self, sid: int | None, name: str, enabled: int, config: str, is_default: int = 0, note: str | None = None
+        self,
+        sid: int | None,
+        name: str,
+        enabled: int,
+        config: str,
+        is_default: int = 0,
+        note: str | None = None,
+        server_type: str | None = None,
     ) -> None:
-        self._repo.update_media_server(sid, name, enabled, config, is_default, note)
+        self._repo.update_media_server(sid, name, enabled, config, is_default, note, server_type)
 
     def set_default_media_server(self, name: str) -> None:
         self._repo.set_default_media_server(name)
+
+    def set_default_media_server_id(self, sid: int) -> None:
+        self._repo.set_default_media_server_id(sid)
 
     def get_default_media_server(self) -> MEDIASERVER | None:
         return self._repo.get_default_media_server()
@@ -556,7 +569,23 @@ class MediaConfigRepositoryAdapter:
         tv_backend: str = "",
         anime_backend: str = "",
         unknown_backend: str = "",
+        movie_layout: str = "category",
+        tv_layout: str = "category",
+        anime_layout: str = "flat",
     ) -> None:
         self._repo.set_media_config(
-            movie_path, tv_path, anime_path, unknown_path, movie_backend, tv_backend, anime_backend, unknown_backend
+            movie_path,
+            tv_path,
+            anime_path,
+            unknown_path,
+            movie_backend,
+            tv_backend,
+            anime_backend,
+            unknown_backend,
+            movie_layout,
+            tv_layout,
+            anime_layout,
         )
+
+    def set_media_layouts(self, movie_layout: str, tv_layout: str, anime_layout: str) -> None:
+        self._repo.set_media_layouts(movie_layout, tv_layout, anime_layout)

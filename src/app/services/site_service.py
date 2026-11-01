@@ -193,7 +193,7 @@ class SiteService:
             return list(merged.values())
 
         merged = {s["name"]: {**s, "source": "builtin", "third_party": False} for s in builtin}
-        for name, site in list(merged.items()):
+        for name, site in merged.items():
             cfg = config_by_name.get(name.lower())
             # enabled 只表示「启用搜索」，站点维护列表仍需展示已关闭搜索的站点
             site["enabled"] = cfg.enabled if cfg else True
@@ -361,6 +361,12 @@ class SiteService:
                 return SiteUpdateResultDTO(code=400, msg="站点不存在于站点定义中，无法添加")
             try:
                 self._site_entity_repo.insert(entity)
+                # 删除站点会保留一条 disabled 配置行；重新添加时必须重新启用。
+                self._indexer_site_config_repo.upsert_site(
+                    site_name=str(name or ""),
+                    source="builtin",
+                    enabled=True,
+                )
                 self._sites.refresh()
                 return SiteUpdateResultDTO(code=0)
             except Exception as e:

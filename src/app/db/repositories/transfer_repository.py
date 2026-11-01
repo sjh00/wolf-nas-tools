@@ -7,8 +7,9 @@ import datetime
 import os.path
 import time
 from enum import Enum
+from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 
 from app.db.models import SYNCHISTORY, TRANSFERBLACKLIST, TRANSFERHISTORY, TRANSFERUNKNOWN
 from app.db.repositories.base_repository import BaseRepository
@@ -38,10 +39,10 @@ class TransferRepository(BaseRepository):
             ret = (
                 db.query(TRANSFERHISTORY)
                 .filter(
-                    source_path == TRANSFERHISTORY.SOURCE_PATH,
-                    source_filename == TRANSFERHISTORY.SOURCE_FILENAME,
-                    dest_path == TRANSFERHISTORY.DEST_PATH,
-                    dest_filename == TRANSFERHISTORY.DEST_FILENAME,
+                    TRANSFERHISTORY.SOURCE_PATH == source_path,
+                    TRANSFERHISTORY.SOURCE_FILENAME == source_filename,
+                    TRANSFERHISTORY.DEST_PATH == dest_path,
+                    TRANSFERHISTORY.DEST_FILENAME == dest_filename,
                 )
                 .count()
             )
@@ -55,11 +56,45 @@ class TransferRepository(BaseRepository):
         """
         with self.session() as db:
             db.query(TRANSFERHISTORY).filter(
-                source_path == TRANSFERHISTORY.SOURCE_PATH,
-                source_filename == TRANSFERHISTORY.SOURCE_FILENAME,
-                dest_path == TRANSFERHISTORY.DEST_PATH,
-                dest_filename == TRANSFERHISTORY.DEST_FILENAME,
+                TRANSFERHISTORY.SOURCE_PATH == source_path,
+                TRANSFERHISTORY.SOURCE_FILENAME == source_filename,
+                TRANSFERHISTORY.DEST_PATH == dest_path,
+                TRANSFERHISTORY.DEST_FILENAME == dest_filename,
             ).update({"DATE": date})
+
+    def update_transfer_history_poster(self, logid: int | None, poster: str) -> None:
+        """回填历史记录海报，后续列表直接读库，避免逐条回源."""
+        if not logid or not poster:
+            return
+        with self.session() as db:
+            db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == logid).update({"POSTER": poster})
+
+    def update_transfer_file_state(
+        self,
+        logid: int,
+        *,
+        source_state: str | None = None,
+        source_deleted_at: str | None = None,
+        dest_state: str | None = None,
+        dest_deleted_at: str | None = None,
+        files_checked_at: str | None = None,
+    ) -> None:
+        """更新记录关联文件的持久化状态，供历史列表直接读取."""
+        values: dict[Any, Any] = {}
+        if source_state is not None:
+            values["SOURCE_STATE"] = source_state
+        if source_deleted_at is not None:
+            values["SOURCE_DELETED_AT"] = source_deleted_at
+        if dest_state is not None:
+            values["DEST_STATE"] = dest_state
+        if dest_deleted_at is not None:
+            values["DEST_DELETED_AT"] = dest_deleted_at
+        if files_checked_at is not None:
+            values["FILES_CHECKED_AT"] = files_checked_at
+        if not values:
+            return
+        with self.session() as db:
+            db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).update(values)
 
     def insert_transfer_history(
         self,
@@ -122,7 +157,7 @@ class TransferRepository(BaseRepository):
                     MODE=mode_value,
                     TYPE=media_info.type_value,
                     CATEGORY=media_info.category,
-                    TMDBID=int(media_info.tmdb_id),
+                    TMDBID=int(media_info.tmdb_id) if str(media_info.tmdb_id or "").isdigit() else 0,
                     TITLE=title,
                     YEAR=media_info.year,
                     SEASON_EPISODE=season_episode,
@@ -132,12 +167,21 @@ class TransferRepository(BaseRepository):
                     DEST=dest,
                     DEST_PATH=dest_path,
                     DEST_FILENAME=dest_filename,
+                    POSTER=(media_info.poster or None),
                     DST_BACKEND=dst_backend or "local",
                     DATE=timestr,
+                    IDENTITY_ID=getattr(media_info, "identity_id", None),
+                    ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
+                    ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
+                    CONTENT_PROFILE=getattr(media_info, "content_profile", None),
+                    SOURCE_STATE="present",
+                    DEST_STATE="present" if dest_filename else "unknown",
                 )
             )
 
-    def get_transfer_history(self, search: str | None, page: int, rownum: int) -> tuple[int, list[TRANSFERHISTORY]]:
+    def get_transfer_history(
+        self, search: str | None, page: int, rownum: int, media_type: str | None = None
+    ) -> tuple[int, list[TRANSFERHISTORY]]:
         """
         查询识别转移记录（分页）
         """
@@ -146,35 +190,96 @@ class TransferRepository(BaseRepository):
         else:
             begin_pos = (int(page) - 1) * int(rownum)
 
-        if search:
-            search = f"%{search}%"
-            with self.session() as db:
-                count = (
-                    db.query(TRANSFERHISTORY)
-                    .filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search)) | (TRANSFERHISTORY.TITLE.like(search)))
-                    .count()
+        with self.session() as db:
+            query = db.query(TRANSFERHISTORY)
+            if search:
+                pattern = f"%{search}%"
+                query = query.filter(
+                    (TRANSFERHISTORY.SOURCE_FILENAME.like(pattern)) | (TRANSFERHISTORY.TITLE.like(pattern))
                 )
-                data = (
+            if media_type:
+                query = query.filter(TRANSFERHISTORY.TYPE == media_type)
+            count = query.count()
+            data = query.order_by(TRANSFERHISTORY.DATE.desc()).limit(int(rownum)).offset(begin_pos).all()
+            return count, data
+
+    def get_transfer_info_by_dest_path(self, dest_path: str, filename: str | None = None) -> list[TRANSFERHISTORY]:
+        """按转移目标路径查询记录，供无 TMDB 的豆瓣/BGM 自动删除使用."""
+        path = os.path.normpath(dest_path)
+        name = str(filename or "").strip()
+        with self.session() as db:
+            if name:
+                return (
                     db.query(TRANSFERHISTORY)
-                    .filter((TRANSFERHISTORY.SOURCE_FILENAME.like(search)) | (TRANSFERHISTORY.TITLE.like(search)))
-                    .order_by(TRANSFERHISTORY.DATE.desc())
-                    .limit(int(rownum))
-                    .offset(begin_pos)
+                    .filter(
+                        TRANSFERHISTORY.DEST == os.path.dirname(path),
+                        TRANSFERHISTORY.DEST_FILENAME == name,
+                    )
                     .all()
                 )
-                return count, data
-        else:
-            with self.session() as db:
-                return db.query(TRANSFERHISTORY).count(), db.query(TRANSFERHISTORY).order_by(
-                    TRANSFERHISTORY.DATE.desc()
-                ).limit(int(rownum)).offset(begin_pos).all()
+            exact = db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.DEST == path).all()
+            if exact:
+                return exact
+            return db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.DEST.startswith(path.rstrip("/") + "/")).all()
+
+    def get_existing_external_ids(self, external_ids: list[str]) -> set[str]:
+        """按外部 ID 跨 provider 查询转移成功记录（订阅/转移 provider 可能不同）."""
+        values = {str(item or "").strip() for item in external_ids if str(item or "").strip()}
+        if not values:
+            return set()
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY.ANCHOR_EXTERNAL_ID)
+                .filter(TRANSFERHISTORY.ANCHOR_EXTERNAL_ID.in_(sorted(values)))
+                .distinct()
+                .all()
+            )
+        return {str(item[0] or "") for item in rows if item and item[0]}
+
+    def get_existing_anchors(self, pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+        """批量查询已入库的内容锚点，供探索页标记使用."""
+        normalized = {
+            (str(provider).strip(), str(external).strip())
+            for provider, external in pairs
+            if str(provider or "").strip() and str(external or "").strip()
+        }
+        if not normalized:
+            return set()
+        conditions = [
+            and_(
+                TRANSFERHISTORY.ANCHOR_PROVIDER == provider,
+                TRANSFERHISTORY.ANCHOR_EXTERNAL_ID == external,
+            )
+            for provider, external in normalized
+        ]
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY.ANCHOR_PROVIDER, TRANSFERHISTORY.ANCHOR_EXTERNAL_ID)
+                .filter(or_(*conditions))
+                .all()
+            )
+        return {(str(provider), str(external)) for provider, external in rows}
+
+    def get_existing_identity_ids(self, identity_ids: list[str]) -> set[str]:
+        """批量查询已入库的媒体身份 ID，供探索页跨 provider 锚点兜底."""
+        normalized = {str(item).strip() for item in identity_ids if str(item or "").strip()}
+        if not normalized:
+            return set()
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY.IDENTITY_ID)
+                .filter(TRANSFERHISTORY.IDENTITY_ID.in_(list(normalized)))
+                .distinct()
+                .all()
+            )
+        return {str(row[0]) for row in rows if row[0]}
 
     def get_transfer_info_by_id(self, logid: int | None) -> TRANSFERHISTORY | None:
         """
         据logid查询PATH
         """
         with self.session() as db:
-            return db.query(TRANSFERHISTORY).filter(int(logid or 0) == TRANSFERHISTORY.ID).first()
+            return db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid or 0)).first()
 
     def get_transfer_info_by(
         self, tmdbid: int | None, season: str | None = None, season_episode: str | None = None
@@ -184,18 +289,21 @@ class TransferRepository(BaseRepository):
         """
         with self.session() as db:
             if tmdbid and not season and not season_episode:
-                return db.query(TRANSFERHISTORY).filter(int(tmdbid) == TRANSFERHISTORY.TMDBID).all()
+                return db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.TMDBID == int(tmdbid)).all()
             if tmdbid and season:
                 season = f"%{season}%"
                 return (
                     db.query(TRANSFERHISTORY)
-                    .filter(int(tmdbid) == TRANSFERHISTORY.TMDBID, TRANSFERHISTORY.SEASON_EPISODE.like(season))
+                    .filter(TRANSFERHISTORY.TMDBID == int(tmdbid), TRANSFERHISTORY.SEASON_EPISODE.like(season))
                     .all()
                 )
             if tmdbid and season_episode:
                 return (
                     db.query(TRANSFERHISTORY)
-                    .filter(int(tmdbid) == TRANSFERHISTORY.TMDBID, season_episode == TRANSFERHISTORY.SEASON_EPISODE)
+                    .filter(
+                        TRANSFERHISTORY.TMDBID == int(tmdbid),
+                        TRANSFERHISTORY.SEASON_EPISODE == season_episode,
+                    )
                     .all()
                 )
             return None
@@ -266,14 +374,14 @@ class TransferRepository(BaseRepository):
         if not tmdbid:
             return 0
         with self.session() as db:
-            rows = db.query(TRANSFERHISTORY.SEASON_EPISODE).filter(int(tmdbid) == TRANSFERHISTORY.TMDBID).all()
+            rows = db.query(TRANSFERHISTORY.SEASON_EPISODE).filter(TRANSFERHISTORY.TMDBID == int(tmdbid)).all()
         return contiguous_episodes((se for (se,) in rows), int(season or 1), start=int(start or 1))
 
     def delete_transfer_history_by_source(self, source_path: str, source_filename: str) -> None:
         with self.session() as db:
             db.query(TRANSFERHISTORY).filter(
-                source_path == TRANSFERHISTORY.SOURCE_PATH,
-                source_filename == TRANSFERHISTORY.SOURCE_FILENAME,
+                TRANSFERHISTORY.SOURCE_PATH == source_path,
+                TRANSFERHISTORY.SOURCE_FILENAME == source_filename,
             ).delete()
 
     def is_transfer_history_exists_by_source_full_path(self, source_full_path: str) -> bool:
@@ -285,9 +393,45 @@ class TransferRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(TRANSFERHISTORY.ID)
-                .filter(path == TRANSFERHISTORY.SOURCE_PATH, filename == TRANSFERHISTORY.SOURCE_FILENAME)
+                .filter(TRANSFERHISTORY.SOURCE_PATH == path, TRANSFERHISTORY.SOURCE_FILENAME == filename)
                 .first()
                 is not None
+            )
+
+    def get_transfer_history_by_source_full_path(self, source_full_path: str) -> TRANSFERHISTORY | None:
+        """据源文件全路径取最近一条转移记录（用于校验目标是否仍存在）."""
+        path = os.path.dirname(source_full_path)
+        filename = os.path.basename(source_full_path)
+        with self.session() as db:
+            return (
+                db.query(TRANSFERHISTORY)
+                .filter(TRANSFERHISTORY.SOURCE_PATH == path, TRANSFERHISTORY.SOURCE_FILENAME == filename)
+                .order_by(TRANSFERHISTORY.DATE.desc())
+                .first()
+            )
+
+    def get_transfer_history_by_source_dir(self, source_dir: str) -> list[TRANSFERHISTORY]:
+        """据源目录取该目录及其子目录下所有转移记录（用于校验目录目标是否仍存在）.
+
+        目录同步批量传入的可能是种子目录（文件直接在其中），也可能是分类目录
+        （媒体文件在更深的子目录下），故同时匹配目录本身与其后代。
+
+        比较前把两侧分隔符统一成 `/`：Windows 上 os.path.normpath 会把
+        `/src/Movie` 转成 `\\src\\Movie`，与库里存的原始字符串对不上。
+        """
+        if not source_dir:
+            return []
+        norm = os.path.normpath(source_dir).replace("\\", "/").rstrip("/")
+        if not norm:
+            return []
+        col = func.replace(TRANSFERHISTORY.SOURCE_PATH, "\\", "/")
+        prefix = norm + "/"
+        with self.session() as db:
+            return (
+                db.query(TRANSFERHISTORY)
+                .filter(or_(col == norm, col.startswith(prefix, autoescape=True)))
+                .order_by(TRANSFERHISTORY.DATE.desc())
+                .all()
             )
 
     def delete_transfer_log_by_id(self, logid: int) -> None:
@@ -295,14 +439,14 @@ class TransferRepository(BaseRepository):
         根据logid删除记录
         """
         with self.session() as db:
-            db.query(TRANSFERHISTORY).filter(int(logid) == TRANSFERHISTORY.ID).delete()
+            db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).delete()
 
     def update_transfer_dest(self, logid: int, new_dest_path: str, new_dest_filename: str) -> bool:
         """更新转移记录的目标路径（跨盘整理感知：记录 DEST 已手动移动后同步新位置）"""
         if not logid:
             return False
         with self.session() as db:
-            row = db.query(TRANSFERHISTORY).filter(int(logid) == TRANSFERHISTORY.ID).first()
+            row = db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).first()
             if not row:
                 return False
             row.DEST_PATH = new_dest_path
@@ -322,7 +466,7 @@ class TransferRepository(BaseRepository):
         if not logid:
             return False
         with self.session() as db:
-            row = db.query(TRANSFERHISTORY).filter(int(logid) == TRANSFERHISTORY.ID).first()
+            row = db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).first()
             if not row:
                 return False
             if new_source_path is not None:
@@ -352,7 +496,7 @@ class TransferRepository(BaseRepository):
         with self.session() as db:
             db.query(TRANSFERHISTORY).delete()
 
-    def get_transfer_statistics(self, days: int = 30) -> list[tuple]:
+    def get_transfer_statistics(self, days: int = 30) -> list:
         """
         查询历史记录统计
         使用 func.substring 替代 func.substr 以支持多种数据库
@@ -363,10 +507,10 @@ class TransferRepository(BaseRepository):
             query = db.query(TRANSFERHISTORY.TYPE, date_str, func.count("*"))
             if days > 0:
                 begin_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-                query = query.filter(begin_date < TRANSFERHISTORY.DATE)
+                query = query.filter(TRANSFERHISTORY.DATE > begin_date)
             return query.group_by(TRANSFERHISTORY.TYPE, date_str).order_by(date_str).all()
 
-    def get_transfer_series_statistics(self, days: int = 30) -> list[tuple]:
+    def get_transfer_series_statistics(self, days: int = 30) -> list:
         """
         按天统计电视剧去重剧数（distinct TMDBID，仅 tv 类型）
         返回 [(date_str, series_count), ...]
@@ -379,7 +523,7 @@ class TransferRepository(BaseRepository):
             )
             if days > 0:
                 begin_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-                query = query.filter(begin_date < TRANSFERHISTORY.DATE)
+                query = query.filter(TRANSFERHISTORY.DATE > begin_date)
             return query.group_by(date_str).order_by(date_str).all()
 
     # ==================== Transfer Unknown ====================
@@ -437,7 +581,7 @@ class TransferRepository(BaseRepository):
         if not path:
             return
         with self.session() as db:
-            db.query(TRANSFERUNKNOWN).filter(os.path.normpath(path) == TRANSFERUNKNOWN.PATH).update({"STATE": "Y"})
+            db.query(TRANSFERUNKNOWN).filter(TRANSFERUNKNOWN.PATH == os.path.normpath(path)).update({"STATE": "Y"})
 
     def delete_transfer_unknowns(self, tids: list[int]) -> None:
         """
@@ -466,7 +610,7 @@ class TransferRepository(BaseRepository):
         if not tid:
             return None
         with self.session() as db:
-            return db.query(TRANSFERUNKNOWN).filter(int(tid) == TRANSFERUNKNOWN.ID).first()
+            return db.query(TRANSFERUNKNOWN).filter(TRANSFERUNKNOWN.ID == int(tid)).first()
 
     def get_transfer_unknown_by_path(self, path: str) -> list[TRANSFERUNKNOWN]:
         """
@@ -475,7 +619,7 @@ class TransferRepository(BaseRepository):
         if not path:
             return []
         with self.session() as db:
-            return db.query(TRANSFERUNKNOWN).filter(os.path.normpath(path) == TRANSFERUNKNOWN.PATH).all()
+            return db.query(TRANSFERUNKNOWN).filter(TRANSFERUNKNOWN.PATH == os.path.normpath(path)).all()
 
     def is_exists_transfer_unknowns(self, path: str) -> bool:
         return self.is_transfer_unknown_exists(path)
@@ -487,7 +631,7 @@ class TransferRepository(BaseRepository):
         if not path:
             return False
         with self.session() as db:
-            ret = db.query(TRANSFERUNKNOWN).filter(os.path.normpath(path) == TRANSFERUNKNOWN.PATH).count()
+            ret = db.query(TRANSFERUNKNOWN).filter(TRANSFERUNKNOWN.PATH == os.path.normpath(path)).count()
         return ret > 0
 
     def is_need_insert_transfer_unknown(self, path: str) -> bool:
@@ -536,7 +680,7 @@ class TransferRepository(BaseRepository):
         if not path:
             return False
         with self.session() as db:
-            ret = db.query(TRANSFERBLACKLIST).filter(os.path.normpath(path) == TRANSFERBLACKLIST.PATH).count()
+            ret = db.query(TRANSFERBLACKLIST).filter(TRANSFERBLACKLIST.PATH == os.path.normpath(path)).count()
         return ret > 0
 
     def is_exists_transfer_blacklist(self, path: str) -> bool:
@@ -568,8 +712,8 @@ class TransferRepository(BaseRepository):
         删除黑名单记录
         """
         with self.session() as db:
-            db.query(TRANSFERBLACKLIST).filter(str(path) == TRANSFERBLACKLIST.PATH).delete()
-            db.query(SYNCHISTORY).filter(str(path) == SYNCHISTORY.PATH).delete()
+            db.query(TRANSFERBLACKLIST).filter(TRANSFERBLACKLIST.PATH == str(path)).delete()
+            db.query(SYNCHISTORY).filter(SYNCHISTORY.PATH == str(path)).delete()
 
     def truncate_transfer_blacklist(self) -> None:
         """
@@ -590,7 +734,7 @@ class TransferRepository(BaseRepository):
         with self.session() as db:
             return (
                 db.query(SYNCHISTORY.ID)
-                .filter(os.path.normpath(path) == SYNCHISTORY.PATH, os.path.normpath(dest) == SYNCHISTORY.DEST)
+                .filter(SYNCHISTORY.PATH == os.path.normpath(path), SYNCHISTORY.DEST == os.path.normpath(dest))
                 .first()
                 is not None
             )
@@ -606,3 +750,13 @@ class TransferRepository(BaseRepository):
 
         with self.session() as db:
             db.add(SYNCHISTORY(PATH=os.path.normpath(path), SRC=os.path.normpath(src), DEST=os.path.normpath(dest)))
+
+    def delete_sync_history(self, path: str, dest: str) -> None:
+        """删除指定 (PATH, DEST) 的同步历史记录（目标文件被删除后用于重新同步）"""
+        if not path or not dest:
+            return
+        with self.session() as db:
+            db.query(SYNCHISTORY).filter(
+                SYNCHISTORY.PATH == os.path.normpath(path),
+                SYNCHISTORY.DEST == os.path.normpath(dest),
+            ).delete(synchronize_session=False)

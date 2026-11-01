@@ -105,6 +105,9 @@ class BrushTaskRepositoryAdapter:
     def update_brushtask_torrent_state(self, update_torrents: list) -> None:
         self._repo.update_brushtask_torrent_state(update_torrents)
 
+    def update_brushtask_torrent_pause_reason(self, taskid: int, download_id: str, reason: str) -> None:
+        self._repo.update_brushtask_torrent_pause_reason(taskid, download_id, reason)
+
     def delete_brushtask_torrent(self, taskid: int, download_id: str) -> None:
         self._repo.delete_brushtask_torrent(taskid, download_id)
 
@@ -180,6 +183,9 @@ class BrushTorrentRepositoryAdapter:
 
     def update_brushtask_torrent_state(self, update_torrents: list) -> None:
         return self._repo.update_brushtask_torrent_state(update_torrents)
+
+    def update_brushtask_torrent_pause_reason(self, taskid: int, download_id: str, reason: str) -> None:
+        return self._repo.update_brushtask_torrent_pause_reason(taskid, download_id, reason)
 
     def delete_brushtask_torrent(self, taskid: int, download_id: str) -> None:
         return self._repo.delete_brushtask_torrent(taskid, download_id)

@@ -13,17 +13,17 @@ class SystemDictRepository(BaseRepository):
     def get_by_type_key(self, dtype: str, key: str) -> SYSTEMDICT | None:
         """根据 type + key 获取记录"""
         with self.session() as db:
-            return db.query(SYSTEMDICT).filter(dtype == SYSTEMDICT.TYPE, key == SYSTEMDICT.KEY).first()
+            return db.query(SYSTEMDICT).filter(SYSTEMDICT.TYPE == dtype, SYSTEMDICT.KEY == key).first()
 
     def list_by_type(self, dtype: str) -> list[SYSTEMDICT]:
         """根据 type 获取列表"""
         with self.session() as db:
-            return db.query(SYSTEMDICT).filter(dtype == SYSTEMDICT.TYPE).all()
+            return db.query(SYSTEMDICT).filter(SYSTEMDICT.TYPE == dtype).all()
 
     def set(self, dtype: str, key: str, value: str, note: str = "") -> bool:
         """设置字典值（存在则更新，不存在则插入）"""
         with self.session() as db:
-            existing = db.query(SYSTEMDICT).filter(dtype == SYSTEMDICT.TYPE, key == SYSTEMDICT.KEY).first()
+            existing = db.query(SYSTEMDICT).filter(SYSTEMDICT.TYPE == dtype, SYSTEMDICT.KEY == key).first()
             if existing:
                 existing.VALUE = value  # type: ignore[assignment]
                 if note:
@@ -36,12 +36,12 @@ class SystemDictRepository(BaseRepository):
     def delete(self, dtype: str, key: str) -> bool:
         """删除字典值"""
         with self.session() as db:
-            result = db.query(SYSTEMDICT).filter(dtype == SYSTEMDICT.TYPE, key == SYSTEMDICT.KEY).delete()
+            result = db.query(SYSTEMDICT).filter(SYSTEMDICT.TYPE == dtype, SYSTEMDICT.KEY == key).delete()
             db.commit()
             return result > 0
 
     def exists(self, dtype: str, key: str) -> bool:  # type: ignore[override]
         """检查是否存在"""
         with self.session() as db:
-            count = db.query(SYSTEMDICT).filter(dtype == SYSTEMDICT.TYPE, key == SYSTEMDICT.KEY).count()
+            count = db.query(SYSTEMDICT).filter(SYSTEMDICT.TYPE == dtype, SYSTEMDICT.KEY == key).count()
             return count > 0

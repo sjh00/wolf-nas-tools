@@ -21,7 +21,7 @@ router = APIRouter()
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(
+def login(
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     auth_service: AuthService = Depends(get_auth_service),
@@ -55,7 +55,7 @@ async def login(
 
 
 @router.post("/refresh", response_model=LoginResponse)
-async def refresh_token(
+def refresh_token(
     request: Request,
     response: Response,
     auth_service: AuthService = Depends(get_auth_service),

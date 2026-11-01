@@ -13,10 +13,15 @@ class CategoryConfigEntity:
     name: str
     sort_order: int
     is_default: bool
-    rules: dict[str, str]
+    enabled: bool
+    rules: dict[str, str] | list[dict[str, Any]]
 
     @classmethod
-    def from_orm(cls, orm_model, rules: dict[str, str] | None = None) -> Optional["CategoryConfigEntity"]:
+    def from_orm(
+        cls,
+        orm_model,
+        rules: dict[str, str] | list[dict[str, Any]] | None = None,
+    ) -> Optional["CategoryConfigEntity"]:
         if orm_model is None:
             return None
         return cls(
@@ -25,6 +30,7 @@ class CategoryConfigEntity:
             name=orm_model.NAME or "",
             sort_order=int(orm_model.SORT_ORDER or 0),
             is_default=bool(orm_model.IS_DEFAULT),
+            enabled=bool(getattr(orm_model, "ENABLED", 1)),
             rules=rules or {},
         )
 
@@ -35,5 +41,6 @@ class CategoryConfigEntity:
             "name": self.name,
             "sort_order": self.sort_order,
             "is_default": self.is_default,
+            "enabled": self.enabled,
             "rules": self.rules,
         }

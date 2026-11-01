@@ -20,10 +20,12 @@ from api.routers import (
     browser_fingerprint,
     brush,
     chat,
+    custom_rss,
     download,
     filter,
     image,
     kb,
+    library_rename,
     media,
     message_webhook,
     plugin_framework,
@@ -46,6 +48,7 @@ from app.db.engine import get_engine
 from app.di.builders.context_builder import build_app_context
 from app.downloader.client import init_clients as init_downloaders
 from app.indexer.client import init_clients as init_indexers
+from app.infrastructure.http.slow_request_middleware import SlowRequestLoggingMiddleware
 from app.infrastructure.rate_limiter.middleware import RateLimitMiddleware
 from app.infrastructure.redis import RedisStore
 from app.infrastructure.thread import ThreadExecutor
@@ -60,6 +63,13 @@ from app.services.system.lifecycle import SystemLifecycleService
 def _startup(app: FastAPI) -> None:
     """后台线程执行全部初始化，避免阻塞 lifespan 接受连接."""
     try:
+        log.info("[FastAPI]初始化数据库表结构...")
+        init_db()
+    except Exception as e:
+        log.error(f"[FastAPI]数据库初始化失败: {e}")
+        return
+
+    try:
         app_context = build_app_context()
         app.state.context = app_context
     except Exception as e:
@@ -67,11 +77,11 @@ def _startup(app: FastAPI) -> None:
         return
 
     try:
-        log.info("[FastAPI]初始化数据库表结构...")
-        init_db()
+        recovered = app_context.library_rename_service.recover_interrupted_jobs()
+        if recovered:
+            log.info(f"[FastAPI]已标记 {recovered} 个中断的媒体库重命名任务")
     except Exception as e:
-        log.error(f"[FastAPI]数据库初始化失败: {e}")
-        return
+        log.error(f"[FastAPI]恢复媒体库重命名任务失败: {e}")
 
     try:
         log.info("[FastAPI]启动后台服务...")
@@ -140,6 +150,10 @@ async def lifespan(app: FastAPI):
             log.error(f"[FastAPI]服务关闭异常: {e}")
         log.info("[FastAPI]后台服务已关闭")
 
+    hook_system = getattr(getattr(app.state, "context", None), "hook_system", None)
+    if hook_system is not None:
+        hook_system.close()
+
     ThreadExecutor.shutdown_all()
 
 
@@ -179,6 +193,11 @@ app.add_middleware(
 app.add_middleware(RateLimitMiddleware, rate="60/m")
 
 
+# 慢请求日志：超过阈值（app.slow_request_ms，默认 1000ms）打印告警
+_slow_request_ms = float((settings.get("app") or {}).get("slow_request_ms", 1000))
+app.add_middleware(SlowRequestLoggingMiddleware, slow_ms=_slow_request_ms)
+
+
 @app.middleware("http")
 async def startup_guard(request: Request, call_next):
     """初始化期间返回 503，防止前端请求报内部错误。"""
@@ -214,8 +233,10 @@ app.include_router(scheduler.router, prefix="/api/scheduler", tags=["scheduler"]
 app.include_router(plugin_framework.router, prefix="/api/plugin-framework", tags=["plugin-framework"])
 app.include_router(plugin_market.router, prefix="/api/plugin/market", tags=["plugin-market"])
 app.include_router(rss_automation.router, prefix="/api/rss-automation", tags=["rss-automation"])
+app.include_router(custom_rss.router, prefix="/api/site", tags=["custom-rss"])
 app.include_router(words.router, prefix="/api/words", tags=["words"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
+app.include_router(library_rename.router, prefix="/api/media", tags=["media-library-rename"])
 app.include_router(rbac.router, prefix="/api/rbac", tags=["rbac"])
 app.include_router(browser_fingerprint.router, prefix="/api", tags=["browser-fingerprint"])
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])

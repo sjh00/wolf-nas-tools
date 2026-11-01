@@ -1,5 +1,7 @@
 """下载领域事件处理器."""
 
+import os
+
 import log
 from app.events import Event, on_event
 from app.events.constants import DOWNLOAD_COMPLETED, DOWNLOAD_FAILED, DOWNLOAD_STARTED
@@ -45,6 +47,8 @@ def handle_download_completed(event: Event) -> None:
     if not isinstance(payload, DownloadCompletedPayload):
         payload = DownloadCompletedPayload(**payload)
     log.info(f"[Event]下载完成: {payload.task_id} @ {payload.path}")
+    # 任务名缺失时用路径末段兜底，避免前端列表出现空标题
+    name = payload.name or os.path.basename(str(payload.path or "").rstrip("/")) or payload.task_id
     put_download_event(
         {
             "event": DOWNLOAD_COMPLETED,
@@ -53,7 +57,7 @@ def handle_download_completed(event: Event) -> None:
                 "task_id": payload.task_id,
                 "path": payload.path,
                 "tags": payload.tags,
-                "name": payload.name,
+                "name": name,
             },
         }
     )

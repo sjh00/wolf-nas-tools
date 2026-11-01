@@ -9,7 +9,7 @@ from app.core.exceptions import DomainError, RepositoryError, ServiceError
 from app.core.settings import settings
 from app.domain.engine.brush_rule_engine import BrushRuleEngine
 from app.domain.enums import ProgressKey
-from app.domain.mediatypes import MediaType
+from app.domain.mediatypes import MediaType, normalize_media_type_input
 from app.infrastructure.external.doubanapi import DoubanApi
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
@@ -211,7 +211,18 @@ class WebSearchService:
         if not search_word:
             return WebSearchResultDTO(code=0, msg="")
         if media_type:
-            if MediaType.from_string(media_type) == MediaType.MOVIE:
+            request_type, profile = normalize_media_type_input(
+                str(media_type),
+                str((filters or {}).get("content_profile") or "default"),
+            )
+            if profile != "default":
+                filters = {**(filters or {}), "content_profile": profile}
+            parsed_type = MediaType.from_string(request_type or "")
+            if parsed_type in (MediaType.MOVIE, MediaType.ANIME):
+                media_type = MediaType.MOVIE
+            elif parsed_type == MediaType.TV:
+                media_type = MediaType.TV
+            elif profile != "default":
                 media_type = MediaType.MOVIE
             else:
                 media_type = MediaType.TV

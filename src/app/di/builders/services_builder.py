@@ -18,6 +18,9 @@ from app.db.repositories.download_repo_adapter import (
     DownloadSettingRepositoryAdapter,
     IndexerStatisticsRepositoryAdapter,
 )
+from app.db.repositories.library_rename_repo_adapter import LibraryRenameRepositoryAdapter
+from app.db.repositories.media_identity_repository import MediaIdentityRepository
+from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
 from app.db.repositories.plugin_framework_repository import PluginFrameworkRepository
 from app.db.repositories.plugin_market_repository import PluginMarketRepository
 from app.db.repositories.rbac_repo_adapter import RBACMenuRepositoryAdapter, RBACRoleRepositoryAdapter
@@ -32,6 +35,7 @@ from app.db.repositories.subscribe_repo_adapter import (
     SubscribeTvEpisodeRepositoryAdapter,
     SubscribeTvRepositoryAdapter,
 )
+from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferBlacklistRepositoryAdapter
 from app.db.repositories.word_repo_adapter import CustomWordGroupRepositoryAdapter, CustomWordRepositoryAdapter
@@ -52,12 +56,14 @@ from app.services.brush.task_service import BrushTaskService
 from app.services.brush_service import BrushService
 from app.services.channel_binding_service import ChannelBindingService
 from app.services.config_service import ConfigService
+from app.services.discovery_service import DiscoveryService
 from app.services.download_core import DownloadCore
 from app.services.download_service import DownloadService
 from app.services.downloader_core import DownloaderCore
 from app.services.file_index_service import FileIndexService
 from app.services.filter_service import FilterService
 from app.services.indexer_service import IndexerService
+from app.services.library_presence_service import LibraryPresenceService
 from app.services.media_cleanup_service import MediaCleanupService
 from app.services.media_config_service import MediaConfigService
 from app.services.media_consistency_service import MediaConsistencyService
@@ -66,9 +72,11 @@ from app.services.media_info_service import MediaInfoService
 from app.services.media_library_service import MediaLibraryService
 from app.services.media_migrate_service import MediaMigrateService
 from app.services.media_recommendation_service import MediaRecommendationService
+from app.services.metadata_service import MetadataService
 from app.services.plugin_framework_service import PluginFrameworkService
 from app.services.plugin_market_service import PluginMarketService
 from app.services.rbac.service import RBACService
+from app.services.rss_automation.custom_source_service import CustomRssSourceService
 from app.services.rss_automation.task_service import RssTaskService
 from app.services.rss_automation.userrss_service import UserRssService
 from app.services.rss_processor import RssHelper
@@ -104,6 +112,7 @@ from app.services.transfer.existence_checker import MediaExistenceChecker
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.handlers import register_download_completed_handler
 from app.services.transfer.history_manager import TransferHistoryManager
+from app.services.transfer.library_rename_service import LibraryRenameService
 from app.services.transfer.path_resolver import TransferPathResolver
 from app.services.transfer_coordinator import TransferCoordinator
 from app.services.transfer_engine import TransferEngine
@@ -150,7 +159,13 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         event_bus=event_bus,
     )
 
-    shared_scraper = Scraper(media_service=media_service)
+    metadata_service = MetadataService(identity_repo=MediaIdentityRepository(), media_service=media_service)
+    discovery_service = DiscoveryService(
+        media_service=media_service,
+        media_server=media_server,
+        library_presence_service=LibraryPresenceService(media_server=media_server),
+    )
+    shared_scraper = Scraper(media_service=media_service, metadata_service=metadata_service)
     scrape_queue_service = ScrapeQueueService(scraper=shared_scraper)
 
     filetransfer_service = FileTransferService(
@@ -166,6 +181,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         path_resolver=path_resolver,
         existence_checker=existence_checker,
         cleanup_service=cleanup_service,
+        metadata_service=metadata_service,
     )
 
     transfer_pipeline = TransferPipeline(
@@ -179,6 +195,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         transfer_pipeline=transfer_pipeline,
         download_history_repo=DownloadHistoryRepositoryAdapter(),
         media_cache=MediaCache(),
+        sync_path_repo=SyncPathRepositoryAdapter(),
     )
 
     shared_client_factory = DownloadClientFactory()
@@ -215,6 +232,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     )
 
     search_pipeline = SearchPipeline(media_service=media_service)
+    # 过滤规则变更时清理搜索流水线的规则缓存，避免改库后必须重启才生效
+    filter_service.add_change_listener(search_pipeline.result_filter.clear_cache)
 
     indexer = Indexer(
         search_pipeline=search_pipeline,
@@ -250,6 +269,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         system_config=SystemConfig(),
         download_repo=DownloadHistoryRepositoryAdapter(),
         transfer_history_manager=history_manager,
+        metadata_service=metadata_service,
     )
 
     searcher = Searcher(
@@ -263,13 +283,13 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         event_bus=event_bus,
     )
 
+    # 目录同步使用由连接预算推导的独立线程池，避免共享池放大并发。
     sync_engine = SyncEngine(
         transfer_engine=transfer_engine,
         transfer_pipeline=transfer_pipeline,
         sync_path_repo=SyncPathRepositoryAdapter(),
         storage_backend_repo=StorageBackendRepositoryAdapter(),
-        thread_executor=thread_executor,
-        sync_workers=4,
+        thread_executor=infra.transfer_sync_executor,
     )
 
     sync_service = SyncService(
@@ -278,6 +298,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         media_cache=MediaCache(),
         thread_executor=thread_executor,
         storage_backend_repo=StorageBackendRepositoryAdapter(),
+        media_service=media_service,
+        metadata_service=metadata_service,
     )
 
     file_index_service = FileIndexService(
@@ -324,6 +346,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         progress_helper=ProgressTracker(),
         event_bus=event_bus,
         intent_resolver=intent_resolver,
+        metadata_service=metadata_service,
     )
     web_search_service = WebSearchService(
         search_fn=make_web_search_fn(search_orchestrator, SystemConfigService()),
@@ -344,6 +367,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     # 消息定向发送按用户绑定渠道路由
     message.set_channel_binding_service(channel_binding_service)
     user_rss_service = UserRssService(rss_checker=rss_task_service)
+    custom_rss_service = CustomRssSourceService()
 
     douban = DouBan()
     media_info_service = MediaInfoService(
@@ -351,6 +375,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         subscribe=subscribe_service,
         media_server=media_server,
         douban=douban,
+        metadata_service=metadata_service,
     )
 
     download_service = DownloadService(
@@ -428,7 +453,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         storage_backend_repo=StorageBackendRepositoryAdapter(),
         media_service=media_service,
         thread_executor=thread_executor,
-        scraper=Scraper(media_service=media_service),
+        scraper=Scraper(media_service=media_service, metadata_service=metadata_service),
+        route_repo=MediaLibraryRouteRepositoryAdapter(),
     )
     media_library_service = MediaLibraryService(
         media_server=media_server,
@@ -513,6 +539,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         media_info_service=media_info_service,
         subscribe=subscribe_service,
         rss_task_service=rss_task_service,
+        metadata_service=metadata_service,
     )
     subscribe_history_service = SubscribeHistoryService(
         history_repo=SubscribeHistoryRepositoryAdapter(),
@@ -542,6 +569,19 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         filetransfer=filetransfer_service,
         sync_service=sync_service,
         poster_resolver=_history_poster_resolver,
+        metadata_service=metadata_service,
+        subscribe_repo=SubscribeRepository(),
+    )
+    library_rename_service = LibraryRenameService(
+        rename_repo=LibraryRenameRepositoryAdapter(),
+        storage_repo=StorageBackendRepositoryAdapter(),
+        media_config_service=media_config_service,
+        media_service=media_service,
+        media_server=media_server,
+        download_repo=DownloadHistoryRepositoryAdapter(),
+        thread_executor=thread_executor,
+        transfer_history_service=transfer_history_service,
+        metadata_service=metadata_service,
     )
 
     # 回填 PluginSandbox 的服务依赖（供动态加载插件使用）
@@ -585,6 +625,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         site_resolver=site_resolver,
         site_favicon_service=site_favicon_service,
         media_info_service=media_info_service,
+        metadata_service=metadata_service,
+        discovery_service=discovery_service,
         media_config_service=media_config_service,
         media_file_service=media_file_service,
         media_library_service=media_library_service,
@@ -614,10 +656,12 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         storage_backend_service=storage_backend_service,
         search_result_service=search_result_service,
         transfer_history_service=transfer_history_service,
+        library_rename_service=library_rename_service,
         subscribe_calendar_service=subscribe_calendar_service,
         subscribe_history_service=subscribe_history_service,
         words_service=words_service,
         user_rss_service=user_rss_service,
+        custom_rss_service=custom_rss_service,
         site_grant_service=site_grant_service,
         channel_binding_service=channel_binding_service,
     )

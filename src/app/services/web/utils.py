@@ -2,6 +2,7 @@ from typing import Any
 
 import cn2an
 
+import log
 from app.domain.mediatypes import MediaType
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
@@ -85,71 +86,97 @@ class WebUtils:
             return None
         media_info = None
         if str(mediaid).startswith("DB:"):
-            # 豆瓣
+            # 豆瓣锚点：只用豆瓣数据，不再为“补 TMDB”做标题重映射
             doubanid = mediaid[3:]
             info = self._douban.get_douban_detail(doubanid=doubanid, mtype=mtype, wait=wait)
             if not info:
                 return None
-            title = info.get("title")
+            title = str(info.get("title") or "").strip()
+            if not title:
+                return None
             original_title = info.get("original_title")
-            year = info.get("year")
-            # 保存豆瓣封面URL
-            douban_cover = info.get("cover_url", "")
-            # 支持自动识别类型
+            year = str(info.get("year") or "")
             if not mtype:
                 mtype = MediaType.TV if info.get("episodes_count") else MediaType.MOVIE
-            media_info = None
-            if original_title:
-                media_info = self._media_service.get_media_info(
-                    title=f"{original_title} {year}", mtype=mtype, append_to_response="all"
-                )
-            if not media_info or not media_info.tmdb_info:
-                media_info = self._media_service.get_media_info(
-                    title=f"{title} {year}", mtype=mtype, append_to_response="all"
-                )
-            # TMDB匹配失败时，使用豆瓣信息构造基础媒体信息，避免退化为不识别模式
-            if not media_info or not media_info.tmdb_info:
-                media_info = meta_info(title=title)
-                media_info.title = title
-                media_info.cn_name = title
-                media_info.original_title = original_title or title
-                media_info.year = year
-                media_info.type = mtype
-                media_info.douban_id = doubanid
-                if douban_cover:
-                    media_info.poster_path = douban_cover
-                    media_info.backdrop_path = douban_cover
-            if media_info:
-                media_info.douban_id = doubanid
-                # 如果TMDB没有图片，使用豆瓣图片
-                if douban_cover and (not media_info.poster_path or not media_info.poster_path.strip()):
-                    media_info.poster_path = douban_cover
+            media_info = meta_info(title=title, mtype=mtype)
+            media_info.title = title
+            media_info.cn_name = title
+            media_info.original_title = original_title or title
+            media_info.year = year
+            media_info.type = mtype
+            media_info.douban_id = doubanid
+            media_info.tmdb_id = ""
+            media_info.anchor_provider = "douban"
+            media_info.anchor_external_id = str(doubanid)
+            media_info.overview = info.get("intro") or info.get("card_subtitle") or ""
+            rating = info.get("rating") or {}
+            if isinstance(rating, dict):
+                media_info.vote_average = float(rating.get("value") or 0.0)
+            elif isinstance(rating, (int, float)):
+                media_info.vote_average = float(rating)
+            media_info.total_episodes = int(info.get("episodes_count") or 0)
+            if mtype in (MediaType.TV, MediaType.ANIME):
+                media_info.begin_season = 1
+            cover = str(info.get("cover_url") or "").strip()
+            if cover:
+                media_info.poster_path = cover
+                media_info.backdrop_path = cover
+            # TMDB 仅作为可选补充：能映射才填真实 TMDB ID，绝不覆盖豆瓣 anchor/文本/封面
+            if self._media_service is not None:
+                try:
+                    tmdb_media = self._media_service.get_media_info(
+                        title=f"{title} {year}".strip(),
+                        mtype=mtype,
+                        strict=bool(year),
+                        cache=False,
+                    )
+                    if tmdb_media and tmdb_media.provider_data:
+                        media_info.tmdb_id = str(tmdb_media.tmdb_id or "")
+                        media_info.provider_data = tmdb_media.provider_data
+                        if not media_info.total_episodes:
+                            media_info.total_episodes = int(tmdb_media.total_episodes or 0)
+                except Exception as exc:  # noqa: BLE001 - 映射失败保持豆瓣直连
+                    log.debug(f"[WebUtils]豆瓣 {doubanid} 可选映射 TMDB 失败: {exc}")
+            return media_info
         elif str(mediaid).startswith("BG:"):
-            # BANGUMI
+            # Bangumi 直连：不再要求映射到 TMDB
             bangumiid = str(mediaid)[3:]
             info = self._bangumi.detail(bid=bangumiid)
             if not info:
                 return None
-            title = info.get("name")
-            title_cn = info.get("name_cn")
-            year = info.get("date")[:4] if info.get("date") else ""
-            media_info = self._media_service.get_media_info(
-                title=f"{title} {year}", mtype=MediaType.TV, append_to_response="all"
-            )
-            if not media_info or not media_info.tmdb_info:
-                media_info = self._media_service.get_media_info(
-                    title=f"{title_cn} {year}", mtype=MediaType.TV, append_to_response="all"
-                )
-            # 检查是否成功匹配到TMDB信息
-            if not media_info or not media_info.tmdb_info:
+            title = str(info.get("name_cn") or info.get("name") or "").strip()
+            if not title:
                 return None
+            original_title = str(info.get("name") or title).strip()
+            air_date = str(info.get("date") or "")
+            year = air_date[:4]
+            media_info = meta_info(title=title, mtype=MediaType.TV)
+            media_info.title = title
+            media_info.cn_name = title
+            media_info.original_title = original_title
+            media_info.year = year
+            media_info.type = MediaType.TV
+            media_info.overview = info.get("summary") or ""
+            media_info.anchor_provider = "bangumi"
+            media_info.anchor_external_id = str(bangumiid)
+            media_info.content_profile = "anime"
+            media_info.tmdb_id = ""
+            media_info.total_episodes = int(info.get("eps") or info.get("total_episodes") or 0)
+            rating = info.get("rating") or {}
+            media_info.vote_average = float(rating.get("score") or 0.0)
+            images = info.get("images") or {}
+            poster = images.get("large") or images.get("common") or ""
+            if poster:
+                media_info.poster_path = poster
+                media_info.backdrop_path = poster
         else:
             # TMDB
             info = self._media_service.get_tmdb_info(tmdbid=mediaid, mtype=mtype, append_to_response="all")
             if not info:
                 return None
-            media_info = meta_info(title=info.get("title") if mtype == MediaType.MOVIE else info.get("name"))
-            media_info.set_tmdb_info(info)
+            title = str(info.get("title") if mtype == MediaType.MOVIE else info.get("name") or "")
+            media_info = meta_info(title=title)
+            media_info.set_provider_data(info)
 
         return media_info
 
@@ -174,7 +201,7 @@ class WebUtils:
             results = []
             for tmdbinfo in tmdbinfos:
                 tmp_info = meta_info(title=keyword)
-                tmp_info.set_tmdb_info(tmdbinfo)
+                tmp_info.set_provider_data(tmdbinfo)
                 if tmp_info.type == MediaType.MOVIE and (season_num or episode_num):
                     continue
                 if tmp_info.begin_season:

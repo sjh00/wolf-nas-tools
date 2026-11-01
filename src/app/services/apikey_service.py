@@ -82,6 +82,17 @@ class APIKeyService:
         items, _ = self._key_repo.list_keys(page=1, page_size=200, created_by=user_id)
         return any(getattr(i, "id", None) == key_id for i in items)
 
+    def user_can_access_key(self, key_id: int, user) -> bool:
+        """判断用户是否有权访问指定 API Key（超管或创建者）"""
+        if user is None:
+            return True
+        if getattr(user, "is_superadmin", False):
+            return True
+        item = self._key_repo.get_by_id(key_id)
+        if item is None:
+            return False
+        return getattr(item, "CREATED_BY", None) == getattr(user, "user_id", None)
+
     def list_keys(self, page: int = 1, page_size: int = 50, user=None) -> dict[str, Any]:
         """获取 API Key 列表（普通用户仅见自己创建的）"""
         try:

@@ -14,13 +14,39 @@ from api.deps import (
     require_permission,
 )
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import NexusError, ResourceAlreadyExistsError, ResourceNotFoundError, ServiceError
+from app.core.exceptions import (
+    NexusError,
+    PermissionDenied,
+    ResourceAlreadyExistsError,
+    ResourceNotFoundError,
+    ServiceError,
+)
 from app.core.settings import settings
-from app.schemas.auth import UserContext
+from app.schemas.auth import SUPERADMIN_ROLE_CODE, UserContext
 from app.schemas.common import CommonResponse
 from app.utils.response import fail, success
 
 router = APIRouter()
+
+
+def _role_code(role) -> str:
+    """兼容 role_code / ROLE_CODE 两种属性命名"""
+    return str(getattr(role, "role_code", None) or getattr(role, "ROLE_CODE", None) or "")
+
+
+def _assert_role_assignment_allowed(svc, current_user: UserContext, target_user_id: int | None, role_ids) -> None:
+    """越权保护：非超管不得授予/保留 superadmin，也不得修改超管用户。"""
+    if getattr(current_user, "is_superadmin", False):
+        return
+    if role_ids:
+        for rid in role_ids:
+            role = svc.get_role_by_id(rid)
+            if role is not None and _role_code(role) == SUPERADMIN_ROLE_CODE:
+                raise PermissionDenied("只有超级管理员可以授予超级管理员角色")
+    if target_user_id:
+        roles = svc.get_user_roles(target_user_id) or []
+        if any(_role_code(r) == SUPERADMIN_ROLE_CODE for r in roles):
+            raise PermissionDenied("无权修改超级管理员用户")
 
 
 # ---------- Request Models ----------
@@ -146,6 +172,8 @@ def create_user(
     if not req.username or not req.password:
         return fail(success=False, message="用户名和密码不能为空")
 
+    _assert_role_assignment_allowed(svc, current_user, None, req.role_ids)
+
     try:
         result = svc.create_user(
             username=req.username,
@@ -168,6 +196,8 @@ def delete_user(
     if not req.id:
         return fail(success=False, message="用户ID不能为空")
 
+    _assert_role_assignment_allowed(svc, current_user, req.id, None)
+
     try:
         _ = svc.delete_user(req.id, current_user_id=current_user.user_id)
         return success(data={"success": True, "message": "删除成功"})
@@ -189,6 +219,8 @@ def update_user(
         val = getattr(req, field, None)
         if val is not None:
             update_fields[field] = val
+
+    _assert_role_assignment_allowed(svc, current_user, req.id, req.role_ids)
 
     try:
         svc.update_user(req.id, **update_fields)

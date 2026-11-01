@@ -10,6 +10,8 @@
 from app.db.models.agent_memory import (
     AGENTCONVERSATION,
     AGENTMESSAGE,
+    AGENTPENDINGACTION,
+    AGENTTURN,
     AGENTWEBMESSAGE,
 )
 from app.db.models.apikey import (
@@ -41,6 +43,9 @@ from app.db.models.config import (
     MEDIASERVER,
 )
 
+# 自定义 RSS 源模型
+from app.db.models.custom_rss import CustomRssSource
+
 # 分布式锁模型
 from app.db.models.distributed_lock import (
     DISTRIBUTEDLOCK,
@@ -60,7 +65,25 @@ from app.db.models.indexer import (
     INDEXERSTATISTICS,
 )
 
+# 媒体库重命名模型
+from app.db.models.library_rename import (
+    LIBRARYMEDIAMETADATA,
+    LIBRARYRENAMEITEM,
+    LIBRARYRENAMEJOB,
+)
+
+# 媒体身份与元数据快照模型
+from app.db.models.media_identity import (
+    MEDIA_EXTERNAL_REF,
+    MEDIA_FIELD_OVERRIDE,
+    MEDIA_IDENTITY,
+    MEDIA_METADATA_SNAPSHOT,
+    PERSON_EXTERNAL_REF,
+    PERSON_IDENTITY,
+)
+
 # 媒体同步模型
+from app.db.models.media_library_route import MediaLibraryRoute
 from app.db.models.media_sync import (
     MEDIASYNCITEMS,
     MEDIASYNCSTATISTIC,
@@ -184,6 +207,7 @@ __all__ = [
     # 消息
     "MESSAGECLIENT",
     # RSS
+    "CustomRssSource",
     "SubscribeHistory",
     "SubscribeMovies",
     "SubscribeTorrents",
@@ -216,7 +240,12 @@ __all__ = [
     "PLUGINCONFIG",
     "PLUGINLOGS",
     "PLUGINHOOKS",
+    # 媒体库重命名
+    "LIBRARYRENAMEJOB",
+    "LIBRARYRENAMEITEM",
+    "LIBRARYMEDIAMETADATA",
     # 媒体同步
+    "MediaLibraryRoute",
     "MEDIASYNCITEMS",
     "MEDIASYNCSTATISTIC",
     # 搜索
@@ -236,6 +265,8 @@ __all__ = [
     "APIKEY",
     "AGENTCONVERSATION",
     "AGENTMESSAGE",
+    "AGENTPENDINGACTION",
+    "AGENTTURN",
     "AGENTWEBMESSAGE",
     "APIKEYLOG",
     # 分布式锁

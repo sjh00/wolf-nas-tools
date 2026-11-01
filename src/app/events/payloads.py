@@ -28,6 +28,7 @@ class MediaEpisodeTransferredPayload:
     season: str
     episodes: list[int]
     total_episodes: int
+    media_type: str | None = None
 
 
 @dataclass(frozen=True)

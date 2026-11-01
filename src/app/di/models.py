@@ -49,6 +49,7 @@ class InfrastructureObjects:
 
     event_bus: EventBus
     thread_executor: ThreadExecutor
+    transfer_sync_executor: ThreadExecutor
     scheduler_core: SchedulerCore
     message: Message
     message_queue: MessageQueue
@@ -126,12 +127,16 @@ class ServiceObjects:
     storage_backend_service: Any
     search_result_service: Any
     transfer_history_service: Any
+    library_rename_service: Any
     subscribe_calendar_service: Any
     subscribe_history_service: Any
     words_service: Any
     user_rss_service: Any
     site_grant_service: Any = None
+    custom_rss_service: Any = None
     channel_binding_service: Any = None
+    metadata_service: Any = None
+    discovery_service: Any = None
 
 
 @dataclass(frozen=True)

@@ -260,12 +260,24 @@ class FilterService:
         self._rg_matcher = rg_matcher
         self._groups = []
         self._rules = []
+        # 规则/分组变更时的缓存失效回调（如 ResultFilter.clear_cache）
+        self._change_listeners: list = []
         self.reload()
+
+    def add_change_listener(self, listener) -> None:
+        """注册变更回调：规则/分组变更（reload）时触发，用于清理下游缓存。"""
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
 
     def reload(self):
         """重新加载过滤规则数据"""
         self._groups = self._filter_group_repo.get_config_filter_group() or []
         self._rules = self._filter_rule_repo.get_config_filter_rule() or []
+        for listener in self._change_listeners:
+            try:
+                listener()
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Filter]规则变更回调执行失败: {e}")
 
     # ------------------- 规则组查询 -------------------
 
@@ -413,6 +425,35 @@ class FilterService:
         ret = self._filter_rule_repo.insert_filter_rule(item, ruleid)
         self.reload()
         return ret
+
+    def ensure_filter_group(self, name: str, rules: list[dict], default: str = "N") -> int:
+        """按名称确保规则组存在；已存在时保留用户修改，不重复创建."""
+        existing = self.get_filter_groupid_by_name(name)
+        if existing:
+            return int(existing)
+        self.add_group(name, default)
+        group_id = self.get_filter_groupid_by_name(name)
+        if not group_id:
+            raise ValidationError(f"过滤规则组创建失败: {name}")
+        for index, rule in enumerate(rules, start=1):
+            include = rule.get("include") or ""
+            exclude = rule.get("exclude") or ""
+            if isinstance(include, (list, tuple)):
+                include = "\n".join(str(item) for item in include)
+            if isinstance(exclude, (list, tuple)):
+                exclude = "\n".join(str(item) for item in exclude)
+            self.add_filter_rule(
+                {
+                    "group": int(group_id),
+                    "name": rule.get("name") or f"规则 {index}",
+                    "pri": rule.get("pri") or index,
+                    "include": include,
+                    "exclude": exclude,
+                    "size": rule.get("size") or "",
+                    "free": rule.get("free") or "",
+                }
+            )
+        return int(group_id)
 
     def delete_filterrule(self, ruleid):
         """删除过滤规则"""

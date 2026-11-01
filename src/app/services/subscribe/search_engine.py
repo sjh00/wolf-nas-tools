@@ -44,14 +44,18 @@ class SubscribeSearchEngine:
         else:
             self._get_queue().run()
 
-    def subscribe_search_movie(self, rssid: int | None = None, state: str = SubscribeState.PENDING.value) -> None:
+    def subscribe_search_movie(
+        self, rssid: int | None = None, state: str = SubscribeState.PENDING.value, force: bool = False
+    ) -> None:
         """搜索单个电影订阅."""
         if state == SubscribeState.RUNNING.value:
-            self._get_indexer()._search_movies(state=SubscribeState.RUNNING.value, rssid=rssid)
+            self._get_indexer()._search_movies(state=SubscribeState.RUNNING.value, rssid=rssid, force=force)
         else:
-            self._get_queue()._search_movies(state=SubscribeState.PENDING.value, rssid=rssid)
+            self._get_queue()._search_movies(state=SubscribeState.PENDING.value, rssid=rssid, force=force)
 
-    def subscribe_search_tv(self, rssid: int | None = None, state: str = SubscribeState.PENDING.value) -> None:
+    def subscribe_search_tv(
+        self, rssid: int | None = None, state: str = SubscribeState.PENDING.value, force: bool = False
+    ) -> None:
         """搜索单个电视剧订阅."""
         if state == SubscribeState.RUNNING.value:
             self._get_indexer()._search_tvs(state=SubscribeState.RUNNING.value, rssid=rssid)

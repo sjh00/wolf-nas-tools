@@ -64,7 +64,7 @@ class TestVerifyCookieHtmlPath:
             patch(f"{MODULE}.is_logged_in", return_value=logged_in) as mock_check,
         ):
             mock_client_cls.return_value.get.return_value = mock_res
-            result = plugin._verify_cookie("www.hddolby.com", "c_secure_uid=1")
+            result = plugin._verify_cookie("www.uhddolby.com", "c_secure_uid=1")
         return result, mock_client_cls, mock_check
 
     def test_api_key_site_uses_html_check(self):
@@ -74,7 +74,7 @@ class TestVerifyCookieHtmlPath:
         plugin.ctx.site_engine.test_connection.assert_not_called()
         mock_check.assert_called_once()
         call_kwargs = mock_client_cls.return_value.get.call_args.kwargs
-        assert call_kwargs["url"] == "https://www.hddolby.com"
+        assert call_kwargs["url"] == "https://www.uhddolby.com"
         assert call_kwargs["auth"] is not None
 
     def test_bearer_site_uses_html_check(self):
@@ -103,7 +103,7 @@ class TestVerifyCookieHtmlPath:
         plugin = _make_plugin(site_def=_site_def("api_key"))
         with patch(f"{MODULE}.HttpClient") as mock_client_cls:
             mock_client_cls.return_value.get.side_effect = RuntimeError("网络异常")
-            assert plugin._verify_cookie("www.hddolby.com", "uid=1") is False
+            assert plugin._verify_cookie("www.uhddolby.com", "uid=1") is False
 
 
 class TestCookieCloudCommand:

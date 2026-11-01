@@ -63,9 +63,27 @@ class TestSubscribeUniqueConstraint:
         """同用户重复订阅同媒体触发唯一约束"""
         from sqlalchemy.exc import IntegrityError
 
-        db_session.add(SubscribeMovies(NAME="MovieA", YEAR="2024", TMDBID="100", USER_ID=1))
+        db_session.add(
+            SubscribeMovies(
+                NAME="MovieA",
+                YEAR="2024",
+                TMDBID="100",
+                ANCHOR_PROVIDER="tmdb",
+                ANCHOR_EXTERNAL_ID="100",
+                USER_ID=1,
+            )
+        )
         db_session.commit()
-        db_session.add(SubscribeMovies(NAME="MovieA", YEAR="2024", TMDBID="100", USER_ID=1))
+        db_session.add(
+            SubscribeMovies(
+                NAME="MovieA",
+                YEAR="2024",
+                TMDBID="100",
+                ANCHOR_PROVIDER="tmdb",
+                ANCHOR_EXTERNAL_ID="100",
+                USER_ID=1,
+            )
+        )
         try:
             db_session.commit()
             raise AssertionError("unique constraint not enforced")
@@ -74,7 +92,50 @@ class TestSubscribeUniqueConstraint:
 
     def test_cross_user_same_media_allowed(self, db_session):
         """跨用户订阅同媒体合法"""
-        db_session.add(SubscribeMovies(NAME="MovieA", YEAR="2024", TMDBID="100", USER_ID=1))
-        db_session.add(SubscribeMovies(NAME="MovieA", YEAR="2024", TMDBID="100", USER_ID=2))
+        db_session.add(
+            SubscribeMovies(
+                NAME="MovieA",
+                YEAR="2024",
+                TMDBID="100",
+                ANCHOR_PROVIDER="tmdb",
+                ANCHOR_EXTERNAL_ID="100",
+                USER_ID=1,
+            )
+        )
+        db_session.add(
+            SubscribeMovies(
+                NAME="MovieA",
+                YEAR="2024",
+                TMDBID="100",
+                ANCHOR_PROVIDER="tmdb",
+                ANCHOR_EXTERNAL_ID="100",
+                USER_ID=2,
+            )
+        )
+        db_session.commit()
+        assert db_session.query(SubscribeMovies).count() == 2
+
+    def test_same_tmdb_different_anchor_allowed(self, db_session):
+        """同一 TMDB 可由不同来源作为锚点，旧 TMDB 唯一索引不阻塞"""
+        db_session.add(
+            SubscribeMovies(
+                NAME="MovieA",
+                YEAR="2024",
+                TMDBID="100",
+                ANCHOR_PROVIDER="tmdb",
+                ANCHOR_EXTERNAL_ID="100",
+                USER_ID=1,
+            )
+        )
+        db_session.add(
+            SubscribeMovies(
+                NAME="MovieA",
+                YEAR="2024",
+                TMDBID="100",
+                ANCHOR_PROVIDER="douban",
+                ANCHOR_EXTERNAL_ID="200",
+                USER_ID=1,
+            )
+        )
         db_session.commit()
         assert db_session.query(SubscribeMovies).count() == 2

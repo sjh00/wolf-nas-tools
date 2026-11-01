@@ -7,12 +7,15 @@ from pydantic import BaseModel, Field
 import log
 from app.core.constants import ANIME_GENREIDS
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
+from app.domain.media_ref import MediaRef
 from app.domain.mediatypes import MediaType
 from app.domain.validators.media_title import clean_advertisement_title, sanitize_title
 from app.infrastructure.image_proxy import ImageProxy
-from app.media.category_matcher import get_category
 from app.media.image_resolver import MediaImageResolver
+from app.media.message_image_policy import transform_message_image
 from app.utils import StringUtils
+
+from .category_matcher import get_category
 
 
 class MediaInfo(BaseModel):
@@ -26,6 +29,12 @@ class MediaInfo(BaseModel):
     rev_string: str | None = None
     subtitle: str | None = None
     type: MediaType | None = None
+    content_profile: str = "default"
+    anchor_provider: str | None = None
+    anchor_external_id: str | None = None
+    identity_id: str | None = None
+    provider: str | None = None
+    metadata_ref: str | None = None
 
     # ---- 名称 ----
     cn_name: str | None = None
@@ -79,6 +88,8 @@ class MediaInfo(BaseModel):
     original_language: str | None = None
     original_title: str | None = None
     release_date: str | None = None
+    # 通用题材（TMDB/豆瓣/插件统一），用于电影/电视剧/动漫分类持久化
+    genres: list[str] = Field(default_factory=list)
     networks: list[str] | None = None
     runtime: int = 0
     year: str | None = None
@@ -93,8 +104,8 @@ class MediaInfo(BaseModel):
     vote_average: float = 0.0
     overview: str | None = None
 
-    # ---- TMDB 完整信息 ----
-    tmdb_info: dict[str, Any] = Field(default_factory=dict)
+    # ---- 当前 provider 的完整原始信息（中性字段） ----
+    provider_data: dict[str, Any] = Field(default_factory=dict)
 
     # ---- 识别置信度（ADR-014 透传，0.0-1.0；未识别/旧路径默认 0） ----
     confidence: float = 0.0
@@ -210,18 +221,38 @@ class MediaInfo(BaseModel):
             self.begin_episode = int(ep)
             self.end_episode = None
 
+    def get_episode_bit(self) -> int:
+        """集号补齐位数：单季超过 99 集时用 3 位，否则 2 位，避免 2/3 位混排导致排序错乱。"""
+        candidates = [
+            num for num in (self.begin_episode, self.end_episode, self.total_episodes) if isinstance(num, int)
+        ]
+        candidates.append(self._get_tmdb_season_episode_count())
+        return 3 if max(candidates) > 99 else 2
+
+    def _get_tmdb_season_episode_count(self) -> int:
+        """从 TMDB 详情读取当前季集数，缺失时返回 0。"""
+        seasons = self.provider_data.get("seasons") if isinstance(self.provider_data, dict) else None
+        if not seasons or self.begin_season is None:
+            return 0
+        for season in seasons:
+            if isinstance(season, dict) and season.get("season_number") == self.begin_season:
+                return int(season.get("episode_count") or 0)
+        return 0
+
     def get_episode_string(self) -> str:
         if self.begin_episode is not None:
+            bit = self.get_episode_bit()
             b = self.begin_episode
             e = self.end_episode
             if e is None or (isinstance(b, int) and isinstance(e, int) and e == b):
-                return "E{}".format(str(b).rjust(2, "0"))
-            return "E{}-E{}".format(str(b).rjust(2, "0"), str(e).rjust(2, "0"))
+                return "E{}".format(str(b).rjust(bit, "0"))
+            return "E{}-E{}".format(str(b).rjust(bit, "0"), str(e).rjust(bit, "0"))
         return ""
 
     def get_episode_items(self) -> str:
         """返回集的并列表达方式，用于支持单文件多集"""
-        return "E{}".format("E".join(str(episode).rjust(2, "0") for episode in self.get_episode_list()))
+        bit = self.get_episode_bit()
+        return "E{}".format("E".join(str(episode).rjust(bit, "0") for episode in self.get_episode_list()))
 
     def get_episode_list(self) -> list:
         if self.begin_episode is None:
@@ -234,9 +265,12 @@ class MediaInfo(BaseModel):
         episodes = self.get_episode_list()
         if not episodes:
             return ""
+        # 单季不超过 99 集时保持原有不补零输出；超过 99 集统一补足 3 位
+        bit = self.get_episode_bit()
+        pad = bit if bit > 2 else 0
         if len(episodes) == 1:
-            return str(episodes[0])
-        return f"{episodes[0]}-{episodes[-1]}"
+            return str(episodes[0]).rjust(pad, "0")
+        return f"{str(episodes[0]).rjust(pad, '0')}-{str(episodes[-1]).rjust(pad, '0')}"
 
     def get_episode_seq(self) -> str:
         """兼容旧接口 — 同 get_episode_seqs"""
@@ -439,18 +473,33 @@ class MediaInfo(BaseModel):
         if save_path:
             self.save_path = save_path
 
-    def set_tmdb_info(self, info):
+    def set_provider_data(self, info):
         if not info:
             return
         adapter = CategoryConfigRepositoryAdapter()
         entities = adapter.get_all()
-        rule_map: dict[str, dict[str, dict[str, str]]] = {"movie": {}, "tv": {}, "anime": {}}
+        rule_map: dict[str, dict[str, Any]] = {"movie": {}, "tv": {}, "anime": {}}
         for ent in entities:
             mt = ent.media_type
-            if mt in rule_map:
-                rule_map[mt][ent.name] = ent.rules if not ent.is_default else {}
+            if mt in rule_map and bool(getattr(ent, "enabled", True)):
+                effective = ent.rules if not ent.is_default else {}
+                if not effective:
+                    log.debug(f"[MediaInfo]分类『{ent.name}』({mt}) 无有效规则，将作为兜底")
+                rule_map[mt][ent.name] = effective
 
         media_type = info.get("media_type")
+        if media_type is not None and not isinstance(media_type, MediaType):
+            # 兼容字符串（"tv"/"movie"）：否则会被直接赋值为字符串并跳过动漫判定
+            parsed_media_type = MediaType.from_string(str(media_type))
+            if parsed_media_type != MediaType.UNKNOWN:
+                media_type = parsed_media_type
+        raw_genres = info.get("genres") or []
+        self.genres = [
+            str(genre.get("name") or genre.get("id"))
+            for genre in raw_genres
+            if (hasattr(genre, "get") and (genre.get("name") or genre.get("id")))
+            or (not hasattr(genre, "get") and genre)
+        ]
         if media_type == MediaType.TV:
             genre_ids = info.get("genre_ids") or []
             # TMDB detail 返回 genres（数组）而非 genre_ids，需兼容提取
@@ -478,7 +527,7 @@ class MediaInfo(BaseModel):
         if info.get("external_ids"):
             self.tvdb_id = info.get("external_ids", {}).get("tvdb_id", 0)
             self.imdb_id = info.get("external_ids", {}).get("imdb_id", "")
-        self.tmdb_info = info
+        self.provider_data = info
         self.vote_average = round(float(info.get("vote_average")), 1) if info.get("vote_average") else 0
         self.overview = info.get("overview")
         self.original_language = info.get("original_language")
@@ -492,7 +541,7 @@ class MediaInfo(BaseModel):
             tmdb_year = info.get("first_air_date", "")[:4] if info.get("first_air_date") else ""
             if tmdb_year.isdigit() and self.year.isdigit() and abs(int(self.year) - int(tmdb_year)) > 5:
                 self.tmdb_id = None  # type: ignore[reportAttributeAccessIssue]
-                self.tmdb_info = None  # type: ignore[reportAttributeAccessIssue]
+                self.provider_data = {}
                 return
 
         if media_type == MediaType.MOVIE:
@@ -518,7 +567,11 @@ class MediaInfo(BaseModel):
                         break
             if self.release_date and (not self.year or str(self.year).strip() in ("", "\t")):
                 self.year = self.release_date[0:4]
-            self.category = get_category(rule_map.get("movie"), info)
+            self.category = get_category(rule_map.get("movie"), info, MediaType.MOVIE.value)
+            log.debug(
+                f"[MediaInfo]电影分类匹配: title={self.title!r} lang={info.get('original_language')} "
+                f"origin={info.get('origin_country')} genre={info.get('genre_ids')} -> {self.category!r}"
+            )
             self.poster_path = ImageProxy.get_tmdbimage_url(info.get("poster_path")) if info.get("poster_path") else ""
             self.backdrop_path = (
                 ImageProxy.get_tmdbimage_url(info.get("backdrop_path")) if info.get("backdrop_path") else ""
@@ -552,11 +605,15 @@ class MediaInfo(BaseModel):
             if self.release_date and (not self.year or str(self.year).strip() in ("", "\t")):
                 self.year = self.release_date[0:4]
             if self.type == MediaType.MOVIE:
-                self.category = get_category(rule_map.get("movie"), info)
+                self.category = get_category(rule_map.get("movie"), info, MediaType.MOVIE.value)
+                log.debug(
+                    f"[MediaInfo]电影分类匹配: title={self.title!r} lang={info.get('original_language')} "
+                    f"origin={info.get('origin_country')} genre={info.get('genre_ids')} -> {self.category!r}"
+                )
             elif self.type == MediaType.TV:
-                self.category = get_category(rule_map.get("tv"), info)
+                self.category = get_category(rule_map.get("tv"), info, MediaType.TV.value)
             else:
-                self.category = get_category(rule_map.get("anime"), info)
+                self.category = get_category(rule_map.get("anime"), info, MediaType.ANIME.value)
             self.poster_path = (
                 ImageProxy.get_tmdbimage_url(info.get("poster_path"), size="medium") if info.get("poster_path") else ""
             )
@@ -566,16 +623,68 @@ class MediaInfo(BaseModel):
                 else ""
             )
 
-    def get_detail_url(self) -> str:
-        if self.tmdb_id:
-            if str(self.tmdb_id).startswith("DB:"):
-                return "https://movie.douban.com/subject/{}".format(str(self.tmdb_id).replace("DB:", ""))
-            if self.type == MediaType.MOVIE:
-                return f"https://www.themoviedb.org/movie/{self.tmdb_id}"
-            return f"https://www.themoviedb.org/tv/{self.tmdb_id}"
+    def get_media_ref(self) -> MediaRef | None:
+        provider = str(getattr(self, "anchor_provider", "") or "")
+        external = str(getattr(self, "anchor_external_id", "") or "")
+        if provider and external:
+            return MediaRef(provider=provider, external_id=external, media_type=self.type)
+        raw = str(self.tmdb_id or "").strip()
+        upper = raw.upper()
+        if upper.startswith("DB:") and raw[3:]:
+            return MediaRef(provider="douban", external_id=raw[3:], media_type=self.type)
+        if upper.startswith("BG:") and raw[3:]:
+            return MediaRef(provider="bangumi", external_id=raw[3:], media_type=self.type)
+        if upper.startswith("TMDB:") and raw[5:]:
+            return MediaRef(provider="tmdb", external_id=raw[5:], media_type=self.type)
+        if raw.isdigit():
+            return MediaRef(provider="tmdb", external_id=raw, media_type=self.type)
         if self.douban_id:
-            return f"https://movie.douban.com/subject/{self.douban_id}"
+            return MediaRef(provider="douban", external_id=str(self.douban_id), media_type=self.type)
+        return None
+
+    def get_detail_url(self, provider: str | None = None) -> str:
+        """返回详情页；默认跟随统一锚点，而不是无条件跳 TMDB."""
+        ref = self.get_media_ref()
+        target = (provider or self.anchor_provider or (ref.provider if ref else "")).strip().lower()
+        if target == "douban":
+            douban_id = self.douban_id or (ref.external_id if ref and ref.provider == "douban" else "")
+            return f"https://movie.douban.com/subject/{douban_id}" if douban_id else ""
+        if target == "tmdb":
+            raw_id = str(self.tmdb_id or "")
+            if ref and ref.provider == "tmdb":
+                raw_id = str(ref.external_id or "")
+            if not raw_id.isdigit():
+                return ""
+            base = "movie" if self.type == MediaType.MOVIE else "tv"
+            return f"https://www.themoviedb.org/{base}/{raw_id}"
+        if target == "bangumi":
+            external = self.anchor_external_id or (ref.external_id if ref and ref.provider == "bangumi" else "")
+            return f"https://bgm.tv/subject/{external}" if external else ""
         return ""
+
+    def get_detail_links(self) -> list[dict[str, str]]:
+        """按统一 refs 返回可用详情链接，供前端并列展示."""
+        links: list[dict[str, str]] = []
+        seen: set[str] = set()
+        labels = {"douban": "豆瓣", "tmdb": "TMDB", "bangumi": "Bangumi"}
+        candidates = [
+            self.get_media_ref(),
+            MediaRef(provider="tmdb", external_id=str(self.tmdb_id), media_type=self.type)
+            if str(self.tmdb_id or "").isdigit()
+            else None,
+            MediaRef(provider="douban", external_id=str(self.douban_id), media_type=self.type)
+            if self.douban_id
+            else None,
+        ]
+        for ref in candidates:
+            if ref is None or ref.provider in seen:
+                continue
+            url = self.get_detail_url(ref.provider)
+            if not url:
+                continue
+            seen.add(ref.provider)
+            links.append({"provider": ref.provider, "label": labels.get(ref.provider, ref.provider), "url": url})
+        return links
 
     def get_douban_detail_url(self) -> str:
         if self.douban_id:
@@ -586,7 +695,19 @@ class MediaInfo(BaseModel):
         return MediaImageResolver.get_backdrop_image(self, default=default, original=original)
 
     def get_message_image(self):
-        return MediaImageResolver.get_message_image(self)
+        image = MediaImageResolver.get_message_image(self)
+        return transform_message_image(
+            str(getattr(self, "content_profile", "") or ""),
+            str(image or ""),
+        )
+
+    def get_message_poster_image(self, original=False):
+        """通知里的副图也走消息策略，不能复用页面海报转换结果."""
+        image = MediaImageResolver.get_poster_image(self, original=original)
+        return transform_message_image(
+            str(getattr(self, "content_profile", "") or ""),
+            str(image or ""),
+        )
 
     def get_poster_image(self, original=False):
         return MediaImageResolver.get_poster_image(self, original=original)
@@ -629,6 +750,13 @@ class MediaInfo(BaseModel):
             "audio_encode": self.audio_encode,
             "category": self.category,
             "douban_id": self.douban_id,
+            "anchor_provider": self.anchor_provider,
+            "links": self.get_detail_links(),
+            "anchor_external_id": self.anchor_external_id,
+            "content_profile": self.content_profile,
+            "provider": self.provider,
+            "metadata_ref": self.metadata_ref,
+            "identity_id": self.identity_id,
             "keyword": self.keyword,
             "original_language": self.original_language,
             "original_title": self.original_title,
@@ -679,6 +807,9 @@ class MediaInfo(BaseModel):
             audio_encode=parsed.audio_encode,
             resource_team=parsed.resource_team,
             type=parsed.type,
+            content_profile=getattr(parsed, "content_profile", "default"),
+            anchor_provider=getattr(parsed, "anchor_provider", None),
+            anchor_external_id=getattr(parsed, "anchor_external_id", None),
         )
 
     def init_subtitle(self, title_text):

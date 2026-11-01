@@ -3,10 +3,11 @@
 import os
 import threading
 
+from app.core.settings import settings
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
 from app.infrastructure.http.retry import HttpRetryConfig
-from app.infrastructure.tmdb import get_rate_limiter
+from app.infrastructure.tmdb import get_rate_limiter, get_retry_handler
 from app.utils.config_tools import get_proxies
 
 from .as_obj import AsObj
@@ -15,6 +16,11 @@ from .exceptions import TMDbError
 # 语言必须线程隔离：TMDB_LANGUAGE 原用全局环境变量，多线程并发（转移/识别/别名补取）
 # 会相互覆盖，导致转移重命名拿到英文标题。改为线程本地，各线程互不影响。
 _tmdb_local = threading.local()
+
+
+def _tmdb_rate() -> str:
+    """TMDB 请求速率（令牌桶），来自 app.tmdb_rate 配置."""
+    return str((settings.get("app") or {}).get("tmdb_rate") or "40/10s")
 
 
 def _proxy_url_from_settings() -> str | None:
@@ -93,12 +99,19 @@ class TMDb:
 
     @staticmethod
     def _get_obj(result, key="results", all_details=False):
+        # 响应异常（None/非 dict）时返回空列表，避免下游 result[key] 报 'NoneType' is not subscriptable
+        if not isinstance(result, dict):
+            return []
         if "success" in result and result["success"] is False:
-            raise TMDbError(result["status_message"])
+            raise TMDbError(result.get("status_message") or "TMDB 请求失败")
         if all_details is True or key is None:
             return AsObj(**result)
         else:
-            return [AsObj(**res) for res in result[key]]
+            # 错误体可能缺少 key 或 key 非列表，避免下标/迭代报错
+            values = result.get(key)
+            if not isinstance(values, list):
+                return []
+            return [AsObj(**res) for res in values if isinstance(res, dict)]
 
     def _call(self, action, append_to_response, method="GET", data=None):
         credential = (self.api_key or "").strip()
@@ -108,8 +121,9 @@ class TMDb:
         query = f"include_adult=false&{append_to_response}&language={self.language}"
         request_kwargs: dict = {
             "data": data,
-            "rate_limit_key": "tmdb:api",
-            "rate_limit_rate": "4/s",
+            # 按密钥分桶限流：不同密钥各自计数，避免共用同一桶互相挤压
+            "rate_limit_key": f"tmdb:{credential}",
+            "rate_limit_rate": _tmdb_rate(),
             "rate_limit_timeout": 60,
         }
         if is_tmdb_read_access_token(credential):
@@ -119,7 +133,9 @@ class TMDb:
             url = f"{self.domain}{action}?api_key={credential}&{query}"
 
         client = self._get_client()
-        req = client.request(method, url, **request_kwargs)
+        # 429/5xx 退避重试（尊重 Retry-After），由全局 TMDB 重试处理器执行；
+        # request_kwargs 保留了 Bearer（Read Access Token）与限流参数
+        req = get_retry_handler().execute(lambda: client.request(method, url, **request_kwargs))
 
         headers = req.headers
         if "X-RateLimit-Remaining" in headers:
@@ -127,7 +143,12 @@ class TMDb:
         if "X-RateLimit-Reset" in headers:
             self._reset = int(headers["X-RateLimit-Reset"])
 
-        json_data = req.json()
+        try:
+            json_data = req.json()
+        except ValueError as e:
+            raise TMDbError(f"TMDB 返回非 JSON 响应：{e}") from e
+        if not isinstance(json_data, dict):
+            raise TMDbError("TMDB 返回空/异常响应")
 
         if "page" in json_data:
             os.environ["PAGE"] = str(json_data["page"])

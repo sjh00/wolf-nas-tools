@@ -11,22 +11,44 @@ import tempfile
 import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import log
-from api.deps import get_hook_system, get_plugin_framework_service, require_any_permission, require_permission
+from api.deps import (
+    get_hook_system,
+    get_metadata_service,
+    get_plugin_framework_service,
+    require_any_permission,
+    require_permission,
+)
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import DomainError, NexusError, ServiceError
+from app.core.exceptions import DomainError, NexusError, PermissionDenied, ServiceError
 from app.core.settings import settings
 from app.plugin_framework import api_registry
 from app.plugin_framework.hook_system import HookSystem
 from app.schemas.common import CommonResponse
+from app.services.metadata_service import MetadataService
 from app.services.plugin_framework_service import PluginFrameworkService
 from app.utils.response import fail, success
 
 router = APIRouter()
+
+
+def _assert_private_plugin_access(svc, plugin_id: str, user) -> None:
+    """私有插件包配置/数据/API 需要 manifest 声明的权限码."""
+    manifest = svc.get_manifest(plugin_id)
+    if manifest is None:
+        return
+    metadata = manifest.backend.metadata
+    if getattr(metadata, "visibility", "public") != "private":
+        return
+    required = getattr(metadata, "required_permission", "") or "metadata:private:view"
+    permissions = set(getattr(user, "permissions", []) or [])
+    if not getattr(user, "is_superadmin", False) and required not in permissions:
+        raise PermissionDenied(f"缺少私有插件权限: {required}")
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +100,7 @@ def get_plugin_config(
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """获取插件配置"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     config = svc.get_config(plugin_id)
     fields = svc.get_config_fields(plugin_id)
     return success(data={"config": config, "fields": fields})
@@ -89,17 +112,21 @@ def save_plugin_config(
     req: PluginConfigRequest,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
+    metadata_svc: MetadataService = Depends(get_metadata_service),
 ):
     """保存插件配置"""
     if not svc.get_manifest(plugin_id):
         return fail(code=ErrorCode.PLUGIN_NOT_FOUND, msg="插件未找到")
+    _assert_private_plugin_access(svc, plugin_id, user)
     svc.save_config(plugin_id, req.config)
+    metadata_svc.bump_detail_cache_version()
     return success(message="保存成功")
 
 
 @router.post("/plugins/install", response_model=CommonResponse, summary="安装插件")
 def install_plugin(
     file: UploadFile = File(...),
+    sha256: str | None = Form(None),
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
@@ -110,9 +137,10 @@ def install_plugin(
             tmp.write(file.file.read())
             tmp_path = tmp.name
 
-        manifest = svc.install(tmp_path)
+        manifest = svc.install(tmp_path, expected_sha256=sha256)
         os.unlink(tmp_path)
-
+        # 详情缓存有 10 分钟 TTL；升级代码不再立即清空全部详情，
+        # 避免每次小版本更新后首次打开都重新抓取。
         return success(data={"id": manifest.id, "name": manifest.name}, message="安装成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -125,15 +153,16 @@ def install_plugin(
 @router.delete("/plugins/{plugin_id}", response_model=CommonResponse, summary="卸载插件")
 def uninstall_plugin(
     plugin_id: str,
+    purge_data: bool = False,
     user: str = Depends(require_permission("plugin:manage")),
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
-    """卸载插件"""
+    """卸载插件；默认删除插件私有数据和日志."""
     if not svc.get_manifest(plugin_id):
         return fail(code=ErrorCode.PLUGIN_NOT_FOUND, msg="插件未找到")
 
     try:
-        svc.uninstall(plugin_id)
+        svc.uninstall(plugin_id, purge_data=purge_data)
         return success(message="卸载成功")
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
@@ -229,18 +258,28 @@ def run_plugin(
         return fail(msg=f"运行失败: {e!s}")
 
 
-def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict):
-    """分发插件自定义 API 请求"""
-    handler = api_registry.get_api_handler(plugin_id, api_path)
+def _plugin_api_response(result):
+    """把插件 handler 返回值转换为统一响应."""
+    if isinstance(result, dict) and "success" in result:
+        if result.get("success"):
+            return success(data=result.get("data"), message=result.get("message") or "success")
+        return fail(msg=result.get("message") or "插件接口调用失败")
+    return success(data=result)
+
+
+async def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict, method: str):
+    """在线程池中执行同步 handler；async handler 直接 await."""
+    handler = api_registry.get_api_handler(plugin_id, api_path, method)
     if not handler:
         return fail(msg=f"插件接口不存在: {api_path}")
     try:
-        result = handler(params)
-        if isinstance(result, dict) and "success" in result:
-            if result.get("success"):
-                return success(data=result.get("data"), message=result.get("message") or "success")
-            return fail(msg=result.get("message") or "插件接口调用失败")
-        return success(data=result)
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(params)
+        else:
+            result = await run_in_threadpool(handler, params)
+            if inspect.isawaitable(result):
+                result = await result
+        return _plugin_api_response(result)
     except (ServiceError, DomainError) as e:
         _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
@@ -249,14 +288,19 @@ def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict):
         return fail(msg=f"插件接口异常: {e!s}")
 
 
+_MAX_PLUGIN_API_BODY = 8 * 1024 * 1024
+
+
 @router.get("/plugins/{plugin_id}/api/{api_path:path}", response_model=CommonResponse, summary="插件自定义接口GET")
-def plugin_api_get(
+async def plugin_api_get(
     plugin_id: str,
     api_path: str,
     request: Request,
     user: str = Depends(require_permission("plugin:view")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
-    return _dispatch_plugin_api(plugin_id, api_path, dict(request.query_params))
+    _assert_private_plugin_access(svc, plugin_id, user)
+    return await _dispatch_plugin_api(plugin_id, api_path, dict(request.query_params), "GET")
 
 
 @router.post("/plugins/{plugin_id}/api/{api_path:path}", response_model=CommonResponse, summary="插件自定义接口POST")
@@ -265,15 +309,24 @@ async def plugin_api_post(
     api_path: str,
     request: Request,
     user: str = Depends(require_permission("plugin:manage")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
+    _assert_private_plugin_access(svc, plugin_id, user)
     params: dict = dict(request.query_params)
     try:
+        content_length = request.headers.get("content-length")
+        try:
+            too_large = bool(content_length) and int(content_length) > _MAX_PLUGIN_API_BODY
+        except ValueError:
+            too_large = False
+        if too_large:
+            return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="请求体过大")
         body = await request.json()
         if isinstance(body, dict):
             params.update(body)
     except Exception as e:
         log.debug(f"[PluginAPI] 请求体非 JSON，忽略: {e}")
-    return _dispatch_plugin_api(plugin_id, api_path, params)
+    return await _dispatch_plugin_api(plugin_id, api_path, params, "POST")
 
 
 @router.get("/plugins/{plugin_id}/logs", response_model=CommonResponse, summary="获取插件日志")
@@ -325,14 +378,16 @@ def get_plugin_data(
     plugin_id: str,
     filename: str,
     user: str = Depends(require_any_permission("plugin:view", "plugin:manage")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """获取插件数据文件（JSON）"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     try:
         data_dir = os.path.join(settings.data_path, "plugins_data", plugin_id)
         target = os.path.join(data_dir, filename)
         real_dir = os.path.realpath(data_dir)
         real_target = os.path.realpath(target)
-        if not real_target.startswith(real_dir):
+        if os.path.commonpath([real_dir, real_target]) != real_dir:
             return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
         if not os.path.exists(target):
             return success(data=[])
@@ -356,14 +411,16 @@ def delete_plugin_data(
     filename: str,
     item_id: str,
     user: str = Depends(require_permission("plugin:manage")),
+    svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """删除插件数据文件中的某条记录"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     try:
         data_dir = os.path.join(settings.data_path, "plugins_data", plugin_id)
         target = os.path.join(data_dir, filename)
         real_dir = os.path.realpath(data_dir)
         real_target = os.path.realpath(target)
-        if not real_target.startswith(real_dir):
+        if os.path.commonpath([real_dir, real_target]) != real_dir:
             return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
         if not os.path.exists(target):
             return fail(code=ErrorCode.RESOURCE_NOT_FOUND, msg="数据文件不存在")
@@ -410,7 +467,12 @@ def get_plugin_asset(
     real_plugin_path = os.path.realpath(plugin_path)
     real_target = os.path.realpath(target)
 
-    if not real_target.startswith(real_plugin_path):
+    # 路径必须严格位于本插件目录内：用 commonpath 而非字符串前缀，
+    # 防止 /plugins/foo 前缀匹配到 /plugins/foobar，或 ../ 逃逸
+    try:
+        if os.path.commonpath([real_plugin_path, real_target]) != real_plugin_path:
+            return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
+    except ValueError:
         return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="非法路径")
 
     if not os.path.exists(target) or not os.path.isfile(target):
