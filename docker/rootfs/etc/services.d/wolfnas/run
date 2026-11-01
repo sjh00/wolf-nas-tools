@@ -10,5 +10,5 @@ fi
 
 # s6-notifyoncheck 需要在服务目录执行才能读取 notification-fd
 exec \
-    s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost ${NEXUS_PORT}" \
-    s6-setuidgid nexus bash -c 'cd "${WORKDIR}" && exec sh ./start-prod.sh'
+    s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost ${WOLFNAS_PORT}" \
+    s6-setuidgid wolfnas bash -c 'cd "${WORKDIR}" && exec sh ./start-prod.sh'

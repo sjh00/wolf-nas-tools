@@ -92,7 +92,6 @@ class DownloaderEntity:
             "type": self.type,
             "transfer": self.transfer,
             "only_wolf_nas": self.only_wolf_nas,
-            "only_nexus_media": self.only_wolf_nas,
             "match_path": self.match_path,
             "rmt_mode": self.rmt_mode,
             "config": self.config,

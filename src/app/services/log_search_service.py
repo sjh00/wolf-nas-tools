@@ -38,7 +38,7 @@ MAX_MATCHES = 20000
 class LogSearchService:
     """基于日志文件的全文搜索服务."""
 
-    def __init__(self, log_dir: str | None = None, module: str = "nexus-media"):
+    def __init__(self, log_dir: str | None = None, module: str = "wolfnas"):
         self._log_dir = log_dir
         self._module = module
 

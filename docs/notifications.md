@@ -205,8 +205,8 @@ server {
 
 **配置顺序（必须按此步骤）**：
 
-1. 在 Nexus Media 中填入 Token 和 EncodingAESKey 并保存
-2. **重启 Nexus Media**
+1. 在 WolfNas 中填入 Token 和 EncodingAESKey 并保存
+2. **重启 WolfNas**
 3. 在企业微信后台「API接收消息」的 URL 中填入回调地址并点确定：
 
    ```
@@ -235,7 +235,7 @@ server {
 
 ![设置可信域名](assets/images/system/wechat-trusted-domain.png){ .screenshot }
 
-- **OAuth2.0 网页授权回调域名**：填入 Nexus Media 的访问域名（与「外网访问地址」一致），交互菜单跳转免登依赖此项
+- **OAuth2.0 网页授权回调域名**：填入 WolfNas 的访问域名（与「外网访问地址」一致），交互菜单跳转免登依赖此项
 - **域名归属认证**：按页面提示下载校验文件并放到网站根目录完成验证，显示「已验证」后方可保存
 - 可调用 JS-SDK 的可信域名按需添加（最多 10 个）
 

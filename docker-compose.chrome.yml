@@ -1,4 +1,4 @@
-# Nexus Media Chrome / OCR 可选服务叠加层
+# WolfNas Chrome / OCR 可选服务叠加层
 #
 # 与基础 compose 一起使用：
 #   VNC_PASSWORD='<强密码>' docker compose -f docker-compose.yml -f docker-compose.chrome.yml up -d
@@ -20,7 +20,7 @@ services:
     container_name: nexus-chrome
     restart: unless-stopped
     networks:
-      - nexus-media-network
+      - wolfnas-network
     shm_size: 2gb
     security_opt:
       - seccomp:unconfined

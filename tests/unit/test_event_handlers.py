@@ -61,7 +61,7 @@ class TestTransferHandlers:
                 "downloader_id": "qb1",
                 "task_id": "task1",
                 "path": "/dl/movie.mkv",
-                "tags": ["NEXUS_MEDIA"],
+                "tags": ["WOLFNAS"],
                 "name": "movie",
             },
         )

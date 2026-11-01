@@ -89,8 +89,10 @@ def check_config():
         # 检查HTTPS
         ssl_cert = _app_cfg.get("ssl_cert")
         ssl_key = _app_cfg.get("ssl_key")
-        if os.environ.get("NEXUS_PORT"):
-            web_port = os.environ.get("NEXUS_PORT")
+        # WOLFNAS_PORT 为主；NEXUS_PORT 是旧品牌名，仍读取以兼容既有部署
+        _env_port = os.environ.get("WOLFNAS_PORT") or os.environ.get("NEXUS_PORT")
+        if _env_port:
+            web_port = _env_port
         if not ssl_cert or not ssl_key:
             log.info(f"未启用https，请使用 http://IP:{web_port!s} 访问管理页面")
         else:

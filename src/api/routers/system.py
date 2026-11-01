@@ -1064,7 +1064,7 @@ def export_logs(
         source=req.source,
         hours=req.hours,
     )
-    filename = f"nexus-media-logs-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+    filename = f"wolfnas-logs-{time.strftime('%Y%m%d-%H%M%S')}.txt"
     return Response(
         content=text,
         media_type="text/plain; charset=utf-8",

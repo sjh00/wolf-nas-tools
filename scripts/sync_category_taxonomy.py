@@ -231,7 +231,7 @@ def _fetch_bangumi_aliases(client: httpx.Client, limit: int = 30) -> set[str]:
     try:
         response = client.get(
             "https://api.bgm.tv/calendar",
-            headers={"User-Agent": "nexus-media-category-taxonomy/1.0"},
+            headers={"User-Agent": "wolfnas-category-taxonomy/1.0"},
             timeout=20,
         )
         response.raise_for_status()
@@ -255,7 +255,7 @@ def _fetch_bangumi_aliases(client: httpx.Client, limit: int = 30) -> set[str]:
         try:
             detail_response = client.get(
                 f"https://api.bgm.tv/v0/subjects/{subject_id}",
-                headers={"User-Agent": "nexus-media-category-taxonomy/1.0"},
+                headers={"User-Agent": "wolfnas-category-taxonomy/1.0"},
                 timeout=20,
             )
             detail_response.raise_for_status()

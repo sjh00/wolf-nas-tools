@@ -2,7 +2,7 @@
 
 import sys
 
-sys.path.insert(0, "/nexus-media/src")
+sys.path.insert(0, "/wolfnas/src")
 from app.media.parser._metainfo import meta_info
 
 titles = [

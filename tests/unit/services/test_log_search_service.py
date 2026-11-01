@@ -24,7 +24,7 @@ JSON_LINES = """\
 
 class TestLogSearchServiceKeywordSearch:
     def test_human_keyword_match_keeps_multiline(self, tmp_path):
-        (tmp_path / "nexus-media.log").write_text(HUMAN_LINES, encoding="utf-8")
+        (tmp_path / "wolfnas.log").write_text(HUMAN_LINES, encoding="utf-8")
         svc = LogSearchService(log_dir=str(tmp_path))
         res = svc.search(keyword="rousi", hours=None)
         assert res["total"] == 3, res
@@ -36,21 +36,21 @@ class TestLogSearchServiceKeywordSearch:
         assert "未命中条目的续行" not in texts
 
     def test_human_keyword_no_match_fast(self, tmp_path):
-        (tmp_path / "nexus-media.log").write_text(HUMAN_LINES, encoding="utf-8")
+        (tmp_path / "wolfnas.log").write_text(HUMAN_LINES, encoding="utf-8")
         svc = LogSearchService(log_dir=str(tmp_path))
         res = svc.search(keyword="不存在的关键字xyz", hours=None)
         assert res["total"] == 0
         assert res["items"] == []
 
     def test_json_keyword_search(self, tmp_path):
-        (tmp_path / "nexus-media.log").write_text(JSON_LINES, encoding="utf-8")
+        (tmp_path / "wolfnas.log").write_text(JSON_LINES, encoding="utf-8")
         svc = LogSearchService(log_dir=str(tmp_path))
         res = svc.search(keyword="rousi", hours=None)
         assert res["total"] == 2, res
         assert all("rousi" in (it.get("text") or "").lower() for it in res["items"])
 
     def test_source_and_level_still_filter(self, tmp_path):
-        (tmp_path / "nexus-media.log").write_text(HUMAN_LINES, encoding="utf-8")
+        (tmp_path / "wolfnas.log").write_text(HUMAN_LINES, encoding="utf-8")
         svc = LogSearchService(log_dir=str(tmp_path))
         res = svc.search(keyword="rousi", level="ERROR", hours=None)
         assert res["total"] == 1

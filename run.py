@@ -38,7 +38,8 @@ def main():
 
     app_conf = settings.get("app") or {}
     host = app_conf.get("web_host", "::").replace("[", "").replace("]", "")
-    port = int(os.environ.get("NEXUS_PORT") or app_conf.get("web_port") or 3000)
+    # WOLFNAS_PORT 为主；NEXUS_PORT 是旧品牌名，仍读取以兼容既有部署
+    port = int(os.environ.get("WOLFNAS_PORT") or os.environ.get("NEXUS_PORT") or app_conf.get("web_port") or 3000)
     log.console(f"监听地址：{host}:{port}")
 
     ssl_kwargs = {}

@@ -25,7 +25,7 @@ from api.deps import (
     require_permission,
 )
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import DomainError, NexusError, PermissionDenied, ServiceError
+from app.core.exceptions import DomainError, PermissionDenied, ServiceError, WolfNasError
 from app.core.settings import settings
 from app.plugin_framework import api_registry
 from app.plugin_framework.hook_system import HookSystem
@@ -143,7 +143,7 @@ def install_plugin(
         # 避免每次小版本更新后首次打开都重新抓取。
         return success(data={"id": manifest.id, "name": manifest.name}, message="安装成功")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 安装插件失败: {e}")
@@ -165,7 +165,7 @@ def uninstall_plugin(
         svc.uninstall(plugin_id, purge_data=purge_data)
         return success(message="卸载成功")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 卸载插件失败 {plugin_id}: {e}")
@@ -188,7 +188,7 @@ def enable_plugin(
         threading.Thread(target=svc._do_enable, args=(plugin_id,), daemon=True).start()
         return success(message="启用中，请稍后刷新")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 启用插件失败 {plugin_id}: {e}")
@@ -209,7 +209,7 @@ def disable_plugin(
         svc.disable(plugin_id)
         return success(message="禁用成功")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 禁用插件失败 {plugin_id}: {e}")
@@ -230,7 +230,7 @@ def reload_plugin(
         svc.reload_plugin(plugin_id)
         return success(message="重载成功")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 重载插件失败 {plugin_id}: {e}")
@@ -251,7 +251,7 @@ def run_plugin(
         svc.run_plugin(plugin_id)
         return success(message="运行任务已启动")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 运行插件失败 {plugin_id}: {e}")
@@ -281,7 +281,7 @@ async def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict, meth
                 result = await result
         return _plugin_api_response(result)
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 插件接口异常 {plugin_id}/{api_path}: {e}")
@@ -398,7 +398,7 @@ def get_plugin_data(
             return success(data=list(data.values()))
         return success(data=data)
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 获取插件数据失败: {e}")
@@ -436,7 +436,7 @@ def delete_plugin_data(
             json.dump(data, f, ensure_ascii=False, indent=2)
         return success(message="删除成功")
     except (ServiceError, DomainError) as e:
-        _code = e.errcode if isinstance(e, NexusError) else ErrorCode.OPERATION_FAILED
+        _code = e.errcode if isinstance(e, WolfNasError) else ErrorCode.OPERATION_FAILED
         return fail(code=_code, msg=e.message)
     except Exception as e:
         log.error(f"[PluginAPI] 删除插件数据失败: {e}")

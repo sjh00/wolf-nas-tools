@@ -20,17 +20,17 @@ def _write(tmp_path, text: str) -> str:
 
 def test_load_dotenv_parses_without_polluting_environ(tmp_path, monkeypatch):
     monkeypatch.delenv("LOG__LEVEL", raising=False)
-    monkeypatch.delenv("NEXUS_MEDIA_CONFIG", raising=False)
+    monkeypatch.delenv("WOLFNAS_CONFIG", raising=False)
     path = _write(
         tmp_path,
-        '# comment\nLOG__LEVEL=debug\nNEXUS_MEDIA_CONFIG="/x.yaml"\n\nBADLINE\n',
+        '# comment\nLOG__LEVEL=debug\nWOLFNAS_CONFIG="/x.yaml"\n\nBADLINE\n',
     )
 
     values = _load_dotenv(path)
 
-    assert values == {"LOG__LEVEL": "debug", "NEXUS_MEDIA_CONFIG": "/x.yaml"}
+    assert values == {"LOG__LEVEL": "debug", "WOLFNAS_CONFIG": "/x.yaml"}
     assert "LOG__LEVEL" not in os.environ
-    assert "NEXUS_MEDIA_CONFIG" not in os.environ
+    assert "WOLFNAS_CONFIG" not in os.environ
 
 
 def test_load_dotenv_missing_file_returns_empty(tmp_path):
@@ -38,30 +38,30 @@ def test_load_dotenv_missing_file_returns_empty(tmp_path):
 
 
 def test_apply_bootstrap_injects_bootstrap_and_unknown_keys(monkeypatch):
-    for key in ("NEXUS_MEDIA_CONFIG", "NEXUS_SITES_DIR", "LOG__LEVEL"):
+    for key in ("WOLFNAS_CONFIG", "WOLFNAS_SITES_DIR", "LOG__LEVEL"):
         monkeypatch.delenv(key, raising=False)
-    fields = {"nexus_media_config": None, "log": None}
+    fields = {"wolfnas_config": None, "log": None}
 
     _apply_bootstrap_env(
         {
-            "NEXUS_MEDIA_CONFIG": "/x.yaml",
-            "NEXUS_SITES_DIR": "/sites",
+            "WOLFNAS_CONFIG": "/x.yaml",
+            "WOLFNAS_SITES_DIR": "/sites",
             "LOG__LEVEL": "debug",
         },
         fields,
     )
 
-    assert os.environ["NEXUS_MEDIA_CONFIG"] == "/x.yaml"
-    assert os.environ["NEXUS_SITES_DIR"] == "/sites"
+    assert os.environ["WOLFNAS_CONFIG"] == "/x.yaml"
+    assert os.environ["WOLFNAS_SITES_DIR"] == "/sites"
     assert "LOG__LEVEL" not in os.environ
 
 
 def test_apply_bootstrap_keeps_existing_env(monkeypatch):
-    monkeypatch.setenv("NEXUS_MEDIA_DATA", "/existing")
+    monkeypatch.setenv("WOLFNAS_DATA", "/existing")
 
-    _apply_bootstrap_env({"NEXUS_MEDIA_DATA": "/from-dotenv"}, {"nexus_media_data": None})
+    _apply_bootstrap_env({"WOLFNAS_DATA": "/from-dotenv"}, {"wolfnas_data": None})
 
-    assert os.environ["NEXUS_MEDIA_DATA"] == "/existing"
+    assert os.environ["WOLFNAS_DATA"] == "/existing"
 
 
 def test_apply_bootstrap_injects_sqlite_path_alias(monkeypatch):

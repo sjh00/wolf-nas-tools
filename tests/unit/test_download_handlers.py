@@ -22,7 +22,7 @@ class TestDownloadHandlers:
                 payload=DownloadStartedPayload(
                     media_info={"title": "Test Movie"},
                     is_paused=False,
-                    tag="NEXUS_MEDIA",
+                    tag="WOLFNAS",
                     download_dir="/dl",
                     download_setting=1,
                     downloader_id="qb1",
@@ -69,7 +69,7 @@ class TestDownloadHandlers:
                     downloader_id="qb1",
                     task_id="task123",
                     path="/dl/movie.mkv",
-                    tags=["NEXUS_MEDIA"],
+                    tags=["WOLFNAS"],
                     name="movie",
                 ),
             )
@@ -80,7 +80,7 @@ class TestDownloadHandlers:
             assert item["data"]["downloader_id"] == "qb1"
             assert item["data"]["task_id"] == "task123"
             assert item["data"]["path"] == "/dl/movie.mkv"
-            assert item["data"]["tags"] == ["NEXUS_MEDIA"]
+            assert item["data"]["tags"] == ["WOLFNAS"]
             assert item["data"]["name"] == "movie"
         finally:
             unsubscribe_download_events(q)

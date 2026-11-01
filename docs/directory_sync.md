@@ -81,7 +81,7 @@
   - 使用Rclone复制本地文件到网盘
   - 需要自行映射rclone配置目录到容器中（/nt/.config/rclone）
   - 或在容器内使用rclone config完成rclone配置
-  - 网盘配置名称必须为：NEXUS_MEDIA
+  - 网盘配置名称必须为：WOLFNAS
   - 参考：[Rclone环境变量](https://rclone.org/docs/#environment-variables)
 
 - **Rclone移动**  
@@ -91,8 +91,8 @@
 - **Minio复制**  
   - Minio复制本地文件到网络存储
   - 针对S3/云原生场景
-  - 需要在容器内使用`mc alias set NEXUS_MEDIA http://your_domain_name_or_ip:port ACCESS_KEY SECRET_KEY`完成minio配置
-  - alias的名称必须为NEXUS_MEDIA
+  - 需要在容器内使用`mc alias set WOLFNAS http://your_domain_name_or_ip:port ACCESS_KEY SECRET_KEY`完成minio配置
+  - alias的名称必须为WOLFNAS
   - 在minio控制台增加一个名为data的bucket(名称必须为data)
 
 - **Minio移动**  

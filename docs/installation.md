@@ -5,7 +5,7 @@
 - 基于 Debian（`python:3.14-slim-trixie`）
 - 支持 amd64 / arm64 架构
 - 内嵌 nginx 反代，后端容器统一 **8080** 端口对外（内部服务监听 3000）
-- 非 root 用户运行（nexus:nexus，UID 911，可用 PUID/PGID 覆盖）
+- 非 root 用户运行（wolfnas:wolfnas，UID 911，可用 PUID/PGID 覆盖）
 - s6-overlay 进程管理，支持优雅退出
 - 数据库迁移在容器启动时自动执行（`alembic upgrade head`，幂等，无需独立 migration 容器）
 
@@ -98,7 +98,7 @@ docker compose -f docker-compose.mysql.yml up -d
 同名容器（`wolfnas`、`wolfnas-mysql` 等）若残留自旧部署，`up` 会报 `name already in use` 或挂到旧网络：
 
 ```bash
-docker ps -a | grep nexus
+docker ps -a | grep wolfnas
 docker rm -f wolfnas wolfnas-mysql wolfnas-redis wolfnas-web
 docker compose -f docker-compose.mysql.yml up -d
 ```
@@ -161,7 +161,7 @@ services:
       - PUID=0
       - PGID=0
       - UMASK=000
-      - NEXUS_PORT=3000
+      - WOLFNAS_PORT=3000
       - REDIS__HOST=redis
       - REDIS__PORT=6379
       - REDIS__DB=0
@@ -254,7 +254,7 @@ services:
       - PUID=0
       - PGID=0
       - UMASK=000
-      - NEXUS_PORT=3000
+      - WOLFNAS_PORT=3000
     restart: always
     networks:
       - wolfnas-network
@@ -370,7 +370,7 @@ docker run -d \
   -e PUID=0 \
   -e PGID=0 \
   -e UMASK=000 \
-  -e NEXUS_PORT=3000 \
+  -e WOLFNAS_PORT=3000 \
   sjh00/wolf-nas:latest
 ```
 
@@ -391,7 +391,7 @@ services:
       - PUID=0
       - PGID=0
       - UMASK=000
-      - NEXUS_PORT=3000
+      - WOLFNAS_PORT=3000
     restart: always
     hostname: wolfnas
     container_name: wolfnas
@@ -473,7 +473,7 @@ server {
 配合设置：
 
 1. 在 **系统设置 → 基础设置 → 系统** 中将「外网访问地址」填为 `https://media.example.com`，消息通知中的链接才能正确跳转
-2. 子路径部署（如 `/nexus`）暂不支持，请使用独立域名或端口
+2. 子路径部署（如 `/wolfnas`）暂不支持，请使用独立域名或端口
 3. 使用**企业微信交互功能**时，还需把 `/wechat` 直接转发到后端端口（前端 nginx 不转发该路径），详见 [通知渠道配置](notifications.md#交互功能可选)
 
 ## Redis 配置
@@ -557,7 +557,7 @@ MySQL / PostgreSQL 版 compose 已配置好，后端通过 `DATABASE__*` 环境�
 | `PUID` | 0 | 运行用户 UID |
 | `PGID` | 0 | 运行用户 GID |
 | `UMASK` | 000 | 文件权限掩码 |
-| `NEXUS_PORT` | 3000 | 容器内部 wolfnas 服务端口（nginx 反代到该端口） |
+| `WOLFNAS_PORT` | 3000 | 容器内部 wolfnas 服务端口（nginx 反代到该端口） |
 | `SKIP_MIGRATION` | false | 设为 `true` 跳过启动时数据库迁移（默认自动执行，幂等） |
 | `TZ` | Asia/Shanghai | 时区 |
 | `WOLFNAS_DATA` | /data | 数据目录（config.yaml、数据库、插件数据） |

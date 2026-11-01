@@ -15,7 +15,7 @@ import sqlalchemy as sa
 import log
 from alembic import op as alembic_op
 
-_INSTALLED_FLAG = "_nexus_idempotent_ddl"
+_INSTALLED_FLAG = "_wolfnas_idempotent_ddl"
 
 
 def _inspector(op_module: Any) -> sa.Inspector:

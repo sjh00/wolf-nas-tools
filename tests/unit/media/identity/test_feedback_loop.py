@@ -122,11 +122,11 @@ class TestEditionOverrides:
         graph._overrides_loaded = False
         import os
 
-        os.environ["NEXUS_EDITION_OVERRIDES"] = str(p)
+        os.environ["WOLFNAS_EDITION_OVERRIDES"] = str(p)
         try:
             graph._ensure_overrides_loaded()
         finally:
-            os.environ.pop("NEXUS_EDITION_OVERRIDES", None)
+            os.environ.pop("WOLFNAS_EDITION_OVERRIDES", None)
 
         graph._index.put_franchise.assert_called_once()
         written = graph._index.put_franchise.call_args[0][0]

@@ -58,7 +58,7 @@ RUN mkdir -p /var/log/nginx /var/run
 ENV S6_SERVICES_GRACETIME=30000 \
     S6_KILL_GRACETIME=60000 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
-    HOME="/nexus" \
+    HOME="/wolfnas-home" \
     TERM="xterm" \
     LANG="C.UTF-8" \
     TZ="Asia/Shanghai" \
@@ -68,18 +68,19 @@ ENV S6_SERVICES_GRACETIME=30000 \
     PUID=0 \
     PGID=0 \
     UMASK=000 \
-    NEXUS_PORT=3000 \
+    WOLFNAS_PORT=3000 \
     WORKDIR="/wolfnas"
 
-RUN groupadd -r -g 911 nexus \
-    && useradd -r -g nexus -d ${HOME} -s /bin/bash -u 911 nexus \
+# 运行期用户 wolfnas（UID/GID 911 与历史版本一致，升级后卷权限不受影响）
+RUN groupadd -r -g 911 wolfnas \
+    && useradd -r -g wolfnas -d ${HOME} -s /bin/bash -u 911 wolfnas \
     && mkdir -p ${WORKDIR} ${HOME} /data/logs \
-    && echo "nexus ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+    && echo "wolfnas ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 WORKDIR ${WORKDIR}
 
-COPY --chown=nexus:nexus . ${WORKDIR}/
-COPY --from=builder --chown=nexus:nexus /wolfnas/.venv ${WORKDIR}/.venv
+COPY --chown=wolfnas:wolfnas . ${WORKDIR}/
+COPY --from=builder --chown=wolfnas:wolfnas /wolfnas/.venv ${WORKDIR}/.venv
 
 RUN chmod +x \
     ${WORKDIR}/start-prod.sh \

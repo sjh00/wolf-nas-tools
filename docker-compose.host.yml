@@ -33,7 +33,7 @@ services:
       UMASK: "000"
       TZ: Asia/Shanghai
       WOLFNAS_DATA: /data
-      NEXUS_PORT: "3001"
+      WOLFNAS_PORT: "3001"
       APP__WEB_PORT: "3001"
     restart: unless-stopped
     healthcheck:

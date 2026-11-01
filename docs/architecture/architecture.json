@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "Nexus Media 完整架构（大图）",
+    "title": "WolfNas 完整架构（大图）",
     "locale": "zh-CN",
     "quality_profile": "standard",
     "viewBox": [
@@ -59,7 +59,7 @@
       "id": "web",
       "type": "external",
       "label": "Web 前端",
-      "sublabel": "nexus-media-web",
+      "sublabel": "wolfnas-web",
       "pos": [
         620,
         90

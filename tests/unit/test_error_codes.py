@@ -5,10 +5,10 @@ import pytest
 from app.core.error_codes import ErrorCode, default_http_status, default_message
 from app.core.exceptions import (
     AuthError,
-    NexusError,
     PermissionDenied,
     ResourceNotFoundError,
     ValidationError,
+    WolfNasError,
 )
 from app.utils.response import fail, success
 
@@ -34,7 +34,7 @@ class TestErrorCode:
         assert 90_000 <= ErrorCode.DATABASE_ERROR < 100_000
 
 
-class TestNexusError:
+class TestWolfNasError:
     def test_default_errcode_from_subclass(self):
         exc = ResourceNotFoundError("站点不存在")
         assert exc.errcode == ErrorCode.RESOURCE_NOT_FOUND
@@ -47,7 +47,7 @@ class TestNexusError:
         assert exc.message == default_message(ErrorCode.PERMISSION_DENIED)
 
     def test_explicit_errcode_override(self):
-        exc = NexusError("自定义", errcode=ErrorCode.DOWNLOADER_CONNECT_FAILED, http_status=502)
+        exc = WolfNasError("自定义", errcode=ErrorCode.DOWNLOADER_CONNECT_FAILED, http_status=502)
         assert exc.errcode == ErrorCode.DOWNLOADER_CONNECT_FAILED
         assert exc.http_status == 502
 
@@ -109,18 +109,18 @@ class TestNewCodes:
         assert PluginHotReloadError().errcode == ErrorCode.PLUGIN_HOT_RELOAD_FAILED
 
     def test_registry_drives_http_status(self):
-        from app.core.exceptions import NexusError
+        from app.core.exceptions import WolfNasError
 
         # http_status 未显式传入时，由错误码注册表决定（单一事实来源）
-        assert NexusError(errcode=ErrorCode.PASSWORD_INCORRECT).http_status == 401
-        assert NexusError(errcode=ErrorCode.APIKEY_INVALID).http_status == 401
-        assert NexusError(errcode=ErrorCode.PLUGIN_INSTALLING).http_status == 409
-        assert NexusError(errcode=ErrorCode.PLUGIN_MANIFEST_INVALID).http_status == 400
+        assert WolfNasError(errcode=ErrorCode.PASSWORD_INCORRECT).http_status == 401
+        assert WolfNasError(errcode=ErrorCode.APIKEY_INVALID).http_status == 401
+        assert WolfNasError(errcode=ErrorCode.PLUGIN_INSTALLING).http_status == 409
+        assert WolfNasError(errcode=ErrorCode.PLUGIN_MANIFEST_INVALID).http_status == 400
 
     def test_headers_passed_through(self):
-        from app.core.exceptions import NexusError
+        from app.core.exceptions import WolfNasError
 
-        exc = NexusError("认证失败", headers={"WWW-Authenticate": "Bearer"})
+        exc = WolfNasError("认证失败", headers={"WWW-Authenticate": "Bearer"})
         assert exc.headers == {"WWW-Authenticate": "Bearer"}
 
 
@@ -132,13 +132,13 @@ class TestExceptionHandlers:
         return Request(scope)
 
     @pytest.mark.asyncio
-    async def test_nexus_handler_payload(self):
+    async def test_wolfnas_handler_payload(self):
         import json
 
-        from api.exception_handlers import nexus_error_handler
+        from api.exception_handlers import wolfnas_error_handler
         from app.core.exceptions import PermissionDenied
 
-        resp = await nexus_error_handler(await self._req(), PermissionDenied("无权限"))
+        resp = await wolfnas_error_handler(await self._req(), PermissionDenied("无权限"))
         assert resp.status_code == 403
         body = json.loads(bytes(resp.body))
         assert body["code"] == int(ErrorCode.PERMISSION_DENIED)

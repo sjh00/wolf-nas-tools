@@ -4,11 +4,11 @@ import os
 import tempfile
 
 # 必须在导入任何项目模块之前设置 — 使用临时文件避免污染仓库
-_test_config = os.path.join(tempfile.gettempdir(), "nexus_media_test_config.yaml")
+_test_config = os.path.join(tempfile.gettempdir(), "wolfnas_test_config.yaml")
 os.environ["WOLFNAS_CONFIG"] = _test_config
 os.environ["DATABASE__TYPE"] = "sqlite"
 # 隔离应用数据库：默认指向 data/user.db，全量测试会 drop_all 真实库，这里强制用临时文件
-_test_db = os.path.join(tempfile.gettempdir(), "nexus_media_test_user.db")
+_test_db = os.path.join(tempfile.gettempdir(), "wolfnas_test_user.db")
 try:
     os.remove(_test_db)
 except FileNotFoundError:

@@ -58,7 +58,7 @@ class DatabaseFactory:
     # 进程连接上限 = 主池(pool_size + max_overflow) + 调度池(scheduler_*)，默认合计 30 条。
     # 取值依据：PostgreSQL 官方默认 max_connections=100（另保留 superuser_reserved_connections=3），
     # 但数据库实例常被多个服务共用（同机的 odoo、备份工具等），且不少部署会把它收紧到 40~60。
-    # 应用默认只占 30%（主池 20 + 调度池 10），给同实例的其他客户端留出空间，避免 nexus 的
+    # 应用默认只占 30%（主池 20 + 调度池 10），给同实例的其他客户端留出空间，避免本应用的
     # overflow 新建连接被服务端 FATAL 拒绝（remaining connection slots are reserved）。
     # 注意 pool_size 只决定常驻连接数、max_overflow 提供峰值弹性，因此「常驻 10 + 溢出 10」
     # 比原来「常驻 20」在同等峰值下少占一半空闲槽位。
@@ -73,7 +73,7 @@ class DatabaseFactory:
     DEFAULT_SCHEDULER_POOL_TIMEOUT = 15
 
     # PostgreSQL 连接标识（pg_stat_activity.application_name）
-    PG_APPLICATION_NAME = "nexus_media"
+    PG_APPLICATION_NAME = "wolfnas"
 
     # 服务端连接槽位耗尽的特征串（PostgreSQL / MySQL）
     SLOT_EXHAUSTED_MARKERS = (
@@ -362,7 +362,7 @@ class DatabaseFactory:
                 engine = sa_create_engine(
                     DatabaseFactory.get_main_db_url(),
                     poolclass=NullPool,
-                    connect_args={"application_name": "nexus_media-budget-probe"}
+                    connect_args={"application_name": "wolfnas-budget-probe"}
                     if db_type == DatabaseFactory.POSTGRESQL
                     else {},
                 )

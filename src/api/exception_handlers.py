@@ -12,7 +12,7 @@ from starlette.responses import Response
 
 import log
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import NexusError
+from app.core.exceptions import WolfNasError
 from app.utils.response import fail
 
 _HTTP_STATUS_ERRCODE: dict[int, ErrorCode] = {
@@ -25,7 +25,7 @@ _HTTP_STATUS_ERRCODE: dict[int, ErrorCode] = {
 }
 
 
-async def nexus_error_handler(request: Request, exc: NexusError) -> JSONResponse:
+async def wolfnas_error_handler(request: Request, exc: WolfNasError) -> JSONResponse:
     """业务异常：携带 errcode 与 http_status"""
     if exc.http_status >= 500:
         log.error(f"[API]业务异常: {request.method} {request.url.path} - {exc}")
@@ -88,7 +88,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(NexusError, nexus_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(WolfNasError, wolfnas_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, global_exception_handler)  # type: ignore[arg-type]

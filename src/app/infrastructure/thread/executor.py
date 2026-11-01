@@ -63,7 +63,7 @@ class ThreadExecutor:
         if self._pool is None:
             self._pool = ThreadPoolExecutor(
                 max_workers=self._max_workers,
-                thread_name_prefix=f"nexus-{self._name}",
+                thread_name_prefix=f"wolfnas-{self._name}",
             )
             log.debug(f"[ThreadExecutor]创建线程池: {self._name} (workers={self._max_workers})")
         return self._pool

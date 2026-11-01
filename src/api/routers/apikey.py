@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from api.deps import get_apikey_service, get_current_user
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import NexusError, ServiceError
+from app.core.exceptions import ServiceError, WolfNasError
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
 from app.services.apikey_service import APIKeyService
@@ -96,7 +96,7 @@ async def create_api_key(
         )
         return success(data=result, message="API Key 创建成功，请妥善保存 Key，此页面为唯一展示机会")
     except ServiceError as e:
-        raise NexusError(f"创建失败: {e.message}", errcode=ErrorCode.OPERATION_FAILED, http_status=500) from e
+        raise WolfNasError(f"创建失败: {e.message}", errcode=ErrorCode.OPERATION_FAILED, http_status=500) from e
 
 
 @router.get("/keys", response_model=CommonResponse, summary="获取 API Key 列表")
@@ -127,7 +127,7 @@ async def update_api_key(
         user=user,
     )
     if not ok:
-        raise NexusError("API Key 不存在或更新失败", errcode=ErrorCode.APIKEY_NOT_FOUND, http_status=404)
+        raise WolfNasError("API Key 不存在或更新失败", errcode=ErrorCode.APIKEY_NOT_FOUND, http_status=404)
     return success(message="更新成功")
 
 
@@ -140,7 +140,7 @@ async def delete_api_key(
     """删除 API Key"""
     ok = service.delete_key(key_id, user=user)
     if not ok:
-        raise NexusError("API Key 不存在", errcode=ErrorCode.APIKEY_NOT_FOUND, http_status=404)
+        raise WolfNasError("API Key 不存在", errcode=ErrorCode.APIKEY_NOT_FOUND, http_status=404)
     return success(message="删除成功")
 
 
@@ -154,7 +154,7 @@ async def list_api_key_logs(
 ):
     """获取指定 API Key 的使用记录"""
     if not service.user_can_access_key(key_id, user):
-        raise NexusError("无权查看该 API Key 使用记录", errcode=ErrorCode.PERMISSION_DENIED, http_status=403)
+        raise WolfNasError("无权查看该 API Key 使用记录", errcode=ErrorCode.PERMISSION_DENIED, http_status=403)
     result = service.list_logs(api_key_id=key_id, page=page, page_size=page_size)
     return success(data=result)
 
@@ -168,7 +168,7 @@ async def list_all_logs(
 ):
     """获取所有 API Key 的使用记录（仅超级管理员）"""
     if not getattr(user, "is_superadmin", False):
-        raise NexusError("无权查看全部 API Key 使用记录", errcode=ErrorCode.PERMISSION_DENIED, http_status=403)
+        raise WolfNasError("无权查看全部 API Key 使用记录", errcode=ErrorCode.PERMISSION_DENIED, http_status=403)
     result = service.list_logs(page=page, page_size=page_size)
     return success(data=result)
 

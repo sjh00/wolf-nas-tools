@@ -296,8 +296,9 @@ class SiteEngine:
 
     @classmethod
     def _resolve_definitions_dir(cls) -> str:
-        """优先使用环境变量 NEXUS_SITES_DIR，其次在线更新目录，最后回退到内置目录。"""
-        env_dir = os.environ.get("NEXUS_SITES_DIR")
+        """优先使用环境变量 WOLFNAS_SITES_DIR（旧名 NEXUS_SITES_DIR 兼容），
+        其次在线更新目录，最后回退到内置目录。"""
+        env_dir = os.environ.get("WOLFNAS_SITES_DIR") or os.environ.get("NEXUS_SITES_DIR")
         if env_dir and os.path.isdir(env_dir):
             return env_dir
         try:

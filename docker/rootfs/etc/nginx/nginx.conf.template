@@ -1,7 +1,7 @@
 # 后端 Nginx 配置（API 网关模式）
 # 仅代理 API 请求到 gunicorn，前端由独立服务提供
 
-user nexus;
+user wolfnas;
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /run/nginx/nginx.pid;
@@ -31,7 +31,7 @@ http {
 
     # 上游后端服务
     upstream backend {
-        server 127.0.0.1:__NEXUS_PORT__;
+        server 127.0.0.1:__WOLFNAS_PORT__;
         keepalive 32;
     }
 
