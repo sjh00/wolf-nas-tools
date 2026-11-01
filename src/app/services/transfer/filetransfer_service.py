@@ -110,6 +110,32 @@ def is_soft_transfer_failure(message: str | None) -> bool:
     return any(marker in text for marker in _SOFT_TRANSFER_MARKERS)
 
 
+def _spec_signature(media) -> str:
+    """提取规格签名，用于判定两份文件是否为同一版本。
+
+    只取「分辨率 + 版本标记」：这是区分多版本的核心维度（1080p vs 2160p、
+    普通版 vs IMAX/导演剪辑）。刻意不含视频/音频编码——规范命名里通常不写编码，
+    带上会导致「本次能解析、库里的解析不出」而永远不匹配，失去去重作用。
+    标题也排除在外：标题随 TMDB 译名漂移，规格不会。
+    """
+    parts = [
+        getattr(media, "resource_pix", ""),
+        getattr(media, "resource_effect", ""),
+    ]
+    tokens = [str(p).strip().lower() for p in parts if p and str(p).strip() not in ("", "None")]
+    return "/".join(tokens)
+
+
+def _spec_signature_from_filename(filename: str) -> str:
+    """从文件名解析规格签名；解析失败返回空串。"""
+    if not filename:
+        return ""
+    try:
+        return _spec_signature(meta_info_fn(title=filename))
+    except Exception as e:  # noqa: BLE001
+        log.debug(f"[Rmt]规格解析失败 {filename}: {e}")
+        return ""
+
 
 _mirror_queue: MemoryMessageQueue | None = None
 _mirror_queue_lock = threading.Lock()
@@ -1224,8 +1250,10 @@ class FileTransferService:
                     if PathUtils.is_extras(file_item) or PathUtils.get_extras_dir(file_item):
                         log.warn(f"[Rmt]{file_item} 为花絮/附属内容，跳过入库")
                         continue
-                    if media and media.begin_episode is None and (
-                        is_collection_context(parent_dir) or is_collection_context(parent_parent_dir)
+                    if (
+                        media
+                        and media.begin_episode is None
+                        and (is_collection_context(parent_dir) or is_collection_context(parent_parent_dir))
                     ):
                         log.warn(f"[Rmt]{file_item} 位于合集目录且无集数，按附属内容跳过，避免误当剧集入库失败")
                         continue
@@ -1647,6 +1675,67 @@ class FileTransferService:
             return ""
         return os.path.join(str(row.dest_path), str(row.dest_filename))
 
+    @staticmethod
+    def _file_size(path: str, backend=None) -> int:
+        """文件大小（字节）；取不到返回 0。用于判定「是否同一份文件」。"""
+        if backend is not None:
+            try:
+                info = backend.stat(path)
+                if info is not None:
+                    return int(getattr(info, "size", 0) or 0)
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[Rmt]读取远端文件大小失败 {path}: {e}")
+                return 0
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+
+    def _movie_duplicate_target(self, media, file_item: str, dst_backend=None) -> str:
+        """同一部电影是否已入库 —— 按 TMDB 身份判断，不依赖本次标题生成的路径.
+
+        标题会随 TMDB 译名变化（社区改译名/被灌入广告）而漂移，路径比对会把「同一部片」
+        判成「不存在」而重复转移。这里改为按 tmdb_id 查已入库版本，并用两个内容信号
+        确认是同一份内容，避免误杀真正的多版本：
+
+        1. 已入库文件与本次源文件大小完全一致 → 同一份文件被重复处理；
+        2. 规格签名一致（分辨率/版本/编码/音轨，不含标题）→ 仅标题不同的同一版本。
+
+        规格不同（如已入库 1080p、本次 2160p）视为多版本共存，返回空串放行。
+        """
+        tmdb_id = getattr(media, "tmdb_id", None)
+        if not tmdb_id:
+            return ""
+        try:
+            history = self._history.get_transfer_info_by(tmdbid=tmdb_id) or []
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Rmt]电影身份去重查询失败 tmdb={tmdb_id}: {e}")
+            return ""
+
+        existing: list[tuple[Any, str]] = []
+        for row in history:
+            if not self._history_dest_exists(row, dst_backend):
+                continue
+            full = os.path.join(str(getattr(row, "dest_path", "") or ""), str(getattr(row, "dest_filename", "") or ""))
+            if full:
+                existing.append((row, full))
+        if not existing:
+            return ""
+
+        src_size = self._file_size(file_item)
+        src_spec = _spec_signature(media)
+        for row, full in existing:
+            dest_size = self._file_size(full, dst_backend)
+            if src_size and dest_size and src_size == dest_size:
+                log.info(f"[Rmt]TMDB={tmdb_id} 已存在同大小文件（{src_size} 字节），判定重复")
+                return full
+            if src_spec:
+                dest_spec = _spec_signature_from_filename(str(getattr(row, "dest_filename", "") or ""))
+                if dest_spec and dest_spec == src_spec:
+                    log.info(f"[Rmt]TMDB={tmdb_id} 已存在同规格文件（{src_spec}），判定重复")
+                    return full
+        return ""
+
     def _scrape_duplicate_if_incomplete(
         self, media, dir_path: str, file_path: str, dst_backend=None, force: bool = False
     ) -> None:
@@ -1709,6 +1798,24 @@ class FileTransferService:
                     transferred_path,
                     transferred_path,
                     os.path.dirname(transferred_path),
+                )
+
+        # 电影身份级去重：按 TMDB 身份查已入库版本。
+        # 剧集侧已有同类判断（tmdbid+季+集），电影此前只有路径比对——
+        # 标题一旦漂移（TMDB 译名被改/被灌广告）目标路径就变，同一部片会被重复转移。
+        if media.type == MediaType.MOVIE and not udf_flag:
+            dup_path = self._movie_duplicate_target(media, file_item, dst_backend)
+            if dup_path:
+                log.warn(f"[Rmt]电影已入库（TMDB={media.tmdb_id}），跳过重复转移：{file_item} -> {dup_path}")
+                self._history.insert_transfer_blacklist(file_item)
+                return (
+                    0,
+                    0,
+                    alert_messages,
+                    1,
+                    dup_path,
+                    dup_path,
+                    os.path.dirname(dup_path),
                 )
 
         dir_exist_flag, ret_dir_path, file_exist_flag, ret_file_path = self._existence.is_media_exists(
