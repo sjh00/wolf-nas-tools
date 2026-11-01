@@ -3,8 +3,13 @@
 单元测试 mock 掉了仓储，无法覆盖「ORM → 实体 → 服务」这条链路
 （例如实体字段名与 ORM 列名不匹配时单测仍会通过）。这里用真实 sqlite
 建表写入记录，验证记录能一路出现在列表里。
+
+注意：`get_active_downloads` 只查最近 30 天的记录，写入时间必须相对当前时刻
+计算。早期版本硬编码了一个固定日期，随着真实时间推移记录会滑出窗口，
+测试便会在查下载器之前就被过滤掉（表现为列表恒为空）。
 """
 
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +24,11 @@ from app.services.download_service import DownloadService
 
 _PUSHED_HASH = "4def530771e85891c8b3411d4ed644bea7d0bde3"
 _PUSHED_NAME = "Boyhood 2014 2160p HDR UHD BluRay DTS-HD MA 5.1 x265-10bit-HDS"
+
+
+def _recent_date(hours_ago: int = 2) -> str:
+    """相对当前时刻的最近时间（落在 30 天窗口内）。"""
+    return (datetime.now() - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @pytest.fixture
@@ -64,7 +74,7 @@ def db_env():
                 DOWNLOAD_ID=_PUSHED_HASH,
                 SAVE_PATH="/downloads",
                 STATE="downloading",
-                DATE="2026-09-15 14:44:00",
+                DATE=_recent_date(),
             )
         )
     try:
@@ -147,6 +157,9 @@ class TestDownloadingEndToEnd:
 
         result = svc.get_downloading_with_media_info()
 
+        # 先确认确实走到了下载器：否则「空列表 + 状态不变」会被窗口过滤等因素
+        # 静默满足，测试失去意义
+        client.get_downloading_progress.assert_called_once()
         assert result["items"] == []
         assert _read_state(db_env) == "downloading", "查询失败不得把任务标记为完成"
 

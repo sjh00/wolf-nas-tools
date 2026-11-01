@@ -2026,7 +2026,9 @@ class FileTransferService:
                 continue
             if not dest_dir:
                 continue
-            dest_file = os.path.join(dest_dir, file_name)
+            # dest_dir 来自媒体库配置/远端后端，是 POSIX 风格路径；
+            # 用 os.path.join 在 Windows 上会插入反斜杠并发给远端，导致写错位置
+            dest_file = PathUtils.join_path(dest_dir, file_name)
             try:
                 if backend.exists(dest_file):
                     continue
