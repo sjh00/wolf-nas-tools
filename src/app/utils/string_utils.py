@@ -663,3 +663,28 @@ class StringUtils:
     @staticmethod
     def is_numeric(s):
         return bool(re.match(r"^[-+]?[0-9]+(\.[0-9]+)?$", s))
+
+
+def season_variants(season) -> list[str]:
+    """季号的全部等价写法，用于跨层（DB / 事件 / 刮削）比较。
+
+    同一部剧的季号在不同来源写法不同：媒体信息给 `S01`，转移事件给 `1`，
+    订阅表可能存其中任意一种。直接字符串比较会让「匹配不到订阅」这类
+    故障静默发生，因此统一在这里展开等价写法。
+    """
+    raw = str(season if season is not None else "").strip()
+    if not raw:
+        return []
+    digits = raw[1:] if raw[:1] in ("S", "s") else raw
+    if not digits.isdigit():
+        return [raw]
+    num = int(digits)
+    return sorted({raw, str(num), f"{num:02d}", f"S{num}", f"S{num:02d}"})
+
+
+def season_matches(left, right) -> bool:
+    """判断两个季号写法是否指同一季（季号为空视为不比较）。"""
+    left_variants = set(season_variants(left))
+    if not left_variants:
+        return True
+    return bool(left_variants & set(season_variants(right)))

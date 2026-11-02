@@ -20,6 +20,7 @@ from app.services.subscribe.management.refresh_service import SubscribeRefreshSe
 from app.services.subscribe.management.update_service import SubscribeUpdateService
 from app.services.subscribe.management.utils import tv_filter_signature
 from app.services.web.utils import WebUtils
+from app.utils.string_utils import season_matches
 
 _ALIAS_MAP_TTL = 1800
 _ALIAS_MAP_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
@@ -478,7 +479,8 @@ class SubscribeService:
         if not seasoninfo:
             return
         for info in seasoninfo:
-            if str(info.get("season")) == media_info.get_season_seq():
+            # 季号写法跨层不一致（S01 / 1），必须按等价写法比较，否则缺集信息被整体丢弃
+            if season_matches(info.get("season"), media_info.get_season_seq()):
                 if info.get("episodes"):
                     log.info(
                         "[Subscribe]更新电视剧 {} {} 缺失集数为 {}".format(

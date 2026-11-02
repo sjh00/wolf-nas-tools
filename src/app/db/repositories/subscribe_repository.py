@@ -23,6 +23,7 @@ from app.media.metadata.legacy import parse_legacy_ref
 from app.media.metadata.policy import ANCHOR_POLICY
 from app.schemas.auth import UserContext
 from app.utils.json_utils import JsonUtils
+from app.utils.string_utils import season_variants
 
 if TYPE_CHECKING:
     from app.media.models import MediaInfo
@@ -31,6 +32,20 @@ if TYPE_CHECKING:
 # DESC 列为 varchar(255)，存的是 TMDB 简介（可能超长）；SQLite 不校验长度，
 # PostgreSQL 严格校验会抛 StringDataRightTruncation，故所有写入路径统一截断。
 _DESC_MAX_LEN = 200
+
+
+def _season_filter(column, season):
+    """按季号等价写法过滤；season 为空时不加条件。
+
+    SUBSCRIBE_TVS.SEASON 由订阅创建路径写入 `S01` 形式，而转移完成事件传的
+    是 `1` 形式。早期这里直接 `SEASON == str(season)` 比较，两种写法永不相等，
+    导致「单集转移完成 → 更新订阅进度」始终匹配不到订阅（日志是“未找到订阅”），
+    订阅进度因此长期停在初始值。等价写法见 `season_variants`。
+    """
+    variants = season_variants(season)
+    if not variants:
+        return None
+    return column.in_(variants)
 
 
 def _trim_desc(desc: str | None) -> str:
@@ -211,20 +226,22 @@ class SubscribeRepository(BaseRepository):
 
             if tmdbid:
                 query = _scope(db.query(SubscribeTvs.ID).filter(SubscribeTvs.TMDBID == str(tmdbid)))
-                if season:
-                    query = query.filter(SubscribeTvs.SEASON == str(season))
+                cond = _season_filter(SubscribeTvs.SEASON, season)
+                if cond is not None:
+                    query = query.filter(cond)
                 ret = query.first()
                 if ret:
                     return ret[0]
             query = _scope(db.query(SubscribeTvs.ID).filter(SubscribeTvs.NAME == title))
-            if season:
-                query = query.filter(SubscribeTvs.SEASON == str(season))
+            cond = _season_filter(SubscribeTvs.SEASON, season)
+            if cond is not None:
+                query = query.filter(cond)
             if year:
                 query = query.filter(SubscribeTvs.YEAR == str(year))
             ret = query.first()
             if ret:
                 return ret[0]
-            return self._fuzzy_subscribe_id(db, SubscribeTvs, title, year)
+            return self._fuzzy_subscribe_id(db, SubscribeTvs, title, year, season)
 
     @staticmethod
     def _normalize_title(value) -> str:
@@ -242,18 +259,27 @@ class SubscribeRepository(BaseRepository):
         return difflib.SequenceMatcher(None, left, right).ratio() >= 0.85
 
     @classmethod
-    def _fuzzy_subscribe_id(cls, db, model, title: str, year: str | None = None):
+    def _fuzzy_subscribe_id(cls, db, model, title: str, year: str | None = None, season=None):
         """精确标题未命中时的模糊回退（豆瓣/探索页标题与订阅名常不一致）.
 
         先按年份优先做标题匹配，避免同名不同年误判。
+        `season` 非空时只在该季范围内回退：多季剧集按标题模糊匹配会命中别的季，
+        进而把进度写到错误的订阅行上。
         """
         base_title = str(title or "").split(" (")[0].strip()
         if not base_title:
             return None
-        ret = db.query(model.ID).filter(model.NAME.contains(base_title, autoescape=True)).first()
+        season_cond = _season_filter(getattr(model, "SEASON", None), season) if season else None
+        query = db.query(model.ID).filter(model.NAME.contains(base_title, autoescape=True))
+        if season_cond is not None:
+            query = query.filter(season_cond)
+        ret = query.first()
         if ret:
             return ret[0]
-        rows = db.query(model.ID, model.NAME, model.YEAR).all()
+        rows_query = db.query(model.ID, model.NAME, model.YEAR)
+        if season_cond is not None:
+            rows_query = rows_query.filter(season_cond)
+        rows = rows_query.all()
         for year_first in (True, False):
             for rid, name, row_year in rows:
                 if year_first and year and str(row_year) != str(year):
@@ -615,8 +641,9 @@ class SubscribeRepository(BaseRepository):
             return None
         with self.session() as db:
             query = db.query(SubscribeTvs.USER_ID).filter(SubscribeTvs.TMDBID == str(tmdbid))
-            if season:
-                query = query.filter(SubscribeTvs.SEASON == str(season))
+            cond = _season_filter(SubscribeTvs.SEASON, season)
+            if cond is not None:
+                query = query.filter(cond)
             row = query.order_by(SubscribeTvs.ID.desc()).first()
             value = row[0] if row else None
             return int(value) if value is not None else None
@@ -750,10 +777,12 @@ class SubscribeRepository(BaseRepository):
         if not title:
             return False
         with self.session() as db:
-            if season:
+            cond = _season_filter(SubscribeTvs.SEASON, season)
+            if cond is not None:
                 count = (
                     db.query(SubscribeTvs)
-                    .filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season)
+                    .filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year))
+                    .filter(cond)
                     .count()
                 )
             else:
@@ -838,15 +867,17 @@ class SubscribeRepository(BaseRepository):
                     )
                     if content_profile:
                         dup_query = dup_query.filter(SubscribeTvs.CONTENT_PROFILE == content_profile)
-                    if season_str:
-                        dup_query = dup_query.filter(SubscribeTvs.SEASON == season_str)
+                    cond = _season_filter(SubscribeTvs.SEASON, season_str)
+                    if cond is not None:
+                        dup_query = dup_query.filter(cond)
                 else:
                     dup_query = db.query(SubscribeTvs).filter(
                         SubscribeTvs.NAME == media_info.title,
                         SubscribeTvs.YEAR == str(media_info.year),
                     )
-                    if season_str:
-                        dup_query = dup_query.filter(SubscribeTvs.SEASON == season_str)
+                    cond = _season_filter(SubscribeTvs.SEASON, season_str)
+                    if cond is not None:
+                        dup_query = dup_query.filter(cond)
                 if user_id is not None:
                     dup_query = dup_query.filter(SubscribeTvs.USER_ID == user_id)
                 if dup_query.count() > 0:
@@ -1007,45 +1038,62 @@ class SubscribeRepository(BaseRepository):
             nums = [int(e) for e in lack_episodes if str(e).isdigit()]
             new_current_ep = min(nums) if nums else None
         with self.session() as db:
-            if rssid:
-                # 内联 update_rss_tv_episodes，确保与 LACK 更新在同一事务
-                if (
-                    db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rssid)).count()
-                    > 0
-                ):
-                    db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rssid)).update(
-                        {"EPISODES": ",".join(episodes)}
-                    )
-                else:
-                    db.add(SubscribeTvEpisodes(RSSID=rssid, EPISODES=",".join(episodes)))
-                update_fields: dict = {"LACK": lack}
-                if new_current_ep is not None:
-                    update_fields["CURRENT_EP"] = new_current_ep
-                db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(update_fields)
+            if not rssid:
+                # 按标题/年份/季定位订阅行；查不到就无法同步 EPISODES，直接返回
+                cond = _season_filter(SubscribeTvs.SEASON, season)
+                query = db.query(SubscribeTvs.ID).filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year))
+                if cond is not None:
+                    query = query.filter(cond)
+                row = query.first()
+                if not row:
+                    return
+                rssid = int(row[0])
+            # 内联 update_rss_tv_episodes，确保 EPISODES 与 LACK 在同一事务内一致。
+            # 早期分支只在传入 rssid 时才写 EPISODES，按标题更新会留下
+            # 「LACK 变了、缺失集列表没变」的脏数据，订阅进度与重试逻辑随之失真。
+            if db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rssid)).count() > 0:
+                db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rssid)).update(
+                    {"EPISODES": ",".join(episodes)}
+                )
             else:
-                update_fields = {"LACK": lack}
-                if new_current_ep is not None:
-                    update_fields["CURRENT_EP"] = new_current_ep
-                db.query(SubscribeTvs).filter(
-                    SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season
-                ).update(update_fields)
+                db.add(SubscribeTvEpisodes(RSSID=str(rssid), EPISODES=",".join(episodes)))
+            update_fields: dict = {"LACK": lack}
+            if new_current_ep is not None:
+                update_fields["CURRENT_EP"] = new_current_ep
+            db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(update_fields)
 
     def update_rss_tv_total(self, rssid: int, total_ep: int, lack_episodes: list | None = None) -> None:
-        """更新电视剧总集数（TMDB 集数增加时同步），同时可选更新缺失集"""
+        """更新电视剧总集数（TMDB 集数增加时同步）。
+
+        `lack_episodes` 语义为**本次新增的缺失集**（策略层传
+        `range(old_total+1, new_total+1)`）。必须与已有缺失集取并集：
+
+        连载剧每更新一集都会走这里，早期实现直接覆盖 EPISODES，
+        会把「尚未补齐的历史缺失集」整体丢弃——订阅从此只认最新一集，
+        老集永远不会再被搜索，且 CURRENT_EP 不随缺失集变化导致进度失真。
+        """
         if not rssid:
             return
-        lack = len(lack_episodes) if lack_episodes else 0
-        episodes_str = ",".join(str(e) for e in lack_episodes) if lack_episodes else ""
+        incoming = {int(e) for e in (lack_episodes or []) if str(e).strip().isdigit()}
         with self.session() as db:
-            db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(
-                {"TOTAL_EP": total_ep, "TOTAL": total_ep, "LACK": lack}
+            existing = (
+                db.query(SubscribeTvEpisodes).filter(cast(SubscribeTvEpisodes.RSSID, Integer) == int(rssid)).first()
             )
-            if rssid:
-                existing = db.query(SubscribeTvEpisodes).filter(SubscribeTvEpisodes.RSSID == int(rssid)).first()
-                if existing:
-                    existing.EPISODES = episodes_str
-                else:
-                    db.add(SubscribeTvEpisodes(RSSID=str(rssid), EPISODES=episodes_str))
+            current: set[int] = set()
+            if existing and existing.EPISODES:
+                current = {int(e) for e in existing.EPISODES.split(",") if e.strip().isdigit()}
+            # 只要仍在总集数范围内就保留（含历史缺失集与新集）
+            merged = sorted(e for e in (current | incoming) if 1 <= e <= int(total_ep))
+            episodes_str = ",".join(str(e) for e in merged)
+            update_fields: dict = {"TOTAL_EP": total_ep, "TOTAL": total_ep, "LACK": len(merged)}
+            # CURRENT_EP 语义 = 首个待下载集；缺失集非空时保持与之一致
+            if merged:
+                update_fields["CURRENT_EP"] = merged[0]
+            db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(update_fields)
+            if existing:
+                existing.EPISODES = episodes_str
+            else:
+                db.add(SubscribeTvEpisodes(RSSID=str(rssid), EPISODES=episodes_str))
 
     def delete_rss_tv(
         self,
@@ -1071,15 +1119,17 @@ class SubscribeRepository(BaseRepository):
                 # 内联查找，确保后续删除在同一事务上下文，并先按归属收敛
                 if tmdbid:
                     query = _scope(db.query(SubscribeTvs.ID).filter(SubscribeTvs.TMDBID == tmdbid))
-                    if season:
-                        query = query.filter(SubscribeTvs.SEASON == season)
+                    cond = _season_filter(SubscribeTvs.SEASON, season)
+                    if cond is not None:
+                        query = query.filter(cond)
                     ret = query.first()
                     if ret:
                         rssid = ret[0]
                 if not rssid:
                     query = _scope(db.query(SubscribeTvs).filter(SubscribeTvs.NAME == title))
-                    if season:
-                        query = query.filter(SubscribeTvs.SEASON == str(season))
+                    cond = _season_filter(SubscribeTvs.SEASON, season)
+                    if cond is not None:
+                        query = query.filter(cond)
                     items = query.all()
                     if items:
                         if tmdbid:
@@ -1128,9 +1178,11 @@ class SubscribeRepository(BaseRepository):
             if rssid:
                 db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update({"STATE": state})
             else:
-                db.query(SubscribeTvs).filter(
-                    SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season
-                ).update({"STATE": state})
+                cond = _season_filter(SubscribeTvs.SEASON, season)
+                query = db.query(SubscribeTvs).filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year))
+                if cond is not None:
+                    query = query.filter(cond)
+                query.update({"STATE": state})
 
     # ==================== RSS TV Episodes ====================
 

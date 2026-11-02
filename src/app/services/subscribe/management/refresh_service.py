@@ -77,7 +77,6 @@ class SubscribeRefreshService:
             season = rss_info.get("season") or 1
             total = rss_info.get("total")
             total_ep = rss_info.get("total_ep")
-            lack = rss_info.get("lack")
             if tmdbid:
                 log.debug(f"[Subscribe]{MediaType.TV.display_name} {name} 已有 TMDB ID {tmdbid}，跳过刷新")
                 continue
@@ -89,11 +88,18 @@ class SubscribeRefreshService:
                 if total_ep:
                     total_episode = total_ep
                 if total_episode and (name != media_info.title or total != total_episode):
-                    lack_episode = total_episode - (total - lack)
+                    # 保留已有缺失集，仅补入新增集。
+                    # 早期实现用 total_episode - (total - lack) 反推「缺失的是最后 N 集」，
+                    # 等价于假设用户从头连续观看；从中间开始看的订阅会被算错。
+                    existing_missing = set(self._tv_episode_repo.get(rssid) or [])
+                    if total_episode > total:
+                        existing_missing |= set(range(int(total or 0) + 1, total_episode + 1))
+                    missing = sorted(e for e in existing_missing if 1 <= e <= total_episode)
+                    lack_episode = len(missing)
                     log.info(
                         f"[Subscribe]检测到TMDB信息变化，"
                         f"更新{MediaType.TV.display_name}订阅 {name} 为 {media_info.title}，"
-                        f"总集数为：{total_episode}"
+                        f"总集数为：{total_episode}，待下载 {lack_episode} 集"
                     )
                     # TV 订阅需同时更新 tv_repo + tv_episode_repo，使用事务保证原子性
                     with transaction_scope():
@@ -108,9 +114,7 @@ class SubscribeRefreshService:
                             desc=media_info.overview or "",
                             note=gen_rss_note(media_info),
                         )
-                        self._tv_episode_repo.update(
-                            rid=rssid, episodes=list(range(total_episode - lack_episode + 1, total_episode + 1))
-                        )
+                        self._tv_episode_repo.update(rid=rssid, episodes=missing)
         log.info("[Subscribe]订阅TMDB信息刷新完成")
 
     @staticmethod
@@ -247,14 +251,22 @@ class SubscribeRefreshService:
             **self._scope_kwargs(rss_info, snapshot),
         }
         if total_episode:
-            lack_episode = max(total_episode - max(total - lack, 0), 0)
-            updates.update({"total": total_episode, "lack": lack_episode})
+            # 保留已有缺失集，只补入新出现的集号。
+            # 早期实现用 total_episode - (total - lack) 反推「缺失的是最后 N 集」，
+            # 等价于假设用户从头连续观看；从中间开始看的订阅会被算错并丢失历史缺失集。
+            existing = self._tv_episode_repo.get(rss_info.get("id"))
+            if existing is None:
+                # 无剧集记录：沿用按 lack 推导的初始缺失范围
+                missing = list(range(max(total - lack, 0) + 1, total + 1))
+            else:
+                missing = sorted({int(e) for e in existing})
+            if total_episode > total:
+                missing = sorted(set(missing) | set(range(int(total) + 1, int(total_episode) + 1)))
+            missing = [e for e in missing if 1 <= e <= int(total_episode)]
+            updates.update({"total": total_episode, "lack": len(missing)})
             with transaction_scope():
                 self._tv_repo.update(rss_info.get("id"), **updates)
-                self._tv_episode_repo.update(
-                    rid=rss_info.get("id"),
-                    episodes=list(range(total_episode - lack_episode + 1, total_episode + 1)),
-                )
+                self._tv_episode_repo.update(rid=rss_info.get("id"), episodes=missing)
         else:
             self._tv_repo.update(rss_info.get("id"), **updates)
         return True
