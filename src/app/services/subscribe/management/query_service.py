@@ -295,9 +295,16 @@ class SubscribeQueryService:
             current_ep = rss_tv.CURRENT_EP
             total = int(rss_tv.TOTAL or 0)
             lack = int(rss_tv.LACK or 0)
-            # 进度以 CURRENT_EP（首个待下载集）为准；历史数据可能 LACK 与 CURRENT_EP 不一致。
-            if total and current_ep and 0 < int(current_ep) <= total:
-                lack = max(0, total - int(current_ep) + 1)
+            # 进度 = (total - lack) / total，lack 由缺失集列表维护，是真实数量。
+            # 早期这里用 CURRENT_EP（首个待下载集）反推 lack = total - current_ep + 1，
+            # 等价于假设「缺失集是 current_ep..total 的连续后缀」。用户从最新集开始看
+            # （缺失 1..39、已下 40-41）时该假设不成立，进度会被算成 0。
+            # 仅在 LACK 缺失/越界（历史脏数据）时才回退到 CURRENT_EP 兜底。
+            if total and not (0 <= lack <= total):
+                if current_ep and 0 < int(current_ep) <= total:
+                    lack = max(0, total - int(current_ep) + 1)
+                else:
+                    lack = 0
             fuzzy_match = rss_tv.FUZZY_MATCH == 1
             keyword = rss_tv.KEYWORD
             if keyword and str(keyword).startswith("content_id:"):

@@ -142,6 +142,88 @@ class TestSubscribeQueryService:
         assert "1" in result
         assert result["1"]["over_edition"] is True
 
+    @staticmethod
+    def _tv_row(**overrides):
+        """构造一条 TV 订阅行（MagicMock 需显式给数值/字符串字段，否则 int() 会失败）。"""
+        rss = MagicMock()
+        fields = {
+            "ID": 1,
+            "USER_ID": None,
+            "NAME": "某连载剧",
+            "YEAR": "2025",
+            "SEASON": "S01",
+            "TMDBID": "123456",
+            "IDENTITY_ID": None,
+            "ANCHOR_PROVIDER": None,
+            "ANCHOR_EXTERNAL_ID": None,
+            "CONTENT_PROFILE": "default",
+            "METADATA_POLICY": None,
+            "NAMING_PROFILE": None,
+            "IMAGE": "",
+            "DESC": None,
+            "NOTE": None,
+            "RSS_SITES": None,
+            "SEARCH_SITES": None,
+            "OVER_EDITION": 0,
+            "FILTER_RESTYPE": None,
+            "FILTER_PIX": None,
+            "FILTER_TEAM": None,
+            "FILTER_RULE": None,
+            "FILTER_INCLUDE": None,
+            "FILTER_EXCLUDE": None,
+            "FILTER_FREE": 0,
+            "DOWNLOAD_SETTING": None,
+            "SAVE_PATH": None,
+            "TOTAL": 41,
+            "TOTAL_EP": 41,
+            "CURRENT_EP": 1,
+            "LACK": 39,
+            "FUZZY_MATCH": 0,
+            "KEYWORD": None,
+            "STATE": "R",
+            "ADD_DATE": "2025-01-01 00:00:00",
+        }
+        fields.update(overrides)
+        for key, value in fields.items():
+            setattr(rss, key, value)
+        return rss
+
+    def _query(self, rows):
+        tv_repo = MagicMock()
+        tv_repo.get_all.return_value = rows
+        sites = MagicMock()
+        sites.get_site_names.return_value = []
+        indexer = MagicMock()
+        indexer.get_user_indexer_names.return_value = []
+        return SubscribeQueryService(MagicMock(), tv_repo, MagicMock(), MagicMock(), sites, indexer)
+
+    def test_tv_progress_uses_real_lack_not_current_ep(self):
+        """回归：已下载最新 2 集（缺 1-39、CURRENT_EP 仍为 1）时进度不得显示 0%。
+
+        前端进度公式为 (total - lack) / total。若后端用 CURRENT_EP 反推 lack，
+        从中间/末尾开始观看的订阅会恒为 0%。
+        """
+        # 41 集，已下载 40、41，缺失 1-39
+        svc = self._query([self._tv_row(TOTAL=41, TOTAL_EP=41, CURRENT_EP=1, LACK=39)])
+        item = svc.get_subscribe_tvs()["1"]
+        assert item["lack"] == 39
+        assert item["total"] == 41
+        assert item["total"] - item["lack"] == 2, "进度必须是已下载的 2 集，而不是 0"
+
+    def test_tv_lack_out_of_range_falls_back_to_current_ep(self):
+        """历史脏数据（LACK > TOTAL）时用 CURRENT_EP 兜底，避免进度为负。"""
+        svc = self._query([self._tv_row(TOTAL=40, TOTAL_EP=40, CURRENT_EP=20, LACK=99)])
+        item = svc.get_subscribe_tvs()["1"]
+        assert item["lack"] == 21  # total - current_ep + 1
+        assert item["total"] - item["lack"] == 19
+
+    def test_tv_lack_zero_remains_zero(self):
+        """全部补齐后 lack=0，进度必须是 100%。"""
+        svc = self._query([self._tv_row(TOTAL=41, TOTAL_EP=41, CURRENT_EP=41, LACK=0)])
+        item = svc.get_subscribe_tvs()["1"]
+        assert item["lack"] == 0
+        assert item["total"] - item["lack"] == 41
+
 
 class TestSubscribeMatcher:
     """Test suite for SubscribeMatcher."""
