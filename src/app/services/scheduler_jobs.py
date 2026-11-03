@@ -99,6 +99,7 @@ def load_default_jobs(
     conversation_store=None,
     plugin_market_service=None,
     message: Any = None,
+    path_resolver: Any = None,
 ):
     """
     加载系统默认定时任务
@@ -302,6 +303,18 @@ def load_default_jobs(
                     log.info(f"[Lifecycle]历史对账完成: {result}")
             except Exception as e:  # noqa: BLE001
                 log.warn(f"[Lifecycle]历史对账失败: {e}")
+            # 保留策略：默认 keep 不会动任何文件；只有显式标了
+            # sync_delete / replace 的记录才会触碰媒体库
+            try:
+                from app.services.transfer.retention_service import (  # noqa: PLC0415
+                    RetentionSweep,
+                )
+
+                swept = RetentionSweep(path_resolver=path_resolver).sweep()
+                if swept.get("deleted") or swept.get("replaced"):
+                    log.info(f"[Retention]保留策略清理完成: {swept}")
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Retention]保留策略清理失败: {e}")
 
         scheduler.register_interval(
             job_id="MediaLifecycle.reconcile",

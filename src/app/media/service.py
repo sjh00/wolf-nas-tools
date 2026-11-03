@@ -1015,8 +1015,19 @@ class MediaService:
                 parent_ctx,
             )
             # 文件名解析不出集号时，从父目录名提取（动漫单集目录常携带 S01E07）
-            if parsed_list[idx]:
-                self._fill_episode_from_parent_paths(path_map[idx], parsed_list[idx])
+            _parsed_item = parsed_list[idx]
+            if _parsed_item is not None:
+                self._fill_episode_from_parent_paths(path_map[idx], _parsed_item)
+                # 调用方已明确类型的（下载器分类 / 同步源目录名）作为权威提示：
+                # 解析器推断的类型可能缺失或被文件名误导，用提示兜底并锁定查询类型。
+                hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
+                if hint != MediaType.UNKNOWN and _parsed_item.type in (None, MediaType.UNKNOWN):
+                    _parsed_item.type = hint
+
+        # 类型提示转成 lookup 约束：源已声明是剧集时，不允许被模糊评分翻转成同名老电影
+        type_hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
+        constrain_type = type_hint != MediaType.UNKNOWN
+        lookup_hint = type_hint if constrain_type else None
 
         # 2.3 去重后并发查 TMDB
 
@@ -1037,7 +1048,13 @@ class MediaService:
             max_workers = min(len(unique_keys), 8)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_key = {
-                    executor.submit(self._lookup.lookup, parsed, language=language or ""): key
+                    executor.submit(
+                        self._lookup.lookup,
+                        parsed,
+                        hint_type=lookup_hint,
+                        language=language or "",
+                        constrain_type=constrain_type,
+                    ): key
                     for key, parsed in unique_keys.items()
                 }
                 for future in as_completed(future_to_key):

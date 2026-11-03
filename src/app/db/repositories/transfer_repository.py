@@ -96,6 +96,95 @@ class TransferRepository(BaseRepository):
         with self.session() as db:
             db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.ID == int(logid)).update(values)
 
+    def update_retention_policy(self, logid: int, policy: str) -> bool:
+        """设置单条记录的旧版本保留策略，返回是否命中记录."""
+        if not logid:
+            return False
+        with self.session() as db:
+            rows = (
+                db.query(TRANSFERHISTORY)
+                .filter(TRANSFERHISTORY.ID == int(logid))
+                .update({"RETENTION_POLICY": str(policy)})
+            )
+            return bool(rows)
+
+    def get_same_episode_records(self, record) -> list:
+        """取与给定记录「同作品同季同集」的其它记录（用于洗版）.
+
+        优先按 IDENTITY_ID 收敛；没有身份索引的旧数据退回 TMDBID + 季集匹配。
+        只返回已入库且有目标路径的记录。
+        """
+        identity = str(getattr(record, "IDENTITY_ID", "") or "")
+        tmdbid = str(getattr(record, "TMDBID", "") or "")
+        season_episode = str(getattr(record, "SEASON_EPISODE", "") or "")
+        with self.session() as db:
+            query = db.query(TRANSFERHISTORY).filter(TRANSFERHISTORY.DEST_PATH != "")
+            if identity:
+                query = query.filter(TRANSFERHISTORY.IDENTITY_ID == identity)
+            elif tmdbid:
+                query = query.filter(TRANSFERHISTORY.TMDBID == tmdbid)
+            else:
+                return []
+            rows = query.all()
+        same: list = []
+        for row in rows:
+            if not str(getattr(row, "DEST_FILENAME", "") or ""):
+                continue
+            if season_episode and str(getattr(row, "SEASON_EPISODE", "") or "") != season_episode:
+                continue
+            same.append(row)
+        return same
+
+    def get_records_for_retention(self, limit: int = 2000) -> list:
+        """保留策略对账的候选记录：有源路径与目标路径的最近记录."""
+        with self.session() as db:
+            return (
+                db.query(TRANSFERHISTORY)
+                .filter(TRANSFERHISTORY.SOURCE_PATH != "", TRANSFERHISTORY.DEST_FILENAME != "")
+                .order_by(TRANSFERHISTORY.ID.desc())
+                .limit(max(1, int(limit)))
+                .all()
+            )
+
+    def get_replace_candidates(self) -> list:
+        """policy=replace 且同集已存在更新记录的旧记录（洗版候选）."""
+        with self.session() as db:
+            olds = (
+                db.query(TRANSFERHISTORY)
+                .filter(
+                    TRANSFERHISTORY.RETENTION_POLICY == "replace",
+                    TRANSFERHISTORY.DEST_FILENAME != "",
+                )
+                .all()
+            )
+            if not olds:
+                return []
+            newer = (
+                db.query(TRANSFERHISTORY)
+                .filter(
+                    TRANSFERHISTORY.DEST_FILENAME != "",
+                    TRANSFERHISTORY.IDENTITY_ID.isnot(None),
+                )
+                .all()
+            )
+        latest: dict[tuple, int] = {}
+        for row in newer:
+            key = (
+                str(getattr(row, "IDENTITY_ID", "") or ""),
+                str(getattr(row, "SEASON_EPISODE", "") or ""),
+            )
+            latest[key] = max(latest.get(key, 0), int(getattr(row, "ID", 0) or 0))
+        result: list = []
+        for row in olds:
+            key = (
+                str(getattr(row, "IDENTITY_ID", "") or ""),
+                str(getattr(row, "SEASON_EPISODE", "") or ""),
+            )
+            # 只有「同集已有更新的记录」才清理，避免把唯一版本删掉
+            if latest.get(key, 0) > int(getattr(row, "ID", 0) or 0):
+                result.append(row)
+        return result
+
     def insert_transfer_history(
         self,
         in_from: Enum,
@@ -830,3 +919,26 @@ class TransferRepository(BaseRepository):
                 SYNCHISTORY.PATH == os.path.normpath(path),
                 SYNCHISTORY.DEST == os.path.normpath(dest),
             ).delete(synchronize_session=False)
+
+    def delete_sync_history_for_source(self, source_path: str) -> int:
+        """按源路径清理同步历史，兼容文件与目录两种粒度。
+
+        SYNCHISTORY.PATH 存的是**目录**（同步监听的单位），而识别记录里的
+        SOURCE_PATH 可能是目录、SOURCE_FILENAME 才是文件名。早期清理只按
+        「目录/文件」拼接的完整路径删除，目录级那条永远删不掉，
+        于是「移除识别记录」后同步引擎仍判定已同步，内容再也无法重新入库。
+        """
+        text = str(source_path or "").strip()
+        if not text:
+            return 0
+        normalized = os.path.normpath(text)
+        with self.session() as db:
+            rows = db.query(SYNCHISTORY).filter(SYNCHISTORY.PATH == normalized).delete(synchronize_session=False)
+            # 目录下的子条目一并清理，避免残留历史继续拦住新文件
+            prefix = normalized.rstrip("/") + "/"
+            rows += (
+                db.query(SYNCHISTORY)
+                .filter(SYNCHISTORY.PATH.like(prefix + "%"))
+                .delete(synchronize_session=False)
+            )
+            return int(rows)

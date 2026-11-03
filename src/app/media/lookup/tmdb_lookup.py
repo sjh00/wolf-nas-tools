@@ -62,8 +62,21 @@ class TmdbLookup(BaseLookup):
         )
 
     def lookup(
-        self, parsed, hint_type: MediaType | None = None, strict: bool | None = None, language: str | None = None
+        self,
+        parsed,
+        hint_type: MediaType | None = None,
+        strict: bool | None = None,
+        language: str | None = None,
+        constrain_type: bool = False,
     ) -> LookupResult | None:
+        """按标题查 TMDB。
+
+        :param constrain_type: 类型由调用方确定（如源目录名已标明是剧集），
+            禁止跨类型猜测。避免「剧集目录里的内容被模糊评分翻转成同名老电影」
+            —— 剧集被认成十几年前的同类同名影片、或被认成译名相同的中文片，
+            都是这条路径造成的。关闭跨类型后仍保留同类型内的降级
+            （去年份重试、multi search），只是不再换类型。
+        """
         if not parsed.title_en and not parsed.title_cn:
             return None
 
@@ -96,6 +109,7 @@ class TmdbLookup(BaseLookup):
                         episode=parsed.episode,
                         strict=strict,
                         original_title=org_title,
+                        constrain_type=constrain_type,
                     )
                 # 中文名搜索失败时，使用英文名搜索
                 if not result and parsed.title_en:
@@ -108,6 +122,7 @@ class TmdbLookup(BaseLookup):
                         episode=parsed.episode,
                         strict=strict,
                         original_title=org_title,
+                        constrain_type=constrain_type,
                     )
                 # Fallback: 数字序号前缀剥离（"01 Movie Title" → "Movie Title"）
                 if not result:
@@ -127,6 +142,7 @@ class TmdbLookup(BaseLookup):
                                 episode=parsed.episode,
                                 strict=strict,
                                 original_title=org_title,
+                                constrain_type=constrain_type,
                             )
                             if result:
                                 break
@@ -287,6 +303,7 @@ class TmdbLookup(BaseLookup):
         episode=None,
         strict: bool | None = None,
         original_title: str = "",
+        constrain_type: bool = False,
     ):
         info = None
         # 1. 按指定类型搜索
@@ -306,7 +323,7 @@ class TmdbLookup(BaseLookup):
                             name, info.get("id"), info.get("title"), info.get("release_date")
                         )
                     )
-                    if not strict:
+                    if not strict and not constrain_type:
                         cross_info = self.search.search_tv(name, first_year, season_number, episode)
                         if cross_info and cross_info.get("id"):
                             cross_info["media_type"] = MediaType.TV
@@ -355,7 +372,7 @@ class TmdbLookup(BaseLookup):
                             name, info.get("id"), info.get("name"), info.get("first_air_date")
                         )
                     )
-                    if episode is None and not strict:
+                    if episode is None and not strict and not constrain_type:
                         has_batch = bool(original_title and _BATCH_KEYWORDS_RE.search(original_title))
                         if has_batch:
                             log.debug(f"[Meta]{name} 原始标题含批量关键词，跳过跨类型电影搜索")
@@ -431,6 +448,7 @@ class TmdbLookup(BaseLookup):
                         return best
 
         # 2. Fallback: 多类型搜索
+        # 类型被约束时不接受跨类型结果：源目录已明确是剧集，返回电影只会污染分类与落盘路径
         if not info:
             log.debug(f"[Meta]正在识别：{name}, 多类型搜索 ...")
             info = self.search.search_multi(name)
@@ -438,11 +456,22 @@ class TmdbLookup(BaseLookup):
                 info["media_type"] = (
                     MediaType.MOVIE if info.get("media_type") in ["movie", MediaType.MOVIE] else MediaType.TV
                 )
-                log.info("[Meta]{} 识别到 {}：TMDBID={}".format(name, info.get("media_type").value, info.get("id")))
-                return info
+                if constrain_type and search_type != MediaType.UNKNOWN and info.get("media_type") != search_type:
+                    log.info(
+                        "[Meta]{} 多类型搜索只找到 {}，与已知类型 {} 不符，放弃".format(
+                            name, info.get("media_type").value, search_type.value
+                        )
+                    )
+                    info = None
+                else:
+                    log.info(
+                        "[Meta]{} 识别到 {}：TMDBID={}".format(name, info.get("media_type").value, info.get("id"))
+                    )
+                    return info
 
         # 3. Fallback: 互换类型搜索（去掉年份）
-        if not info and search_type != MediaType.UNKNOWN:
+        # 类型被约束时不做互换：这正是「剧集被认成同名老电影」的来源
+        if not info and search_type != MediaType.UNKNOWN and not constrain_type:
             log.debug(f"[Meta]正在识别：{name}, 互换类型搜索 ...")
             if search_type == MediaType.MOVIE:
                 info = self.search.search_tv(name, None)
