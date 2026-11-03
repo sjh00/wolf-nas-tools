@@ -7,6 +7,7 @@
 
 import log
 from app.domain.mediatypes import MediaType
+from app.media.category_taxonomy import load_taxonomy
 from app.media.external.bangumi import Bangumi
 from app.media.identity.index import AliasIndex, get_alias_index
 from app.media.identity.models import (
@@ -57,7 +58,10 @@ class IdentityIndexBuilder:
         original = info.get("original_name") or info.get("original_title") or ""
         date = info.get("first_air_date") or info.get("release_date") or ""
         year = int(date[:4]) if date[:4].isdigit() else None
-        is_ja = info.get("original_language") == "ja"
+        # 语言判断统一走 taxonomy 归一化：TMDB 返回 ISO 639-1（日语 ja），
+        # 但部分数据源/缓存会给 jp、jpn、日本語 等写法；直接 `== "ja"` 会漏判，
+        # 从而把日语罗马音别名错标成普通译名。
+        is_ja = "ja" in load_taxonomy().language_codes(info.get("original_language"))
 
         aliases: list[Alias] = []
         for item in (info.get("alternative_titles") or {}).get("results") or []:
