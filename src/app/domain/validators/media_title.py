@@ -54,15 +54,26 @@ _GARBAGE_PATTERNS = re.compile(
 # 数字常用 Unicode 数学数字（𝟲/𝟵）与全角数字伪装，站点名与域名之间用全角冒号连接，
 # 导致常规"裸域名"规则匹配不到。判定锚点取"纯数字标签域名"——真实片名不会包含
 # 4488569.com 这类主机名；同时不把"含 .com"本身当判据，以免误伤《Alibi.com》。
+#
+# 两条必须同时成立的约束，否则会把正常种子名当广告整段删掉：
+# 1. TLD 必须是「终结」的——后面不能再跟 `.`/`-`/字母数字。
+#    种子里 `America.1997.CC.BDRip`、`Show.2019.TV.1080p`、`Channel.2021.ME.mkv`
+#    的 `.CC`/`.TV`/`.ME` 后面紧跟技术标签，是场景分隔符而不是域名；
+#    早期用 `\b` 判定，这些年份+标签会被当成「数字域名广告」删除，
+#    直接导致年份丢失、标题被削（如 `电影.2010.CC.BluRay` → `BluRay`）。
+# 2. 数字标签不能是 4 位年份（19xx/20xx）——真实广告用长数字 ID（4488569），
+#    而 4 位年份在种子命名里几乎总是出品年。
 _AD_TLD = r"(?:com|net|org|cc|tv|xyz|top|club|info|pw|me|io)"
-_AD_NUMERIC_DOMAIN_RE = re.compile(rf"\d{{3,}}\.{_AD_TLD}\b", re.IGNORECASE)
-_AD_ANY_DOMAIN_RE = re.compile(rf"[\w.-]+\.{_AD_TLD}\b", re.IGNORECASE)
-_AD_BARE_DOMAIN_RE = re.compile(rf"[\w-]+(?:\.[\w-]+)*\.{_AD_TLD}", re.IGNORECASE)
+_AD_TLD_TERMINAL = r"(?![.\dA-Za-z-])"
+_AD_NOT_YEAR = r"(?!(?:19\d{2}|20[0-3]\d)\.)"
+_AD_NUMERIC_DOMAIN_RE = re.compile(rf"(?<!\d){_AD_NOT_YEAR}\d{{3,}}\.{_AD_TLD}{_AD_TLD_TERMINAL}", re.IGNORECASE)
+_AD_ANY_DOMAIN_RE = re.compile(rf"[\w.-]+\.{_AD_TLD}{_AD_TLD_TERMINAL}", re.IGNORECASE)
+_AD_BARE_DOMAIN_RE = re.compile(rf"[\w-]+(?:\.[\w-]+)*\.{_AD_TLD}{_AD_TLD_TERMINAL}", re.IGNORECASE)
 _AD_SITE_WORD_RE = re.compile(r"(?:片网|操姦|操奸|黄漫|淫片|色情)")
 # 广告片段：站名（可带前后缀中文）+ 数字域名，整体移除
 _AD_FRAGMENT_RE = re.compile(
     rf"(?:[一-鿿]{{0,6}}(?:片网|操姦|操奸|黄漫|淫片|色情)[一-鿿]{{0,4}}[\s:：]*)?"
-    rf"\d{{3,}}\.{_AD_TLD}\b",
+    rf"(?<!\d){_AD_NOT_YEAR}\d{{3,}}\.{_AD_TLD}{_AD_TLD_TERMINAL}",
     re.IGNORECASE,
 )
 

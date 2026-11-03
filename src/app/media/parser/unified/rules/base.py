@@ -74,7 +74,9 @@ class RuleEngine:
         return elements
 
     def apply(self, ctx: ParseContext) -> ParseContext:
-        for elem in self.extract_all(ctx.text):
+        elements = self.extract_all(ctx.text)
+        self._refine_year(ctx, elements)
+        for elem in elements:
             ctx.add_element(elem)
             if elem.category == "episode":
                 ctx.episode = elem.value
@@ -97,6 +99,50 @@ class RuleEngine:
             elif elem.category == "release_group":
                 ctx.release_group = elem.value
         return ctx
+
+    @staticmethod
+    def _refine_year(ctx: ParseContext, elements: list[ExtractedElement]) -> None:
+        """季集号存在时，把「季集号之后的年份」定为出品年，片名里的年份还给标题。
+
+        真实故障：`Reply.1988.S01E16.2015.1080p...`（韩剧《请回答1988》）
+        年份规则先吃掉了紧贴片名的 1988 → 标题只剩 `Reply`、出品年记成 1988，
+        TMDB 于是匹配到另一部同名影片（线上数据里同一条剧被记成 2022 / 2026 两个
+        不同 TMDB 的电影）。
+
+        命名惯例里出品年紧跟在片名后，但片名自身含年份时（Reply 1988、
+        Wonder Woman 1984）会出现「片名年份 … 季集号 … 出品年」的顺序，
+        此时季集号之后的那个年份才是出品年。被替换掉的年份不消费，
+        让它回到标题里，标题才能还原成 `Reply 1988`。
+        """
+        year_elems = [e for e in elements if e.category == "year"]
+        if not year_elems:
+            return
+        sxx_spans = [e.span for e in elements if e.rule_name.startswith("sxxexx")]
+        if not sxx_spans:
+            return
+        boundary = max(end for _, end in sxx_spans)
+        # 年份规则带 stop，只会留下一个候选；季集号之后的出品年需要单独扫出来
+        later = re.search(r"\b(19\d{2}|20[0-3]\d)\b", ctx.text[boundary:])
+        if not later:
+            return
+        start = boundary + later.start(1)
+        end = boundary + later.end(1)
+        for elem in list(year_elems):
+            if elem.span[0] >= boundary:
+                # 已经选中的就是出品年
+                return
+            # 片名里的年份：不消费、不记为元数据，让它回到标题
+            elements.remove(elem)
+        elements.append(
+            ExtractedElement(
+                category="year",
+                value=int(later.group(1)),
+                confidence=0.85,
+                rule_name="year_after_episode",
+                span=(start, end),
+                consumed=True,
+            )
+        )
 
 
 def get_rule_engine() -> RuleEngine:
