@@ -35,6 +35,17 @@ def safe_category_name(value: Any) -> str:
     return category
 
 
+# 特别篇编号：SP01 / SP12，要求两侧有分隔符，避免误伤 Spider-Man 之类的单词
+_SP_LABEL_RE = re.compile(r"(?:^|[\._ \-])SP(\d{1,2})(?:$|[\._ \-])", re.IGNORECASE)
+
+
+def extras_sp_label(name: str) -> str:
+    """从原始文件名提取特别篇编号，返回 `SP09` 形式；非特别篇返回空串。"""
+    match = _SP_LABEL_RE.search(str(name or ""))
+    return f"SP{int(match.group(1)):02d}" if match else ""
+
+
+
 class TransferPathResolver:
     """负责路径解析、格式化字符串生成和目标目录选择."""
 
@@ -541,6 +552,14 @@ class TransferPathResolver:
         note = getattr(media_info, "note", None) if media_info else None
         if isinstance(note, dict) and note.get("is_extras"):
             season_name = "extras"
+            # 特别篇（SP09）会被解析出集号 9，直接沿用会渲染成 S01E09，
+            # 在 extras 里看起来就是正片第 9 集。改用 SP 标识命名以示区分。
+            org = str(getattr(media_info, "org_string", "") or "")
+            sp_label = extras_sp_label(org)
+            if sp_label:
+                ext = os.path.splitext(org)[1] or os.path.splitext(file_name)[1]
+                title = str(format_dict.get("title") or "").strip()
+                file_name = f"{title} - {sp_label}{ext}" if title else f"{sp_label}{ext}"
         return dir_name, season_name, file_name
 
     def get_dest_path_by_info(self, dest, meta_info, media_service, snapshot=None):
