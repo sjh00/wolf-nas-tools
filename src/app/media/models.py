@@ -48,14 +48,63 @@ def _genre_keys_of_side(rule_map: dict[str, dict[str, Any]], side: str) -> set[s
 
 
 def _tv_only_genre_keys(rule_map: dict[str, dict[str, Any]]) -> set[str]:
-    """只在 TV 侧配置了分类的题材键。
+    """只在 TV 侧有归属的题材键。
 
     「纪录片」「综艺」「儿童」这类分类通常只挂在 TV 媒体库，电影侧只有按语言
     （华语电影）或动画（动画电影）划分的分类。一部纪录片在 TMDB 里是 movie，
     若照 movie 归档就只能落进默认分类（外语电影），既不符合整理习惯，
     也让 TV/纪录片 目录永远收不到新内容。
+
+    除配置里「只在 TV 侧出现」的题材外，再并入一组**固有非电影题材**：
+    它们本就是电视形态的内容（晚会、演唱会、真人秀、纪实），即便当前分类
+    配置里没有对应栏目，也不该被当成电影塞进电影库。
     """
-    return _genre_keys_of_side(rule_map, "tv") - _genre_keys_of_side(rule_map, "movie")
+    configured = _genre_keys_of_side(rule_map, "tv") - _genre_keys_of_side(rule_map, "movie")
+    return configured | _NON_FILM_GENRES
+
+
+# 固有非电影题材：这几个题材的内容以电视/演出形态为主，不属于电影栏目。
+# 只影响「题材判定」这一步，具体落到 TV 下哪个分类仍由分类规则决定。
+_NON_FILM_GENRES: frozenset[str] = frozenset(
+    {
+        "documentary",
+        "reality",
+        "talk",
+        "kids",
+        "music",
+        "news",
+        "soap",
+        "sport",
+    }
+)
+
+
+# 以叙事为主、本身就构成一部电影的题材。命中这些说明该作品是剧情片/传记片等，
+# 即使带「音乐」「纪录片」标签也不该移出电影侧 —— 典型例子是音乐传记片
+# （《波西米亚狂想曲》= 剧情 + 音乐），它必须是电影，不能进 TV/综艺。
+_FILM_NARRATIVE_GENRES: frozenset[str] = frozenset(
+    {
+        "drama",
+        "comedy",
+        "action",
+        "adventure",
+        "crime",
+        "thriller",
+        "romance",
+        "science_fiction",
+        "mystery",
+        "horror",
+        "war",
+        "history",
+        "western",
+        "family",
+        "fantasy",
+    }
+)
+
+# 纪录片优先级最高：纪录片带「剧情」标签在 TMDB 里很常见（历史重演、人物纪实），
+# 但它的归属应该是 TV/纪录片，不能被叙事题材保护逻辑抢回电影侧。
+_PRIORITY_TV_GENRES: frozenset[str] = frozenset({"documentary"})
 
 
 class MediaInfo(BaseModel):
@@ -509,11 +558,13 @@ class MediaInfo(BaseModel):
             self.sibling_rssids = sibling_rssids
 
     def _has_tv_only_genre(self, info: dict[str, Any], rule_map: dict[str, dict[str, Any]]) -> bool:
-        """该作品是否只该归到 TV 侧分类。
+        """该作品是否该归到 TV 侧分类（而非电影侧）。
 
-        判定条件：题材命中「只在 TV 侧有分类」的键，且不命中任何电影侧分类。
-        后者保证动画纪录片（动画+纪录片）这类作品留在「动画电影」——
-        它本来就是电影，电影侧有对应栏目可放。
+        判定顺序：
+        1. 题材命中电影侧任一分类（如动画电影）→ 留在电影
+        2. 命中纪录片 → 归 TV（纪录片优先，即使 TMDB 同时给了「剧情」标签）
+        3. 命中叙事电影题材 → 留在电影（保护音乐传记片等）
+        4. 命中「只在 TV 侧有分类」的题材 → 归 TV
         """
         tv_only = _tv_only_genre_keys(rule_map)
         if not tv_only:
@@ -522,8 +573,16 @@ class MediaInfo(BaseModel):
         if not raw:
             return False
         keys = load_taxonomy().genre_keys(raw)
+        # 1. 电影侧已有归属（动画电影等）
         if keys & _genre_keys_of_side(rule_map, "movie"):
             return False
+        # 2. 纪录片优先归 TV
+        if keys & _PRIORITY_TV_GENRES:
+            return True
+        # 3. 叙事电影题材保护（音乐传记片、歌舞剧情片等）
+        if keys & _FILM_NARRATIVE_GENRES:
+            return False
+        # 4. 剩下的纯非叙事题材（综艺/音乐演出/儿童等）归 TV
         return bool(keys & tv_only)
 
     def set_download_info(self, download_setting=None, save_path=None):
