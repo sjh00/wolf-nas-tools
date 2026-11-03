@@ -188,6 +188,7 @@ class AsyncHttpClient:
         """执行异步 HTTP 请求，tenacity 自动重试 + 异常转换."""
         rate_limit_key = kwargs.pop("rate_limit_key", None)
         rate_limit_rate = kwargs.pop("rate_limit_rate", None)
+        rate_limit_burst = kwargs.pop("rate_limit_burst", None)
         rate_limit_timeout = kwargs.pop("rate_limit_timeout", None)
         raise_for_status = kwargs.pop("raise_for_status", True)
         raise_exception = kwargs.pop("raise_exception", False)
@@ -199,11 +200,15 @@ class AsyncHttpClient:
             # 未显式指定超时时给有限默认值，避免桶耗尽时无限阻塞
             if rate_limit_timeout is None:
                 rate_limit_timeout = 30.0
-            acquired = self._rate_limiter.acquire(
-                key=rate_limit_key,
-                rate=rate_limit_rate,
-                timeout=rate_limit_timeout,
-            )
+            # burst 由调用方按站点配置传入；缺省交给引擎按 rate 推导
+            acquire_kwargs: dict[str, Any] = {
+                "key": rate_limit_key,
+                "rate": rate_limit_rate,
+                "timeout": rate_limit_timeout,
+            }
+            if rate_limit_burst:
+                acquire_kwargs["burst"] = int(rate_limit_burst)
+            acquired = self._rate_limiter.acquire(**acquire_kwargs)
             if not acquired:
                 raise HttpRateLimitError(f"Rate limit exceeded: {rate_limit_key}")
 

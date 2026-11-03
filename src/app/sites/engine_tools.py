@@ -72,14 +72,21 @@ def _build_auth(engine: Any, site: Any, user_config: dict) -> tuple[dict, httpx2
 
 
 def _get_rate_limit_kwargs(engine: Any, site: Any) -> dict:
-    """获取限流参数（供 HttpClient 使用）."""
+    """获取限流参数（供 HttpClient 使用）.
+
+    必须同时传 burst：只传 rate 时 HttpClient 会按 rate 数值自行推导 burst
+    （10/m → burst=10），等于允许瞬间连发 10 个请求，绕过站点「间隔 60 秒」的限制。
+    """
     site_limiter = getattr(engine, "site_limiter", None)
     if not site_limiter or not site or not getattr(site, "id", None):
         return {}
     rate_config = site_limiter.get_rate(str(site.id))
     if not rate_config:
         return {}
-    return {"rate_limit_key": f"site:{site.id}", "rate_limit_rate": rate_config[0]}
+    kwargs = {"rate_limit_key": f"site:{site.id}", "rate_limit_rate": rate_config[0]}
+    if len(rate_config) > 1 and rate_config[1]:
+        kwargs["rate_limit_burst"] = int(rate_config[1])
+    return kwargs
 
 
 def _build_headers(engine: Any, site: Any, user_config: dict) -> dict:

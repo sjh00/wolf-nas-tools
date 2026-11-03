@@ -209,9 +209,20 @@ class TestSiteRateLimiterService:
         assert not svc.check("1", timeout=0)
 
     def test_check_blocks_when_over_limit(self):
-        svc = SiteRateLimiterService(engine=RateLimitEngine(backend=MemoryTokenBucketBackend()))
+        # min_interval=0 关闭最低间隔兜底，专测「桶耗尽即拦截」；
+        # 钳制后 burst=1 的行为见 test_clamp_blocks_second_request
+        svc = SiteRateLimiterService(
+            engine=RateLimitEngine(backend=MemoryTokenBucketBackend()), min_interval_seconds=0
+        )
         svc.register_site("1", {"rate_limit": "2/m", "rate_burst": 2})
         assert not svc.check("1", timeout=0)
+        assert not svc.check("1", timeout=0)
+        assert svc.check("1", timeout=0)
+
+    def test_clamp_blocks_second_request(self):
+        """60 秒/次兜底生效后，突发额度被压到 1：第二次请求立即被拦."""
+        svc = SiteRateLimiterService(engine=RateLimitEngine(backend=MemoryTokenBucketBackend()))
+        svc.register_site("1", {"rate_limit": "10/m", "rate_burst": 10})
         assert not svc.check("1", timeout=0)
         assert svc.check("1", timeout=0)
 
