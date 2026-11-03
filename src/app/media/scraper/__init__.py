@@ -224,11 +224,7 @@ class Scraper:
         nfo_path = os.path.join(dir_path, f"{file_name}.nfo")
         if not force_nfo and self._exists(nfo_path) and self._nfo_has_metadata(self._read_text(nfo_path)):
             return
-        title = (
-            self._download_history_title(file)
-            or str(getattr(media_info, "title", "") or "").strip()
-            or file_name
-        )
+        title = self._download_history_title(file) or str(getattr(media_info, "title", "") or "").strip() or file_name
         year = str(getattr(media_info, "year", "") or "")
         scraper_nfo = {**self._scraper_nfo.get("movie", {}), "basic": True}
         try:

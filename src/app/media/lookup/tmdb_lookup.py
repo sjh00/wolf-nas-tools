@@ -160,12 +160,45 @@ class TmdbLookup(BaseLookup):
             self._lookup_cache.set(cache_key, final)
             return final
 
+    @staticmethod
+    def _is_trimmable_tag(token: str) -> bool:
+        """判断尾部词是否属于「可裁掉的残留标签」而不是片名实词。
+
+        真实故障：`Sample Title Cop`（《示例喜剧片零零发》）整名搜不到时依次裁掉
+        尾词得到 `Sample Title`，恰好命中另一部同名电影（1996），于是被当成
+        识别成功——片名被削、TMDB 指向错误作品。
+
+        裁词重试的初衷是去掉解析残留的标签（`Ma`/`Tx`/平台码/HFR 等），
+        因此只允许裁：纯数字、极短码、已知元数据 token、全大写或含数字的短码。
+        正常的标题实词（Cop / Returns / Part 等）不裁，宁可识别失败也不认错片。
+        """
+        from app.media.parser.unified.name_extractor import _META_TOKEN_RE  # noqa: PLC0415
+
+        word = token.strip(".,;:!?、，。：；")
+        if not word:
+            return False
+        if word.isdigit():
+            return True
+        if _META_TOKEN_RE.match(word):
+            return True
+        if len(word) <= 2:
+            return True
+        # 全大写短码（MA / TX / HFR / EDR / VFR）
+        if word.isupper() and len(word) <= 8:
+            return True
+        # 含数字的短码（x265 / 2AUDIO / H264 / 10bit）
+        if len(word) <= 8 and any(ch.isdigit() for ch in word):
+            return True
+        # 带分组标记的码（x265@Group / A+B）
+        return any(ch in "@+&/" for ch in word)
+
     def _lookup_trimmed_tail(self, parsed, search_type, strict: bool | None) -> dict:
         """标题尾部残留标签导致无结果时，逐个裁掉尾词重试。
 
         TMDB 搜索对多余词不容错（如解析残留的 `Ma`/`Tx`/平台码），
         整个查询会直接 0 结果；此处对解析出的名称做有限次数尾部裁剪，
         命中后仍要求候选名称相近且年份不冲突，避免裁出错误匹配。
+        仅裁「标签样」的尾词（见 `_is_trimmable_tag`），不裁片名实词。
         """
         if strict:
             return {}
@@ -175,6 +208,9 @@ class TmdbLookup(BaseLookup):
                 continue
             for cut in range(1, _TRIM_RETRY_MAX + 1):
                 if len(tokens) - cut < 2:
+                    break
+                removed = tokens[len(tokens) - cut :]
+                if not all(self._is_trimmable_tag(tok) for tok in removed):
                     break
                 variant = " ".join(tokens[:-cut]).strip()
                 if len(variant) < 3:
