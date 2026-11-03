@@ -49,6 +49,7 @@ services:
       REDIS__HOST: redis
       REDIS__PORT: "6379"
       REDIS__DB: "0"
+      QUEUE__REQUIRE_AOF: "true"
       LABORATORY__CHROME_ENABLED: "true"
       LABORATORY__CHROME_SERVER_HOST: http://nexus-chrome:9850
     depends_on:
@@ -71,7 +72,7 @@ services:
       - wolfnas-network
     volumes:
       - ./data/redis_data:/data
-    command: redis-server --save "" --appendonly no --dir /data
+    command: redis-server --save "" --appendonly yes --appendfsync everysec --dir /data
 
   mysql:
     image: mysql:8.4

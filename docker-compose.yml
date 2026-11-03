@@ -82,7 +82,8 @@ services:
     container_name: wolfnas-redis
     volumes:
       - ./data/redis_data:/data
-    command: redis-server --save "" --appendonly no --dir /data
+    # AOF 持久化：上游持久任务队列在 Redis 模式下要求 AOF（QUEUE.REQUIRE_AOF 默认 true）
+    command: redis-server --save "" --appendonly yes --appendfsync everysec --dir /data
     restart: always
     networks:
       - wolfnas-network

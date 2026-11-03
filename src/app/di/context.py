@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.events.bus import EventBus
-    from app.infrastructure.queue.base import MessageQueue
+    from app.infrastructure.message_queue.base import MessageQueue
     from app.infrastructure.thread import ThreadExecutor
     from app.media.identity.builder import IdentityIndexBuilder
     from app.media.identity.graph import EditionGraph
@@ -116,6 +116,8 @@ class AppContext:
     storage_backend_service: Any
     search_result_service: Any
     transfer_history_service: Any
+    scrape_queue_service: Any
+    transfer_queue_service: Any
     subscribe_calendar_service: Any
     subscribe_history_service: Any
     words_service: Any

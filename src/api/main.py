@@ -26,6 +26,7 @@ from api.routers import (
     image,
     kb,
     library_rename,
+    lifecycle,
     media,
     message_webhook,
     plugin_framework,
@@ -83,17 +84,6 @@ def _startup(app: FastAPI) -> None:
     except Exception as e:
         log.error(f"[FastAPI]恢复媒体库重命名任务失败: {e}")
 
-    try:
-        log.info("[FastAPI]启动后台服务...")
-        system_lifecycle: SystemLifecycleService = app_context.system_lifecycle
-        system_lifecycle.start_service()
-        app.state.system_lifecycle = system_lifecycle
-    except Exception as e:
-        log.error(f"[FastAPI]后台服务启动失败: {e}")
-        return
-
-    log.info("[FastAPI]后台服务启动完成")
-
     for name, init_fn in [
         ("索引器", init_indexers),
         ("下载器", init_downloaders),
@@ -107,9 +97,8 @@ def _startup(app: FastAPI) -> None:
         except Exception as e:
             log.error(f"[FastAPI]{name}注册失败: {e}")
 
-    app.state.ready = True
-    log.info("[FastAPI]核心服务已就绪，后台加载插件...")
-
+    # 插件必须在后台服务（下载监控/转移）之前加载：转移依赖插件提供的
+    # parser_profiles 识别内容编号，否则启动窗口内完成的下载会误走 TMDB。
     try:
         message: Message = app_context.message
         plugin_sandbox = app_context.plugin_sandbox
@@ -122,7 +111,20 @@ def _startup(app: FastAPI) -> None:
         message.refresh_menus()
         log.info("[FastAPI]消息菜单刷新完成")
     except Exception as e:
-        log.error(f"[FastAPI]后台插件或消息初始化失败: {e}")
+        log.error(f"[FastAPI]插件或消息初始化失败: {e}")
+
+    try:
+        log.info("[FastAPI]启动后台服务...")
+        system_lifecycle: SystemLifecycleService = app_context.system_lifecycle
+        system_lifecycle.start_service()
+        app.state.system_lifecycle = system_lifecycle
+    except Exception as e:
+        log.error(f"[FastAPI]后台服务启动失败: {e}")
+        return
+
+    log.info("[FastAPI]后台服务启动完成")
+    app.state.ready = True
+    log.info("[FastAPI]核心服务已就绪")
 
 
 @asynccontextmanager
@@ -236,6 +238,7 @@ app.include_router(rss_automation.router, prefix="/api/rss-automation", tags=["r
 app.include_router(custom_rss.router, prefix="/api/site", tags=["custom-rss"])
 app.include_router(words.router, prefix="/api/words", tags=["words"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
+app.include_router(lifecycle.router, prefix="/api/media/lifecycle", tags=["media-lifecycle"])
 app.include_router(library_rename.router, prefix="/api/media", tags=["media-library-rename"])
 app.include_router(rbac.router, prefix="/api/rbac", tags=["rbac"])
 app.include_router(browser_fingerprint.router, prefix="/api", tags=["browser-fingerprint"])
