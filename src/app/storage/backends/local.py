@@ -1,10 +1,12 @@
 """本地文件系统存储后端。"""
 
+import errno
 import os
 import shutil
 from collections.abc import Iterator
 from typing import BinaryIO
 
+import log
 from app.storage.backends.base import FileInfo, StorageBackend, StorageConfig
 
 
@@ -95,10 +97,24 @@ class LocalStorageBackend(StorageBackend):
         shutil.move(src_rp, dst_rp)
 
     def hardlink(self, src: str, dst: str) -> None:
+        """硬链接；跨文件系统时自动降级为复制。
+
+        硬链接只能在同一文件系统内建立。媒体库的「下载目录」与「媒体目录」
+        经常分属不同磁盘（/media/storedisk1 ↔ /media/storedisk2 等），
+        此时 os.link 会抛 EXDEV(18)。早期实现直接上抛，导致这批转移全部失败，
+        文件既没进媒体库也没被清理，订阅侧还以为是重复下载。
+        跨盘无法真正共享 inode，降级复制是唯一可行的行为。
+        """
         src_rp = self._resolve(src)
         dst_rp = self._resolve(dst)
         os.makedirs(os.path.dirname(dst_rp), exist_ok=True)
-        os.link(src_rp, dst_rp)
+        try:
+            os.link(src_rp, dst_rp)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            log.warn(f"[Local]跨文件系统无法硬链接，降级为复制: {src_rp} -> {dst_rp}")
+            shutil.copy2(src_rp, dst_rp)
 
     def softlink(self, src: str, dst: str) -> None:
         src_rp = self._resolve(src)
