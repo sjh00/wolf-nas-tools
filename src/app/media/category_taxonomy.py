@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -62,9 +63,21 @@ class Taxonomy:
         return {key} if key else set()
 
     def language_codes(self, value: Any) -> set[str]:
+        """归一化语言值；支持 `zh-CN` / `ja_JP` / `en-US` 这类带地区后缀的写法。
+
+        BCP 47 允许 `语言-地区`（TMDB 偶尔返回 `pt-BR`、`zh-TW`），
+        精确匹配查不到时退回主语言子标签，避免整条语言信息丢失。
+        """
         result: set[str] = set()
         for item in _as_values(value):
-            code = self.language_aliases.get(str(item).strip().lower())
+            text = str(item).strip().lower()
+            if not text:
+                continue
+            code = self.language_aliases.get(text)
+            if not code:
+                # 去掉地区/变体后缀再查一次（zh-cn → zh，ja_jp → ja）
+                primary = re.split(r"[-_]", text, maxsplit=1)[0]
+                code = self.language_aliases.get(primary)
             if code:
                 result.add(code)
         return result
@@ -74,7 +87,13 @@ class Taxonomy:
         for item in _as_values(value):
             if isinstance(item, dict):
                 item = item.get("iso_3166_1") or item.get("name") or ""
-            code = self.country_aliases.get(str(item).strip().lower())
+            text = str(item).strip()
+            code = self.country_aliases.get(text.lower())
+            if not code and len(text) > 2:
+                # 兼容 “Japan (JP)” 之类的复合写法：取其中的 2 位代码
+                match = re.search(r"\b([A-Z]{2})\b", text)
+                if match:
+                    code = self.country_aliases.get(match.group(1).lower())
             if code:
                 result.add(code)
         return result
