@@ -295,28 +295,34 @@ class PathUtils:
     @staticmethod
     def is_extras(path: str) -> bool:
         """
-        判断是否为额外内容/花絮目录或文件。
+        判断是否为额外内容/花絮/特别篇目录或文件。
         匹配 BONUS.DISC、behind the scenes、deleted scenes、interviews、
-        samples、shorts、featurettes、clips 等模式。
+        samples、shorts、featurettes、clips 等模式，
+        以及 SP/Specials/Season 0 目录与 SPxx 命名的特别篇文件。
         """
         basedir = os.path.basename(path)
-        if re.search(
-            r".+?[\._ ]BONUS[\._ ]DISC"
-            r"|behind[\._ -]the[\._ -]scenes$"
-            r"|deleted[\._ -]scenes$"
-            r"|interviews$"
-            r"|featurettes$"
-            r"|making[\._ -]of$"
-            r"|gag[\._ -]reel$"
-            r"|extras$"
-            r"|bonus$"
-            r"|samples$"
-            r"|shorts$"
-            r"|clips$",
-            basedir,
-            re.IGNORECASE,
-        ):
-            return True
+        # 去掉扩展名再匹配一次：`interviews$` / `making of$` 这类以结尾锚定的模式，
+        # 对 `interviews.mkv` 永远不生效。目录名无扩展名时 stem == basedir，
+        # 两种写法都保留可覆盖 `dir.extras`（目录）与 `extras.mkv`（文件）。
+        stem = os.path.splitext(basedir)[0]
+        for candidate in (basedir, stem):
+            if re.search(
+                r".+?[\._ ]BONUS[\._ ]DISC"
+                r"|behind[\._ -]the[\._ -]scenes$"
+                r"|deleted[\._ -]scenes$"
+                r"|interviews$"
+                r"|featurettes$"
+                r"|making[\._ -]of$"
+                r"|gag[\._ -]reel$"
+                r"|extras$"
+                r"|bonus$"
+                r"|samples$"
+                r"|shorts$"
+                r"|clips$",
+                candidate,
+                re.IGNORECASE,
+            ):
+                return True
         if re.search(
             r".+?[\._ ]BONUS[\._ ]DISC[\._ ]"
             r"|.+?SP?\d{1,2}\.extras\.\d{2,}"
@@ -326,11 +332,17 @@ class PathUtils:
             re.IGNORECASE,
         ):
             return True
-        # 路径段是花絮目录：.../Extras/...、.../Bonus Disc/...
+        # 特别篇文件：SP01 / SP12 这类带分隔符界定的标记。
+        # 要求两侧都有分隔符（或位于首尾），避免误伤 Spider-Man、Spring 等单词。
+        # 例：The.World.at.War.SP09.1973.BluRay...mkv、某某剧.SP03.mkv
+        if re.search(r"(?:^|[\._ \-])SP\d{1,2}(?:$|[\._ \-])", basedir, re.IGNORECASE):
+            return True
+        # 路径段是花絮/特别篇目录：.../Extras/...、.../Bonus Disc/...、.../SP/...、.../Season 0/...
         normalized = path.replace("\\", "/")
         return bool(
             re.search(
-                r"/(?:extras|bonus(?:[\._ -]disc)?|featurettes|behind[\._ -]the[\._ -]scenes)/",
+                r"/(?:extras|bonus(?:[\._ -]disc)?|featurettes|behind[\._ -]the[\._ -]scenes"
+                r"|sp|specials|season[\._ -]?0)/",
                 f"{normalized}/",
                 re.IGNORECASE,
             )
