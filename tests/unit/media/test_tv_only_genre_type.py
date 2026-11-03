@@ -58,14 +58,39 @@ class TestGenreKeysFromRules:
 
 class TestTvOnlyGenreKeys:
     def test_computes_difference_from_config(self):
-        assert _tv_only_genre_keys(RULE_MAP) == {"documentary", "kids", "reality", "talk"}
+        # 固有非电影题材始终并入，配置里只在 TV 侧出现的也并入
+        assert _tv_only_genre_keys(RULE_MAP) == {
+            "documentary",
+            "kids",
+            "reality",
+            "talk",
+            "music",
+            "news",
+            "soap",
+            "sport",
+        }
 
     def test_genre_with_movie_home_is_excluded(self):
         # 动画(16) 在电影侧有「动画电影」，不算 TV-only
         assert "animation" not in _tv_only_genre_keys(RULE_MAP)
 
+    def test_non_film_genres_present_even_without_config(self):
+        # 配置里完全没有任何分类时，「音乐」「纪录片」等固有非电影题材仍然归 TV
+        empty = _tv_only_genre_keys({"movie": {}, "tv": {}})
+        assert {"documentary", "music", "reality", "talk", "kids"} <= empty
+
     def test_empty_config(self):
-        assert _tv_only_genre_keys({"movie": {}, "tv": {}}) == set()
+        # 无配置时仅剩固有非电影题材
+        assert _tv_only_genre_keys({"movie": {}, "tv": {}}) == {
+            "documentary",
+            "kids",
+            "music",
+            "news",
+            "reality",
+            "soap",
+            "sport",
+            "talk",
+        }
 
 
 class TestTypeCorrection:
@@ -84,9 +109,15 @@ class TestTypeCorrection:
             ([{"id": 10767, "name": "Talk Show"}], "tv"),
             ([{"id": 10764, "name": "Reality"}], "tv"),
             ([{"id": 10762, "name": "Kids"}], "tv"),
+            # 音乐会/演唱会/晚会：纯音乐题材，不是电影
+            ([{"id": 10402, "name": "Music"}], "tv"),
+            # 纪录片带剧情标签（历史重演/人物纪实）仍归 TV —— 纪录片优先
+            ([{"id": 18, "name": "Drama"}, {"id": 99, "name": "Documentary"}], "tv"),
+            # 音乐 + 纪录片（音乐会实况纪录片）
+            ([{"id": 10402, "name": "Music"}, {"id": 99, "name": "Documentary"}], "tv"),
         ],
     )
-    def test_tv_only_genres_become_tv(self, genres, expected):
+    def test_non_film_genres_become_tv(self, genres, expected):
         assert self._resolve(genres) == expected
 
     @pytest.mark.parametrize(
@@ -96,9 +127,18 @@ class TestTypeCorrection:
             [{"id": 28, "name": "Action"}],
             [{"id": 16, "name": "Animation"}],  # 有「动画电影」分类，保持电影
             [{"id": 18, "name": "Drama"}, {"id": 16, "name": "Animation"}],
+            # 音乐传记片/歌舞片：带剧情/爱情等叙事题材，必须留在电影侧
+            ([{"id": 18, "name": "Drama"}, {"id": 10402, "name": "Music"}]),
+            (
+                [
+                    {"id": 18, "name": "Drama"},
+                    {"id": 10402, "name": "Music"},
+                    {"id": 10749, "name": "Romance"},
+                ]
+            ),
         ],
     )
-    def test_movies_with_movie_home_stay_movie(self, genres):
+    def test_narrative_films_stay_movie(self, genres):
         assert self._resolve(genres) == "movie"
 
     def test_animation_plus_documentary_prefers_movie(self):
