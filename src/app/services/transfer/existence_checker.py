@@ -18,7 +18,11 @@ class MediaExistenceChecker:
 
     @staticmethod
     def _layout_dirs(base: str, dir_name: str, category: str, use_category: bool) -> list[str]:
-        """主布局路径 + 旧布局兼容路径；分类为空时只有平铺."""
+        """布局候选路径，按优先级排列：第 0 项即「新条目应该落在哪里」。
+
+        分类为空时只有平铺；分类存在时有分类/平铺两种写法，由 use_category
+        决定首选，另一个作为历史布局的兼容候选。
+        """
         flat = os.path.join(base, dir_name)
         if not category:
             return [flat]
@@ -84,26 +88,16 @@ class MediaExistenceChecker:
         if media.type == MediaType.MOVIE:
             dir_name, file_name = self._path_resolver.get_movie_dest_path(media, self._media)
             category = safe_category_name(getattr(media, "category", ""))
-            candidates = self._layout_dirs(
+            layout_dirs = self._layout_dirs(
                 media_dest, dir_name, category, bool(self._path_resolver.movie_category_flag)
             )
+            # 「精选」是历史兼容布局：只有该片已在其中时才沿用，不能成为新片的默认落点
             favorite_path = os.path.join(media_dest, RMT_FAVTYPE, dir_name)
-            if favorite_path not in candidates:
-                candidates.insert(0, favorite_path)
-            for file_path in candidates:
-                ret_dir_path = file_path
-                if _exists(file_path):
-                    dir_exist_flag = True
-                file_dest = os.path.join(file_path, file_name)
-                ret_file_path = file_dest
-                for ext in RMT_MEDIAEXT:
-                    ext_dest = f"{file_dest}{ext}"
-                    if _exists(ext_dest):
-                        file_exist_flag = True
-                        ret_file_path = ext_dest
-                        break
-                if file_exist_flag:
-                    break
+            candidates = [favorite_path, *[d for d in layout_dirs if d != favorite_path]]
+            ret_dir_path = self._pick_target_dir(candidates, layout_dirs[0], file_name, _exists)
+            dir_exist_flag = bool(ret_dir_path) and _exists(ret_dir_path)
+            if ret_dir_path:
+                ret_file_path, file_exist_flag = self._find_existing_file(ret_dir_path, file_name, _exists)
         else:
             dir_name, season_name, file_name = self._path_resolver.get_tv_dest_path(media, self._media)
             # 与 TransferPathResolver.get_dest_path_by_info 使用同一套布局开关。
@@ -112,24 +106,52 @@ class MediaExistenceChecker:
             if media.type == MediaType.ANIME:
                 add_category = bool(self._path_resolver.anime_category_flag)
             if media.get_season_list():
-                for media_path in self._layout_dirs(media_dest, dir_name, category, add_category):
-                    season_dir = os.path.join(media_path, season_name)
-                    ret_dir_path = season_dir
-                    if _exists(season_dir):
-                        dir_exist_flag = True
-                    episodes = media.get_episode_list()
-                    if episodes:
-                        file_path = os.path.join(season_dir, file_name)
-                        ret_file_path = file_path
-                        for ext in RMT_MEDIAEXT:
-                            ext_dest = f"{file_path}{ext}"
-                            if _exists(ext_dest):
-                                file_exist_flag = True
-                                ret_file_path = ext_dest
-                                break
-                    if file_exist_flag:
-                        break
+                layout_dirs = self._layout_dirs(media_dest, dir_name, category, add_category)
+                season_dirs = [os.path.join(media_path, season_name) for media_path in layout_dirs]
+                episodes = media.get_episode_list()
+                ret_dir_path = self._pick_target_dir(
+                    season_dirs, season_dirs[0], file_name if episodes else "", _exists
+                )
+                dir_exist_flag = bool(ret_dir_path) and _exists(ret_dir_path)
+                if ret_dir_path and episodes:
+                    ret_file_path, file_exist_flag = self._find_existing_file(ret_dir_path, file_name, _exists)
         return dir_exist_flag, ret_dir_path, file_exist_flag, ret_file_path
+
+    @classmethod
+    def _find_existing_file(cls, dir_path: str, file_name: str, exists_fn) -> tuple[str | None, bool]:
+        """在给定目录里按媒体扩展名找已存在的同名文件，返回（文件路径, 是否存在）."""
+        if not dir_path or not file_name:
+            return None, False
+        base = os.path.join(dir_path, file_name)
+        for ext in RMT_MEDIAEXT:
+            candidate = f"{base}{ext}"
+            if exists_fn(candidate):
+                return candidate, True
+        return base, False
+
+    @classmethod
+    def _pick_target_dir(cls, candidates: list[str], preferred: str, file_name: str, exists_fn) -> str | None:
+        """从布局候选中挑出本次要写入的目录。
+
+        - 某个候选里已有该文件 → 用它，避免同一部片在分类/平铺两种布局各存一份
+        - 否则用第一个已存在的目录，让新集数跟已有集数落在同一处
+        - 都不存在 → 用首选布局（`candidates` 的首选项），这是新条目该落的目录
+
+        早期实现直接在循环里把 `ret_dir_path` 逐项覆盖，循环结束（没有命中文件时）
+        会停在最后一个候选即「平铺」布局——分类布局因此只对库里已存在的条目生效，
+        新订阅/新入库的条目全部落到平铺目录，且一旦落错后续集数会一直跟随。
+        """
+        first_existing: str | None = None
+        for path in candidates:
+            if not path:
+                continue
+            if file_name:
+                _, hit = cls._find_existing_file(path, file_name, exists_fn)
+                if hit:
+                    return path
+            if first_existing is None and exists_fn(path):
+                first_existing = path
+        return first_existing or preferred
 
     def get_no_exists_medias(self, meta_info_obj, meta_info_fn, season=None, total_num=None):
         """
