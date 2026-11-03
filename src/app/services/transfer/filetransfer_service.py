@@ -1537,8 +1537,8 @@ class FileTransferService:
                     content_profile=getattr(media, "content_profile", None),
                 )
 
-                # BONUS/花絮内容：跳过转移历史、NFO/海报、字幕下载
-                isextras = media.type != MediaType.ANIME and PathUtils.is_extras(file_item)
+                # BONUS/花絮/特别篇：跳过转移历史、NFO/海报、字幕下载
+                isextras = PathUtils.is_extras(file_item)
 
                 if not isextras:
                     self._history.insert_transfer_history(
@@ -1961,8 +1961,8 @@ class FileTransferService:
         src_backend=None,
         dst_backend=None,
     ):
-        # 额外内容/花絮：写入 note 标记，供路径解析落盘到 extras 子目录、下游事件区分
-        if media.type != MediaType.ANIME and PathUtils.is_extras(file_item):
+        # 额外内容/花絮/特别篇：写入 note 标记，供路径解析落盘到 extras 子目录、下游事件区分
+        if PathUtils.is_extras(file_item):
             media.note["is_extras"] = True
         # 源文件级去重：同一个文件已成功转移且目标仍存在时跳过，多版本文件互不影响。
         if not udf_flag:
