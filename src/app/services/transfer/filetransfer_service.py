@@ -141,6 +141,23 @@ def _spec_signature_from_filename(filename: str) -> str:
         return ""
 
 
+def _snapshot_field_value(snapshot, name: str):
+    """读取快照字段值；支持 FieldValue 包装与裸值两种形态。
+
+    快照把各 provider 的标量字段统一放在 `fields` 字典里（值为 FieldValue），
+    Snapshot 对象本身没有同名属性；早期代码直接 `getattr(snapshot, "xxx")`
+    取不到值，分类等信息因此静默丢失。
+    """
+    fields = getattr(snapshot, "fields", None)
+    if not isinstance(fields, dict):
+        return None
+    item = fields.get(name)
+    if item is None:
+        return None
+    value = getattr(item, "value", item)
+    return value if value not in ("", None) else None
+
+
 _mirror_queue: MemoryMessageQueue | None = None
 _mirror_queue_lock = threading.Lock()
 
@@ -899,11 +916,14 @@ class FileTransferService:
                 "content_profile": getattr(snapshot, "content_profile", "") or "",
                 "providers": [str(getattr(snapshot, "primary_provider", "") or "")]
                 + [str(getattr(ref, "provider", "") or "") for ref in getattr(snapshot, "refs", []) or []],
+                # original_language 必需：分类规则「华语电影」正是按它匹配（zh,cn,bo,za）。
+                # 早期这里漏传，规则永远匹配不上 → 一路掉到 is_default 的「外语电影」，
+                # 导致国语片全部被分到外语电影目录（快照里的 spoken_languages 是
+                # 「普通话」这类中文名，规则值却是语言代码，无法兜底）。
+                # 注意该字段只存在于 snapshot.fields 里，Snapshot 对象没有同名属性。
+                "original_language": _snapshot_field_value(snapshot, "original_language"),
             }
-            return str(
-                get_category(rule_map.get(key), info, str(media_type_value or key))
-                or ""
-            )
+            return str(get_category(rule_map.get(key), info, str(media_type_value or key)) or "")
         except Exception as exc:  # noqa: BLE001 - 分类失败不阻断转移
             log.debug(f"[Rmt]快照分类匹配失败: {exc}")
             return ""
@@ -1494,8 +1514,7 @@ class FileTransferService:
                     year=media.year or "",
                     season_episode=season_episode,
                     poster=media.get_poster_image() or "",
-                    identity_id=getattr(snapshot, "identity_id", None)
-                    or getattr(media, "identity_id", None),
+                    identity_id=getattr(snapshot, "identity_id", None) or getattr(media, "identity_id", None),
                     anchor_provider=getattr(media, "anchor_provider", None),
                     anchor_external_id=getattr(media, "anchor_external_id", None),
                     content_profile=getattr(media, "content_profile", None),
