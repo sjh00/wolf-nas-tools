@@ -459,6 +459,24 @@
         "War & Politics",
         "戰爭政治"
       ]
+    },
+    "sport": {
+      "labels": {
+        "zh": "运动",
+        "en": "Sport"
+      },
+      "tmdb": {
+        "movie": [
+          10770
+        ]
+      },
+      "aliases": [
+        "运动",
+        "運動",
+        "体育",
+        "體育",
+        "Sport"
+      ]
     }
   },
   "languages": {
@@ -510,7 +528,8 @@
         "日本語",
         "日語",
         "ja",
-        "jp"
+        "jp",
+        "jpn"
       ]
     },
     "ko": {
@@ -524,7 +543,16 @@
         "韓語",
         "韓国語",
         "ko",
-        "kr"
+        "kr",
+        "朝鲜语",
+        "朝鮮語",
+        "한국어",
+        "조선말",
+        "한국어/조선말",
+        "kor",
+        "조선어",
+        "韩国语",
+        "韓國語"
       ]
     },
     "en": {
@@ -536,7 +564,8 @@
         "英语",
         "English",
         "英語",
-        "en"
+        "en",
+        "eng"
       ]
     },
     "fr": {
@@ -548,7 +577,11 @@
         "法语",
         "French",
         "法語",
-        "fr"
+        "fr",
+        "Français",
+        "Francais",
+        "fre",
+        "fra"
       ]
     },
     "de": {
@@ -560,7 +593,10 @@
         "德语",
         "German",
         "德語",
-        "de"
+        "de",
+        "Deutsch",
+        "ger",
+        "deu"
       ]
     },
     "es": {
@@ -572,7 +608,10 @@
         "西班牙语",
         "Spanish",
         "西班牙語",
-        "es"
+        "es",
+        "Español",
+        "Espanol",
+        "spa"
       ]
     },
     "it": {
@@ -584,7 +623,10 @@
         "意大利语",
         "Italian",
         "意大利語",
-        "it"
+        "it",
+        "義大利語",
+        "Italiano",
+        "ita"
       ]
     },
     "ru": {
@@ -596,7 +638,10 @@
         "俄语",
         "Russian",
         "俄語",
-        "ru"
+        "ru",
+        "Русский",
+        "Pусский",
+        "rus"
       ]
     },
     "th": {
@@ -608,7 +653,9 @@
         "泰语",
         "Thai",
         "泰語",
-        "th"
+        "th",
+        "ภาษาไทย",
+        "tha"
       ]
     },
     "pt": {
@@ -620,7 +667,489 @@
         "葡萄牙语",
         "Portuguese",
         "葡萄牙語",
-        "pt"
+        "pt",
+        "Português",
+        "Portugues",
+        "por"
+      ]
+    },
+    "hi": {
+      "labels": {
+        "zh": "印地语",
+        "en": "Hindi"
+      },
+      "aliases": [
+        "印地语",
+        "印地語",
+        "हिन्दी",
+        "Hindi",
+        "hi",
+        "hin"
+      ]
+    },
+    "ar": {
+      "labels": {
+        "zh": "阿拉伯语",
+        "en": "Arabic"
+      },
+      "aliases": [
+        "阿拉伯语",
+        "阿拉伯語",
+        "العربية",
+        "Arabic",
+        "ar",
+        "ara"
+      ]
+    },
+    "nl": {
+      "labels": {
+        "zh": "荷兰语",
+        "en": "Dutch"
+      },
+      "aliases": [
+        "荷兰语",
+        "荷蘭語",
+        "Nederlands",
+        "Dutch",
+        "nl",
+        "nld",
+        "dut"
+      ]
+    },
+    "sv": {
+      "labels": {
+        "zh": "瑞典语",
+        "en": "Swedish"
+      },
+      "aliases": [
+        "瑞典语",
+        "瑞典語",
+        "svenska",
+        "Swedish",
+        "sv",
+        "swe"
+      ]
+    },
+    "da": {
+      "labels": {
+        "zh": "丹麦语",
+        "en": "Danish"
+      },
+      "aliases": [
+        "丹麦语",
+        "丹麥語",
+        "Dansk",
+        "Danish",
+        "da",
+        "dan"
+      ]
+    },
+    "cs": {
+      "labels": {
+        "zh": "捷克语",
+        "en": "Czech"
+      },
+      "aliases": [
+        "捷克语",
+        "捷克語",
+        "Český",
+        "Cesky",
+        "Czech",
+        "cs",
+        "ces",
+        "cze"
+      ]
+    },
+    "id": {
+      "labels": {
+        "zh": "印尼语",
+        "en": "Indonesian"
+      },
+      "aliases": [
+        "印尼语",
+        "印尼語",
+        "印度尼西亚语",
+        "Bahasa indonesia",
+        "Indonesian",
+        "id",
+        "ind"
+      ]
+    },
+    "fa": {
+      "labels": {
+        "zh": "波斯语",
+        "en": "Persian"
+      },
+      "aliases": [
+        "波斯语",
+        "波斯語",
+        "فارسی",
+        "Persian",
+        "fa",
+        "fas",
+        "per"
+      ]
+    },
+    "ur": {
+      "labels": {
+        "zh": "乌尔都语",
+        "en": "Urdu"
+      },
+      "aliases": [
+        "乌尔都语",
+        "烏爾都語",
+        "اردو",
+        "Urdu",
+        "ur",
+        "urd"
+      ]
+    },
+    "te": {
+      "labels": {
+        "zh": "泰卢固语",
+        "en": "Telugu"
+      },
+      "aliases": [
+        "泰卢固语",
+        "泰盧固語",
+        "తెలుగు",
+        "Telugu",
+        "te",
+        "tel"
+      ]
+    },
+    "sw": {
+      "labels": {
+        "zh": "斯瓦希里语",
+        "en": "Swahili"
+      },
+      "aliases": [
+        "斯瓦希里语",
+        "斯瓦希里語",
+        "Kiswahili",
+        "Swahili",
+        "sw",
+        "swa"
+      ]
+    },
+    "vi": {
+      "labels": {
+        "zh": "越南语",
+        "en": "Vietnamese"
+      },
+      "aliases": [
+        "越南语",
+        "越南語",
+        "Tiếng Việt",
+        "Vietnamese",
+        "vi",
+        "vie"
+      ]
+    },
+    "tr": {
+      "labels": {
+        "zh": "土耳其语",
+        "en": "Turkish"
+      },
+      "aliases": [
+        "土耳其语",
+        "土耳其語",
+        "Türkçe",
+        "Turkish",
+        "tr",
+        "tur"
+      ]
+    },
+    "pl": {
+      "labels": {
+        "zh": "波兰语",
+        "en": "Polish"
+      },
+      "aliases": [
+        "波兰语",
+        "波蘭語",
+        "Polski",
+        "Polish",
+        "pl",
+        "pol"
+      ]
+    },
+    "uk": {
+      "labels": {
+        "zh": "乌克兰语",
+        "en": "Ukrainian"
+      },
+      "aliases": [
+        "乌克兰语",
+        "烏克蘭語",
+        "Українська",
+        "Ukrainian",
+        "uk",
+        "ukr",
+        "Український",
+        "українська"
+      ]
+    },
+    "he": {
+      "labels": {
+        "zh": "希伯来语",
+        "en": "Hebrew"
+      },
+      "aliases": [
+        "希伯来语",
+        "希伯來語",
+        "עברית",
+        "Hebrew",
+        "he",
+        "heb"
+      ]
+    },
+    "el": {
+      "labels": {
+        "zh": "希腊语",
+        "en": "Greek"
+      },
+      "aliases": [
+        "希腊语",
+        "希臘語",
+        "Ελληνικά",
+        "Greek",
+        "el",
+        "gre",
+        "ell"
+      ]
+    },
+    "hu": {
+      "labels": {
+        "zh": "匈牙利语",
+        "en": "Hungarian"
+      },
+      "aliases": [
+        "匈牙利语",
+        "匈牙利語",
+        "Magyar",
+        "Hungarian",
+        "hu",
+        "hun"
+      ]
+    },
+    "fi": {
+      "labels": {
+        "zh": "芬兰语",
+        "en": "Finnish"
+      },
+      "aliases": [
+        "芬兰语",
+        "芬蘭語",
+        "Suomi",
+        "Finnish",
+        "fi",
+        "fin"
+      ]
+    },
+    "no": {
+      "labels": {
+        "zh": "挪威语",
+        "en": "Norwegian"
+      },
+      "aliases": [
+        "挪威语",
+        "挪威語",
+        "Norsk",
+        "Norwegian",
+        "no",
+        "nor"
+      ]
+    },
+    "ro": {
+      "labels": {
+        "zh": "罗马尼亚语",
+        "en": "Romanian"
+      },
+      "aliases": [
+        "罗马尼亚语",
+        "羅馬尼亞語",
+        "Română",
+        "Romanian",
+        "ro",
+        "rum",
+        "ron"
+      ]
+    },
+    "ms": {
+      "labels": {
+        "zh": "马来语",
+        "en": "Malay"
+      },
+      "aliases": [
+        "马来语",
+        "馬來語",
+        "Bahasa melayu",
+        "Malay",
+        "ms",
+        "may",
+        "msa"
+      ]
+    },
+    "tl": {
+      "labels": {
+        "zh": "他加禄语",
+        "en": "Tagalog"
+      },
+      "aliases": [
+        "他加禄语",
+        "他加祿語",
+        "Tagalog",
+        "tl",
+        "tgl"
+      ]
+    },
+    "bn": {
+      "labels": {
+        "zh": "孟加拉语",
+        "en": "Bengali"
+      },
+      "aliases": [
+        "孟加拉语",
+        "孟加拉語",
+        "বাংলা",
+        "Bengali",
+        "bn",
+        "ben"
+      ]
+    },
+    "ta": {
+      "labels": {
+        "zh": "泰米尔语",
+        "en": "Tamil"
+      },
+      "aliases": [
+        "泰米尔语",
+        "泰米爾語",
+        "தமிழ்",
+        "Tamil",
+        "ta",
+        "tam"
+      ]
+    },
+    "ml": {
+      "labels": {
+        "zh": "马拉雅拉姆语",
+        "en": "Malayalam"
+      },
+      "aliases": [
+        "马拉雅拉姆语",
+        "Malayalam",
+        "ml",
+        "mal"
+      ]
+    },
+    "kn": {
+      "labels": {
+        "zh": "卡纳达语",
+        "en": "Kannada"
+      },
+      "aliases": [
+        "卡纳达语",
+        "ಕನ್ನಡ",
+        "Kannada",
+        "kn",
+        "kan"
+      ]
+    },
+    "mr": {
+      "labels": {
+        "zh": "马拉地语",
+        "en": "Marathi"
+      },
+      "aliases": [
+        "马拉地语",
+        "मराठी",
+        "Marathi",
+        "mr",
+        "mar"
+      ]
+    },
+    "ca": {
+      "labels": {
+        "zh": "加泰罗尼亚语",
+        "en": "Catalan"
+      },
+      "aliases": [
+        "加泰罗尼亚语",
+        "Català",
+        "Catalan",
+        "ca",
+        "cat"
+      ]
+    },
+    "sq": {
+      "labels": {
+        "zh": "阿尔巴尼亚语",
+        "en": "Albanian"
+      },
+      "aliases": [
+        "阿尔巴尼亚语",
+        "阿爾巴尼亞語",
+        "shqip",
+        "Albanian",
+        "sq",
+        "alb",
+        "sqi"
+      ]
+    },
+    "so": {
+      "labels": {
+        "zh": "索马里语",
+        "en": "Somali"
+      },
+      "aliases": [
+        "索马里语",
+        "索馬里語",
+        "Somali",
+        "so",
+        "som"
+      ]
+    },
+    "et": {
+      "labels": {
+        "zh": "爱沙尼亚语",
+        "en": "Estonian"
+      },
+      "aliases": [
+        "爱沙尼亚语",
+        "愛沙尼亞語",
+        "Eesti",
+        "Estonian",
+        "et",
+        "est"
+      ]
+    },
+    "la": {
+      "labels": {
+        "zh": "拉丁语",
+        "en": "Latin"
+      },
+      "aliases": [
+        "拉丁语",
+        "拉丁語",
+        "Latin",
+        "la",
+        "lat"
+      ]
+    },
+    "ee": {
+      "labels": {
+        "zh": "埃维语",
+        "en": "Ewe"
+      },
+      "aliases": [
+        "埃维语",
+        "埃維語",
+        "Èʋegbe",
+        "Ewe",
+        "ee",
+        "ewe"
       ]
     }
   },
@@ -635,7 +1164,9 @@
         "China",
         "中國",
         "CN",
-        "CHN"
+        "CHN",
+        "中国大陆",
+        "中國大陸"
       ]
     },
     "HK": {
@@ -662,7 +1193,8 @@
         "台湾",
         "台灣",
         "TW",
-        "TWN"
+        "TWN",
+        "臺灣"
       ]
     },
     "JP": {
@@ -687,7 +1219,9 @@
         "South Korea",
         "韓國",
         "KR",
-        "KOR"
+        "KOR",
+        "南韩",
+        "Korea"
       ]
     },
     "US": {
@@ -752,7 +1286,8 @@
         "意大利",
         "Italy",
         "IT",
-        "ITA"
+        "ITA",
+        "義大利"
       ]
     },
     "ES": {
@@ -828,6 +1363,471 @@
         "澳洲",
         "AU",
         "AUS"
+      ]
+    },
+    "KP": {
+      "labels": {
+        "zh": "朝鲜",
+        "en": "North Korea"
+      },
+      "aliases": [
+        "朝鲜",
+        "北韩",
+        "North Korea",
+        "KP",
+        "PRK"
+      ]
+    },
+    "SG": {
+      "labels": {
+        "zh": "新加坡",
+        "en": "SG"
+      },
+      "aliases": [
+        "新加坡",
+        "Singapore",
+        "SG",
+        "SGP"
+      ]
+    },
+    "NL": {
+      "labels": {
+        "zh": "荷兰",
+        "en": "Netherlands"
+      },
+      "aliases": [
+        "荷兰",
+        "荷蘭",
+        "Netherlands",
+        "NL",
+        "NLD"
+      ]
+    },
+    "BE": {
+      "labels": {
+        "zh": "比利时",
+        "en": "Belgium"
+      },
+      "aliases": [
+        "比利时",
+        "比利時",
+        "Belgium",
+        "BE",
+        "BEL"
+      ]
+    },
+    "SE": {
+      "labels": {
+        "zh": "瑞典",
+        "en": "SE"
+      },
+      "aliases": [
+        "瑞典",
+        "Sweden",
+        "SE",
+        "SWE"
+      ]
+    },
+    "NO": {
+      "labels": {
+        "zh": "挪威",
+        "en": "NO"
+      },
+      "aliases": [
+        "挪威",
+        "Norway",
+        "NO",
+        "NOR"
+      ]
+    },
+    "DK": {
+      "labels": {
+        "zh": "丹麦",
+        "en": "Denmark"
+      },
+      "aliases": [
+        "丹麦",
+        "丹麥",
+        "Denmark",
+        "DK",
+        "DNK"
+      ]
+    },
+    "FI": {
+      "labels": {
+        "zh": "芬兰",
+        "en": "Finland"
+      },
+      "aliases": [
+        "芬兰",
+        "芬蘭",
+        "Finland",
+        "FI",
+        "FIN"
+      ]
+    },
+    "PL": {
+      "labels": {
+        "zh": "波兰",
+        "en": "Poland"
+      },
+      "aliases": [
+        "波兰",
+        "波蘭",
+        "Poland",
+        "PL",
+        "POL"
+      ]
+    },
+    "PT": {
+      "labels": {
+        "zh": "葡萄牙",
+        "en": "PT"
+      },
+      "aliases": [
+        "葡萄牙",
+        "Portugal",
+        "PT",
+        "PRT"
+      ]
+    },
+    "IE": {
+      "labels": {
+        "zh": "爱尔兰",
+        "en": "Ireland"
+      },
+      "aliases": [
+        "爱尔兰",
+        "愛爾蘭",
+        "Ireland",
+        "IE",
+        "IRL"
+      ]
+    },
+    "AT": {
+      "labels": {
+        "zh": "奥地利",
+        "en": "Austria"
+      },
+      "aliases": [
+        "奥地利",
+        "奧地利",
+        "Austria",
+        "AT",
+        "AUT"
+      ]
+    },
+    "CH": {
+      "labels": {
+        "zh": "瑞士",
+        "en": "CH"
+      },
+      "aliases": [
+        "瑞士",
+        "Switzerland",
+        "CH",
+        "CHE"
+      ]
+    },
+    "BR": {
+      "labels": {
+        "zh": "巴西",
+        "en": "BR"
+      },
+      "aliases": [
+        "巴西",
+        "Brazil",
+        "BR",
+        "BRA"
+      ]
+    },
+    "MX": {
+      "labels": {
+        "zh": "墨西哥",
+        "en": "MX"
+      },
+      "aliases": [
+        "墨西哥",
+        "Mexico",
+        "MX",
+        "MEX"
+      ]
+    },
+    "AR": {
+      "labels": {
+        "zh": "阿根廷",
+        "en": "AR"
+      },
+      "aliases": [
+        "阿根廷",
+        "Argentina",
+        "AR",
+        "ARG"
+      ]
+    },
+    "CL": {
+      "labels": {
+        "zh": "智利",
+        "en": "CL"
+      },
+      "aliases": [
+        "智利",
+        "Chile",
+        "CL",
+        "CHL"
+      ]
+    },
+    "CO": {
+      "labels": {
+        "zh": "哥伦比亚",
+        "en": "Colombia"
+      },
+      "aliases": [
+        "哥伦比亚",
+        "哥倫比亞",
+        "Colombia",
+        "CO",
+        "COL"
+      ]
+    },
+    "ID": {
+      "labels": {
+        "zh": "印尼",
+        "en": "印度尼西亞"
+      },
+      "aliases": [
+        "印尼",
+        "印度尼西亚",
+        "印度尼西亞",
+        "Indonesia",
+        "ID",
+        "IDN"
+      ]
+    },
+    "MY": {
+      "labels": {
+        "zh": "马来西亚",
+        "en": "Malaysia"
+      },
+      "aliases": [
+        "马来西亚",
+        "馬來西亞",
+        "Malaysia",
+        "MY",
+        "MYS"
+      ]
+    },
+    "PH": {
+      "labels": {
+        "zh": "菲律宾",
+        "en": "Philippines"
+      },
+      "aliases": [
+        "菲律宾",
+        "菲律賓",
+        "Philippines",
+        "PH",
+        "PHL"
+      ]
+    },
+    "VN": {
+      "labels": {
+        "zh": "越南",
+        "en": "VN"
+      },
+      "aliases": [
+        "越南",
+        "Vietnam",
+        "VN",
+        "VNM"
+      ]
+    },
+    "IR": {
+      "labels": {
+        "zh": "伊朗",
+        "en": "IR"
+      },
+      "aliases": [
+        "伊朗",
+        "Iran",
+        "IR",
+        "IRN"
+      ]
+    },
+    "TR": {
+      "labels": {
+        "zh": "土耳其",
+        "en": "TR"
+      },
+      "aliases": [
+        "土耳其",
+        "Turkey",
+        "TR",
+        "TUR"
+      ]
+    },
+    "IL": {
+      "labels": {
+        "zh": "以色列",
+        "en": "IL"
+      },
+      "aliases": [
+        "以色列",
+        "Israel",
+        "IL",
+        "ISR"
+      ]
+    },
+    "AE": {
+      "labels": {
+        "zh": "阿联酋",
+        "en": "United Arab Emirates"
+      },
+      "aliases": [
+        "阿联酋",
+        "阿聯酋",
+        "United Arab Emirates",
+        "AE",
+        "ARE"
+      ]
+    },
+    "SA": {
+      "labels": {
+        "zh": "沙特阿拉伯",
+        "en": "SA"
+      },
+      "aliases": [
+        "沙特阿拉伯",
+        "Saudi Arabia",
+        "SA",
+        "SAU"
+      ]
+    },
+    "ZA": {
+      "labels": {
+        "zh": "南非",
+        "en": "ZA"
+      },
+      "aliases": [
+        "南非",
+        "South Africa",
+        "ZA",
+        "ZAF"
+      ]
+    },
+    "EG": {
+      "labels": {
+        "zh": "埃及",
+        "en": "EG"
+      },
+      "aliases": [
+        "埃及",
+        "Egypt",
+        "EG",
+        "EGY"
+      ]
+    },
+    "NG": {
+      "labels": {
+        "zh": "尼日利亚",
+        "en": "Nigeria"
+      },
+      "aliases": [
+        "尼日利亚",
+        "奈及利亞",
+        "Nigeria",
+        "NG",
+        "NGA"
+      ]
+    },
+    "AL": {
+      "labels": {
+        "zh": "阿尔巴尼亚",
+        "en": "Albania"
+      },
+      "aliases": [
+        "阿尔巴尼亚",
+        "阿爾巴尼亞",
+        "Albania",
+        "AL",
+        "ALB"
+      ]
+    },
+    "CZ": {
+      "labels": {
+        "zh": "捷克",
+        "en": "Czech Republic"
+      },
+      "aliases": [
+        "捷克",
+        "Czechia",
+        "Czech Republic",
+        "CZ",
+        "CZE"
+      ]
+    },
+    "HU": {
+      "labels": {
+        "zh": "匈牙利",
+        "en": "HU"
+      },
+      "aliases": [
+        "匈牙利",
+        "Hungary",
+        "HU",
+        "HUN"
+      ]
+    },
+    "RO": {
+      "labels": {
+        "zh": "罗马尼亚",
+        "en": "Romania"
+      },
+      "aliases": [
+        "罗马尼亚",
+        "羅馬尼亞",
+        "Romania",
+        "RO",
+        "ROU"
+      ]
+    },
+    "GR": {
+      "labels": {
+        "zh": "希腊",
+        "en": "Greece"
+      },
+      "aliases": [
+        "希腊",
+        "希臘",
+        "Greece",
+        "GR",
+        "GRC"
+      ]
+    },
+    "UA": {
+      "labels": {
+        "zh": "乌克兰",
+        "en": "Ukraine"
+      },
+      "aliases": [
+        "乌克兰",
+        "烏克蘭",
+        "Ukraine",
+        "UA",
+        "UKR"
+      ]
+    },
+    "NZ": {
+      "labels": {
+        "zh": "新西兰",
+        "en": "New Zealand"
+      },
+      "aliases": [
+        "新西兰",
+        "紐西蘭",
+        "New Zealand",
+        "NZ",
+        "NZL"
       ]
     }
   }
