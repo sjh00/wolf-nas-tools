@@ -52,6 +52,8 @@ class TRANSFERHISTORY(Base):
     DEST_STATE: Mapped[str | None] = mapped_column(String(16), nullable=True)
     DEST_DELETED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
     FILES_CHECKED_AT: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 旧版本保留策略：keep（默认，什么都不删）/ sync_delete（源消失即删库）/ replace（新版入库即删旧版）
+    RETENTION_POLICY: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}

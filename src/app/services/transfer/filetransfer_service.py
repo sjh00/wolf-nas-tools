@@ -47,6 +47,7 @@ from app.media.category_matcher import get_category
 from app.media.metadata.parsing import ParserChain
 from app.media.metadata.refs import parse_media_ref
 from app.media.metadata.registry import registry as metadata_registry
+from app.media.models import build_category_rule_map, correct_type_by_genres
 from app.media.parser import RegexParser
 from app.media.parser.unified.preprocessor import is_collection_context
 from app.message import Message
@@ -814,6 +815,20 @@ class FileTransferService:
             snapshot_lang = _snapshot_field_value(snapshot, "original_language")
             if snapshot_lang:
                 media_info.original_language = str(snapshot_lang)
+        # 类型纠正必须早于分类匹配：纪录片/综艺/音乐演出在 TMDB 里是 movie，
+        # 若不改判就会按 movie 规则落到「外语电影」，同时走错目标磁盘。
+        # 这条快照路径不经过 set_provider_data，需在此单独纠正。
+        corrected_type = correct_type_by_genres(
+            getattr(media_info, "type", None),
+            getattr(snapshot, "genres", None),
+            self._category_rule_map(),
+        )
+        if corrected_type is not None and corrected_type != getattr(media_info, "type", None):
+            log.info(
+                f"[Rmt]{getattr(media_info, 'title', '')} 题材判定为非电影，类型 "
+                f"{getattr(media_info, 'type', None)} -> {corrected_type}"
+            )
+            media_info.type = corrected_type
         category = self._category_from_snapshot(snapshot, media_info)
         if category:
             media_info.category = category
@@ -905,6 +920,19 @@ class FileTransferService:
         elif getattr(snapshot, "primary_provider", ""):
             media_info.anchor_provider = str(snapshot.primary_provider)
 
+    def _category_rule_map(self) -> dict:
+        """分类规则 {movie|tv|anime: {分类名: 规则}}，带 60 秒缓存。
+
+        类型纠正与分类匹配都依赖它，共用一份缓存避免重复查库。
+        """
+        now = time.time()
+        cached = getattr(self, "_category_rule_cache", None)
+        if cached is not None and now - cached[0] < 60:
+            return cached[1]
+        rule_map = build_category_rule_map(CategoryConfigRepositoryAdapter().get_all())
+        self._category_rule_cache = (now, rule_map)
+        return rule_map
+
     def _category_from_snapshot(self, snapshot, media_info) -> str:
         """用统一分类规则，从任意 provider 的快照计算媒体分类."""
         try:
@@ -913,18 +941,7 @@ class FileTransferService:
             key = str(media_type_value or "movie").lower()
             if key not in {"movie", "tv", "anime"}:
                 key = "movie"
-            now = time.time()
-            cached = getattr(self, "_category_rule_cache", None)
-            if cached is not None and now - cached[0] < 60:
-                rule_map = cached[1]
-            else:
-                entities = CategoryConfigRepositoryAdapter().get_all()
-                rule_map = {"movie": {}, "tv": {}, "anime": {}}
-                for entity in entities:
-                    mt = str(getattr(entity, "media_type", "") or "").lower()
-                    if mt in rule_map and bool(getattr(entity, "enabled", True)):
-                        rule_map[mt][entity.name] = {} if getattr(entity, "is_default", False) else entity.rules
-                self._category_rule_cache = (now, rule_map)
+            rule_map = self._category_rule_map()
             info = {
                 "genres": list(getattr(snapshot, "genres", []) or []),
                 "countries": list(getattr(snapshot, "countries", []) or []),
@@ -1909,6 +1926,42 @@ class FileTransferService:
                     return full
         return ""
 
+    def _should_replace_stale_episode(
+        self, media, file_item: str, ret_file_path: str, dst_backend, stale_rows: list
+    ) -> bool:
+        """剧集换版判定：库中已有该集、旧版源已删除、且本次是**不同**文件.
+
+        「旧版源文件已删除」是关键信号 —— 用户在下载器清掉了旧版，等于认可新版。
+        但仅凭这一点不够，还要排除两种情况：
+
+        1. 同一份文件被重复处理（大小完全一致）：覆盖没有意义，按重复跳过；
+        2. 库中旧文件已不存在：没有可替换的目标，走正常新增流程。
+        """
+        if not ret_file_path or not stale_rows:
+            return False
+        if not self._target_exists(ret_file_path, dst_backend):
+            return False
+        return bool(self._stale_episode_reason(media, file_item, ret_file_path, dst_backend, stale_rows))
+
+    def _stale_episode_reason(self, media, file_item: str, ret_file_path: str, dst_backend, stale_rows: list) -> str:
+        """返回换版理由；不满足条件时返回空串（避免判定与日志重复计算）."""
+        dest_size = self._file_size(ret_file_path, dst_backend)
+        src_size = self._file_size(file_item)
+        if src_size and dest_size and src_size == dest_size:
+            # 同大小 = 同一份内容被重新处理，覆盖只会白白重写一次
+            return ""
+        if not src_size:
+            return ""
+        old = stale_rows[0]
+        old_name = os.path.basename(str(getattr(old, "source_path", "") or ""))
+        return f"旧源 {old_name} 已删除，规格由 {self._format_size(dest_size)} 变为 {self._format_size(src_size)}"
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        if not size:
+            return "未知"
+        return f"{size / 1024**3:.2f}G"
+
     def _scrape_duplicate_if_incomplete(
         self, media, dir_path: str, file_path: str, dst_backend=None, force: bool = False
     ) -> None:
@@ -2008,6 +2061,7 @@ class FileTransferService:
         # 避免目标路径规则变化（如分类子目录调整）导致重复入库。
         # 仅信任源路径仍存在的历史记录：调试/测试残留（源已删除，如 /tmp 假记录）不参与去重，
         # 避免真实文件被误判"已转移"而跳过实际转移
+        stale_episode_rows: list = []
         if media.type != MediaType.MOVIE and media.begin_season and media.begin_episode is not None:
             try:
                 season_str = f"S{media.begin_season:02d}"
@@ -2019,12 +2073,11 @@ class FileTransferService:
                     )
                     or []
                 )
+                dest_alive = [h for h in history if self._history_dest_exists(h, dst_backend)]
                 valid_history = [
                     h
-                    for h in history
-                    if getattr(h, "source_path", "")
-                    and os.path.exists(str(getattr(h, "source_path", "")))
-                    and self._history_dest_exists(h, dst_backend)
+                    for h in dest_alive
+                    if getattr(h, "source_path", "") and os.path.exists(str(getattr(h, "source_path", "")))
                 ]
                 if valid_history and self._episode_in_history(valid_history, media.begin_episode):
                     log.warn(
@@ -2036,6 +2089,14 @@ class FileTransferService:
                     if ret_file_path and self._target_exists(ret_file_path, dst_backend):
                         self._history.insert_transfer_blacklist(file_item)
                     return 0, 0, alert_messages, 1, new_file, ret_file_path, ret_dir_path
+                # 换版候选：同集、库中文件仍在、但旧版源文件已被删除。
+                # 这说明用户已在下载器清理旧版本、认定了新版本，允许覆盖旧文件。
+                stale_episode_rows = [
+                    h
+                    for h in dest_alive
+                    if self._episode_in_history([h], media.begin_episode)
+                    and not (getattr(h, "source_path", "") and os.path.exists(str(getattr(h, "source_path", ""))))
+                ]
             except Exception as e:  # noqa: BLE001
                 log.debug(f"[Rmt]转移历史去重查询失败: {e}")
 
@@ -2052,6 +2113,39 @@ class FileTransferService:
                     base, _ = os.path.splitext(ret_file_path)
                     new_file = f"{base}{file_ext}"
                     log.info(f"[Rmt]文件 {old} 已存在，覆盖为 {new_file} ...")
+                    acquired = self._with_library_target_lock(
+                        getattr(dst_backend, "id", None) or "local",
+                        ret_dir_path,
+                        lambda: self._engine.transfer(
+                            file_item,
+                            new_file,
+                            operation,
+                            over_flag=True,
+                            old_file=old,
+                            src_backend=src_backend,
+                            dst_backend=dst_backend,
+                        ),
+                    )
+                    if not acquired:
+                        return 0, 0, alert_messages, 1, new_file, ret_file_path, ret_dir_path
+                    self._replicate_to_enabled_backends(media, new_file, dst_backend)
+                    return 0, 0, alert_messages, exist_filenum, new_file, ret_file_path, ret_dir_path
+                elif stale_episode_rows and self._should_replace_stale_episode(
+                    media, file_item, ret_file_path, dst_backend, stale_episode_rows
+                ):
+                    # 电视剧换版：库中已有该集、旧版源文件已被删除（用户在下载器清理了旧版），
+                    # 且本次是不同文件 → 用新版替换媒体库旧文件，而不是跳过。
+                    # 这是「认定新版本」的强信号：旧源已消失说明用户不再需要它。
+                    reason = self._stale_episode_reason(
+                        media, file_item, ret_file_path, dst_backend, stale_episode_rows
+                    )
+                    log.info(
+                        f"[Rmt]剧集换版（{media.get_season_episode_string()}）：旧版源已删除，"
+                        f"用 {os.path.basename(file_item)} 替换 {os.path.basename(ret_file_path)}（{reason}）"
+                    )
+                    old = ret_file_path
+                    base, _ = os.path.splitext(ret_file_path)
+                    new_file = f"{base}{file_ext}"
                     acquired = self._with_library_target_lock(
                         getattr(dst_backend, "id", None) or "local",
                         ret_dir_path,

@@ -4,6 +4,7 @@ import os
 import time
 from collections.abc import Callable
 
+import log
 from app.core.exceptions import ValidationError
 from app.services.transfer.media_file_deletion_service import MediaFileDeletionService
 from app.utils import PathUtils
@@ -23,15 +24,26 @@ class HistoryActionService:
         self._delete_history = delete_history
 
     def delete_records(self, logids: list[int]) -> list[dict]:
-        """只删除识别记录与黑名单，不触碰任何物理文件."""
+        """只删除识别记录与同步/黑名单标记，不触碰任何物理文件。
+
+        同步历史必须一起清：SYNCHISTORY 按目录记账，而识别记录里 SOURCE_PATH
+        是目录、SOURCE_FILENAME 才是文件。早期只按「目录/文件」拼接的完整路径
+        删黑名单，目录级那条同步历史留着，导致「移除记录」后同步引擎仍认为
+        已同步 —— 用户想换版本重新入库时永远等不到重新识别。
+        """
         records = self._load_records(logids)
         found = {int(record.ID) for record in records}
         if records:
             self._history.delete_transfer_logs([record.ID for record in records])
             for record in records:
+                source_dir = str(record.SOURCE_PATH or "")
                 self._history.delete_transfer_blacklist(
-                    PathUtils.join_path(str(record.SOURCE_PATH or ""), str(record.SOURCE_FILENAME or ""))
+                    PathUtils.join_path(source_dir, str(record.SOURCE_FILENAME or ""))
                 )
+                try:
+                    self._history.delete_sync_history_for_source(source_dir)
+                except Exception as e:  # noqa: BLE001
+                    log.debug(f"[TransferHistory]清理同步历史失败 {source_dir}: {e}")
         return [
             {
                 "id": int(logid),

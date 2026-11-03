@@ -81,7 +81,7 @@ _NON_FILM_GENRES: frozenset[str] = frozenset(
 
 # 以叙事为主、本身就构成一部电影的题材。命中这些说明该作品是剧情片/传记片等，
 # 即使带「音乐」「纪录片」标签也不该移出电影侧 —— 典型例子是音乐传记片
-# （《波西米亚狂想曲》= 剧情 + 音乐），它必须是电影，不能进 TV/综艺。
+# （剧情 + 音乐），它必须是电影，不能进 TV/综艺。
 _FILM_NARRATIVE_GENRES: frozenset[str] = frozenset(
     {
         "drama",
@@ -105,6 +105,62 @@ _FILM_NARRATIVE_GENRES: frozenset[str] = frozenset(
 # 纪录片优先级最高：纪录片带「剧情」标签在 TMDB 里很常见（历史重演、人物纪实），
 # 但它的归属应该是 TV/纪录片，不能被叙事题材保护逻辑抢回电影侧。
 _PRIORITY_TV_GENRES: frozenset[str] = frozenset({"documentary"})
+
+
+def correct_type_by_genres(
+    media_type: MediaType | None,
+    genres: Any,
+    rule_map: dict[str, dict[str, Any]],
+) -> MediaType | None:
+    """按题材把 movie 纠正为 tv（纪录片/综艺/音乐演出等非电影题材）。
+
+    识别链路有两条：TMDB detail 走 `set_provider_data`，多源快照走
+    `_apply_snapshot_to_media`。类型纠正必须对两条都生效，否则同样的纪录片
+    在一条路上归 TV、另一条路上仍进电影库。因此把判定收在这里共用。
+
+    判定顺序：电影侧已有归属 → 留在电影；纪录片 → 归 TV；叙事电影题材 →
+    留在电影（保护音乐传记片）；其余纯非叙事题材 → 归 TV。
+
+    :param media_type: 当前判定的类型（非 movie 时原样返回）
+    :param genres: 题材列表，支持 TMDB `[{"id","name"}]`、ID 列表或中文名单
+    :param rule_map: 分类配置 {movie: {分类: 规则}, tv: {...}}
+    :return: 纠正后的类型
+    """
+    if media_type != MediaType.MOVIE:
+        return media_type
+    tv_only = _tv_only_genre_keys(rule_map)
+    if not tv_only:
+        return media_type
+    if not genres:
+        return media_type
+    keys = load_taxonomy().genre_keys(genres)
+    if not keys:
+        return media_type
+    # 电影侧已有对应栏目（动画电影等）→ 本就是电影
+    if keys & _genre_keys_of_side(rule_map, "movie"):
+        return media_type
+    # 纪录片优先归 TV
+    if keys & _PRIORITY_TV_GENRES:
+        return MediaType.TV
+    # 叙事电影题材保护（音乐传记片、歌舞剧情片等）
+    if keys & _FILM_NARRATIVE_GENRES:
+        return media_type
+    # 其余纯非叙事题材（综艺/音乐演出/儿童等）归 TV
+    if keys & tv_only:
+        return MediaType.TV
+    return media_type
+
+
+def build_category_rule_map(entities: Any) -> dict[str, dict[str, Any]]:
+    """把分类配置实体整理成 {movie|tv|anime: {分类名: 规则}}，默认分类规则置空。"""
+    rule_map: dict[str, dict[str, Any]] = {"movie": {}, "tv": {}, "anime": {}}
+    for entity in entities or []:
+        mt = str(getattr(entity, "media_type", "") or "").lower()
+        if mt in rule_map and bool(getattr(entity, "enabled", True)):
+            rule_map[mt][getattr(entity, "name", "")] = (
+                {} if getattr(entity, "is_default", False) else (getattr(entity, "rules", None) or {})
+            )
+    return rule_map
 
 
 class MediaInfo(BaseModel):
@@ -558,32 +614,11 @@ class MediaInfo(BaseModel):
             self.sibling_rssids = sibling_rssids
 
     def _has_tv_only_genre(self, info: dict[str, Any], rule_map: dict[str, dict[str, Any]]) -> bool:
-        """该作品是否该归到 TV 侧分类（而非电影侧）。
-
-        判定顺序：
-        1. 题材命中电影侧任一分类（如动画电影）→ 留在电影
-        2. 命中纪录片 → 归 TV（纪录片优先，即使 TMDB 同时给了「剧情」标签）
-        3. 命中叙事电影题材 → 留在电影（保护音乐传记片等）
-        4. 命中「只在 TV 侧有分类」的题材 → 归 TV
-        """
-        tv_only = _tv_only_genre_keys(rule_map)
-        if not tv_only:
-            return False
-        raw = info.get("genres") or info.get("genre_ids") or []
-        if not raw:
-            return False
-        keys = load_taxonomy().genre_keys(raw)
-        # 1. 电影侧已有归属（动画电影等）
-        if keys & _genre_keys_of_side(rule_map, "movie"):
-            return False
-        # 2. 纪录片优先归 TV
-        if keys & _PRIORITY_TV_GENRES:
-            return True
-        # 3. 叙事电影题材保护（音乐传记片、歌舞剧情片等）
-        if keys & _FILM_NARRATIVE_GENRES:
-            return False
-        # 4. 剩下的纯非叙事题材（综艺/音乐演出/儿童等）归 TV
-        return bool(keys & tv_only)
+        """兼容旧调用：等价于 correct_type_by_genres 是否把 movie 改判为 tv。"""
+        return (
+            correct_type_by_genres(MediaType.MOVIE, info.get("genres") or info.get("genre_ids"), rule_map)
+            == MediaType.TV
+        )
 
     def set_download_info(self, download_setting=None, save_path=None):
         if download_setting:
@@ -595,15 +630,12 @@ class MediaInfo(BaseModel):
         if not info:
             return
         adapter = CategoryConfigRepositoryAdapter()
-        entities = adapter.get_all()
-        rule_map: dict[str, dict[str, Any]] = {"movie": {}, "tv": {}, "anime": {}}
-        for ent in entities:
-            mt = ent.media_type
-            if mt in rule_map and bool(getattr(ent, "enabled", True)):
-                effective = ent.rules if not ent.is_default else {}
-                if not effective:
-                    log.debug(f"[MediaInfo]分类『{ent.name}』({mt}) 无有效规则，将作为兜底")
-                rule_map[mt][ent.name] = effective
+        rule_map = build_category_rule_map(adapter.get_all())
+        for side, rules in rule_map.items():
+            if side != "anime":
+                for name, effective in rules.items():
+                    if not effective:
+                        log.debug(f"[MediaInfo]分类『{name}』({side}) 无有效规则，将作为兜底")
         media_type = info.get("media_type")
         if media_type is not None and not isinstance(media_type, MediaType):
             # 兼容字符串（"tv"/"movie"）：否则会被直接赋值为字符串并跳过动漫判定
@@ -635,11 +667,9 @@ class MediaInfo(BaseModel):
                 # 避免把 ANIME 误降级为 TV 而入错媒体库目录
                 self.type = MediaType.TV
         elif media_type:
-            self.type = media_type
-            if media_type == MediaType.MOVIE and self._has_tv_only_genre(info, rule_map):
-                # 题材只在 TV 侧配置了分类（纪录片/综艺/儿童等）→ 按 TV 归档，
-                # 否则会落进电影的默认分类，且无法进入 TV/纪录片 等目录
-                self.type = MediaType.TV
+            # 题材只在 TV 侧有归属（纪录片/综艺/音乐演出等）→ 按 TV 归档，
+            # 否则会落进电影的默认分类，且无法进入 TV/纪录片 等目录
+            self.type = correct_type_by_genres(media_type, info.get("genres") or info.get("genre_ids"), rule_map)
         else:
             return
         self.tmdb_id = info.get("id")

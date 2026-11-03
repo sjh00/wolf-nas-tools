@@ -34,7 +34,8 @@ tv:
     origin_country: 'CN,TW,HK'
   欧美剧:
     # 匹配 origin_country 国家，主要欧美国家列表
-    origin_country: 'US,FR,GB,DE,ES,IT,NL,PT,RU,UK'
+    # CA 必须包含：部分加拿大出品的剧集 origin_country 只有 CA，漏配会掉进「未分类」
+    origin_country: 'US,FR,GB,DE,ES,IT,NL,PT,RU,UK,CA'
   日韩剧:
     # 匹配 origin_country 国家，主要亚洲国家列表
     origin_country: 'JP,KP,KR,TH,IN,SG'

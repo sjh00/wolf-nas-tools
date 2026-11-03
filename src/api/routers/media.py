@@ -57,6 +57,7 @@ from app.services.metadata_service import MetadataService
 from app.services.search_service import Searcher
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
+from app.services.transfer.retention_service import RetentionPolicy, RetentionService
 from app.utils import StringUtils
 from app.utils.response import fail, success
 
@@ -882,6 +883,33 @@ def delete_history_files(
     results = ft.delete_record_files(ids, targets)
     svc.invalidate_cache()
     return success(data={"results": results})
+
+
+class RetentionPolicyRequest(BaseModel):
+    ids: list[int]
+    policy: str = "keep"
+
+
+@router.post("/history/retention/set", response_model=CommonResponse, summary="设置旧版本保留策略")
+def set_history_retention(
+    req: RetentionPolicyRequest,
+    current_user=Depends(require_permission("library:manage")),
+    svc: TransferHistoryService = Depends(get_transfer_history_service),
+):
+    """设置记录在「源文件消失 / 新版本入库」时的处理方式。
+
+    - keep（默认）：两条路径都不动媒体库文件
+    - sync_delete：源文件从下载器消失时，同步删除媒体库文件
+    - replace：同集出现更新版本时，删除该旧版本文件与记录（洗版）
+    """
+    ids = [int(item) for item in req.ids if item is not None]
+    if not ids:
+        return fail(msg="未选择记录")
+    if str(req.policy).strip().lower() not in RetentionPolicy.ALL:
+        return fail(msg=f"不支持的策略：{req.policy}")
+    updated = RetentionService().set_policy(ids, req.policy)
+    svc.invalidate_cache()
+    return success(data={"updated": updated, "total": len(ids), "policy": RetentionPolicy.normalize(req.policy)})
 
 
 @router.post("/history/files/check", response_model=CommonResponse, summary="检测识别记录关联文件状态")
