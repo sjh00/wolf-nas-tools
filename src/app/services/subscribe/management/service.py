@@ -3,6 +3,7 @@
 import datetime
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import log
@@ -492,8 +493,11 @@ class SubscribeService:
                     )
                 break
 
-    def update_subscribe_tv_lack_by_episodes(self, rssid, downloaded_episodes: list[int]) -> bool:
+    def update_subscribe_tv_lack_by_episodes(self, rssid, downloaded_episodes: Sequence[Any]) -> bool:
         """手动下载完成后回写电视剧订阅：从当前缺失集减去本次下载的集。
+
+        入参放宽为 Sequence[Any]：调用方可能带来非数字脏值（None/空串/字母），
+        方法内部用 `str(e).isdigit()` 过滤，签名需如实反映这一层防御。
 
         :param rssid: 订阅 ID
         :param downloaded_episodes: 本次手动下载覆盖的集号列表
