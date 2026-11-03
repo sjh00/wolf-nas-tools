@@ -685,6 +685,10 @@ class FileTransferService:
             for _info in medias.values():
                 self._apply_download_record_hint(_info, download_record)
                 self._apply_subscription_hint(_info)
+                # 识别完全没给出类型时，采用来源（qb 下载分类）声明的类型：
+                # 只有「无任何类型证据」才兜底，避免覆盖 TMDB/题材得出的结论。
+                if hinted_media_type and getattr(_info, "type", None) in (None, MediaType.UNKNOWN):
+                    _info.type = MediaType.from_string(str(hinted_media_type))
             for _path, _info in medias.items():
                 if not getattr(_info, "org_string", ""):
                     _info.org_string = os.path.basename(_path)

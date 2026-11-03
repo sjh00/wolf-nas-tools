@@ -16,6 +16,46 @@ from app.media.message_image_policy import transform_message_image
 from app.utils import StringUtils
 
 from .category_matcher import get_category
+from .category_taxonomy import load_taxonomy
+
+
+def _genre_keys_from_rules(rules: Any) -> set[str]:
+    """从分类规则里取出它用到的题材键（`genre_ids` / `genres`）。
+
+    规则值可能是 `"10764,10767"` 这种逗号分隔字符串，而 `genre_keys` 只按
+    单个 ID/名称解析，整串会被当成一个未知名称丢掉 —— 必须先在逗号处拆开。
+    """
+    keys: set[str] = set()
+    if not isinstance(rules, dict):
+        return keys
+    taxonomy = load_taxonomy()
+    for field in ("genre_ids", "genres", "genre"):
+        raw = rules.get(field)
+        if raw in (None, ""):
+            continue
+        items = raw if isinstance(raw, (list, tuple, set)) else [part for part in str(raw).split(",") if part.strip()]
+        for item in items:
+            keys |= taxonomy.genre_keys([item])
+    return keys
+
+
+def _genre_keys_of_side(rule_map: dict[str, dict[str, Any]], side: str) -> set[str]:
+    """某一侧（movie/tv）分类规则里用到的全部题材键。"""
+    keys: set[str] = set()
+    for rules in rule_map.get(side, {}).values():
+        keys |= _genre_keys_from_rules(rules)
+    return keys
+
+
+def _tv_only_genre_keys(rule_map: dict[str, dict[str, Any]]) -> set[str]:
+    """只在 TV 侧配置了分类的题材键。
+
+    「纪录片」「综艺」「儿童」这类分类通常只挂在 TV 媒体库，电影侧只有按语言
+    （华语电影）或动画（动画电影）划分的分类。一部纪录片在 TMDB 里是 movie，
+    若照 movie 归档就只能落进默认分类（外语电影），既不符合整理习惯，
+    也让 TV/纪录片 目录永远收不到新内容。
+    """
+    return _genre_keys_of_side(rule_map, "tv") - _genre_keys_of_side(rule_map, "movie")
 
 
 class MediaInfo(BaseModel):
@@ -468,6 +508,24 @@ class MediaInfo(BaseModel):
         if sibling_rssids is not None:
             self.sibling_rssids = sibling_rssids
 
+    def _has_tv_only_genre(self, info: dict[str, Any], rule_map: dict[str, dict[str, Any]]) -> bool:
+        """该作品是否只该归到 TV 侧分类。
+
+        判定条件：题材命中「只在 TV 侧有分类」的键，且不命中任何电影侧分类。
+        后者保证动画纪录片（动画+纪录片）这类作品留在「动画电影」——
+        它本来就是电影，电影侧有对应栏目可放。
+        """
+        tv_only = _tv_only_genre_keys(rule_map)
+        if not tv_only:
+            return False
+        raw = info.get("genres") or info.get("genre_ids") or []
+        if not raw:
+            return False
+        keys = load_taxonomy().genre_keys(raw)
+        if keys & _genre_keys_of_side(rule_map, "movie"):
+            return False
+        return bool(keys & tv_only)
+
     def set_download_info(self, download_setting=None, save_path=None):
         if download_setting:
             self.download_setting = download_setting
@@ -487,7 +545,6 @@ class MediaInfo(BaseModel):
                 if not effective:
                     log.debug(f"[MediaInfo]分类『{ent.name}』({mt}) 无有效规则，将作为兜底")
                 rule_map[mt][ent.name] = effective
-
         media_type = info.get("media_type")
         if media_type is not None and not isinstance(media_type, MediaType):
             # 兼容字符串（"tv"/"movie"）：否则会被直接赋值为字符串并跳过动漫判定
@@ -520,6 +577,10 @@ class MediaInfo(BaseModel):
                 self.type = MediaType.TV
         elif media_type:
             self.type = media_type
+            if media_type == MediaType.MOVIE and self._has_tv_only_genre(info, rule_map):
+                # 题材只在 TV 侧配置了分类（纪录片/综艺/儿童等）→ 按 TV 归档，
+                # 否则会落进电影的默认分类，且无法进入 TV/纪录片 等目录
+                self.type = MediaType.TV
         else:
             return
         self.tmdb_id = info.get("id")
