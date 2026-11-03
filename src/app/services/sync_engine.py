@@ -22,6 +22,7 @@ from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepos
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferHistoryRepositoryAdapter
 from app.domain.entities.transfer_task import SourceType, TransferTask
+from app.domain.mediatypes import MediaType
 from app.infrastructure.distributed_lock import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
@@ -36,6 +37,24 @@ from app.storage.factory import StorageBackendFactory
 from app.utils import PathUtils
 
 _synced_lock = threading.Lock()
+
+# 同步源目录名 → 媒体类型。qb 的下载分类直接体现在 btstore 子目录上
+# （btstore/tv、btstore/movie、btstore/animetv），这是比 TMDB 猜测更可靠的类型线索：
+# 送错类型会让内容落到另一块盘的媒体库目录，跨盘后无法硬链接，
+# 只能退化成复制，白白多占一份空间。
+_SOURCE_DIR_TYPE_HINT: dict[str, MediaType] = {
+    "tv": MediaType.TV,
+    "movie": MediaType.MOVIE,
+    "animetv": MediaType.ANIME,
+}
+
+
+def media_type_hint_from_source(source: str | None) -> str | None:
+    """从同步源的配置路径推断媒体类型，无法判断时返回 None."""
+    base = os.path.basename(str(source or "").rstrip("/")).strip().lower()
+    hinted = _SOURCE_DIR_TYPE_HINT.get(base)
+    return hinted.value if hinted else None
+
 
 # 目录同步并发任务等待上限（秒），超时按未完成处理避免永久挂起
 _SYNC_WAIT_TIMEOUT = 1800
@@ -407,6 +426,7 @@ class SyncEngine:
                     return
             except OSError:
                 return
+        type_hint = media_type_hint_from_source(getattr(cfg, "source", None))
         if self._transfer_queue_service is not None:
             queued = self._transfer_queue_service.submit(
                 {
@@ -417,6 +437,7 @@ class SyncEngine:
                     "target_dir": cfg.dest,
                     "unknown_dir": cfg.unknown,
                     "dst_backend_id": cfg.dst_backend_id,
+                    "media_type": type_hint,
                     "dedup_key": f"sync:{cfg.id}:{event_path}:{cfg.dest}",
                 }
             )
@@ -431,6 +452,7 @@ class SyncEngine:
             target_dir=cfg.dest,
             unknown_dir=cfg.unknown,
             dst_backend_id=cfg.dst_backend_id,
+            media_type=type_hint,
         )
         try:
             ret, msg = self._pipeline.process(task)
