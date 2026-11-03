@@ -27,6 +27,7 @@ from app.events.payloads import SearchStartPayload
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.progress import ProgressTracker
 from app.infrastructure.thread import ThreadExecutor
+from app.media.category_taxonomy import load_taxonomy
 from app.media.service import MediaService
 from app.message import Message
 from app.schemas.search import SearchMediasResultDTO, SearchOneMediaResultDTO
@@ -70,10 +71,14 @@ class SearchQueryBuilder:
 
         # 英文名
         search_en_name = None
+        # 语言判断统一走 taxonomy 归一化：TMDB 返回的是 ISO 639-1（中文 zh、英语 en），
+        # 但部分数据源会给 cn/eng 等写法。早期这里直接 `== "en"` / `!= "cn"` 比较，
+        # 非标准写法会被判成「非中文/非英文」，导致原名漏搜或多搜一次。
+        lang_codes = load_taxonomy().language_codes(media_info.original_language)
         if media_info.en_name:
             search_en_name = media_info.en_name
         else:
-            if media_info.original_language == "en":
+            if "en" in lang_codes:
                 search_en_name = media_info.original_title
             else:
                 en_title = media_helper.get_tmdb_en_title(media_info)
@@ -101,7 +106,7 @@ class SearchQueryBuilder:
             search_zhtw_name = media_helper.get_tmdb_zhtw_title(media_info)
             if search_zhtw_name and search_zhtw_name != search_cn_name:
                 search_name_list.append(search_zhtw_name)
-            if media_info.original_language != "cn" and search_en_name != media_info.original_title:
+            if "zh" not in lang_codes and search_en_name != media_info.original_title:
                 search_name_list.append(media_info.original_title)
             max_workers = len(search_name_list)
 

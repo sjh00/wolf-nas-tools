@@ -797,6 +797,13 @@ class FileTransferService:
             value = getattr(value, "value", value)
             if value:
                 setattr(media_info, key, value)
+        # original_language 一并回填：下游（搜索、分类、NFO）都按它判断语言族。
+        # 该字段只在 snapshot.fields 里，且部分 provider 的快照才有，
+        # 因此仅在媒体信息本身为空时补齐，不覆盖识别阶段已得到的值。
+        if not getattr(media_info, "original_language", None):
+            snapshot_lang = _snapshot_field_value(snapshot, "original_language")
+            if snapshot_lang:
+                media_info.original_language = str(snapshot_lang)
         category = self._category_from_snapshot(snapshot, media_info)
         if category:
             media_info.category = category
