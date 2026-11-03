@@ -94,7 +94,7 @@ class _FakeSvc:
     def _count_filenames(content: str) -> int:
         return sum(1 for line in content.splitlines() if line.strip().startswith("["))
 
-    def structured_chat(self, messages, system_prompt="", response_model=None, temperature=0.3):
+    def structured_chat(self, messages, system_prompt="", response_model=None, temperature=0.3, append_schema=True):
         content = messages[0]["content"]
         if response_model is BatchResult:
             count = self._count_filenames(content)

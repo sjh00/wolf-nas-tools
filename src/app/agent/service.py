@@ -278,17 +278,25 @@ class AgentService:
         system_prompt: str = "",
         response_model: type | None = None,
         temperature: float = 0.3,
+        append_schema: bool = True,
     ) -> Any:
-        """结构化输出对话（返回 pydantic 模型实例）"""
+        """结构化输出对话（返回 pydantic 模型实例）
+
+        :param append_schema: 是否在提示词后追加完整 JSON Schema。调用方的提示词
+            已经逐字段描述结构时可传 False —— 自动生成的 schema 会把可空字段展开成
+            大段 anyOf，对长提示词（如批量识别）是纯重复的输入 token 开销。
+        """
         if not self.ready:
             log.warn("[AgentService]structured_chat 调用失败：Provider 未就绪")
             raise RuntimeError("LLM service not configured")
 
-        prompt = (
-            f"{system_prompt}\n\n"
-            f"请严格按照以下 JSON Schema 返回结果，不要包含任何其他内容：\n"
-            f"{response_model.model_json_schema() if response_model else ''}"
-        )
+        prompt = system_prompt
+        if append_schema and response_model is not None:
+            prompt = (
+                f"{system_prompt}\n\n"
+                f"请严格按照以下 JSON Schema 返回结果，不要包含任何其他内容：\n"
+                f"{response_model.model_json_schema()}"
+            )
         content = self._call_with_fallback(
             lambda p, m, s, t, r: p.chat(m, s, t, None, r), messages, prompt, temperature, self._reasoning
         )
