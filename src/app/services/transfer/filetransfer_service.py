@@ -616,11 +616,17 @@ class FileTransferService:
             dl_season = None
             dl_episode = None
             download_record = None
+            # 调用方显式声明的类型（下载器分类 / 同步源目录名）优先于下载记录推断：
+            # 下载记录缺失时 _lookup_download_record 返回 None，会把这个线索抹掉，
+            # 导致 btstore/tv 下的剧集被 TMDB 猜成电影，进而落到电影的（另一块盘的）目录。
+            hinted_media_type = media_type
             if not provider_data:
                 download_record = self._find_download_record(in_path)
                 provider_data, media_type, dl_season, dl_episode = self._lookup_download_record(
                     in_path, download_record
                 )
+                if media_type is None:
+                    media_type = hinted_media_type
 
             # 先用插件 ParserProfile 短路识别，避免已识别文件再走一次 TMDB。
             policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
