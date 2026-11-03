@@ -225,12 +225,22 @@ class RBACMenuRepository(BaseRepository):
             return True
 
     def delete_menu(self, menu_id: int) -> bool:
-        """
-        删除菜单（同时删除子菜单）
+        """删除菜单（同时删除子菜单及其角色关联）。
+
+        早期实现只删 RBAC_MENUS 行，不清理 RBAC_ROLE_MENUS 关联：
+        SQLAlchemy 的 bulk delete 不会触发 ORM 关系级联，SQLite 默认也不启用
+        `PRAGMA foreign_keys`，于是每删一次菜单就留下一批指向已不存在菜单的
+        孤儿关联（`PRAGMA foreign_key_check` 会持续报错，角色权限快照也会带上
+        不存在的 menu_id）。这里显式级联清理。
         """
         with self.session() as db:
+            child_ids = [row[0] for row in db.query(RBACMenu.ID).filter(RBACMenu.PARENT_ID == menu_id).all()]
+            removed_ids = [*child_ids, menu_id]
+            # 先清理角色-菜单关联，再删菜单本身（避免任何外键约束模式下失败）
+            db.execute(role_menus.delete().where(role_menus.c.menu_id.in_(removed_ids)))
             # 先删除子菜单
-            db.query(RBACMenu).filter(RBACMenu.PARENT_ID == menu_id).delete()
+            if child_ids:
+                db.query(RBACMenu).filter(RBACMenu.ID.in_(child_ids)).delete(synchronize_session=False)
             # 删除菜单本身
             result = db.query(RBACMenu).filter(RBACMenu.ID == menu_id).delete()
             db.commit()
