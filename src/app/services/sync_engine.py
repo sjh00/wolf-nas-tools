@@ -100,6 +100,7 @@ class SyncEngine:
         sync_path_repo: SyncPathRepositoryAdapter,
         storage_backend_repo: StorageBackendRepositoryAdapter,
         thread_executor: ThreadExecutor | None = None,
+        transfer_queue_service=None,
     ):
         self._transfer = transfer_engine
         self._pipeline = transfer_pipeline
@@ -107,6 +108,7 @@ class SyncEngine:
         self._history_repo = TransferHistoryRepositoryAdapter()
         self._backend_repo = storage_backend_repo
         self._thread_executor = thread_executor
+        self._transfer_queue_service = transfer_queue_service
         self._configs: dict[str, SyncPathConfig] = {}
         self._monitor_ids: list[str] = []
         self._observers: list = []
@@ -122,6 +124,18 @@ class SyncEngine:
     def init(self) -> None:
         self._reload()
         self._start()
+
+    def start_queue(self) -> None:
+        if self._transfer_queue_service is not None:
+            self._transfer_queue_service.start()
+
+    def stop_queue(self) -> None:
+        if self._transfer_queue_service is not None:
+            self._transfer_queue_service.stop()
+
+    def restart_queue(self) -> None:
+        if self._transfer_queue_service is not None:
+            self._transfer_queue_service.restart()
 
     def _resolve_backend(self, backend_id: str):
         if backend_id == "local":
@@ -181,7 +195,7 @@ class SyncEngine:
         return self._monitor_ids
 
     def get_sync_path_conf(self, sid: str) -> SyncPathConfig | None:
-        return self._configs.get(sid)
+        return self._configs.get(str(sid))
 
     def get_all_sync_path_conf(self) -> dict[str, SyncPathConfig]:
         return self._configs
@@ -393,6 +407,22 @@ class SyncEngine:
                     return
             except OSError:
                 return
+        if self._transfer_queue_service is not None:
+            queued = self._transfer_queue_service.submit(
+                {
+                    "source_type": SourceType.DIRECTORY.value,
+                    "source_id": cfg.id,
+                    "file_paths": [event_path],
+                    "operation": cfg.operation,
+                    "target_dir": cfg.dest,
+                    "unknown_dir": cfg.unknown,
+                    "dst_backend_id": cfg.dst_backend_id,
+                    "dedup_key": f"sync:{cfg.id}:{event_path}:{cfg.dest}",
+                }
+            )
+            if queued:
+                return
+
         task = TransferTask(
             source_type=SourceType.DIRECTORY,
             source_id=cfg.id,

@@ -13,6 +13,7 @@ from sqlalchemy import Integer, and_, case, cast, func, or_, tuple_
 from app.db.models import DOWNLOADHISTORY, DOWNLOADSETTING, INDEXERSTATISTICS
 from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.episode_progress import contiguous_episodes
+from app.domain.media_ref import is_tmdb_media
 
 
 class DownloadRepository(BaseRepository):
@@ -115,6 +116,30 @@ class DownloadRepository(BaseRepository):
             )
         return contiguous_episodes((se for (se,) in rows), int(season or 1), start=int(start or 1))
 
+    def get_contiguous_completed_episode_by_ref(
+        self,
+        *,
+        identity_id: str | None,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        season: int | None,
+        start: int = 1,
+    ) -> int:
+        """按多元身份查询已完成下载的连续集数（非 TMDB 订阅续订用）."""
+        if not identity_id and not (anchor_provider and anchor_external_id):
+            return 0
+        with self.session() as db:
+            query = db.query(DOWNLOADHISTORY.SE).filter(DOWNLOADHISTORY.STATE == "completed")
+            if identity_id:
+                query = query.filter(DOWNLOADHISTORY.IDENTITY_ID == str(identity_id))
+            else:
+                query = query.filter(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
+                )
+            rows = query.all()
+        return contiguous_episodes((se for (se,) in rows), int(season or 1), start=int(start or 1))
+
     def delete_download_history_by_tmdb(self, tmdb_id: int | str | None, season_prefix: str | None = None) -> int:
         """
         删除已完成的下载历史，根据TMDB ID和可选的季前缀（仅删除 STATE=completed，保留下载中的）
@@ -149,6 +174,36 @@ class DownloadRepository(BaseRepository):
                 db.commit()
             return count
 
+    def delete_download_history_by_identity(
+        self,
+        *,
+        identity_id: str | None,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        season_prefix: str | None = None,
+    ) -> int:
+        """按多元身份删除已完成下载历史（洗版重下用）."""
+        identity_id = str(identity_id or "").strip()
+        anchor_provider = str(anchor_provider or "").strip()
+        anchor_external_id = str(anchor_external_id or "").strip()
+        if not identity_id and not (anchor_provider and anchor_external_id):
+            return 0
+        with self.session() as db:
+            query = db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.STATE == "completed")
+            if identity_id:
+                query = query.filter(DOWNLOADHISTORY.IDENTITY_ID == identity_id)
+            else:
+                query = query.filter(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == anchor_provider,
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == anchor_external_id,
+                )
+            if season_prefix:
+                query = query.filter(DOWNLOADHISTORY.SE.like(f"{season_prefix}%"))
+            count = query.count()
+            query.delete(synchronize_session="fetch")
+            db.commit()
+            return count
+
     def delete_download_history_by_id(self, hid: int | str | None, user=None) -> bool:
         """按历史记录 ID 删除单条下载历史（非超管仅可删除本人或系统记录）."""
         if not hid:
@@ -178,7 +233,8 @@ class DownloadRepository(BaseRepository):
         download_id: str,
         save_dir: str,
         user_id: int | None = None,
-    ) -> None:
+        state: str = "downloading",
+    ) -> int | None:
         """
         新增下载历史（user_id 为发起人；None 为订阅/系统触发的全局下载）
         """
@@ -211,7 +267,7 @@ class DownloadRepository(BaseRepository):
                         "TITLE": media_info.title,
                         "YEAR": media_info.year or "",
                         "TYPE": media_info.type.value if media_info.type else "",
-                        "TMDBID": media_info.tmdb_id or "",
+                        "TMDBID": (media_info.tmdb_id or "") if is_tmdb_media(media_info) else "",
                         "VOTE": media_info.vote_average or "",
                         "POSTER": media_info.get_poster_image() or "",
                         "OVERVIEW": media_info.overview or "",
@@ -223,7 +279,7 @@ class DownloadRepository(BaseRepository):
                         "DOWNLOAD_ID": download_id,
                         "SAVE_PATH": save_dir,
                         "SE": media_info.get_season_episode_string() or "",
-                        "STATE": "downloading",
+                        "STATE": state,
                         "DATE": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
                         "IDENTITY_ID": getattr(media_info, "identity_id", None),
                         "ANCHOR_PROVIDER": getattr(media_info, "anchor_provider", None),
@@ -239,7 +295,7 @@ class DownloadRepository(BaseRepository):
                         TITLE=media_info.title,
                         YEAR=media_info.year or "",
                         TYPE=media_info.type.value if media_info.type else "",
-                        TMDBID=media_info.tmdb_id or "",
+                        TMDBID=(media_info.tmdb_id or "") if is_tmdb_media(media_info) else "",
                         VOTE=media_info.vote_average or "",
                         POSTER=media_info.get_poster_image() or "",
                         OVERVIEW=media_info.overview or "",
@@ -252,13 +308,21 @@ class DownloadRepository(BaseRepository):
                         DOWNLOAD_ID=download_id,
                         SAVE_PATH=save_dir,
                         SE=media_info.get_season_episode_string() or "",
-                        STATE="downloading",
+                        STATE=state,
                         IDENTITY_ID=getattr(media_info, "identity_id", None),
                         ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
                         ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
                         CONTENT_PROFILE=getattr(media_info, "content_profile", None),
                     )
                 )
+            db.flush()
+            row = (
+                db.query(DOWNLOADHISTORY)
+                .filter(DOWNLOADHISTORY.DOWNLOADER == downloader, DOWNLOADHISTORY.DOWNLOAD_ID == download_id)
+                .order_by(DOWNLOADHISTORY.ID.desc())
+                .first()
+            )
+            return row.ID if row is not None else None
 
     def get_download_history(
         self,
@@ -281,10 +345,54 @@ class DownloadRepository(BaseRepository):
                     )
                 return query.all()
 
-            # 使用子查询获取每个 TMDBID + SE 组合的最大日期，而非仅按 TITLE 聚合
+            # 按统一身份去重；非 TMDB 记录不再因为 TMDBID 为空而互相合并。
+            group_key = case(
+                (
+                    and_(
+                        DOWNLOADHISTORY.IDENTITY_ID.isnot(None),
+                        DOWNLOADHISTORY.IDENTITY_ID != "",
+                    ),
+                    func.concat(
+                        "identity:",
+                        DOWNLOADHISTORY.IDENTITY_ID,
+                        "|",
+                        func.coalesce(DOWNLOADHISTORY.SE, ""),
+                    ),
+                ),
+                (
+                    and_(
+                        DOWNLOADHISTORY.TMDBID.isnot(None),
+                        DOWNLOADHISTORY.TMDBID != "",
+                    ),
+                    func.concat(
+                        "tmdb:",
+                        DOWNLOADHISTORY.TMDBID,
+                        "|",
+                        func.coalesce(DOWNLOADHISTORY.SE, ""),
+                    ),
+                ),
+                (
+                    and_(
+                        DOWNLOADHISTORY.ANCHOR_PROVIDER.isnot(None),
+                        DOWNLOADHISTORY.ANCHOR_PROVIDER != "",
+                    ),
+                    func.concat(
+                        "anchor:",
+                        DOWNLOADHISTORY.ANCHOR_PROVIDER,
+                        ":",
+                        func.coalesce(DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID, ""),
+                        "|",
+                        func.coalesce(DOWNLOADHISTORY.SE, ""),
+                    ),
+                ),
+                else_=func.concat("download:", DOWNLOADHISTORY.ID),
+            )
             sub_query = (
-                db.query(DOWNLOADHISTORY.TMDBID, DOWNLOADHISTORY.SE, func.max(DOWNLOADHISTORY.DATE).label("max_date"))
-                .group_by(DOWNLOADHISTORY.TMDBID, DOWNLOADHISTORY.SE)
+                db.query(
+                    group_key.label("group_key"),
+                    func.max(DOWNLOADHISTORY.DATE).label("max_date"),
+                )
+                .group_by(group_key)
                 .subquery()
             )
 
@@ -300,12 +408,11 @@ class DownloadRepository(BaseRepository):
                     base.join(
                         sub_query,
                         and_(
-                            sub_query.c.TMDBID == DOWNLOADHISTORY.TMDBID,
-                            sub_query.c.SE == DOWNLOADHISTORY.SE,
+                            sub_query.c.group_key == group_key,
                             sub_query.c.max_date == DOWNLOADHISTORY.DATE,
                         ),
                     )
-                    .order_by(DOWNLOADHISTORY.DATE.desc())
+                    .order_by(DOWNLOADHISTORY.DATE.desc(), DOWNLOADHISTORY.ID.desc())
                     .all()
                 )
             else:
@@ -317,12 +424,11 @@ class DownloadRepository(BaseRepository):
                     base.join(
                         sub_query,
                         and_(
-                            sub_query.c.TMDBID == DOWNLOADHISTORY.TMDBID,
-                            sub_query.c.SE == DOWNLOADHISTORY.SE,
+                            sub_query.c.group_key == group_key,
                             sub_query.c.max_date == DOWNLOADHISTORY.DATE,
                         ),
                     )
-                    .order_by(DOWNLOADHISTORY.DATE.desc())
+                    .order_by(DOWNLOADHISTORY.DATE.desc(), DOWNLOADHISTORY.ID.desc())
                     .limit(num)
                     .offset(offset)
                     .all()
@@ -384,6 +490,47 @@ class DownloadRepository(BaseRepository):
     def count_download_history_by_path(self, path: str) -> int:
         with self.session() as db:
             return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.SAVE_PATH == os.path.normpath(path)).count()
+
+    def get_download_history_by_row_id(self, history_id: int) -> DOWNLOADHISTORY | None:
+        """按历史记录主键查询（队列占位/重试对账用）."""
+        with self.session() as db:
+            return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.ID == int(history_id)).first()
+
+    def update_download_history_task(
+        self,
+        history_id: int,
+        download_id: str,
+        save_dir: str,
+        state: str = "downloading",
+        media_info: Any | None = None,
+    ) -> bool:
+        """队列任务添加成功后，用真实下载器任务 ID 更新占位历史."""
+        with self.session() as db:
+            row = db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.ID == int(history_id)).first()
+            if row is None:
+                return False
+            row.DOWNLOAD_ID = download_id
+            row.SAVE_PATH = save_dir
+            row.STATE = state
+            row.DATE = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+            if media_info is not None:
+                row.TITLE = media_info.title or media_info.get_name() or row.TITLE
+                row.YEAR = media_info.year or ""
+                row.TYPE = media_info.type.value if media_info.type else ""
+                row.TMDBID = (media_info.tmdb_id or "") if is_tmdb_media(media_info) else ""
+                row.VOTE = media_info.vote_average or ""
+                row.POSTER = media_info.get_poster_image() or ""
+                row.OVERVIEW = media_info.overview or ""
+                row.TORRENT = media_info.org_string
+                row.ENCLOSURE = media_info.enclosure or ""
+                row.DESC = media_info.description or ""
+                row.SE = media_info.get_season_episode_string() or ""
+                row.IDENTITY_ID = getattr(media_info, "identity_id", None)
+                row.ANCHOR_PROVIDER = getattr(media_info, "anchor_provider", None)
+                row.ANCHOR_EXTERNAL_ID = getattr(media_info, "anchor_external_id", None)
+                row.CONTENT_PROFILE = getattr(media_info, "content_profile", None)
+            db.commit()
+            return True
 
     def get_download_history_by_downloader(self, downloader: str, download_id: str) -> DOWNLOADHISTORY | None:
         """

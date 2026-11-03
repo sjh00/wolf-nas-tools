@@ -31,10 +31,14 @@ _LOOKUP_CACHE_VERSION = "v3"
 
 
 def make_lookup_cache_key(parsed, language: str | None, hint_type=None, strict=None) -> str:
-    """构建识别结果缓存键（含版本号便于整体作废，并区分提示类型与严格模式）"""
+    """构建识别结果缓存键（含版本号便于整体作废，并区分提示类型与严格模式）。
+
+    集数（episode）不参与缓存键：TMDB lookup 返回的是剧集级身份，同一季不同集
+    会得到同一结果。带上 episode 会让 2000 条分集产生 2000 次重复网络查询。
+    """
     return (
         f"lookup:{_LOOKUP_CACHE_VERSION}|{parsed.title_cn or ''}|{parsed.title_en or ''}|{parsed.year or ''}"
-        f"|{parsed.season or ''}|{parsed.episode or ''}|{parsed.type.value if parsed.type else ''}"
+        f"|{parsed.season or ''}|{parsed.type.value if parsed.type else ''}"
         f"|{hint_type.value if hint_type else ''}|{int(bool(strict))}|{(language or '').lower()}"
     )
 

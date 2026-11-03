@@ -17,8 +17,8 @@ from app.db.repositories.media_sync_repo_adapter import MediaSyncRepositoryAdapt
 from app.domain.enums import ProgressKey, SystemConfigKey
 from app.domain.mediatypes import MediaType
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
+from app.infrastructure.message_queue.base import MessageQueue
 from app.infrastructure.progress import ProgressTracker
-from app.infrastructure.queue.base import MessageQueue
 from app.mediaserver.registry import get_all_clients
 from app.message import Message
 from app.utils import ExceptionUtils
@@ -405,6 +405,14 @@ class MediaServer:
         client = self._get_client(server_id)
         return client.get_tv_episodes(item_id=item_id, **kwargs) if client else []
 
+    def sync_all_mediaservers(self) -> None:
+        """定时任务入口：遍历所有启用实例，各自的库选择独立生效."""
+        for option in self.get_server_options():
+            try:
+                self.sync_mediaserver(int(option["id"]))
+            except Exception as exc:  # noqa: BLE001
+                log.warn(f"[MediaServer]实例 {option.get('name') or option.get('id')} 同步失败: {exc}")
+
     def sync_mediaserver(self, server_id: int | None = None, library_ids: list[str] | None = None):
         """同步指定实例的媒体库数据到本地数据库。"""
         server_id = self.resolve_server_id(server_id)
@@ -426,10 +434,15 @@ class MediaServer:
                 log.info("[MediaServer]开始同步媒体库数据...")
                 self.progress.start(ProgressKey.MediaSync)
                 self.progress.update(ptype=ProgressKey.MediaSync, text="请稍候...")
-                # 获取需同步的媒体库
-                librarys = (
-                    library_ids if library_ids is not None else self.systemconfig.get(SystemConfigKey.SyncLibrary) or []
-                )
+                # 获取需同步的媒体库：优先实例级选择，旧版本回退全局选择
+                if library_ids is not None:
+                    librarys = library_ids
+                else:
+                    librarys = (
+                        self.systemconfig.get(f"{SystemConfigKey.SyncLibrary.value}::{server_id}")
+                        or self.systemconfig.get(SystemConfigKey.SyncLibrary)
+                        or []
+                    )
                 if not librarys:
                     # 未选择任何媒体库时直接返回：避免清空登记薄后写入为空，导致"已入库"判定全部失效
                     log.warn("[MediaServer]未选择需要同步的媒体库，跳过本次同步（不清空登记薄）")

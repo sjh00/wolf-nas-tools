@@ -699,6 +699,10 @@ def get_downloaded(
                     "date": item.DATE,
                     "site": item.SITE,
                     "content_profile": getattr(item, "CONTENT_PROFILE", "") or "",
+                    "state": item.STATE,
+                    "identity_id": getattr(item, "IDENTITY_ID", "") or "",
+                    "anchor_provider": getattr(item, "ANCHOR_PROVIDER", "") or "",
+                    "anchor_external_id": getattr(item, "ANCHOR_EXTERNAL_ID", "") or "",
                     "history_id": item.ID,
                 }
                 for item in items
@@ -1159,26 +1163,16 @@ def media_detail_by_ref(
     external_id = str(record.get("external_id") or req.external_id)
     links = []
     provider_url = metadata_registry.provider_detail_url(provider, external_id, media_type or MediaType.MOVIE)
+    provider_item = metadata_registry.get_provider(provider)
+    provider_desc = getattr(provider_item, "descriptor", None)
     if provider_url:
-        label = {
-            "douban": "豆瓣",
-            "bangumi": "Bangumi",
-            "tmdb": "TMDB",
-        }.get(provider, provider)
+        label = str(getattr(provider_desc, "display_name", "") or provider)
         links.append({"provider": provider, "label": label, "url": provider_url})
-    tmdb_ref = next(
-        (item for item in snapshot.get("refs", []) if item.get("provider") == "tmdb"),
-        None,
+    tmdb_ref = (
+        next((item for item in snapshot.get("refs", []) if item.get("provider") == "tmdb"), None)
+        if provider == "tmdb"
+        else None
     )
-    if tmdb_ref and str(tmdb_ref.get("external_id") or "").isdigit():
-        tmdb_id = str(tmdb_ref["external_id"])
-        links.append(
-            {
-                "provider": "tmdb",
-                "label": "TMDB",
-                "url": f"https://www.themoviedb.org/{'movie' if (media_type == MediaType.MOVIE) else 'tv'}/{tmdb_id}",
-            }
-        )
     status = sub_svc.get_subscribe_by_anchor(
         provider,
         external_id,
@@ -1187,14 +1181,9 @@ def media_detail_by_ref(
     )
     data = {
         "id": external_id,
-        "mediaid": (
-            f"DB:{external_id}"
-            if provider == "douban"
-            else f"BG:{external_id}"
-            if provider == "bangumi"
-            else external_id
-        ),
-        "tmdbid": tmdb_ref.get("external_id", "") if tmdb_ref else "",
+        "mediaid": f"{provider}:{external_id}",
+        "metadata_ref": f"{provider}:{external_id}",
+        "tmdbid": tmdb_ref.get("external_id", "") if provider == "tmdb" and tmdb_ref else "",
         "provider": provider,
         "anchor_provider": provider,
         "anchor_external_id": external_id,

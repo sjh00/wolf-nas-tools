@@ -119,6 +119,8 @@ class TestDownloaderPostProcessDoesNotTagOnSkip:
             "rmt_mode": "link",
         }
         core._client_factory.get_client.return_value = client
+        # v5.6.0 起转移可由持久队列接管；本用例直连同步路径，显式关闭队列分支
+        core._transfer_queue_service = None
         client.get_transfer_task.return_value = [{"id": "h1", "path": "/dl/a.mkv", "tags": ["WOLFNAS"]}]
         core._pipeline = MagicMock()
         core._pipeline.process.side_effect = fake_process

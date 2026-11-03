@@ -167,6 +167,7 @@ class PtInfoRequest(BaseModel):
 
 class PtIdRequest(BaseModel):
     id: str | None = None
+    delete_files: bool = False
 
 
 class BatchIdsRequest(BaseModel):
@@ -653,7 +654,7 @@ def pt_remove(
 ):
     tid = req.id
     if tid:
-        svc.delete_torrents(ids=tid, delete_file=True)
+        svc.delete_torrents(ids=tid, delete_file=req.delete_files)
     return success(data=tid)
 
 

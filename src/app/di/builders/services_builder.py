@@ -1,6 +1,7 @@
 """业务 Service Builder — 创建 Layer 4 对象。"""
 
 from app import utils as string_utils_module
+from app.core.settings import settings
 from app.core.system_config import SystemConfig
 from app.db.repositories.brush_repo_adapter import BrushRuleRepositoryAdapter, BrushTaskRepositoryAdapter
 from app.db.repositories.channel_binding_repository import ChannelBindingRepository
@@ -64,6 +65,7 @@ from app.services.file_index_service import FileIndexService
 from app.services.filter_service import FilterService
 from app.services.indexer_service import IndexerService
 from app.services.library_presence_service import LibraryPresenceService
+from app.services.lifecycle_service import LifecycleProjector
 from app.services.media_cleanup_service import MediaCleanupService
 from app.services.media_config_service import MediaConfigService
 from app.services.media_consistency_service import MediaConsistencyService
@@ -118,6 +120,7 @@ from app.services.transfer_coordinator import TransferCoordinator
 from app.services.transfer_engine import TransferEngine
 from app.services.transfer_history_service import TransferHistoryService
 from app.services.transfer_pipeline import TransferPipeline
+from app.services.transfer_queue_service import TransferQueueService
 from app.services.words_service import WordsService
 from app.sites import SiteConf, SiteSubtitle
 from app.sites.site_cookie import SiteCookie
@@ -163,10 +166,20 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
     discovery_service = DiscoveryService(
         media_service=media_service,
         media_server=media_server,
-        library_presence_service=LibraryPresenceService(media_server=media_server),
+        library_presence_service=LibraryPresenceService(
+            media_server=media_server,
+            warm_in_background=False,
+        ),
     )
     shared_scraper = Scraper(media_service=media_service, metadata_service=metadata_service)
-    scrape_queue_service = ScrapeQueueService(scraper=shared_scraper)
+    lifecycle_projector = LifecycleProjector()
+    scrape_queue_service = ScrapeQueueService(
+        scraper=shared_scraper,
+        max_workers=settings.queue.scrape_workers,
+        message=message,
+        event_bus=event_bus,
+        lifecycle=lifecycle_projector,
+    )
 
     filetransfer_service = FileTransferService(
         media_service=media_service,
@@ -190,15 +203,28 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         blacklist_repo=TransferBlacklistRepositoryAdapter(),
         backend_repo=StorageBackendRepositoryAdapter(),
     )
+    shared_client_factory = DownloadClientFactory()
+    transfer_queue_service = TransferQueueService(
+        pipeline=transfer_pipeline,
+        client_factory=shared_client_factory,
+        max_workers=settings.queue.transfer_workers,
+        lifecycle=lifecycle_projector,
+    )
+    sync_queue_service = TransferQueueService(
+        pipeline=transfer_pipeline,
+        client_factory=shared_client_factory,
+        max_workers=settings.queue.sync_workers,
+        queue_name="sync",
+        lifecycle=lifecycle_projector,
+    )
     register_download_completed_handler(
         event_bus=event_bus,
         transfer_pipeline=transfer_pipeline,
         download_history_repo=DownloadHistoryRepositoryAdapter(),
         media_cache=MediaCache(),
         sync_path_repo=SyncPathRepositoryAdapter(),
+        transfer_queue_service=transfer_queue_service,
     )
-
-    shared_client_factory = DownloadClientFactory()
 
     download_core = DownloadCore(
         client_factory=shared_client_factory,
@@ -223,6 +249,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         transfer_pipeline=transfer_pipeline,
         download_core=download_core,
         download_monitor=facades.download_monitor,
+        download_history_repo=DownloadHistoryRepositoryAdapter(),
+        transfer_queue_service=transfer_queue_service,
     )
 
     filter_service = FilterService(
@@ -290,6 +318,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         sync_path_repo=SyncPathRepositoryAdapter(),
         storage_backend_repo=StorageBackendRepositoryAdapter(),
         thread_executor=infra.transfer_sync_executor,
+        transfer_queue_service=sync_queue_service,
     )
 
     sync_service = SyncService(
@@ -655,6 +684,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         plugin_market_service=plugin_market_service,
         storage_backend_service=storage_backend_service,
         search_result_service=search_result_service,
+        scrape_queue_service=scrape_queue_service,
+        transfer_queue_service=transfer_queue_service,
         transfer_history_service=transfer_history_service,
         library_rename_service=library_rename_service,
         subscribe_calendar_service=subscribe_calendar_service,

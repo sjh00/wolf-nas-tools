@@ -1,5 +1,6 @@
 """下载监控服务 — 高频轮询检测下载完成，触发事件驱动转移."""
 
+import os
 import time
 from concurrent.futures import as_completed
 from typing import Any
@@ -73,6 +74,15 @@ class DownloadMonitor:
                 log.error(f"[DownloadMonitor]检查下载器异常: {e!s}")
             time.sleep(self._interval)
 
+    @staticmethod
+    def _is_checkable_path(path: str) -> bool:
+        """路径是否为可直接做存在性检查的绝对路径（含 POSIX 根路径写法）。
+
+        Windows 上 `os.path.isabs("/downloads/x.mkv")` 返回 False，但这类路径来自
+        远程 Linux 下载器，仍然是绝对路径，必须参与存在性判断。
+        """
+        return bool(os.path.isabs(path) or path[:1] in ("/", "\\"))
+
     def _warmup(self) -> None:
         """预热：记录当前所有可转移任务 ID，避免启动时大量触发."""
         try:
@@ -91,14 +101,25 @@ class DownloadMonitor:
                     task_id = str(task.get("id") or "")
                     if not task_id:
                         continue
+                    uid = self._make_id(did, task_id)
+                    task_path = str(task.get("path") or "")
                     # 有转移历史的才算已处理；重启时未转移的完成任务必须保留，
                     # 让首次增量检查重新触发，否则会被 warmup 永久吞掉。
                     if self._history_repo is None:
-                        self._processed_ids.add(self._make_id(did, task_id))
+                        self._processed_ids.add(uid)
                         continue
                     try:
-                        if self._history_repo.get_by_source(str(task.get("path") or "")) is not None:
-                            self._processed_ids.add(self._make_id(did, task_id))
+                        if self._history_repo.get_by_source(task_path) is not None:
+                            self._processed_ids.add(uid)
+                            continue
+                        # 启动期残留任务：下载器里仍标记完成，但路径已不存在时
+                        # 转移必然失败，不能让它重放并产生“无法识别”误通知。
+                        # Windows 上 os.path.isabs("/foo") 为 False，而远程下载器给出的
+                        # 常是 POSIX 绝对路径（/downloads/x.mkv），故同时认领根路径写法，
+                        # 否则残留任务在 Windows 宿主上永远不会被跳过。
+                        if task_path and self._is_checkable_path(task_path) and not os.path.exists(task_path):
+                            self._processed_ids.add(uid)
+                            log.warn(f"[DownloadMonitor]跳过启动期残留任务（路径不存在）: {task_id} @ {task_path}")
                     except Exception as e:  # noqa: BLE001 - 历史查询失败不应阻断启动
                         log.debug(f"[DownloadMonitor]查询转移历史失败 {task_id}: {e}")
         except Exception as e:

@@ -55,6 +55,7 @@ def handle_download_completed(
     download_history_repo: Any = None,
     media_cache: Any = None,
     sync_path_repo: Any = None,
+    transfer_queue_service: Any = None,
 ) -> None:
     """下载完成事件处理器 — 触发文件转移."""
     payload = event.payload
@@ -142,6 +143,54 @@ def handle_download_completed(
 
         if transfer_pipeline is None:
             raise RuntimeError("transfer_pipeline is required")
+        if transfer_queue_service is not None:
+            history = None
+            try:
+                history = download_history_repo.get_download_history_by_downloader(
+                    str(payload.downloader_id), str(payload.task_id)
+                )
+            except Exception:  # noqa: BLE001
+                history = None
+            identity_id = str(getattr(history, "IDENTITY_ID", "") or "")
+            season_value = str(getattr(history, "SE", "") or "")
+            season_no = 0
+            episode_no = 0
+            if season_value.startswith("S") and "E" in season_value:
+                try:
+                    season_no = int(season_value[1:].split("E", 1)[0])
+                    episode_no = int(season_value.split("E", 1)[1])
+                except ValueError:
+                    season_no = episode_no = 0
+            queued = transfer_queue_service.submit(
+                {
+                    "downloader_id": payload.downloader_id,
+                    "task_id": payload.task_id,
+                    "path": payload.path,
+                    "name": name,
+                    "tags": payload.tags,
+                    "operation": operation,
+                    "target_dir": target_dir,
+                    "unknown_dir": unknown_dir,
+                    "provider_data": tmdb_info,
+                    "media_type": media_type,
+                    "season": season or season_no,
+                    "episode": episode_no,
+                    "fallback_episode": fallback_episode,
+                    "identity_id": identity_id,
+                    "title": getattr(history, "TITLE", None),
+                    "year": getattr(history, "YEAR", None),
+                    "poster": getattr(history, "POSTER", None),
+                    "source_provider": getattr(history, "ANCHOR_PROVIDER", None),
+                    "content_profile": getattr(history, "CONTENT_PROFILE", None),
+                    "user_id": getattr(history, "USER_ID", None),
+                    "run_id": f"identity:{identity_id}" if identity_id else None,
+                    "trace_id": f"identity:{identity_id}" if identity_id else None,
+                }
+            )
+            if queued:
+                log.info(f"[Event]下载完成转移已入队: {payload.path}")
+                return
+
         task = TransferTask(
             source_type=SourceType.DOWNLOADER,
             source_id=name,
@@ -171,6 +220,7 @@ def register_download_completed_handler(
     download_history_repo: Any = None,
     media_cache: Any = None,
     sync_path_repo: Any = None,
+    transfer_queue_service: Any = None,
 ) -> None:
     """注册下载完成事件处理器，外部显式注入依赖。"""
 
@@ -182,6 +232,7 @@ def register_download_completed_handler(
             download_history_repo=download_history_repo,
             media_cache=media_cache,
             sync_path_repo=sync_path_repo,
+            transfer_queue_service=transfer_queue_service,
         )
 
     event_bus.subscribe(DOWNLOAD_COMPLETED, _handler)
