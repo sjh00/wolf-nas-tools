@@ -130,7 +130,7 @@ class TestOrchestrateFinalText:
         ):
             orch.orchestrate(ctx)
 
-        calls = [str(c) for c in orch._progress.update.call_args_list]
+        calls = [str(c) for c in orch._progress.update_max.call_args_list]
         final = [c for c in calls if "搜索完成" in c]
         assert final, "应有搜索完成的 progress update"
         assert "站点B(超时)" in final[-1]
@@ -202,3 +202,98 @@ class TestProviderIdentityRecovery:
         assert names == ["凡人修仙传"]
         assert filter_args["year"] is None
         assert filter_args.get("type") is None
+
+
+class TestSiteTier:
+    def test_default_site_tier_beats_fallback_priority(self):
+        default_site = MediaInfo(title="A", type=MediaType.MOVIE)
+        default_site.site = "DefaultSite"
+        default_site.site_order = 100
+        fallback = MediaInfo(title="B", type=MediaType.MOVIE)
+        fallback.site = "FallbackSite"
+        fallback.site_order = 9999
+
+        result = SearchOrchestrator._apply_site_tier([fallback, default_site], {"site_tier": ["DefaultSite"]})
+
+        assert result[1].site_order > result[0].site_order
+
+    def test_no_tier_keeps_site_order(self):
+        media = MediaInfo(title="A", type=MediaType.MOVIE)
+        media.site = "Site"
+        media.site_order = 10
+
+        result = SearchOrchestrator._apply_site_tier([media], {})
+
+        assert result[0].site_order == 10
+
+
+class TestContentIdSource:
+    def test_resolved_media_keeps_real_provider(self):
+        orchestrator = object.__new__(SearchOrchestrator)
+        service = MagicMock()
+        service.search.return_value = [{"ref": {"provider": "javdb", "external_id": "P0dyv"}}]
+        orchestrator._metadata_service = service
+        resolved = MediaInfo(title="SSIS-522", type=MediaType.MOVIE)
+        orchestrator.resolve_anchor_media = MagicMock(return_value=resolved)
+
+        media = orchestrator.resolve_content_id_media("javalibrary", "SSIS-522", media_type=MediaType.MOVIE)
+
+        assert media is not None
+        assert media.provider == "javdb"
+        assert media.metadata_ref == "javdb:P0dyv"
+        assert media.anchor_provider == "content_id"
+        assert media.anchor_external_id == "SSIS-522"
+
+
+class TestAnchorMediaTitle:
+    def test_prefers_original_title_over_numeric_alias(self):
+        orchestrator = object.__new__(SearchOrchestrator)
+        service = MagicMock()
+        service.lookup.return_value = {
+            "title": "生化危机：爆发夜",
+            "original_title": "Resident Evil",
+            "year": "2026",
+            "aliases": ["Resident Evil 0", "生化危机0"],
+        }
+        orchestrator._metadata_service = service
+
+        media = orchestrator.resolve_anchor_media("douban", "37068446", media_type=MediaType.MOVIE)
+
+        assert media is not None
+        assert media.title == "生化危机：爆发夜"
+        assert media.en_name == "Resident Evil"
+        assert media.year == "2026"
+
+    def test_zero_year_is_normalized_to_empty(self):
+        orchestrator = object.__new__(SearchOrchestrator)
+        service = MagicMock()
+        service.lookup.return_value = {"title": "Demo", "original_title": "Demo", "year": "0"}
+        orchestrator._metadata_service = service
+
+        media = orchestrator.resolve_anchor_media("douban", "1", media_type=MediaType.MOVIE)
+
+        assert media is not None
+        assert media.year == ""
+
+
+class TestSeasonSuffix:
+    def test_anchor_title_parses_season_number(self):
+        orchestrator = object.__new__(SearchOrchestrator)
+        service = MagicMock()
+        service.lookup.return_value = {
+            "title": "赛博朋克：边缘行者 第二季",
+            "original_title": "Cyberpunk: Edgerunners",
+            "year": "2026",
+        }
+        orchestrator._metadata_service = service
+
+        media = orchestrator.resolve_anchor_media("douban", "1", media_type=MediaType.TV)
+
+        assert media is not None
+        assert media.begin_season == 2
+
+    def test_strip_season_suffix_for_search_name(self):
+        from app.services.search_service import _strip_season_suffix
+
+        assert _strip_season_suffix("赛博朋克：边缘行者 第二季") == "赛博朋克：边缘行者"
+        assert _strip_season_suffix("Cyberpunk Edgerunners Season 2") == "Cyberpunk Edgerunners"

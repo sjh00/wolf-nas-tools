@@ -1,6 +1,6 @@
 [project]
 name = "wolfnas"
-version = "5.6.0"
+version = "5.7.5"
 description = "WolfNas"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -76,6 +76,7 @@ dependencies = [
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [dependency-groups]
 dev = [

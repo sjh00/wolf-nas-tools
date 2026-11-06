@@ -16,6 +16,7 @@ from app.message.schema import ConfigField, MessageConfigSchema
 from app.plugin_framework.builtin_plugins.feishu.backend.feishu_api import FeishuApi
 from app.plugin_framework.builtin_plugins.feishu.backend.ws_server import WsServer
 from app.utils import ExceptionUtils
+from app.utils.config_tools import get_domain
 
 
 def build_webhook_payload(title: str, text: str, url: str) -> dict:
@@ -139,6 +140,7 @@ class Feishu(_IMessageClient):
     def __init__(self, config, apikey_service=None, message=None):
         self._apikey_service = apikey_service
         self._ws = None
+        self._callback_client = None
         self._callback_url = ""
         super().__init__(config, apikey_service, message=message)
 
@@ -168,6 +170,8 @@ class Feishu(_IMessageClient):
         """启动入站交互服务（应用模式即启用长连接）"""
         if self._mode != "app" or not self._app_id or not self._app_secret:
             return
+        if self._ws is not None:
+            self.stop_service()
         if self._apikey_service is None:
             log.warn("飞书交互服务未启动：缺少 apikey_service")
             return
@@ -181,16 +185,26 @@ class Feishu(_IMessageClient):
             self._callback_url = (
                 f"http://127.0.0.1:{web_port}/api/plugin-framework/webhooks/feishu/callback?apikey={api_key}"
             )
+            self._callback_client = HttpClient(config=HttpClientConfig(timeout=10))
             self._ws = WsServer(
                 app_id=self._app_id,
                 app_secret=self._app_secret,
-                callback=lambda ev: HttpClient(config=HttpClientConfig(timeout=10)).post(self._callback_url, json=ev),
+                callback=self._post_callback,
             )
             self._ws.start()
             log.info("飞书消息接收服务已启动")
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
             log.error(f"飞书消息接收服务启动失败: {err}")
+
+    def _post_callback(self, event: dict) -> None:
+        client = self._callback_client
+        if client is None:
+            return
+        try:
+            client.post(self._callback_url, json=event)
+        except Exception as err:  # noqa: BLE001
+            log.warn(f"飞书事件回环失败: {err}")
 
     def stop_service(self):
         """停止入站交互服务"""
@@ -201,6 +215,12 @@ class Feishu(_IMessageClient):
                 log.warn(f"飞书消息接收服务停止失败: {err}")
             self._ws = None
             log.info("飞书消息接收服务已停止")
+        if self._callback_client is not None:
+            try:
+                self._callback_client.close()
+            except Exception as err:  # noqa: BLE001
+                log.warn(f"飞书回调客户端关闭失败: {err}")
+            self._callback_client = None
 
     def get_status(self) -> bool:
         """连接测试：先校验应用凭证；有接收人时再实际发送一条测试消息"""
@@ -226,8 +246,26 @@ class Feishu(_IMessageClient):
             return state
         return True
 
+    @staticmethod
+    def _normalize_image_url(image_url: str) -> str:
+        value = str(image_url or "").strip()
+        if not value:
+            return ""
+        if value.startswith("//"):
+            return "https:" + value
+        if value.startswith(("http://", "https://")):
+            return value
+        domain = get_domain()
+        if not domain:
+            return ""
+        return f"{domain}/{value.lstrip('/')}"
+
     def _resolve_image(self, image_url: str) -> str:
         """下载远程图片并上传飞书，返回 image_key（失败返回空串，通知降级为无图）"""
+        image_url = self._normalize_image_url(image_url)
+        if not image_url:
+            log.warn("飞书图片地址为空或缺少站点域名，通知降级为无图")
+            return ""
         try:
             resp = HttpClient(config=HttpClientConfig(timeout=20)).get(image_url)
             if not resp.content:

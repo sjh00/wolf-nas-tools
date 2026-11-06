@@ -16,6 +16,8 @@ from concurrent.futures import Future, wait
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 import log
 from app.core.constants import RMT_MEDIAEXT, RMT_MIN_FILESIZE
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
@@ -53,6 +55,8 @@ from app.media.parser.unified.preprocessor import is_collection_context
 from app.message import Message
 from app.schemas.media import TransferMediaDTO
 from app.services.scrape_queue_service import ScrapeQueueService
+from app.services.search_subject import SearchSubject
+from app.services.series_service import SeriesService
 from app.services.transfer.cleanup_service import TransferCleanupService
 from app.services.transfer.existence_checker import MediaExistenceChecker
 from app.services.transfer.history_manager import TransferHistoryManager
@@ -211,6 +215,7 @@ class FileTransferService:
         self._filesize_cover = False
         self._ignored_paths: re.Pattern[str] | None = None
         self._duplicate_scrape_at: dict[str, float] = {}
+        self._fail_notified_at: dict[str, float] = {}
         self._ignored_files: re.Pattern[str] | None = None
         self._sync_repo = sync_path_repo
 
@@ -569,7 +574,7 @@ class FileTransferService:
     ) -> tuple[bool, str]:
         """识别并转移一个文件、多个文件或者目录."""
         if not in_path or not (src_backend.exists(in_path) if src_backend is not None else os.path.exists(in_path)):
-            return self._finish_transfer(False, f"文件转移失败，目录或文件不存在：{in_path}")
+            return self._finish_transfer(False, f"文件转移失败，目录或文件不存在：{in_path}", in_path)
 
         # 分布式锁：多实例同时处理同一文件/目录时互斥
         lock_key = f"filetransfer:media:{hashlib.md5(in_path.encode(), usedforsecurity=False).hexdigest()}"
@@ -578,7 +583,7 @@ class FileTransferService:
         if not acquired:
             # 并发/残留锁导致的跳过是瞬态状态，不是失败：交由下一轮重试
             log.info(f"[Rmt]{in_path} 正在转移中（其他实例或上一轮未完成），本轮跳过")
-            return self._finish_transfer(False, skip_message(f"文件正在转移中：{in_path}"))
+            return self._finish_transfer(False, skip_message(f"文件正在转移中：{in_path}"), in_path)
 
         with lock, lock_heartbeat(lock, MEDIA_TRANSFER_LOCK_TTL):
             if not operation:
@@ -596,11 +601,14 @@ class FileTransferService:
             # ---------- 阶段 1：发现文件 ----------
             bluray_disk_dir, file_list = self._discover_files(in_path, files, episode, min_filesize, src_backend)
             if file_list is None:
-                return self._finish_transfer(False, "输入路径错误")
+                return self._finish_transfer(False, "输入路径错误", in_path)
             if not file_list:
-                return self._finish_transfer(
-                    bluray_disk_dir is not None, "目录下未找到媒体文件" if bluray_disk_dir is None else ""
-                )
+                if bluray_disk_dir is None:
+                    msg = "目录下未找到媒体文件"
+                    if self._history.is_need_insert_transfer_unknown(in_path):
+                        self._history.insert_transfer_unknown(in_path, target_dir, operation or self._default_operation)
+                    return self._finish_transfer(False, msg, in_path)
+                return self._finish_transfer(True, "", in_path)
 
             # ---------- 阶段 2：过滤 ----------
             file_list, msg = self.check_ignore(file_list=file_list)
@@ -629,6 +637,13 @@ class FileTransferService:
                 if media_type is None:
                     media_type = hinted_media_type
 
+            anchor_medias: dict[str, object] = {}
+            if download_record is not None:
+                for _path in file_list:
+                    anchor_info = self._media_info_from_anchor_record(download_record, _path, dl_season, dl_episode)
+                    if anchor_info is not None:
+                        anchor_medias[_path] = anchor_info
+
             # 先用插件 ParserProfile 短路识别，避免已识别文件再走一次 TMDB。
             policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
             parser_chain = ParserChain()
@@ -641,6 +656,8 @@ class FileTransferService:
                     parsed_profile = parser_chain.extract(os.path.basename(_path))
                 except Exception:
                     parsed_profile = None
+                if _path in anchor_medias:
+                    continue
                 if parsed_profile is None or not getattr(parsed_profile, "content_profile", None):
                     # 普通媒体：非 TMDB 主源先按策略识别，命中则完全跳过 TMDB。
                     if self._metadata_service is not None and not policy.startswith("tmdb_"):
@@ -668,7 +685,7 @@ class FileTransferService:
                     _info.title = str(parsed_code)
                 profile_medias[_path] = _info
 
-            medias = {**primary_medias, **profile_medias}
+            medias = {**primary_medias, **profile_medias, **anchor_medias}
             if unprofiled_files:
                 identified = self.media.get_media_info_on_files(
                     unprofiled_files,
@@ -681,7 +698,7 @@ class FileTransferService:
                 if identified:
                     medias.update(identified)
             if not medias:
-                return self._finish_transfer(False, "搜索媒体信息出错")
+                return self._finish_transfer(False, "搜索媒体信息出错", in_path)
 
             for _info in medias.values():
                 self._apply_download_record_hint(_info, download_record)
@@ -712,6 +729,13 @@ class FileTransferService:
                         log.debug(f"[Rmt]元数据合成完成 {_info.title}：{time.perf_counter() - started:.2f}s")
                     except Exception as exc:  # noqa: BLE001
                         log.debug(f"[Rmt]主源识别失败: {exc}")
+
+            # 规范剧集标题优先：元数据快照可能带回“第一季/第二季”来源标题
+            for _info in medias.values():
+                canonical_title = SeriesService().get_title(getattr(_info, "series_key", None))
+                if canonical_title:
+                    _info.title = canonical_title
+                    _info.cn_name = canonical_title
 
             # 订阅/下载历史已知季集时兜底：文件名解析失败的动漫单集用订阅记录的集号补齐，
             # 避免"无法从文件名中识别出集数"导致订阅下载的剧集无法入库
@@ -748,12 +772,27 @@ class FileTransferService:
 
     # ---------- 转移流水线私有方法 ----------
 
-    def _finish_transfer(self, status, message):
+    def _finish_transfer(self, status, message, in_path: str = ""):
         self.progress.update(
             ptype=ProgressKey.FileTransfer, value=100, text=f"转移{'成功' if status else '失败'}：{message}！"
         )
         self.progress.end(ProgressKey.FileTransfer)
+        if not status and in_path:
+            self._notify_failure(in_path, 1, message)
         return status, message
+
+    def _notify_failure(self, path: str, count: int, message: str) -> None:
+        """转移失败通知：同一路径 10 分钟内只提醒一次，避免重试刷屏。"""
+        if not path:
+            return
+        now = time.time()
+        if now - self._fail_notified_at.get(path, 0) < 600:
+            return
+        self._fail_notified_at[path] = now
+        try:
+            self.message.send_transfer_fail_message(path, count or 1, message)
+        except Exception as exc:  # noqa: BLE001
+            log.warn(f"[Rmt]发送转移失败通知失败: {exc}")
 
     def _get_bluray_dir(self, in_path: str, src_backend=None) -> str | None:
         """识别蓝光原盘根目录，支持本地与远程源（后端感知）"""
@@ -1211,6 +1250,72 @@ class FileTransferService:
                 return None, parsed_type, dl_season, dl_episode
         return None, None, None, None
 
+    def _media_info_from_anchor_record(self, record, path: str, season, episode):
+        """下载记录有非 TMDB 锚点时，直接用该来源识别，避免先去查 TMDB."""
+        provider = str(getattr(record, "ANCHOR_PROVIDER", "") or "").strip()
+        external = str(getattr(record, "ANCHOR_EXTERNAL_ID", "") or "").strip()
+        if not provider or not external or provider == "tmdb":
+            return None
+        profile = str(getattr(record, "CONTENT_PROFILE", "") or "default")
+        subject = SearchSubject.classify(
+            getattr(record, "TYPE", ""),
+            profile,
+            provider,
+            external,
+        )
+        mtype = subject.display_type or MediaType.from_string(str(getattr(record, "TYPE", "") or "")) or MediaType.MOVIE
+        record_data = None
+        if self._metadata_service is not None:
+            try:
+                record_data = self._metadata_service.lookup(
+                    provider=provider,
+                    external_id=external,
+                    media_type=mtype,
+                    scope=profile,
+                    content_profile=profile,
+                    allow_private=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - 来源失败仍保留锚点继续识别
+                log.warn(f"[Rmt]按锚点 {provider}:{external} 读取元数据失败: {exc}")
+        title = str((record_data or {}).get("title") or getattr(record, "TITLE", "") or "").strip()
+        if not title:
+            title = os.path.splitext(os.path.basename(path))[0]
+        info = meta_info_fn(title, mtype=mtype)
+        info.title = title
+        info.year = str((record_data or {}).get("year") or getattr(record, "YEAR", "") or "")
+        info.org_string = os.path.basename(path)
+        info.anchor_provider = provider
+        info.anchor_external_id = external
+        info.content_profile = profile
+        info.identity_id = getattr(record, "IDENTITY_ID", None)
+        if record_data:
+            info.original_title = str(record_data.get("original_title") or info.original_title or "")
+            info.aliases = list(record_data.get("aliases") or [])
+        try:
+            resolution = SeriesService().resolve(
+                provider=provider,
+                external_id=external,
+                title=title,
+                year=str(info.year or "") or None,
+                season_number=int(season) if season else None,
+                scope=profile,
+                total_episodes=getattr(record, "TOTAL", None),
+                original_title=info.original_title,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug(f"[Rmt]规范剧集解析失败: {exc}")
+        else:
+            info.series_key = resolution.series_key
+            if resolution.title:
+                info.title = resolution.title
+                info.cn_name = resolution.title
+        if season:
+            info.begin_season = int(season)
+            if episode:
+                info.begin_episode = int(episode)
+                info.end_episode = int(episode)
+        return info
+
     @staticmethod
     def _apply_download_record_hint(media, record) -> None:
         """下载记录里的锚点补到媒体对象，避免只有 TMDB 记录才可转移."""
@@ -1224,6 +1329,17 @@ class FileTransferService:
         if getattr(record, "IDENTITY_ID", None) and not getattr(media, "identity_id", None):
             media.identity_id = record.IDENTITY_ID
         profile = str(getattr(record, "CONTENT_PROFILE", "") or "")
+        subject = SearchSubject.classify(
+            getattr(record, "TYPE", ""),
+            profile,
+            provider,
+            external,
+        )
+        record_type = subject.display_type or MediaType.from_string(str(getattr(record, "TYPE", "") or ""))
+        current_type = getattr(media, "type", None)
+        if record_type and current_type != record_type:
+            log.info(f"[Rmt]按下载记录纠正媒体类型：{current_type} -> {record_type}")
+            media.type = record_type
         if profile and (
             not str(getattr(media, "content_profile", "") or "")
             or str(getattr(media, "content_profile", "")) == "default"
@@ -1516,59 +1632,74 @@ class FileTransferService:
                 # 失败或已存在（转移历史/目标文件已存在）都不进入成功处理与消息聚合
                 if fc > 0:
                     success_flag = False
-                if fc > 0 or exist_filenum > 0:
+                # _record_fail 在已有待处理记录时返回 0 失败数，但路径为空；
+                # 不能把这种情况当成成功继续入队刮削，否则会生成 dir/file 为空的死任务。
+                if fc > 0 or exist_filenum > 0 or (not ret_file_path and not ret_dir_path):
+                    if fc > 0 or (not ret_file_path and not ret_dir_path):
+                        success_flag = False
                     if exist_filenum > 0 and ret_file_path and ret_dir_path:
+                        # 目标文件已存在即已入库；补刮时携带 finalize，
+                        # 让刮削成功后照常发送入库消息并触发订阅定稿。
+                        duplicate_finalize = {
+                            "in_path": in_path,
+                            "file_item": file_item,
+                            "out_path": ret_file_path,
+                            "dist_path": dist_path,
+                            "media": JsonUtils.model_to_jsonable(media),
+                            "media_info": media.to_dict(),
+                            "in_from": getattr(in_from, "value", in_from),
+                            "exist_filenum": exist_filenum,
+                            "category_flag": self._path_resolver.movie_category_flag or False,
+                            "bluray": bool(bluray_disk_dir),
+                            "file_ext": os.path.splitext(file_item)[-1],
+                            "ret_file_path": ret_file_path,
+                        }
+                        try:
+                            src_size = src_backend.stat(reg_path).size if src_backend else os.path.getsize(reg_path)
+                            dst_size = (
+                                dst_backend.stat(ret_file_path).size if dst_backend else os.path.getsize(ret_file_path)
+                            )
+                            if src_size and dst_size and int(src_size) != int(dst_size):
+                                failed_count += 1
+                                alert_count += 1
+                                alert_messages.append("目标同名文件大小不一致，未执行覆盖")
+                                self._notify_failure(reg_path, 1, "目标同名文件大小不一致")
+                                continue
+                        except Exception as exc:  # noqa: BLE001
+                            log.debug(f"[Rmt]目标大小校验失败: {exc}")
+                        media.user_id = self._resolve_owner_user_id(reg_path, media)
+                        self._record_transfer_history(
+                            media,
+                            in_from,
+                            operation,
+                            reg_path,
+                            ret_file_path,
+                            dist_path,
+                            resolved_backend,
+                        )
                         self._scrape_duplicate_if_incomplete(
-                            media, ret_dir_path, ret_file_path, resolved_backend, force_scrape
+                            media,
+                            ret_dir_path,
+                            ret_file_path,
+                            resolved_backend,
+                            force_scrape,
+                            finalize=duplicate_finalize,
                         )
                     continue
 
-                file_ext = os.path.splitext(file_item)[-1]
-                raw_tmdb_id = str(media.tmdb_id or "").strip()
-                if raw_tmdb_id.isdigit():
-                    media.set_provider_data(
-                        self.media.get_tmdb_info(
-                            mtype=media.type,
-                            tmdbid=raw_tmdb_id,
-                            append_to_response="all",
-                        )
-                    )
-                snapshot = (
-                    self._metadata_service.latest_snapshot_for_media(media)
-                    if self._metadata_service is not None
-                    else None
-                )
-                out_path = new_file if not bluray_disk_dir else ret_dir_path
-                season_episode = media.get_season_episode_string() if out_path else media.get_season_string()
-                media_dto = TransferMediaDTO(
-                    title=media.title or "",
-                    type_value=media.type.value if media.type else "",
-                    category=media.category or "",
-                    tmdb_id=int(raw_tmdb_id) if raw_tmdb_id.isdigit() else 0,
-                    year=media.year or "",
-                    season_episode=season_episode,
-                    poster=media.get_poster_image() or "",
-                    identity_id=getattr(snapshot, "identity_id", None) or getattr(media, "identity_id", None),
-                    anchor_provider=getattr(media, "anchor_provider", None),
-                    anchor_external_id=getattr(media, "anchor_external_id", None),
-                    content_profile=getattr(media, "content_profile", None),
-                )
-
                 # BONUS/花絮/特别篇：跳过转移历史、NFO/海报、字幕下载
                 isextras = PathUtils.is_extras(file_item)
-
                 if not isextras:
-                    self._history.insert_transfer_history(
-                        in_from=in_from,
-                        rmt_mode=operation,
-                        in_path=reg_path,
-                        out_path=out_path or "",
-                        dest=dist_path,
-                        media_info=media_dto,
-                        dst_backend=getattr(resolved_backend, "id", None) or "local",
+                    self._record_transfer_history(
+                        media,
+                        in_from,
+                        operation,
+                        reg_path,
+                        new_file if not bluray_disk_dir else ret_dir_path,
+                        dist_path,
+                        resolved_backend,
                     )
-
-                # 转移成功：若该文件曾进入未识别列表，标记为已识别（不再依赖手动指定季集标志）
+                # 转移成功：若该文件曾进入未识别列表，标记为已识别
                 self._history.update_transfer_unknown_state(reg_path)
 
                 if media.type == MediaType.MOVIE:
@@ -1583,9 +1714,11 @@ class FileTransferService:
                         message_medias[message_key].total_episodes += media.total_episodes
                         message_medias[message_key].size += media.size
 
+                # 文件已到达最终路径；刮削任务完成后才发布 transfer_finished，
+                # 避免媒体服务器先扫描到无 NFO/图片的目录。
+                file_ext = os.path.splitext(file_item)[-1]
+                out_path = new_file if not bluray_disk_dir else ret_dir_path
                 if not isextras:
-                    # 刮削走后台上游持久队列；刮削完成后由任务统一发布 transfer_finished /
-                    # 字幕下载 / 单集转移事件，避免媒体服务器先扫到没有 NFO 与图片的目录。
                     finalize = {
                         "in_path": in_path,
                         "file_item": file_item,
@@ -1605,7 +1738,7 @@ class FileTransferService:
                         dir_path=ret_dir_path,
                         file_name=self._scrape_file_base_name(ret_file_path, ret_dir_path),
                         file_ext=file_ext,
-                        dst_backend=dst_backend,
+                        dst_backend=resolved_backend,
                         finalize=finalize,
                     )
                 else:
@@ -1801,7 +1934,7 @@ class FileTransferService:
         self,
         backend_id: Any,
         target_dir: str | None,
-        action: Callable[[], None],
+        action: Callable[[], Any],
     ) -> bool:
         """与批量重命名共享目标目录锁；竞争时跳过本次写入."""
         if not target_dir:
@@ -1963,7 +2096,13 @@ class FileTransferService:
         return f"{size / 1024**3:.2f}G"
 
     def _scrape_duplicate_if_incomplete(
-        self, media, dir_path: str, file_path: str, dst_backend=None, force: bool = False
+        self,
+        media,
+        dir_path: str,
+        file_path: str,
+        dst_backend=None,
+        force: bool = False,
+        finalize: dict | None = None,
     ) -> None:
         """目标已存在时，若 NFO 不完整则补刮，不重复搬运文件."""
         file_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -1978,12 +2117,20 @@ class FileTransferService:
         ]
         for nfo in nfo_candidates if not force else []:
             try:
-                if not os.path.exists(nfo):
-                    continue
-                content = Path(nfo).read_text(encoding="utf-8", errors="ignore")
+                if dst_backend is not None:
+                    if not dst_backend.exists(nfo):
+                        continue
+                    with dst_backend.read_stream(nfo) as stream:
+                        content = stream.read().decode("utf-8", errors="ignore")
+                else:
+                    if not os.path.exists(nfo):
+                        continue
+                    content = Path(nfo).read_text(encoding="utf-8", errors="ignore")
                 plot = re.search(r"<plot>\s*(.*?)\s*</plot>", content, re.S)
                 actors = re.search(r"<actor>\s*<name>\s*(.*?)\s*</name>", content, re.S)
                 if (plot and plot.group(1).strip()) or (actors and actors.group(1).strip()):
+                    if finalize:
+                        self._scrape_queue_service.finalize_duplicate(media, finalize)
                     return
             except Exception:
                 continue
@@ -1996,6 +2143,7 @@ class FileTransferService:
                 file_name=file_name,
                 file_ext=file_ext,
                 dst_backend=dst_backend,
+                finalize=finalize,
             )
         except Exception as e:  # noqa: BLE001 - 补刮失败不改变转移结果
             log.warn(f"[Rmt]补刮提交失败 {key}: {e}")
@@ -2213,23 +2361,88 @@ class FileTransferService:
         else:
             ret_file_path = f"{ret_file_path}{file_ext}"
             new_file = ret_file_path
-            acquired = self._with_library_target_lock(
-                getattr(dst_backend, "id", None) or "local",
-                ret_dir_path,
-                lambda: self._engine.transfer(
+            transfer_result = {"ok": False}
+
+            def _transfer() -> None:
+                transfer_result["ok"] = self._engine.transfer(
                     file_item,
                     ret_file_path,
                     operation,
                     over_flag=False,
                     src_backend=src_backend,
                     dst_backend=dst_backend,
-                ),
+                )
+
+            acquired = self._with_library_target_lock(
+                getattr(dst_backend, "id", None) or "local",
+                ret_dir_path,
+                _transfer,
             )
             if not acquired:
                 return 0, 0, alert_messages, 1, new_file, ret_file_path, ret_dir_path
+            if not transfer_result["ok"]:
+                return self._record_fail(
+                    file_item,
+                    reg_path,
+                    target_dir,
+                    operation,
+                    udf_flag,
+                    alert_messages,
+                    "目标文件在转移过程中已存在，未执行转移",
+                )
         # 多后端镜像：复制到其他已启用且缺失该文件的后端
         self._replicate_to_enabled_backends(media, new_file, dst_backend)
         return 0, 0, alert_messages, exist_filenum, new_file, ret_file_path, ret_dir_path
+
+    def _record_transfer_history(
+        self, media, in_from, operation, reg_path, out_path, dist_path, resolved_backend
+    ) -> None:
+        """记录转移结果。新转移与目标已存在（重复转移）都必须落历史。"""
+        raw_tmdb_id = str(media.tmdb_id or "").strip()
+        if raw_tmdb_id.isdigit():
+            media.set_provider_data(
+                self.media.get_tmdb_info(
+                    mtype=media.type,
+                    tmdbid=raw_tmdb_id,
+                    append_to_response="all",
+                )
+            )
+        snapshot = (
+            self._metadata_service.latest_snapshot_for_media(media) if self._metadata_service is not None else None
+        )
+        season_episode = media.get_season_episode_string() if out_path else media.get_season_string()
+        try:
+            series_key = SeriesService().ensure_media_series(media)
+        except Exception:  # noqa: BLE001 - 剧集映射失败不阻断转移历史
+            series_key = getattr(media, "series_key", None)
+        media_dto = TransferMediaDTO(
+            title=media.title or "",
+            type_value=media.type.value if media.type else "",
+            category=media.category or "",
+            tmdb_id=int(raw_tmdb_id) if raw_tmdb_id.isdigit() else 0,
+            year=media.year or "",
+            season_episode=season_episode,
+            poster=media.get_poster_image() or "",
+            identity_id=getattr(snapshot, "identity_id", None) or getattr(media, "identity_id", None),
+            series_key=series_key,
+            anchor_provider=getattr(media, "anchor_provider", None),
+            anchor_external_id=getattr(media, "anchor_external_id", None),
+            content_profile=getattr(media, "content_profile", None),
+        )
+        try:
+            self._history.insert_transfer_history(
+                in_from=in_from,
+                rmt_mode=operation,
+                in_path=reg_path,
+                out_path=out_path or "",
+                dest=dist_path,
+                media_info=media_dto,
+                dst_backend=getattr(resolved_backend, "id", None) or "local",
+            )
+        except IntegrityError:
+            # 队列重投/重复转移：同源同目标历史已存在即视为成功，不再报错
+            log.info(f"[Rmt]转移历史已存在，跳过重复写入：{reg_path}")
+        self._history.update_transfer_unknown_state(reg_path)
 
     def _replicate_to_enabled_backends(self, media, transferred_path, primary_backend) -> None:
         """转移成功后，将该媒体镜像到其他已启用且缺失该文件的后端。
@@ -2295,22 +2508,21 @@ class FileTransferService:
 
     def _record_fail(self, file_item, reg_path, target_dir, operation, udf_flag, alert_messages, msg):
         self.progress.update(ptype=ProgressKey.FileTransfer, text=msg)
-        insert = self._history.is_need_insert_transfer_unknown(reg_path)
+        unknowns = (
+            [item for item in self._history.transfer_unknown_repo.get_all() if item.path == reg_path]
+            if reg_path
+            else []
+        )
+        has_pending = any(str(getattr(item, "state", "") or "") == "N" for item in unknowns)
+        insert = bool(reg_path) and not has_pending and self._history.is_need_insert_transfer_unknown(reg_path)
         if insert:
             self._history.insert_transfer_unknown(reg_path, target_dir, operation)
         if msg not in alert_messages and insert:
             alert_messages = alert_messages + [msg]
-        return 1, 1 if insert else 0, alert_messages, 0, None, None, None
+        # 已存在待处理记录只保留一次失败计数/提醒，避免重试刷屏。
+        return (0 if has_pending else 1), (1 if insert else 0), alert_messages, 0, None, None, None
 
     def _transfer_post_process(self, result, in_from, in_path, operation, root_path) -> tuple[bool, str]:
-        if result["message_medias"]:
-            self.message.send_transfer_tv_message(
-                result["message_medias"],
-                in_from,
-                result.get("exist_filenum", 0),
-                self._path_resolver.tv_category_flag or False,
-            )
-
         total_count = result["total_count"]
         failed_count = result["failed_count"]
         alert_count = result["alert_count"]
@@ -2334,7 +2546,9 @@ class FileTransferService:
                     payload=TransferFailPayload(path=in_path, count=alert_count, reason=reason),
                 )
             )
-            self.message.send_transfer_fail_message(in_path, alert_count, reason)
+            self._notify_failure(in_path, alert_count, reason)
+        elif failed_count > 0:
+            self._notify_failure(in_path, failed_count, error_message or "转移失败")
         elif failed_count == 0:
             if (
                 operation == "move"
@@ -2346,7 +2560,7 @@ class FileTransferService:
             ):
                 log.info(f"[Rmt]目录下已无媒体文件，移动模式下删除目录：{in_path}")
                 shutil.rmtree(in_path)
-        return self._finish_transfer(success_flag, error_message)
+        return self._finish_transfer(success_flag, error_message, in_path)
 
     def transfer_manually(self, s_path, t_path, operation):
         """全量转移，用于使用命令调用."""

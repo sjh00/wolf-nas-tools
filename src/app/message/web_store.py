@@ -11,11 +11,25 @@ import itertools
 import time
 from collections import deque
 from threading import Lock
+from urllib.parse import urlsplit
 
 import log
 from app.db.repositories.web_message_repo_adapter import WebMessageRepositoryAdapter
 from app.db.web_visibility import is_visible
 from app.infrastructure.image_proxy.proxy import ImageProxy
+
+
+def _message_image_url(image: str | None) -> str:
+    """已经是站内图片处理地址时不要再套一层 library 代理."""
+    value = str(image or "").strip()
+    if not value:
+        return ""
+    if value.startswith("/img/"):
+        return value
+    parsed = urlsplit(value)
+    if parsed.path.startswith("/img/"):
+        return value
+    return ImageProxy.get_proxy_image_url(value)
 
 
 class WebMessageStore:
@@ -87,13 +101,14 @@ class WebMessageStore:
         url: str = "",
         items: list[dict] | None = None,
         user_id: str = "",
+        content_profile: str = "",
     ) -> dict:
         """写入消息，返回条目（kind: notify 事件通知 / reply 交互回复 / list 列表）
 
         user_id="": 全局消息（系统通知），所有用户可见；
         user_id=<具体用户>: 仅该用户可见（命令交互回复）。
         """
-        proxied_image = ImageProxy.get_proxy_image_url(image) if image else ""
+        proxied_image = _message_image_url(image)
         proxied_items = self._proxy_items(items or [])
         cursor = None
         if self._repo is not None:
@@ -106,6 +121,7 @@ class WebMessageStore:
                     image=proxied_image,
                     url=(url or "").strip(),
                     items=proxied_items,
+                    content_profile=content_profile,
                 )
             except Exception as e:
                 log.warn(f"[WebMessageStore]DB 写入失败，降级内存: {e}")
@@ -118,6 +134,7 @@ class WebMessageStore:
                 "image": proxied_image,
                 "items": proxied_items,
                 "url": (url or "").strip(),
+                "content_profile": content_profile or "",
                 "user_id": user_id,
                 "time": time.strftime("%H:%M:%S"),
                 "ts": time.time(),
@@ -132,7 +149,7 @@ class WebMessageStore:
         for it in items:
             entry = dict(it)
             img = entry.get("image") or ""
-            entry["image"] = ImageProxy.get_proxy_image_url(img) if img else ""
+            entry["image"] = _message_image_url(img)
             proxied.append(entry)
         return proxied
 
@@ -166,7 +183,7 @@ class WebMessageStore:
             items = [i for i in self._items if is_visible(i.get("user_id"), user_id)]
             return items[-limit:]
 
-    def unread_list(self, user_id: str, limit: int = 50) -> list[dict]:
+    def unread_list(self, user_id: str, limit: int = 20) -> list[dict]:
         """当前用户未读消息列表（通知栏下拉，轻量）"""
         if self._repo is not None:
             try:

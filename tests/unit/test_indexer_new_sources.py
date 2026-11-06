@@ -1,4 +1,4 @@
-"""Sukebei 与 M-Team adult 模式配置回归."""
+"""Sukebei 与 M-Team demo 模式配置回归."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ def test_sukebei_mirrors_nyaa_layout():
     assert sukebei["html"]["search"] == nyaa["html"]["search"]
 
 
-def test_mteam_has_adult_mode_mapping():
+def test_mteam_uses_generic_mode_fallback():
     config = json.loads(Path("config/sites/api/mteam.json").read_text(encoding="utf-8"))
-    assert config["api"]["endpoints"]["search"]["mode_mapping"]["ADULT"] == "adult"
+    assert "DEMO" not in config["api"]["endpoints"]["search"].get("mode_mapping", {})
 
 
-def test_adult_profile_sets_mteam_adult_mode():
+def test_profile_search_mode_falls_back_to_lowercase():
     from types import SimpleNamespace
 
     from app.sites.api_searcher import ApiSiteSearcher
@@ -33,7 +33,7 @@ def test_adult_profile_sets_mteam_adult_mode():
                     "method": "POST",
                     "path": "/api/torrent/search",
                     "body": {"mode": "normal", "keyword": "{keyword}"},
-                    "mode_mapping": {"ADULT": "adult", "MOVIE": "movie"},
+                    "mode_mapping": {"MOVIE": "movie"},
                 }
             },
         ),
@@ -41,25 +41,25 @@ def test_adult_profile_sets_mteam_adult_mode():
     from app.media.metadata import ProviderDescriptor
     from app.media.metadata.registry import registry
 
-    class _AdultProvider:
+    class _DemoProvider:
         descriptor = ProviderDescriptor(
-            provider_key="test_adult",
-            display_name="Adult",
-            content_profiles=frozenset({"adult"}),
-            search_mode="ADULT",
+            provider_key="test_demo",
+            display_name="Demo",
+            content_profiles=frozenset({"demo"}),
+            search_mode="DEMO",
         )
 
-    registry.register_provider(_AdultProvider(), plugin_id="test")
+    registry.register_provider(_DemoProvider(), plugin_id="test")
     try:
         searcher = object.__new__(ApiSiteSearcher)
         setattr(searcher, "_site", site)
         searcher._auth_tokens = {}
         captured = {}
         searcher._execute_request = lambda *args, **kwargs: captured.update(args[1]) or []
-        searcher.search(keyword="SSIS-001", content_profile="adult")
-        assert captured["mode"] == "adult"
+        searcher.search(keyword="DEMO-001", content_profile="demo")
+        assert captured["mode"] == "demo"
     finally:
-        registry.unregister_provider("test_adult", plugin_id="test")
+        registry.unregister_provider("test_demo", plugin_id="test")
 
     captured.clear()
     searcher.search(keyword="SSIS-001", content_profile="default")

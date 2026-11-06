@@ -5,13 +5,15 @@
 所有结果按 session_id 隔离存储，新搜索覆盖旧结果。
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Any
 
 import log
 from app.core.settings import settings
-from app.domain.enums import ProgressKey, SearchType, channel_name
+from app.db.engine import background_engine_context
+from app.domain.enums import SearchType, channel_name
 from app.domain.interfaces.download_repo import IDownloadHistoryRepository
 from app.domain.interfaces.intent import IntentResolver
 from app.domain.interfaces.search_repo import ISearchRepository
@@ -20,8 +22,7 @@ from app.events import Event
 from app.events.bus import EventBus
 from app.events.constants import SEARCH_START
 from app.events.payloads import SearchStartPayload
-from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
-from app.infrastructure.progress import ProgressTracker
+from app.infrastructure.progress import CompositeProgressGroup, ProgressTracker
 from app.media import meta_info
 from app.media.image_resolver import DEFAULT_TMDB_IMAGE
 from app.media.service import MediaService
@@ -30,6 +31,9 @@ from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.search_context import SearchContext
 from app.services.search_service import SearchQueryBuilder, SearchResultDeduplicator, SearchResultProcessor
 from app.utils import StringUtils
+
+# 默认站点 tier 的排序抬升量，必须大于 site_priority_order 的最大值（9999）
+SITE_TIER_BOOST = 100_000
 
 
 class SearchOrchestrator:
@@ -58,9 +62,45 @@ class SearchOrchestrator:
         self._metadata_service = metadata_service
         self._search_auto = settings.get("pt").get("search_auto", True)
 
+    def begin_search(self, session_id: str, keyword: str = "") -> None:
+        """解析锚点元数据前先建立进度，避免 SSE 因长时间无记录提前断开."""
+        progress_key = f"search:{session_id or 'web'}"
+        self._progress.start(progress_key)
+        text = f"正在解析 {keyword} 的媒体信息..." if keyword else "正在解析媒体信息..."
+        self._progress.update(value=1, text=text, ptype=progress_key)
+
+    def end_search(self, session_id: str) -> None:
+        """确保搜索任务任何退出路径都会关闭进度，前端不会停在 0%."""
+        self._progress.end(f"search:{session_id or 'web'}")
+
+    @staticmethod
+    def _apply_site_tier(media_list: list, filter_args: dict | None) -> list:
+        """默认站点 tier：整体抬升 site_order，保证不被更高全局优先级的补充站点压过."""
+        tier_sites = (filter_args or {}).get("site_tier")
+        if not tier_sites:
+            return media_list
+        tier = {str(site) for site in tier_sites if str(site)}
+        for media in media_list:
+            if str(getattr(media, "site", "") or "") in tier:
+                media.site_order = int(getattr(media, "site_order", 0) or 0) + SITE_TIER_BOOST
+        return media_list
+
+    def _finish_progress(self, progress_key: str, site_count: int, total: int) -> None:
+        """全部后处理完成后再置 100%，避免前端在 100% 时仍看到加载态."""
+        self._progress.update_max(
+            value=100,
+            text=(
+                f"关键词完成 {site_count}/{site_count} · 搜索完成，共 {total} 条"
+                f"{self._failed_sites_summary(progress_key)}"
+            ),
+            ptype=progress_key,
+        )
+        self._progress.end(progress_key)
+
     def orchestrate(self, ctx: SearchContext) -> tuple[Any | None, dict | None, int, int]:
         progress_key: str = f"search:{ctx.session_id}"
         self._progress.start(progress_key)
+        self._progress.update(value=2, text="准备搜索...", ptype=progress_key)
 
         # 1. 构建搜索词和过滤条件
         search_names, max_workers, filter_args = self._prepare_search(ctx)
@@ -73,6 +113,7 @@ class SearchOrchestrator:
 
         # 3. 去重
         media_list = SearchResultDeduplicator.deduplicate(media_list)
+        media_list = self._apply_site_tier(media_list, filter_args)
 
         if not media_list:
             log.info(f"[Orchestrator]{ctx.keyword} 未搜索到任何资源")
@@ -80,7 +121,11 @@ class SearchOrchestrator:
             return None, ctx.no_exists or {}, 0, 0
 
         # 4. 排序（复用 SearchResultProcessor，全系统统一排序键；尊重做种数/站点优先规则）
-        self._progress.update(value=85, text=f"排序 {len(media_list)} 条结果...", ptype=progress_key)
+        self._progress.update_max(
+            value=95,
+            text=f"关键词完成 {len(search_names)}/{len(search_names)} · 排序 {len(media_list)} 条结果...",
+            ptype=progress_key,
+        )
         media_list = SearchResultProcessor.sort_results(
             media_list, download_order=(settings.get("pt") or {}).get("download_order")
         )
@@ -89,17 +134,17 @@ class SearchOrchestrator:
         if ctx.persist:
             self._enrich_and_persist(ctx, media_list)
 
-        self._progress.update(
-            value=100,
-            text=f"搜索完成，共 {len(media_list)} 条{self._failed_sites_summary(progress_key)}",
+        self._progress.update_max(
+            value=95,
+            text=f"关键词完成 {len(search_names)}/{len(search_names)} · 正在整理结果...",
             ptype=progress_key,
         )
-        self._progress.end(progress_key)
 
         # 6. 过滤已下载
         filtered = self._filter_downloaded(media_list)
         if not filtered:
             log.info("[Orchestrator]所有搜索结果已在下载历史中存在")
+            self._finish_progress(progress_key, len(search_names), len(media_list))
             return None, ctx.no_exists or {}, len(media_list), 0
 
         # 7. 择优下载
@@ -116,8 +161,10 @@ class SearchOrchestrator:
                 dl_count = len(download_items)
                 log.info(f"[Orchestrator]下载了 {dl_count}/{total} 个资源")
                 result_no_exists = left_medias if left_medias is not None else (ctx.no_exists or {})
+                self._finish_progress(progress_key, len(search_names), total)
                 return download_items[0], result_no_exists, total, dl_count
 
+        self._finish_progress(progress_key, len(search_names), len(media_list))
         return None, ctx.no_exists or {}, len(media_list), 0
 
     def resolve_anchor_media(
@@ -157,14 +204,28 @@ class SearchOrchestrator:
         has_cjk = any("\u4e00" <= char <= "\u9fff" for char in title)
         info.cn_name = title if has_cjk else None
         aliases = [str(item).strip() for item in (record.get("aliases") or []) if str(item).strip()]
-        latin_alias = next((item for item in aliases if any("a" <= ch.lower() <= "z" for ch in item)), "")
+        original_title = str(record.get("original_title") or "").strip()
+        latin_aliases = [item for item in aliases if any("a" <= ch.lower() <= "z" for ch in item)]
+        original_is_latin = bool(original_title) and not any("\u4e00" <= ch <= "\u9fff" for ch in original_title)
+        # 优先 official original_title，别名里的 "Resident Evil 0" 只是地区/暂定名
+        latin_alias = (
+            original_title
+            if original_is_latin
+            else next((item for item in latin_aliases if not re.search(r"\s0$", item)), "")
+        )
         info.en_name = None if has_cjk else title
         if not info.en_name and latin_alias:
             info.en_name = latin_alias
         info.aliases = aliases
-        info.original_title = str(record.get("original_title") or title)
+        info.original_title = original_title or title
+        if actual_type in (MediaType.TV, MediaType.ANIME) and info.begin_season is None and title:
+            # 豆瓣等单季条目把季写在标题里：解析成真实季号，供匹配和过滤使用。
+            _, _, title_season, _, _, _ = StringUtils.get_keyword_from_string(title)
+            if title_season:
+                info.begin_season = int(title_season)
         info.original_language = str(record.get("original_language") or "")
-        info.year = str(record.get("year") or "")
+        raw_year = str(record.get("year") or "").strip()
+        info.year = "" if raw_year in ("", "0", "0000") else raw_year
         info.overview = str(record.get("overview") or "")
         info.anchor_provider = anchor_provider
         info.anchor_external_id = str(anchor_external_id)
@@ -185,20 +246,36 @@ class SearchOrchestrator:
     ):
         """用选定 provider 搜索内容编号，再用命中的 provider 详情 ID 解析."""
         service = self._metadata_service
-        if service is None or not provider or not content_id:
+        if service is None or not content_id:
             return None
         try:
             hits = service.search(
                 query=str(content_id),
-                provider=provider,
+                provider=provider or None,
                 media_type=media_type,
                 content_profile=content_profile or "default",
                 limit=5,
                 allow_private=True,
+                wait_timeout=40,
             )
         except Exception as exc:  # noqa: BLE001
             log.warn(f"[Orchestrator]编号搜索失败 {provider}:{content_id}: {exc}")
-            return None
+            hits = []
+        if not hits and provider:
+            # 指定来源临时超时/熔断时，用同编号在全部可用来源中兜底解析。
+            try:
+                hits = service.search(
+                    query=str(content_id),
+                    provider=None,
+                    media_type=media_type,
+                    content_profile=content_profile or "default",
+                    limit=5,
+                    allow_private=True,
+                    wait_timeout=40,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warn(f"[Orchestrator]编号跨来源搜索失败 {content_id}: {exc}")
+                hits = []
         for hit in hits or []:
             ref = hit.get("ref") or {}
             hit_provider = str(ref.get("provider") or provider)
@@ -212,6 +289,9 @@ class SearchOrchestrator:
                 content_profile=content_profile,
             )
             if media is not None:
+                # 保留真实来源，content_id 只是内部定位锚点，不能覆盖通知/详情来源。
+                media.provider = hit_provider
+                media.metadata_ref = f"{hit_provider}:{hit_external}"
                 media.anchor_provider = "content_id"
                 media.anchor_external_id = str(content_id)
                 return media
@@ -335,9 +415,15 @@ class SearchOrchestrator:
             search_season = media_info.get_season_list() if media_info.begin_season is not None else None
             search_episode = media_info.get_episode_list()
             if ctx.search_type == SearchType.WEB:
-                # 手动资源搜索按整部剧召回；用户显式指定季/集时才过滤。
+                # 手动资源搜索：标题里的“第二季/S02”作为匹配季，母标题用于召回；
+                # 没有季标记时才按整部剧召回。
                 if not (ctx.filter_args or {}).get("season"):
-                    search_season = None
+                    title_season = None
+                    if media_info.type in (MediaType.TV, MediaType.ANIME):
+                        _, _, title_season, _, _, _ = StringUtils.get_keyword_from_string(
+                            str(media_info.title or media_info.cn_name or "")
+                        )
+                    search_season = [int(title_season)] if title_season else None
                 if not (ctx.filter_args or {}).get("episode"):
                     search_episode = None
             if search_episode and not search_season:
@@ -409,27 +495,33 @@ class SearchOrchestrator:
         media_list = []
         progress_key: str = f"search:{ctx.session_id}"
         total = len(search_names)
-        # 关键：把 per-session progress_key 注入 filter_args，否则索引器退回全局 key，
-        # 站点级进度（"站点搜索 X/Y（站点名）：N 条"）就写不进前端 SSE 可见的会话进度
         filter_args = {**filter_args, "progress_key": progress_key}
+        group = CompositeProgressGroup(self._progress, progress_key, total, "搜索")
 
         if max_workers <= 1 and total == 1:
-            self._progress.update(value=30, text=f"正在搜索: {search_names[0]}", ptype=progress_key)
-            result = self._search_one(SearchType.WEB, search_names[0], filter_args, ctx.match_media)
+            child = group.child(0)
+            task_args = {**filter_args, "progress_child": child}
+            result = self._search_one(SearchType.WEB, search_names[0], task_args, ctx.match_media)
             if result:
                 media_list.extend(result)
-            self._progress.update(value=80, text=f"搜索完成，找到 {len(media_list)} 条", ptype=progress_key)
+            group.complete_child(0, f"找到 {len(media_list)} 条")
             return media_list
 
         with self._search_executor(max_workers) as executor:
             tasks = []
-            for name in search_names:
-                tasks.append(executor.submit(self._search_one, SearchType.WEB, name, filter_args, ctx.match_media))
+            for index, name in enumerate(search_names):
+                child = group.child(index)
+                task_args = {**filter_args, "progress_child": child}
+                tasks.append(
+                    (
+                        index,
+                        executor.submit(self._search_one_background, SearchType.WEB, name, task_args, ctx.match_media),
+                    )
+                )
 
-            for idx, future in enumerate(as_completed(tasks), start=1):
+            for index, future in tasks:
                 result = future.result()
-                pct = 10 + round(70 * (idx / total))
-                self._progress.update(value=pct, text=f"搜索关键词 {idx}/{total} 完成", ptype=progress_key)
+                group.complete_child(index, f"找到 {len(result or [])} 条")
                 if result:
                     if isinstance(result, list):
                         media_list.extend(result)
@@ -437,6 +529,11 @@ class SearchOrchestrator:
                         media_list.append(result)
 
         return media_list
+
+    def _search_one_background(self, in_from: SearchType, key_word: str, filter_args: dict, match_media: Any) -> list:
+        """搜索线程使用后台连接池，避免占满 API 主池。"""
+        with background_engine_context():
+            return self._search_one(in_from, key_word, filter_args, match_media)
 
     def _search_one(self, in_from: SearchType, key_word: str, filter_args: dict, match_media: Any) -> list:
         if not key_word or not self._searcher.indexer_service:
@@ -517,7 +614,12 @@ class SearchOrchestrator:
         if service is None:
             return
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="search_hydrate")
-        future = executor.submit(service.hydrate_media, match_media)
+
+        def _hydrate():
+            with background_engine_context():
+                service.hydrate_media(match_media)
+
+        future = executor.submit(_hydrate)
         try:
             future.result(timeout=timeout)
         except TimeoutError:
@@ -528,17 +630,9 @@ class SearchOrchestrator:
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _persist_results(self, ctx: SearchContext, media_list: list):
-        lock = get_lock_manager().create_lock("search:persist_results", ttl_seconds=60)
-        if not lock.acquire():
-            log.warn("[Orchestrator]persist 正在执行，跳过")
-            return
-        try:
-            self._search_repo.delete_by_session(ctx.session_id)
-            self._search_repo.insert_search_results(
-                media_list, ctx.keyword, ctx.ident_flag, ctx.session_id, ctx.user_id
-            )
-        finally:
-            lock.release()
+        # session_id 已经是天然隔离键，不能再使用全局锁；并发会话各自写自己的 session。
+        self._search_repo.delete_by_session(ctx.session_id)
+        self._search_repo.insert_search_results(media_list, ctx.keyword, ctx.ident_flag, ctx.session_id, ctx.user_id)
 
     def _failed_sites_summary(self, progress_key: str) -> str:
         """从搜索进度中汇总失败站点（error/timeout），用于"搜索完成"文本"""
@@ -565,14 +659,7 @@ class SearchOrchestrator:
         # session 已结束 → 返回结束状态，防止重新开启
         if session_detail and not session_detail.get("enable") and session_detail.get("value", 0) >= 100:
             return session_detail
-        # session 进行中 → 用全局 key 获取 search_by_keyword 内部的详细进度
-        global_detail = self._progress.get_process(ProgressKey.Search)
-        if global_detail and global_detail.get("enable") and global_detail.get("value", 0) > 0:
-            return global_detail
-        # 回退到 session key（刚开始/全局 key 还没更新）
-        if session_detail and session_detail.get("value", -1) >= 0:
-            return session_detail
-        return None
+        return session_detail
 
     def cleanup_expired_sessions(self, ttl_hours: int = 24):
         self._search_repo.delete_expired(ttl_hours)

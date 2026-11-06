@@ -33,6 +33,9 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
             return False
         return self._repo.is_completed_download_history_by_tmdb(int(tmdb_id), season_episode)
 
+    def is_completed_by_series(self, series_key: str | None, season_episode: str | None) -> bool:
+        return self._repo.is_completed_download_history_by_series(series_key, season_episode)
+
     def is_completed_by_identity(
         self,
         *,
@@ -184,6 +187,25 @@ class DownloadHistoryRepositoryAdapter(IDownloadHistoryRepository):
 
     def count_download_history_by_path(self, path: str) -> int:
         return self._repo.count_download_history_by_path(path)
+
+    def has_active_download_for_media(
+        self,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        tmdb_id: str | int | None = None,
+        series_key: str | None = None,
+        season_episode: str | None = None,
+    ) -> bool:
+        return self._repo.has_active_download_for_media(
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            tmdb_id=tmdb_id,
+            series_key=series_key,
+            season_episode=season_episode,
+        )
 
     def get_active_downloads(self) -> list[DownloadHistoryEntity]:
         rows = self._repo.get_active_downloads()

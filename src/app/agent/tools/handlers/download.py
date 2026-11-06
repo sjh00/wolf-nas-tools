@@ -16,6 +16,7 @@ def download_add_link(
         page_url=link,
         size="",
         seeders="",
+        peers="",
         uploadvolumefactor="",
         downloadvolumefactor="",
         dl_dir=save_path,

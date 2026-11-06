@@ -1,6 +1,8 @@
 """基础搜索策略 — 提取 subscribe_search_engine 公共逻辑."""
 
+import copy
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -16,6 +18,7 @@ from app.core.exceptions import (
     ServiceError,
 )
 from app.core.settings import settings
+from app.db.engine import background_engine_context
 from app.db.repositories.subscribe_repo_adapter import (
     SubscribeMovieRepositoryAdapter,
     SubscribeTvEpisodeRepositoryAdapter,
@@ -23,28 +26,93 @@ from app.db.repositories.subscribe_repo_adapter import (
 )
 from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.domain.entities.rss import SubscribeState
-from app.domain.enums import SearchType, SystemConfigKey
+from app.domain.enums import SearchType
 from app.domain.interfaces.rss_repo import (
     ISubscribeMovieRepository,
     ISubscribeTvEpisodeRepository,
     ISubscribeTvRepository,
 )
-from app.domain.media_ref import media_identity_key
+from app.domain.lifecycle import LifecycleStage, LifecycleStatus
+from app.domain.media_ref import media_series_scope_key
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system import get_cache_manager
 from app.media import MediaCache, MediaService, meta_info
 from app.message import Message
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.filter_service import FilterService as Filter
+from app.services.lifecycle_service import LifecycleProjector
 from app.services.search_service import Searcher
+from app.services.search_subject import SearchSubject
+from app.services.series_service import SeriesService
 from app.services.subscribe.coordinator import DownloadCoordinator
+from app.services.subscribe.default_settings import get_default_setting
+from app.services.subscribe.retry_policy import backoff_seconds, is_rate_limited
 from app.sites.torrent import Torrent
 
 # 订阅搜索每轮处理上限（subscribe.batch_limit 可覆盖）
 _SUBSCRIBE_BATCH_DEFAULT = 20
 
 
+def _record_search_lifecycle(media_info: Any, rssid: Any) -> None:
+    """把订阅搜索阶段实时投影到媒体流转。"""
+    try:
+        identity = str(getattr(media_info, "identity_id", "") or "")
+        event_key = f"search:{identity or getattr(media_info, 'title', '')}:{rssid}"
+        LifecycleProjector().record_media(
+            media_info,
+            stage=LifecycleStage.SUBSCRIBED,
+            status=LifecycleStatus.RUNNING,
+            event_type="search.started",
+            payload={"rssid": rssid, "source": "SUBSCRIBE"},
+            event_key=event_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warn(f"[Lifecycle]记录订阅搜索阶段失败: {exc}")
+
+
+def _in_background(func):
+    """线程池任务使用后台连接池，避免订阅搜索占满 API 主池。"""
+
+    def _run(item):
+        with background_engine_context():
+            return func(item)
+
+    return _run
+
+
 class BaseSearchStrategy:
+    _batch_cursors: dict[str, int] = {}
+
+    def _load_batch_cursor(self, kind: str, size: int) -> int:
+        position = self._batch_cursors.get(kind, 0)
+        try:
+            position = self._rss_repo.get_search_cursor(kind)
+        except Exception as e:  # noqa: BLE001 - 游标读取失败不应阻断搜索
+            log.debug(f"[Subscribe]读取批次游标失败: {e}")
+        if size <= 0:
+            return 0
+        position = max(0, int(position)) % size
+        self._batch_cursors[kind] = position
+        return position
+
+    def _save_batch_cursor(self, kind: str, position: int) -> None:
+        self._batch_cursors[kind] = position
+        try:
+            self._rss_repo.set_search_cursor(kind, position)
+        except Exception as e:  # noqa: BLE001 - 持久化失败时退回内存游标
+            log.debug(f"[Subscribe]保存批次游标失败: {e}")
+
+    def _take_batch(self, items: list, kind: str, limit: int) -> list:
+        """按轮转游标取一批，避免固定前 N 条长期饿死后续订阅。"""
+        if len(items) <= limit:
+            return items
+        start = self._load_batch_cursor(kind, len(items))
+        batch = items[start : start + limit]
+        if len(batch) < limit:
+            batch += items[: limit - len(batch)]
+        self._save_batch_cursor(kind, (start + limit) % len(items))
+        return batch
+
     """搜索策略基类 — 封装 movie/tv 的公共搜索/下载逻辑."""
 
     _movie_repo: ISubscribeMovieRepository
@@ -98,6 +166,7 @@ class BaseSearchStrategy:
         self._downloader = downloader
         self._filter = filter_service
         self._message = message
+        self._series_service = SeriesService()
         self._ident_cache = get_cache_manager().get_or_create(
             "subscribe_ident", cache_type="memory", maxsize=1000, ttl=3600
         )
@@ -113,6 +182,25 @@ class BaseSearchStrategy:
             return max(1, int((settings.get("subscribe") or {}).get("batch_limit") or _SUBSCRIBE_BATCH_DEFAULT))
         except (ValueError, TypeError):
             return _SUBSCRIBE_BATCH_DEFAULT
+
+    def _get_batch_workers(self) -> int:
+        """订阅搜索并发上限；站点配额低时应调小（如 M-Team 5/min 建议 2）."""
+        try:
+            value = int((settings.get("subscribe") or {}).get("batch_workers") or 3)
+        except (ValueError, TypeError):
+            value = 3
+        return max(1, min(value, 10))
+
+    @staticmethod
+    def _filter_due_retries(items: dict, state: str) -> dict:
+        if state != SubscribeState.ERROR.value or not items:
+            return items
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            key: item
+            for key, item in items.items()
+            if not item.get("next_retry_at") or str(item.get("next_retry_at")) <= now
+        }
 
     def search_pending(self) -> None:
         """触发一次队列搜索（处理 PENDING 订阅），供事件处理器调用."""
@@ -136,16 +224,12 @@ class BaseSearchStrategy:
         if not self._system_config:
             return None
         try:
-            if mtype in (MediaType.TV, MediaType.ANIME):
-                key = SystemConfigKey.DefaultSubscribeSettingTV.value
-            else:
-                profile = str(rss_info.get("content_profile") or "").strip()
-                key = SystemConfigKey.DefaultSubscribeSettingMOV.value
-                if profile and profile != "default":
-                    key = f"{key}::{profile}"
-            default_setting = self._system_config.get(key)
-            if not isinstance(default_setting, dict):
-                return None
+            default_setting = get_default_setting(
+                self._system_config,
+                mtype,
+                rss_info.get("content_profile"),
+                rss_info.get("user_id"),
+            )
             return default_setting.get("search_sites") or None
         except Exception as e:
             log.debug(f"[Subscribe]读取默认订阅设置站点失败: {e}")
@@ -184,6 +268,7 @@ class BaseSearchStrategy:
             rss_movies = self._service.get_subscribe_movies(rid=rssid) if self._service else {}
         else:
             rss_movies = self._service.get_subscribe_movies(state=state) if self._service else {}
+        rss_movies = self._filter_due_retries(rss_movies, state)
         if not rss_movies:
             return
         log.info(f"[Subscribe]共有 {len(rss_movies)} 个{MediaType.MOVIE.display_name}订阅需要搜索")
@@ -222,6 +307,9 @@ class BaseSearchStrategy:
                     media_info.anchor_provider = rss_info.get("anchor_provider")
                     media_info.anchor_external_id = rss_info.get("anchor_external_id")
                     media_info.identity_id = rss_info.get("identity_id")
+                    media_info.series_key = rss_info.get("series_key")
+                    media_info.provider = rss_info.get("provider")
+                    media_info.metadata_ref = rss_info.get("metadata_ref")
                 if not media_info or (not media_info.provider_data and not is_external):
                     log.warn(f"[Subscribe]{MediaType.MOVIE.display_name} {name_val} TMDB 识别失败，标记为错误状态")
                     self._movie_repo.update_state(title=None, year=None, rssid=rid, state=SubscribeState.ERROR.value)
@@ -263,6 +351,7 @@ class BaseSearchStrategy:
                     self._movie_repo.update_state(
                         title=None, year=None, rssid=rid, state=SubscribeState.SEARCHING.value
                     )
+                    _record_search_lifecycle(media_info, rid)
 
                     try:
                         filters = {
@@ -273,6 +362,7 @@ class BaseSearchStrategy:
                             "include": rss_info.get("filter_include"),
                             "exclude": rss_info.get("filter_exclude"),
                             "free": rss_info.get("filter_free"),
+                            "content_profile": rss_info.get("content_profile"),
                         }
                         search_result, _, _, downloaded_count = self._searcher.search_one_media(
                             media_info=media_info,
@@ -310,23 +400,33 @@ class BaseSearchStrategy:
                         RepositoryError,
                         ServiceError,
                         NetworkError,
-                    ):
-                        self._movie_repo.update_state(
-                            title=None, year=None, rssid=rid, state=SubscribeState.RUNNING.value
-                        )
+                    ) as exc:
+                        if rid and is_rate_limited(exc):
+                            delay = backoff_seconds(int(rss_info.get("retry_count") or 0) + 1)
+                            self._movie_repo.schedule_rate_limit_retry(rid, delay)
+                            log.warn(f"[Subscribe]{MediaType.MOVIE.display_name} {name_val} 被限流，{delay}s 后重试")
+                        else:
+                            self._movie_repo.update_state(
+                                title=None, year=None, rssid=rid, state=SubscribeState.RUNNING.value
+                            )
                         log.error(
                             f"[Subscribe]{MediaType.MOVIE.display_name} {name_val}"
                             f" 订阅搜索失败：{traceback.format_exc()}"
                         )
-            except Exception:
+            except Exception as exc:
                 log.error(
                     f"[Subscribe]{MediaType.MOVIE.display_name} {name_val} 订阅处理失败：{traceback.format_exc()}"
                 )
                 if rid:
                     try:
-                        self._movie_repo.update_state(
-                            title=None, year=None, rssid=rid, state=SubscribeState.ERROR.value
-                        )
+                        if is_rate_limited(exc):
+                            delay = backoff_seconds(int(rss_info.get("retry_count") or 0) + 1)
+                            self._movie_repo.schedule_rate_limit_retry(rid, delay)
+                            log.warn(f"[Subscribe]订阅 {rid} 被限流，{delay}s 后重试")
+                        else:
+                            self._movie_repo.update_state(
+                                title=None, year=None, rssid=rid, state=SubscribeState.ERROR.value
+                            )
                     except Exception as update_err:
                         log.debug(f"[Subscribe]设置 ERROR 状态失败 rssid={rid}: {update_err}")
 
@@ -336,8 +436,9 @@ class BaseSearchStrategy:
                 f"[Subscribe]订阅数 {len(rss_movies)} 超过单轮上限 {batch_limit}，"
                 f"本轮流处理前 {batch_limit} 个，其余保持 PENDING 下一轮继续"
             )
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            list(executor.map(_process_one, list(rss_movies.values())[:batch_limit]))
+        with ThreadPoolExecutor(max_workers=self._get_batch_workers()) as executor:
+            batch = self._take_batch(list(rss_movies.values()), "movie", batch_limit)
+            list(executor.map(_in_background(_process_one), batch))
 
     def _search_tvs(
         self, state: str = SubscribeState.PENDING.value, rssid: int | None = None, force: bool = False
@@ -346,6 +447,7 @@ class BaseSearchStrategy:
             rss_tvs = self._service.get_subscribe_tvs(rid=rssid) if self._service else {}
         else:
             rss_tvs = self._service.get_subscribe_tvs(state=state) if self._service else {}
+        rss_tvs = self._filter_due_retries(rss_tvs, state)
         if not rss_tvs:
             return
         log.info(f"[Subscribe]共有 {len(rss_tvs)} 个{MediaType.TV.display_name}订阅需要检索")
@@ -370,13 +472,13 @@ class BaseSearchStrategy:
                     anchor_external_id=rss_info.get("anchor_external_id"),
                     content_profile=str(rss_info.get("content_profile") or ""),
                 )
-                non_tmdb_anchor = (
+                external_identity_anchor = (
                     bool(rss_info.get("anchor_provider") and rss_info.get("anchor_provider") != "tmdb")
                     or bool(rss_info.get("anchor_external_id"))
                     or str(tmdbid or "").startswith("DB:")
                     or self._is_external_ref(tmdbid)
                 )
-                if not media_info or (not media_info.provider_data and not non_tmdb_anchor):
+                if not media_info or (not media_info.provider_data and not external_identity_anchor):
                     log.warn(f"[Subscribe]{MediaType.TV.display_name} {name_val} TMDB 识别失败，标记为错误状态")
                     self._tv_repo.update_state(
                         title=None, year=None, season=None, rssid=rid, state=SubscribeState.ERROR.value
@@ -384,6 +486,14 @@ class BaseSearchStrategy:
                     return
 
                 self._seed_poster_from_subscription(media_info, rss_info)
+                if rss_info.get("content_profile"):
+                    media_info.content_profile = str(rss_info.get("content_profile"))
+                media_info.anchor_provider = rss_info.get("anchor_provider")
+                media_info.anchor_external_id = rss_info.get("anchor_external_id")
+                media_info.identity_id = rss_info.get("identity_id")
+                media_info.series_key = rss_info.get("series_key")
+                media_info.provider = rss_info.get("provider")
+                media_info.metadata_ref = rss_info.get("metadata_ref")
                 media_info.set_download_info(
                     download_setting=rss_info.get("download_setting"), save_path=rss_info.get("save_path")
                 )
@@ -393,6 +503,30 @@ class BaseSearchStrategy:
                     season = int(str(rss_info.get("season")).replace("S", ""))
                 media_info.begin_season = season
                 media_info.rssid = rid
+                # 订阅类型统一由画像+身份决定：动漫订阅必须落 ANIME，否则会进电视剧库。
+                profile = str(getattr(media_info, "content_profile", "") or rss_info.get("content_profile") or "")
+                subject = SearchSubject.classify(
+                    getattr(media_info, "type", None) or MediaType.TV,
+                    profile,
+                    getattr(media_info, "anchor_provider", None),
+                    getattr(media_info, "anchor_external_id", None),
+                )
+                if subject.display_type:
+                    media_info.type = subject.display_type
+                if not media_info.series_key and media_info.anchor_provider and media_info.anchor_external_id:
+                    # 旧订阅/缓存行可能缺少 SERIES_KEY；按锚点解析，保证与候选资源的系列键一致。
+                    try:
+                        resolution = self._series_service.resolve(
+                            provider=media_info.anchor_provider,
+                            external_id=media_info.anchor_external_id,
+                            title=name_val or media_info.title or "",
+                            year=year_val or media_info.year or None,
+                            season_number=season,
+                            scope=str(media_info.content_profile or "default"),
+                        )
+                        media_info.series_key = resolution.series_key
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug(f"[Subscribe]解析订阅系列键失败: {exc}")
                 total_ep = rss_info.get("total")
                 current_ep = rss_info.get("current_ep")
 
@@ -438,9 +572,17 @@ class BaseSearchStrategy:
                 else:
                     episodes_list = episodes
 
-                media_key = media_identity_key(media_info) or media_info.tmdb_id
+                media_key = media_series_scope_key(media_info) or media_info.tmdb_id
+                episode_offset = self._series_service.get_episode_offset(media_info.series_key, season)
                 rss_no_exists_local = {
-                    media_key: [{"season": season, "episodes": episodes_list, "total_episodes": total_ep}]
+                    media_key: [
+                        {
+                            "season": season,
+                            "episodes": episodes_list,
+                            "total_episodes": total_ep,
+                            "episode_offset": episode_offset,
+                        }
+                    ]
                 }
 
                 if self._coordinator and not self._coordinator.try_acquire(media_info):
@@ -482,6 +624,7 @@ class BaseSearchStrategy:
                     self._tv_repo.update_state(
                         title=None, year=None, season=None, rssid=rid, state=SubscribeState.SEARCHING.value
                     )
+                    _record_search_lifecycle(media_info, rid)
                     # 搜索站点：订阅未配置时回退到默认订阅设置的 search_sites（与手动搜索一致）。
                     # 不能直接用 rss_info.get("search_sites")，否则空列表会覆盖 effective sites → 0 站点搜索
                     sites = self._get_effective_search_sites(rss_info, MediaType.TV)
@@ -493,7 +636,9 @@ class BaseSearchStrategy:
                         "include": rss_info.get("filter_include"),
                         "exclude": rss_info.get("filter_exclude"),
                         "free": rss_info.get("filter_free"),
+                        "content_profile": rss_info.get("content_profile"),
                     }
+                    had_missing_entry = bool(rss_no_exists_local.get(media_key))
                     search_result, no_exists, _, _ = self._searcher.search_one_media(
                         media_info=media_info,
                         in_from=SearchType.SUBSCRIBE,
@@ -522,6 +667,25 @@ class BaseSearchStrategy:
                         if exist_flag:
                             if self._service:
                                 self._service.finish_rss_subscribe(rssid=rid, media=media_info)
+                        elif had_missing_entry:
+                            # 下载后以更新过的 no_exists 为准；媒体库此刻可能尚未完成转移，
+                            # 不能用 library_no_exists 把刚下载的集重新写回缺集。
+                            remaining = (no_exists or {}).get(media_key)
+                            if remaining:
+                                if self._service:
+                                    self._service.update_subscribe_tv_lack(
+                                        rssid=rid, media_info=media_info, seasoninfo=remaining
+                                    )
+                            else:
+                                if self._service:
+                                    self._service.clear_subscribe_tv_lack(rid, media_info)
+                                self._tv_repo.update_state(
+                                    title=None,
+                                    year=None,
+                                    season=None,
+                                    rssid=rid,
+                                    state=SubscribeState.RUNNING.value,
+                                )
                         elif library_no_exists and library_no_exists.get(media_key):
                             if self._service:
                                 self._service.update_subscribe_tv_lack(
@@ -539,16 +703,26 @@ class BaseSearchStrategy:
                             self._tv_repo.update_state(
                                 title=None, year=None, season=None, rssid=rid, state=SubscribeState.RUNNING.value
                             )
-            except (MediaError, DownloadError, IndexerError, RepositoryError, ServiceError, NetworkError):
+            except (MediaError, DownloadError, IndexerError, RepositoryError, ServiceError, NetworkError) as exc:
                 log.error(f"[Subscribe]{MediaType.TV.display_name} {name_val} 订阅搜索失败：{traceback.format_exc()}")
-                self._tv_repo.update_state(
-                    title=None, year=None, season=None, rssid=rid, state=SubscribeState.RUNNING.value
-                )
-            except Exception:
+                if rid and is_rate_limited(exc):
+                    delay = backoff_seconds(int(rss_info.get("retry_count") or 0) + 1)
+                    self._tv_repo.schedule_rate_limit_retry(rid, delay)
+                    log.warn(f"[Subscribe]{MediaType.TV.display_name} {name_val} 被限流，{delay}s 后重试")
+                else:
+                    self._tv_repo.update_state(
+                        title=None, year=None, season=None, rssid=rid, state=SubscribeState.RUNNING.value
+                    )
+            except Exception as exc:
                 log.error(f"[Subscribe]{MediaType.TV.display_name} {name_val} 订阅处理失败：{traceback.format_exc()}")
-                self._tv_repo.update_state(
-                    title=None, year=None, season=None, rssid=rid, state=SubscribeState.ERROR.value
-                )
+                if rid and is_rate_limited(exc):
+                    delay = backoff_seconds(int(rss_info.get("retry_count") or 0) + 1)
+                    self._tv_repo.schedule_rate_limit_retry(rid, delay)
+                    log.warn(f"[Subscribe]{MediaType.TV.display_name} {name_val} 被限流，{delay}s 后重试")
+                else:
+                    self._tv_repo.update_state(
+                        title=None, year=None, season=None, rssid=rid, state=SubscribeState.ERROR.value
+                    )
 
         batch_limit = self._get_batch_limit()
         if len(rss_tvs) > batch_limit:
@@ -556,8 +730,9 @@ class BaseSearchStrategy:
                 f"[Subscribe]订阅数 {len(rss_tvs)} 超过单轮上限 {batch_limit}，"
                 f"本轮流处理前 {batch_limit} 个，其余保持 PENDING 下一轮继续"
             )
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            list(executor.map(_process_one, list(rss_tvs.values())[:batch_limit]))
+        with ThreadPoolExecutor(max_workers=self._get_batch_workers()) as executor:
+            batch = self._take_batch(list(rss_tvs.values()), "tv", batch_limit)
+            list(executor.map(_in_background(_process_one), batch))
 
     @staticmethod
     def _is_external_ref(value) -> bool:
@@ -614,7 +789,8 @@ class BaseSearchStrategy:
         )
         cached = self._ident_cache.get(key)
         if cached is not None:
-            return cached
+            # 识别结果会被调用方原地写入 user/season/rssid，必须返回副本，避免并发串数据。
+            return copy.deepcopy(cached)
 
         if anchor_provider and anchor_provider != "tmdb" and anchor_external_id:
             media_info = meta_info(title=("%s %s" % (name, year)).strip(), mtype=mtype)

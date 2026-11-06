@@ -13,6 +13,9 @@ import log
 from app.core.settings import settings
 from app.db.repositories.plugin_framework_repo_adapter import PluginConfigRepositoryAdapter, PluginLogRepositoryAdapter
 from app.domain.entities.plugin import PluginConfigEntity
+from app.domain.validators.media_title import register_title_filter as register_global_title_filter
+from app.domain.validators.media_title import unregister_title_filters
+from app.indexer.contract.global_registry import register_indexer_provider, unregister_plugin_indexers
 from app.media.category_contributions import (
     register_category_contribution,
     unregister_category_contribution,
@@ -185,12 +188,15 @@ class PluginContext:
         """发送消息通知"""
         self._message.send_plugin_message(title=title, text=text, image=image)
 
-    def schedule_cron(self, job_id: str, func, cron: str, **kwargs) -> bool:
+    def _job_display_name(self, job_id: str, name: str | None) -> str:
+        return name or f"{self._plugin_name} · {job_id.replace('_', ' ')}"
+
+    def schedule_cron(self, job_id: str, func, cron: str, name: str | None = None, **kwargs) -> bool:
         """注册 cron 定时任务，返回是否成功"""
         job = self._scheduler.register_smart_cron(
             job_id=f"plugin_{self._plugin_id}_{job_id}",
             func=func,
-            name=self._plugin_name,
+            name=self._job_display_name(job_id, name),
             cron=cron,
             jobstore="plugin",
             **kwargs,
@@ -201,10 +207,14 @@ class PluginContext:
         self.error(f"定时任务注册失败: {job_id} (cron={cron})")
         return False
 
-    def schedule_interval(self, job_id: str, func, **kwargs) -> bool:
+    def schedule_interval(self, job_id: str, func, name: str | None = None, **kwargs) -> bool:
         """注册 interval 定时任务，返回是否成功"""
         job = self._scheduler.register_interval(
-            job_id=f"plugin_{self._plugin_id}_{job_id}", func=func, name=self._plugin_name, jobstore="plugin", **kwargs
+            job_id=f"plugin_{self._plugin_id}_{job_id}",
+            func=func,
+            name=self._job_display_name(job_id, name),
+            jobstore="plugin",
+            **kwargs,
         )
         if job:
             self.info(f"interval 任务已注册: {job_id}")
@@ -212,13 +222,13 @@ class PluginContext:
         self.error(f"interval 任务注册失败: {job_id}")
         return False
 
-    def schedule_date(self, job_id: str, func, run_date) -> bool:
+    def schedule_date(self, job_id: str, func, run_date, name: str | None = None) -> bool:
         """注册一次性日期任务，返回是否成功"""
         job = self._scheduler.register_date(
             job_id=f"plugin_{self._plugin_id}_{job_id}",
             func=func,
             run_date=run_date,
-            name=self._plugin_name,
+            name=self._job_display_name(job_id, name),
             jobstore="plugin",
         )
         if job:
@@ -322,6 +332,14 @@ class PluginContext:
         self._apply_required_permission(provider)
         metadata_registry.register_discovery_provider(provider, plugin_id=self._plugin_id, declared_key=key)
 
+    def register_indexer_provider(self, key: str, provider: Any) -> None:
+        """注册索引器 provider；key 必须与 manifest 的 indexer_providers 一致。"""
+        self._assert_metadata_declared("indexer_providers", key)
+        provider_id = getattr(provider, "provider_id", "") or key
+        if provider_id != key:
+            log.warn(f"[PluginContext]索引器 provider_id({provider_id}) 与声明 key({key}) 不一致，使用 key")
+        register_indexer_provider(provider, self._plugin_id)
+
     def unregister_metadata_provider(self, key: str) -> None:
         """注销本插件注册的元数据 provider."""
         metadata_registry.unregister_provider(key, plugin_id=self._plugin_id)
@@ -382,7 +400,9 @@ class PluginContext:
             with contextlib.suppress(Exception):
                 cleanup()
         metadata_registry.unregister_plugin(self._plugin_id)
+        unregister_plugin_indexers(self._plugin_id)
         unregister_plugin_contributions(self._plugin_id)
+        self.unregister_all_title_filters()
         self._category_contributions.clear()
 
     def _assert_metadata_declared(self, field: str, key: str) -> None:
@@ -424,6 +444,12 @@ class PluginContext:
         """插件配置改变后清空探索来源缓存."""
         if self._discovery_service is not None:
             self._discovery_service.clear_cache()
+
+    def register_title_filter(self, filter_fn: Callable[[str], bool]) -> None:
+        register_global_title_filter(filter_fn, self._plugin_id)
+
+    def unregister_all_title_filters(self) -> None:
+        unregister_title_filters(self._plugin_id)
 
     def register_message_image_transformer(self, transformer: Callable[[str, str], str]) -> None:
         """注册通知图片改写器；仅影响消息，不改变页面展示图片."""

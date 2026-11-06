@@ -4,9 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.constants import site_priority_order
 from app.domain.mediatypes import MediaType
 from app.media.models import MediaInfo
 from app.sites.torrent import Torrent
+
+
+def test_site_priority_order_supports_values_above_100():
+    assert site_priority_order(1) > site_priority_order(100) > site_priority_order(101)
+    assert site_priority_order(9999) == 0
+    assert site_priority_order(10000) == 0
 
 
 class _MediaInfo(MediaInfo):
@@ -75,18 +82,74 @@ class TestTorrentGetDownloadList:
             title="Low",
             type=MediaType.MOVIE,
             res_order=0,
-            site_order=99,
+            site_order=9999,
             seeders=5,
         )
         high = _MediaInfo(
             title="High",
             type=MediaType.MOVIE,
             res_order=0,
-            site_order=-21,
+            site_order=0,
             seeders=500,
         )
         result = Torrent.get_download_list([low, high], download_order="site")
         assert result[0].title == "Low"
+
+    def test_site_mode_site_priority_beats_rule_order(self):
+        high_site = _MediaInfo(
+            title="HighSite",
+            type=MediaType.MOVIE,
+            res_order=0,
+            site_order=9999,
+            seeders=1,
+        )
+        high_rule = _MediaInfo(
+            title="HighRule",
+            type=MediaType.MOVIE,
+            res_order=99,
+            site_order=0,
+            seeders=999,
+        )
+        result = Torrent.get_download_list([high_rule, high_site], download_order="site")
+        assert result[0].title == "HighSite"
+
+    def test_site_mode_same_site_prefers_higher_rule(self):
+        """site 模式：同一站点内规则顺序第二，优先于做种数."""
+        same_site_low_seed = _MediaInfo(
+            title="LowSeedHighRule",
+            type=MediaType.MOVIE,
+            res_order=99,
+            site_order=9999,
+            seeders=5,
+        )
+        same_site_high_seed = _MediaInfo(
+            title="HighSeedLowRule",
+            type=MediaType.MOVIE,
+            res_order=1,
+            site_order=9999,
+            seeders=500,
+        )
+        result = Torrent.get_download_list([same_site_low_seed, same_site_high_seed], download_order="site")
+        assert result[0].title == "LowSeedHighRule"
+
+    def test_seeder_mode_prefers_more_seeders_over_site_priority(self):
+        """做种数优先：低优先级站点做种更多时应胜出."""
+        preferred_site = _MediaInfo(
+            title="PreferredSite",
+            type=MediaType.MOVIE,
+            res_order=1,
+            site_order=9999,
+            seeders=5,
+        )
+        other_site = _MediaInfo(
+            title="OtherSite",
+            type=MediaType.MOVIE,
+            res_order=99,
+            site_order=0,
+            seeders=500,
+        )
+        result = Torrent.get_download_list([preferred_site, other_site], download_order="seeder")
+        assert result[0].title == "OtherSite"
 
     def test_seeder_mode_tie_prefers_lower_pri_site(self):
         """seeder 模式种子数相同时，主站（pri 小、site_order 大）胜出"""
@@ -94,14 +157,14 @@ class TestTorrentGetDownloadList:
             title="Low",
             type=MediaType.MOVIE,
             res_order=0,
-            site_order=99,
+            site_order=9999,
             seeders=5,
         )
         high = _MediaInfo(
             title="High",
             type=MediaType.MOVIE,
             res_order=0,
-            site_order=-21,
+            site_order=0,
             seeders=5,
         )
         result = Torrent.get_download_list([low, high], download_order="seeder")
@@ -116,7 +179,7 @@ class TestTorrentGetDownloadList:
             begin_episode=1,
             end_episode=1,
             res_order=1,
-            site_order=99,
+            site_order=9999,
             seeders=10,
         )
         second = _MediaInfo(
@@ -127,7 +190,7 @@ class TestTorrentGetDownloadList:
             begin_episode=1,
             end_episode=1,
             res_order=1,
-            site_order=-21,
+            site_order=0,
             seeders=10,
         )
         result = Torrent.get_download_list([first, second], download_order="site")
@@ -143,7 +206,7 @@ class TestTorrentGetDownloadList:
             begin_episode=1,
             end_episode=1,
             res_order=1,
-            site_order=99,
+            site_order=9999,
             seeders=10,
         )
         second = _MediaInfo(
@@ -154,7 +217,7 @@ class TestTorrentGetDownloadList:
             begin_episode=1,
             end_episode=1,
             res_order=1,
-            site_order=-21,
+            site_order=0,
             seeders=10,
         )
         result = Torrent.get_download_list([first, second], download_order="site", collapse=False)
@@ -250,3 +313,31 @@ class TestTorrentContentErrors:
         assert content == magnet
         assert client.return_value.get.call_count == 2
         assert client.return_value.get.call_args_list[1].kwargs["url"] == "https://cdn.example.com/a.torrent"
+
+
+class TestIntersectionEpisodes:
+    def test_explicit_empty_target_stays_empty(self):
+        """缺集已清空时不能被媒体库缺失集重新填满（避免重复下载）."""
+        target = {"id1": [{"season": 1, "episodes": [], "total_episodes": 12}]}
+        source = {"id1": [{"season": 1, "episodes": [1, 2], "total_episodes": 12}]}
+
+        result = Torrent.get_intersection_episodes(target, source, "id1")
+
+        assert result["id1"][0]["episodes"] == []
+
+    def test_unknown_target_still_inherits_source(self):
+        """目标没有 episodes 字段时才继承媒体库缺失集."""
+        target = {"id1": [{"season": 1, "total_episodes": 12}]}
+        source = {"id1": [{"season": 1, "episodes": [1, 2], "total_episodes": 12}]}
+
+        result = Torrent.get_intersection_episodes(target, source, "id1")
+
+        assert result["id1"][0]["episodes"] == [1, 2]
+
+    def test_non_empty_target_intersects(self):
+        target = {"id1": [{"season": 1, "episodes": [1, 2, 3]}]}
+        source = {"id1": [{"season": 1, "episodes": [2, 3, 4]}]}
+
+        result = Torrent.get_intersection_episodes(target, source, "id1")
+
+        assert set(result["id1"][0]["episodes"]) == {2, 3}

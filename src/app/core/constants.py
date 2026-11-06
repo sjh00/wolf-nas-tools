@@ -157,3 +157,15 @@ EPISODE_MAPPER_MIN_TOTAL_EPISODES = 30
 # 过滤规则“指定原始语言”可选语言集合（与前端 language_dict 对齐）
 # 规则中填 "other" 表示“不在以下集合内的语言”
 FILTER_LANGUAGE_OPTIONS = {"zh", "en", "ja", "ko", "fr", "de", "ru", "hi"}
+# 站点优先级：数值越小越优先，允许 0~9999。
+MAX_SITE_PRIORITY = 9999
+
+
+def site_priority_order(priority: int | str | None) -> int:
+    """把 priority 转成非负、可直接降序比较的站点顺序值。"""
+    try:
+        value = int(priority or 0)
+    except (TypeError, ValueError):
+        value = MAX_SITE_PRIORITY
+    value = max(0, min(value, MAX_SITE_PRIORITY))
+    return MAX_SITE_PRIORITY - value

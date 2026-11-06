@@ -417,6 +417,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         torrent_remover=torrent_remover,
         download_history_repo=DownloadHistoryRepositoryAdapter(),
         file_index_service=file_index_service,
+        lifecycle=lifecycle_projector,
     )
 
     # 按文件锚点清理媒体库/做种/记录/下载器任务（压制替换场景）
@@ -448,6 +449,7 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         plugin_registry=infra.plugin_registry,
         plugin_sandbox=infra.plugin_sandbox,
         hook_system=infra.hook_system,
+        metadata_service=metadata_service,
     )
 
     plugin_market_service = PluginMarketService(

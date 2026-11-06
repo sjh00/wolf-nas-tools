@@ -4,6 +4,7 @@ Handles download history, settings and indexer statistics related database opera
 """
 
 import os.path
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -13,7 +14,9 @@ from sqlalchemy import Integer, and_, case, cast, func, or_, tuple_
 from app.db.models import DOWNLOADHISTORY, DOWNLOADSETTING, INDEXERSTATISTICS
 from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.episode_progress import contiguous_episodes
+from app.domain.episode_utils import infer_episode_key
 from app.domain.media_ref import is_tmdb_media
+from app.services.identity_resolver import IdentityResolver
 
 
 class DownloadRepository(BaseRepository):
@@ -21,6 +24,9 @@ class DownloadRepository(BaseRepository):
     下载历史和设置仓储
     处理下载历史、下载设置和索引器统计的数据库操作
     """
+
+    def _identity_for_media(self, media_info: Any) -> str:
+        return IdentityResolver().resolve_media(media_info, allow_local=True).identity_id
 
     # ==================== Download History ====================
 
@@ -91,6 +97,19 @@ class DownloadRepository(BaseRepository):
                     DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
                     DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
                 )
+            if season_episode:
+                query = query.filter(DOWNLOADHISTORY.SE == season_episode)
+            return query.first() is not None
+
+    def is_completed_download_history_by_series(self, series_key: str | None, season_episode: str | None) -> bool:
+        """按内部 series_key + 季集查询已完成下载，跨来源共享."""
+        if not series_key:
+            return False
+        with self.session() as db:
+            query = db.query(DOWNLOADHISTORY.ID).filter(
+                DOWNLOADHISTORY.SERIES_KEY == str(series_key),
+                DOWNLOADHISTORY.STATE == "completed",
+            )
             if season_episode:
                 query = query.filter(DOWNLOADHISTORY.SE == season_episode)
             return query.first() is not None
@@ -256,6 +275,7 @@ class DownloadRepository(BaseRepository):
         elif enclosure and len(enclosure) > 4000:
             enclosure = enclosure[:4000]
         media_info.enclosure = enclosure
+        series_key = getattr(media_info, "series_key", None)
 
         with self.session() as db:
             if self.is_exists_download_history(enclosure=enclosure, downloader=downloader, download_id=download_id):
@@ -281,7 +301,8 @@ class DownloadRepository(BaseRepository):
                         "SE": media_info.get_season_episode_string() or "",
                         "STATE": state,
                         "DATE": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
-                        "IDENTITY_ID": getattr(media_info, "identity_id", None),
+                        "IDENTITY_ID": self._identity_for_media(media_info),
+                        "SERIES_KEY": series_key,
                         "ANCHOR_PROVIDER": getattr(media_info, "anchor_provider", None),
                         "ANCHOR_EXTERNAL_ID": getattr(media_info, "anchor_external_id", None),
                         "CONTENT_PROFILE": getattr(media_info, "content_profile", None),
@@ -307,9 +328,13 @@ class DownloadRepository(BaseRepository):
                         DOWNLOADER=downloader,
                         DOWNLOAD_ID=download_id,
                         SAVE_PATH=save_dir,
-                        SE=media_info.get_season_episode_string() or "",
+                        SE=infer_episode_key(
+                            media_info.get_season_episode_string() or "",
+                            media_info.org_string or media_info.title or "",
+                        ),
                         STATE=state,
-                        IDENTITY_ID=getattr(media_info, "identity_id", None),
+                        IDENTITY_ID=self._identity_for_media(media_info),
+                        SERIES_KEY=series_key,
                         ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
                         ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
                         CONTENT_PROFILE=getattr(media_info, "content_profile", None),
@@ -323,6 +348,19 @@ class DownloadRepository(BaseRepository):
                 .first()
             )
             return row.ID if row is not None else None
+
+    def get_download_history_by_download_id(self, downloader: str, download_id: str):
+        """按下载器任务 ID 查询下载历史（生命周期 completed 事件回落用）."""
+        with self.session() as db:
+            return (
+                db.query(DOWNLOADHISTORY)
+                .filter(
+                    DOWNLOADHISTORY.DOWNLOADER == downloader,
+                    DOWNLOADHISTORY.DOWNLOAD_ID == download_id,
+                )
+                .order_by(DOWNLOADHISTORY.ID.desc())
+                .first()
+            )
 
     def get_download_history(
         self,
@@ -496,6 +534,19 @@ class DownloadRepository(BaseRepository):
         with self.session() as db:
             return db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.ID == int(history_id)).first()
 
+    def update_download_history_se(self, download_id: str, media_info: Any) -> bool:
+        """整季包解析出实际集号后，回填下载历史的季集显示."""
+        if not download_id or media_info is None:
+            return False
+        with self.session() as db:
+            row = db.query(DOWNLOADHISTORY).filter(DOWNLOADHISTORY.DOWNLOAD_ID == str(download_id)).first()
+            if row is None:
+                return False
+            row.SE = media_info.get_season_episode_string() or row.SE
+            row.TYPE = media_info.type.value if media_info.type else row.TYPE
+            db.commit()
+            return True
+
     def update_download_history_task(
         self,
         history_id: int,
@@ -524,13 +575,120 @@ class DownloadRepository(BaseRepository):
                 row.TORRENT = media_info.org_string
                 row.ENCLOSURE = media_info.enclosure or ""
                 row.DESC = media_info.description or ""
-                row.SE = media_info.get_season_episode_string() or ""
-                row.IDENTITY_ID = getattr(media_info, "identity_id", None)
+                row.SE = infer_episode_key(
+                    media_info.get_season_episode_string() or "",
+                    media_info.org_string or media_info.title or "",
+                )
+                row.IDENTITY_ID = self._identity_for_media(media_info)
                 row.ANCHOR_PROVIDER = getattr(media_info, "anchor_provider", None)
                 row.ANCHOR_EXTERNAL_ID = getattr(media_info, "anchor_external_id", None)
                 row.CONTENT_PROFILE = getattr(media_info, "content_profile", None)
             db.commit()
             return True
+
+    def has_active_download_for_media(
+        self,
+        *,
+        identity_id: str | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
+        tmdb_id: str | int | None = None,
+        series_key: str | None = None,
+        season_episode: str | None = None,
+    ) -> bool:
+        """订阅再次搜索前检查同一媒体/分集是否已有在途下载."""
+        states = (
+            "pending",
+            "queued",
+            "downloading",
+            "paused",
+            "retrying",
+            "blocked",
+            "running",
+        )
+        conditions = []
+        if identity_id:
+            conditions.append(DOWNLOADHISTORY.IDENTITY_ID == str(identity_id))
+        if anchor_provider and anchor_external_id:
+            conditions.append(
+                and_(
+                    DOWNLOADHISTORY.ANCHOR_PROVIDER == str(anchor_provider),
+                    DOWNLOADHISTORY.ANCHOR_EXTERNAL_ID == str(anchor_external_id),
+                )
+            )
+        if str(tmdb_id or "").strip().isdigit():
+            conditions.append(DOWNLOADHISTORY.TMDBID == str(tmdb_id))
+        if series_key:
+            conditions.append(DOWNLOADHISTORY.SERIES_KEY == str(series_key))
+        if not conditions:
+            return False
+        with self.readonly() as db:
+            rows = (
+                db.query(DOWNLOADHISTORY.SE)
+                .filter(
+                    DOWNLOADHISTORY.STATE.in_(states),
+                    or_(*conditions),
+                )
+                .all()
+            )
+        if not rows:
+            return False
+        target = str(season_episode or "").strip()
+        if not target:
+            return True
+
+        def pairs(value: str) -> tuple[set[tuple[int, int]], set[int]]:
+            result: set[tuple[int, int]] = set()
+            seasons: set[int] = set()
+            for match in re.finditer(r"S(\d+)(?:\s*E(\d+)(?:\s*[-~]\s*E?(\d+))?)?", value, re.IGNORECASE):
+                season = int(match.group(1))
+                seasons.add(season)
+                if match.group(2):
+                    start = int(match.group(2))
+                    end = int(match.group(3) or start)
+                    result.update((season, episode) for episode in range(start, min(end, start + 200) + 1))
+            return result, seasons
+
+        target_pairs, target_seasons = pairs(target)
+        for (active_se,) in rows:
+            active_text = str(active_se or "").strip()
+            if not active_text:
+                return True
+            active_pairs, active_seasons = pairs(active_text)
+            if active_pairs and target_pairs and active_pairs & target_pairs:
+                return True
+            if target_seasons and active_seasons & target_seasons and (not target_pairs or not active_pairs):
+                return True
+        return False
+
+    def get_active_download_states(self, identity_ids: set[str]) -> dict[str, str]:
+        """返回指定身份最新的活跃下载状态，用于生命周期心跳/防误判停滞."""
+        ids = {str(item) for item in identity_ids if item and str(item) != "preview"}
+        if not ids:
+            return {}
+        active_states = (
+            "downloading",
+            "stalledUP",
+            "checkingUP",
+            "forcedDL",
+            "metaDL",
+            "queued",
+            "queuedDL",
+        )
+        result: dict[str, str] = {}
+        with self.readonly() as db:
+            rows = (
+                db.query(DOWNLOADHISTORY.IDENTITY_ID, DOWNLOADHISTORY.STATE)
+                .filter(
+                    DOWNLOADHISTORY.IDENTITY_ID.in_(ids),
+                    DOWNLOADHISTORY.STATE.in_(active_states),
+                )
+                .order_by(DOWNLOADHISTORY.ID.desc())
+                .all()
+            )
+            for identity_id, state in rows:
+                result.setdefault(str(identity_id), str(state or ""))
+        return result
 
     def get_download_history_by_downloader(self, downloader: str, download_id: str) -> DOWNLOADHISTORY | None:
         """

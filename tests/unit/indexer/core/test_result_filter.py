@@ -14,6 +14,21 @@ from app.media import meta_info as parse_title
 from app.media.models import MediaInfo
 
 
+def test_identity_anchored_bypasses_year_specificity():
+    match = SimpleNamespace(
+        year="2026",
+        title="DEMO-823 完全版",
+        en_name="",
+        original_title="",
+        cn_name="",
+    )
+    adult = SimpleNamespace(identity_anchored=True)
+    unidentified = SimpleNamespace(identity_anchored=False)
+    title = "DEMO-823 [LTX]完全版"
+    assert ResultFilter._allow_without_year(adult, title, match) is True
+    assert ResultFilter._allow_without_year(unidentified, title, match) is False
+
+
 def _no_rule_repos():
     """无规则组的仓库桩：filter_args 不含 rule 时直接通过规则检查"""
 
@@ -81,8 +96,8 @@ def _gits_2026():
 class TestLocalFilterQnmRecallGate:
     """ADR-014：quick_name_match 降级为纯召回筛选后的 local_filter 调用处语义"""
 
-    def test_qnm_hit_with_en_name_no_longer_skips_tmdb(self):
-        """qnm 命中且带 en_name（旧高置信直通路径）→ 现一律 skip_tmdb=False 交身份层"""
+    def test_qnm_hit_with_en_name_no_longer_skips_identity_resolution(self):
+        """qnm 命中且带 en_name（旧高置信直通路径）→ 现一律 identity_anchored=False 交身份层"""
         rf = _make_filter()
         candidates, direct_results, stats = rf.local_filter(
             [_item("THE.GHOST.IN.THE.SHELL.S01E03.2026.1080p.AMZN.WEB-DL.H264.DDP-CMCTV")],
@@ -90,13 +105,13 @@ class TestLocalFilterQnmRecallGate:
             match_media=_gits_2026(),
         )
         assert len(candidates) == 1
-        assert candidates[0].skip_tmdb is False
+        assert candidates[0].identity_anchored is False
         assert candidates[0].media_info is candidates[0].meta_info
         assert direct_results == []
         assert stats.index_sucess == 0
 
-    def test_qnm_hit_cn_only_low_confidence_goes_to_tmdb(self):
-        """qnm 命中但仅 cn_name（低置信）→ skip_tmdb=False 走 TMDB"""
+    def test_qnm_hit_cn_only_low_confidence_goes_to_identity_resolution(self):
+        """qnm 命中但仅 cn_name（低置信）→ identity_anchored=False 走身份识别"""
         rf = _make_filter()
         candidates, direct_results, stats = rf.local_filter(
             [_item("[LoliHouse] 攻壳机动队 - 03 [WebRip 1080p]")],
@@ -104,7 +119,7 @@ class TestLocalFilterQnmRecallGate:
             match_media=_gits_2026(),
         )
         assert len(candidates) == 1
-        assert candidates[0].skip_tmdb is False
+        assert candidates[0].identity_anchored is False
         assert direct_results == []
 
     def test_zero_intersection_rejected_and_records_miss(self):
@@ -143,7 +158,7 @@ class TestLocalFilterQnmRecallGate:
         assert stats.index_match_fail == 1
 
     @patch("app.indexer.core.result_filter.cached_meta_info")
-    def test_year_conflict_with_name_overlap_goes_to_tmdb(self, mock_parse):
+    def test_year_conflict_with_name_overlap_goes_to_identity_resolution(self, mock_parse):
         """年份冲突但名称有交集 → 不再本地拒绝，交身份层消歧（召回语义）"""
         mi = parse_title(title="Ghostbusters 2016 1080p")
         mi.cn_name = None
@@ -158,7 +173,7 @@ class TestLocalFilterQnmRecallGate:
         rf = _make_filter()
         candidates, _, stats = rf.local_filter([_item("Ghostbusters 2016 1080p")], filter_args={}, match_media=match)
         assert len(candidates) == 1
-        assert candidates[0].skip_tmdb is False
+        assert candidates[0].identity_anchored is False
         assert stats.index_match_fail == 0
 
     @patch("app.indexer.core.result_filter.cached_meta_info")
@@ -180,7 +195,7 @@ class TestLocalFilterQnmRecallGate:
         assert stats.index_match_fail == 1
 
     def test_imdb_id_passthrough_preserved(self):
-        """imdb_id 判等驱动的 skip_tmdb=True（ID 直通，合法证据）必须保留"""
+        """imdb_id 判等驱动的 identity_anchored=True（ID 直通，合法证据）必须保留"""
         rf = _make_filter()
         match = _gits_2026()
         match.imdb_id = "tt1234567"
@@ -190,10 +205,10 @@ class TestLocalFilterQnmRecallGate:
             match_media=match,
         )
         assert len(candidates) == 1
-        assert candidates[0].skip_tmdb is True
+        assert candidates[0].identity_anchored is True
 
     def test_no_match_media_goes_to_direct_results(self):
-        """无 match_media 分支不变：直接产出 direct_results，不查 TMDB"""
+        """无 match_media 分支不变：直接产出 direct_results，不做外部识别"""
         rf = _make_filter()
         candidates, direct_results, stats = rf.local_filter(
             [_item("THE.GHOST.IN.THE.SHELL.S01E03.2026.1080p.AMZN.WEB-DL.H264.DDP-CMCTV")],
@@ -285,3 +300,110 @@ def test_multilingual_torrent_survives_rule_and_identity_pipeline(title):
     assert len(result.results) == 1
     assert result.results[0].tmdb_id == 106449
     assert result.results[0].provider_data["name"] == "凡人修仙传"
+
+
+class TestTitleSpecificityWithoutYear:
+    def _match(self, **kwargs):
+        from types import SimpleNamespace
+
+        base = {
+            "title": "生化危机：爆发夜",
+            "cn_name": "生化危机：爆发夜",
+            "en_name": "Resident Evil",
+            "original_title": "Resident Evil",
+        }
+        base.update(kwargs)
+        return SimpleNamespace(**base)
+
+    def test_rejects_franchise_prefix_with_sequel_number(self):
+        from app.indexer.core.result_filter import ResultFilter
+
+        assert not ResultFilter._title_specific_without_year("RESIDENT EVIL 2 -CODEX", self._match())
+
+    def test_accepts_specific_subtitle_without_year(self):
+        from app.indexer.core.result_filter import ResultFilter
+
+        match = self._match(original_title="Resident Evil The Umbrella Chronicles")
+        assert ResultFilter._title_specific_without_year("Resident.Evil.The.Umbrella.Chronicles.2160p.WEB-DL", match)
+
+    def test_accepts_chinese_title_without_year(self):
+        from app.indexer.core.result_filter import ResultFilter
+
+        assert ResultFilter._title_specific_without_year("生化危机：爆发夜 2160p", self._match())
+
+
+def test_quick_name_match_ignores_zero_year():
+    from types import SimpleNamespace
+
+    from app.indexer.core.result_filter import ResultFilter
+
+    meta = SimpleNamespace(
+        title="Resident Evil 2026",
+        cn_name="生化危机",
+        en_name="Resident Evil",
+        description="",
+        year="2026",
+        type=MediaType.MOVIE,
+        rev_string="",
+        org_string="",
+    )
+    match = SimpleNamespace(
+        title="生化危机：爆发夜",
+        cn_name="生化危机：爆发夜",
+        en_name="Resident Evil",
+        original_title="Resident Evil",
+        year="0",
+        type=MediaType.MOVIE,
+    )
+    assert ResultFilter.quick_name_match(meta, match)
+
+
+class TestTitleSpecificityRejectsDifferentWorks:
+    def _match(self, original="Resident Evil"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            title="生化危机：爆发夜",
+            cn_name="生化危机：爆发夜",
+            en_name="Resident Evil",
+            original_title=original,
+        )
+
+    def _check(self, name, original="Resident Evil"):
+        from app.indexer.core.result_filter import ResultFilter
+
+        return ResultFilter._title_specific_without_year(name, self._match(original))
+
+    def test_rejects_game_requiem(self):
+        assert not self._check("PC ACT Resident Evil Requiem-voices38")
+
+    def test_rejects_trilogy_collection(self):
+        assert not self._check("Resident Evil trilogy Blu-ray 1080p HDbits@CHDBits")
+
+    def test_accepts_full_specific_title(self):
+        assert self._check(
+            "Resident Evil Death Island 1080p BluRay DTS 5.1-CMCT",
+            original="Resident Evil Death Island",
+        )
+
+    def test_rejects_sequel_number(self):
+        assert not self._check("RESIDENT EVIL 2 -CODEX")
+
+
+class TestSecondSeasonMarker:
+    def _check(self, name):
+        from app.indexer.core.result_filter import ResultFilter
+
+        return ResultFilter._is_second_season_title(name)
+
+    def test_edgerunners_2_marker(self):
+        assert self._check("Cyberpunk Edgerunners 2 - 05 [WebRip 1080p]")
+
+    def test_chinese_second_season(self):
+        assert self._check("赛博朋克：边缘行者 第二季 第01集")
+
+    def test_s02_marker(self):
+        assert self._check("Cyberpunk Edgerunners S02 2026 1080p")
+
+    def test_plain_audio_not_marker(self):
+        assert not self._check("Movie 2023 1080p DDP 2Audio")

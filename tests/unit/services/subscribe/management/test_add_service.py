@@ -1,5 +1,6 @@
 """订阅重订阅续订点推导测试（修复：转移历史已到 N 集，前端回传旧 current_ep 导致进度卡住）."""
 
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -12,16 +13,24 @@ class _FakeTransferHistory:
     def __init__(self, contiguous):
         self._contiguous = contiguous
 
-    def get_contiguous_transferred_episode_by_tmdb(self, tmdbid, season=None, start=1):
+    def get_contiguous_transferred_episode_by_ref(self, ref, season=None, media_type=None, start=1):
         return self._contiguous
+
+    def get_contiguous_transferred_episode_by_tmdb(self, tmdbid, season=None, start=1):
+        raise AssertionError("不应再按 TMDB 专用接口查询转移历史")
 
 
 class _FakeDownloadRepo:
     def __init__(self, contiguous):
         self._contiguous = contiguous
 
-    def get_contiguous_completed_episode_by_tmdb(self, tmdb_id, season=None, start=1):
+    def get_contiguous_completed_episode_by_ref(
+        self, *, identity_id, anchor_provider, anchor_external_id, season=None, start=1
+    ):
         return self._contiguous
+
+    def get_contiguous_completed_episode_by_tmdb(self, tmdb_id, season=None, start=1):
+        raise AssertionError("不应再按 TMDB 专用接口查询下载历史")
 
 
 def _build_service(transfer_contiguous=0, download_contiguous=0):
@@ -91,6 +100,17 @@ class TestResubscribeContinuation:
         assert inserted_kw["current_ep"] == 40
         assert inserted_kw["lack"] == 9  # 48 - 40 + 1
 
+    def test_new_subscription_defaults_current_ep_to_one(self):
+        svc = _build_service()
+        svc._media.get_media_info.return_value = _make_media_info()
+        svc._media.get_tmdb_season_episodes_num.return_value = 12
+        code, _, _ = svc.add_rss_subscribe(
+            name="测试", year="2023", mtype=MediaType.TV, season=1, total_ep=12, current_ep=None
+        )
+        inserted_kw = svc._tv_repo.insert.call_args.kwargs
+        assert inserted_kw["current_ep"] == 1
+        assert inserted_kw["lack"] == 12
+
     def test_no_history_uses_current_ep(self):
         """无转移/下载历史时，沿用传入的 current_ep."""
         svc = _build_service(transfer_contiguous=0, download_contiguous=0)
@@ -112,6 +132,71 @@ class TestResubscribeContinuation:
         )
         inserted_kw = svc._tv_repo.insert.call_args.kwargs
         assert inserted_kw["current_ep"] == 26
+
+
+class TestNonTmdbEpisodeCount:
+    def test_douban_source_uses_metadata_resolver(self):
+        svc = _build_service()
+        media = _make_media_info()
+        media.provider_data = None  # type: ignore[assignment]
+        media.total_episodes = 0
+        media.type = MediaType.ANIME
+        media.anchor_provider = "douban"
+        media.anchor_external_id = "38396475"
+        svc._media.get_media_info.return_value = media
+        svc._metadata_service = MagicMock()
+        svc._metadata_service.resolve_season_episode_count.return_value = 24
+
+        code, _, _ = svc.add_rss_subscribe(
+            name="乱马1/2",
+            year="2026",
+            mtype=MediaType.ANIME,
+            season=3,
+            total_ep=None,
+            current_ep=0,
+        )
+
+        assert code == 0
+        svc._metadata_service.resolve_season_episode_count.assert_called_once()
+        inserted = svc._tv_repo.insert.call_args.kwargs
+        assert inserted["total"] == 24
+        assert inserted["total_ep"] == 24
+        assert inserted["lack"] == 24
+
+
+class TestResolvedSeasonContinuation:
+    def test_s02_history_does_not_use_s01_progress(self):
+        svc = _build_service()
+        svc._media.get_media_info.return_value = _make_media_info()
+        svc._media.get_tmdb_season_episodes_num.return_value = 12
+        svc._series_service = MagicMock()
+        svc._series_service.resolve.return_value = SimpleNamespace(
+            series_key="series:demo", season_number=2, title="测试剧"
+        )
+        seen = {}
+
+        class _SeasonAwareHistory:
+            def get_contiguous_transferred_episode_by_ref(self, ref, season=None, media_type=None, start=1):
+                seen["season"] = season
+                return 12 if int(season or 0) == 1 else 0
+
+        class _SeasonAwareDownload:
+            def get_contiguous_completed_episode_by_ref(
+                self, *, identity_id, anchor_provider, anchor_external_id, season=None, start=1
+            ):
+                return 0
+
+        svc._transfer_history_manager = _SeasonAwareHistory()
+        svc._download_repo = _SeasonAwareDownload()
+        # 请求仍按 S01 传入，但剧集解析把标题识别为 S02
+        code, _, _ = svc.add_rss_subscribe(
+            name="测试剧 第二季", year="2024", mtype=MediaType.TV, season=1, total_ep=12, current_ep=1
+        )
+        assert code == 0
+        assert seen["season"] == 2
+        inserted_kw = svc._tv_repo.insert.call_args.kwargs
+        assert inserted_kw["current_ep"] == 1
+        assert inserted_kw["lack"] == 12
 
 
 class TestDefaultSubscribeSetting:
@@ -214,23 +299,23 @@ def test_douban_only_tv_subscription_without_tmdb():
     svc._media.get_tmdb_season_episodes_num.assert_not_called()
 
 
-def test_provider_ref_subscribes_adult_movie():
-    """成人卡片用 content_id 作锚点、javdb ref 取详情，按单片订阅."""
+def test_provider_ref_subscribes_demo_movie():
+    """演示卡片用 content_id 作锚点、demo_meta ref 取详情，按单片订阅."""
     svc = _build_service()
     svc._metadata_service = MagicMock()
     svc._metadata_service.lookup.return_value = {
         "title": "START-649",
         "year": "2026",
         "poster": "https://example.com/start-649.jpg",
-        "overview": "adult",
-        "content_profile": "adult",
+        "overview": "demo",
+        "content_profile": "demo",
     }
     svc._metadata_service.link_subscription.return_value.as_kwargs.return_value = {
         "identity_id": "01J00000000000000000000002",
         "anchor_provider": "content_id",
         "anchor_external_id": "START-649",
-        "content_profile": "adult",
-        "metadata_policy": "provider_only:adult",
+        "content_profile": "demo",
+        "metadata_policy": "provider_only:demo",
         "naming_profile": None,
     }
     svc._movie_repo.insert.return_value = 999
@@ -240,25 +325,25 @@ def test_provider_ref_subscribes_adult_movie():
         year="",
         mtype=MediaType.MOVIE,
         mediaid="content_id:START-649",
-        metadata_ref="javdb:qAZBWN",
-        content_profile="adult",
-        metadata_policy="provider_only:adult",
+        metadata_ref="demo_meta:qAZBWN",
+        content_profile="demo",
+        metadata_policy="provider_only:demo",
         allow_private=True,
     )
 
     assert code == 0
     svc._metadata_service.lookup.assert_called_once_with(
-        "javdb",
+        "demo_meta",
         "qAZBWN",
         media_type=MediaType.MOVIE,
-        content_profile="adult",
+        content_profile="demo",
         allow_private=True,
         permissions=None,
     )
     inserted_kw = svc._movie_repo.insert.call_args.kwargs
     assert inserted_kw["anchor_provider"] == "content_id"
     assert inserted_kw["anchor_external_id"] == "START-649"
-    assert inserted_kw["content_profile"] == "adult"
+    assert inserted_kw["content_profile"] == "demo"
     assert inserted_kw["media_info"].tmdb_id == ""
     assert inserted_kw["media_info"].anchor_provider == "content_id"
     assert inserted_kw["media_info"].anchor_external_id == "START-649"

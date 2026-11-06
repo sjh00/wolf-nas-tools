@@ -164,18 +164,34 @@ class MediaServer:
             if row.ENABLED
         ]
 
+    def list_routes(self, content_profile: str | None = None, target_path: str | None = None) -> list[Any]:
+        """列出已启用的媒体库路由，供插件统一走公共门面。"""
+        route_repo = getattr(self, "route_repo", None)
+        if route_repo is None:
+            return []
+        routes = [
+            route
+            for route in route_repo.list()
+            if route.enabled
+            and route.target_path
+            and (not content_profile or not route.content_profile or route.content_profile == content_profile)
+            and (not target_path or PathUtils.is_path_in_path(route.target_path, target_path))
+        ]
+        return routes
+
     def resolve_route(self, content_profile: str | None = None, target_path: str | None = None, routes=None):
         """解析目录/画像路由，保留 server_id 和 library_id 完整目标。"""
         route_repo = getattr(self, "route_repo", None)
         if target_path and route_repo:
-            candidates = []
-            for route in route_repo.list() if routes is None else routes:
-                if not route.enabled or not route.target_path:
-                    continue
-                if content_profile and route.content_profile and route.content_profile != content_profile:
-                    continue
-                if PathUtils.is_path_in_path(route.target_path, target_path):
-                    candidates.append(route)
+            candidates = self.list_routes(content_profile, target_path) if routes is None else []
+            if routes is not None:
+                for route in routes:
+                    if not route.enabled or not route.target_path:
+                        continue
+                    if content_profile and route.content_profile and route.content_profile != content_profile:
+                        continue
+                    if PathUtils.is_path_in_path(route.target_path, target_path):
+                        candidates.append(route)
             if candidates:
                 return max(candidates, key=lambda route: len(route.target_path.replace("\\", "/")))
         if content_profile and route_repo:
@@ -286,6 +302,17 @@ class MediaServer:
             return None
         return self.server.get_movies(title, year)
 
+    def supports_person_tags(
+        self,
+        server_id: int | None = None,
+        content_profile: str | None = None,
+        target_path: str | None = None,
+    ) -> bool:
+        """目标实例是否支持人物标签读写。"""
+        resolved = self.resolve_server_id(server_id, content_profile, target_path)
+        client = self._get_client(resolved)
+        return bool(client and hasattr(client, "list_persons") and hasattr(client, "add_person_tags"))
+
     def list_persons(
         self,
         server_id: int | None = None,
@@ -357,15 +384,26 @@ class MediaServer:
         if not items:
             return
         if server_id is not None:
-            self._refresh_items_for_instance(items, server_id)
-            self.refresh_root_library(server_id=server_id)
+            self._scan_instance(items, server_id, None)
             return
         for (target_id, library_id), group_items in self._group_items_by_route(items, content_profile).items():
             if library_id:
                 for item in group_items:
                     item.setdefault("library_id", library_id)
-            self._refresh_items_for_instance(group_items, target_id)
-            self.refresh_root_library(server_id=target_id, library_id=library_id)
+            self._scan_instance(group_items, target_id, library_id)
+
+    def _scan_instance(self, items, server_id: int | None, library_id: str | None) -> None:
+        """同一实例/媒体库的扫描串行执行，避免并发扫描把 Emby 写成重复剧集。"""
+        key = f"mediaserver:scan:{server_id or 0}:{library_id or ''}"
+        lock = get_lock_manager().create_lock(key, ttl_seconds=900)
+        if not lock.acquire():
+            log.info("[MediaServer]媒体库扫描正在执行，跳过重复触发")
+            return
+        try:
+            self._refresh_items_for_instance(items, server_id)
+            self.refresh_root_library(server_id=server_id, library_id=library_id)
+        finally:
+            lock.release()
 
     def _refresh_items_for_instance(self, items, server_id: int | None):
         client = self._get_client(server_id)

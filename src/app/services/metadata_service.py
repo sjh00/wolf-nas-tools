@@ -9,7 +9,7 @@ import difflib
 import re
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -42,6 +42,12 @@ from app.media.metadata.metrics import snapshot as metrics_snapshot
 from app.media.metadata.providers import register_builtin_providers
 from app.media.metadata.registry import MetadataRegistry
 from app.media.metadata.registry import registry as global_registry
+from app.services.identity_resolver import IdentityResolver
+from app.utils import StringUtils
+from app.utils.timeout import run_parallel_with_timeout, run_with_timeout
+
+# 详情抓取硬超时：必须大于正常浏览器导航（约 20-30s），但不能无限挂起
+METADATA_DETAIL_TIMEOUT = 45.0
 
 
 class IdentityRepositoryProtocol(Protocol):
@@ -184,6 +190,7 @@ class MetadataService:
         self._registry = registry or global_registry
         self._orchestrator = MetadataOrchestrator(self._registry)
         self._identity_repo = identity_repo or MediaIdentityRepository()
+        self._resolver = IdentityResolver(repository=self._identity_repo)
         self._person_repo = person_repo or PersonIdentityRepository()
         self._media_service = media_service
         self._system_default_policy = system_default_policy
@@ -793,19 +800,20 @@ class MetadataService:
         persist: bool,
     ):
         anchor = refs[0]
-        identity = self._identity_repo.find_by_ref(
-            anchor.provider,
-            anchor.external_id,
-            scope=anchor.scope,
-            media_type=anchor.media_type.value if anchor.media_type else None,
+        resolved = self._resolver.resolve_values(
+            provider=anchor.provider,
+            external_id=anchor.external_id,
+            title=getattr(media_info, "title", None),
+            year=getattr(media_info, "year", None),
+            media_type=media_type.value,
+            content_profile=profile,
+            scope=anchor.scope or "default",
+            allow_local=False,
+            create=persist,
         )
-        if identity is None and persist:
-            identity = self._identity_repo.ensure_identity(
-                media_type=media_type.value,
-                content_profile=profile,
-                title=getattr(media_info, "title", None),
-                year=getattr(media_info, "year", None),
-            )
+        if not resolved.identity_id:
+            return None
+        identity = resolved.identity or self._identity_repo.get_identity(resolved.identity_id)
         if identity is None:
             return None
         for ref in refs:
@@ -1110,6 +1118,7 @@ class MetadataService:
         limit: int = 20,
         allow_private: bool = False,
         permissions: set[str] | None = None,
+        wait_timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         self._ensure_builtin()
         if not query.strip():
@@ -1165,23 +1174,30 @@ class MetadataService:
         if not selected:
             return []
         hits: list[dict[str, Any]] = []
-        executor = ThreadPoolExecutor(max_workers=min(8, len(selected)), thread_name_prefix="metadata_search")
-        futures = {executor.submit(search_one, item): item.descriptor.provider_key for item in selected}
-        # 单 provider 搜索可能包含 Cloudflare 挑战（实测 40~60s），必须等完；
-        # 只有多 provider 聚合才使用短超时，避免慢源拖垮整体。
-        wait_timeout = 120.0 if len(selected) == 1 else 10.0
-        done, not_done = wait(futures, timeout=wait_timeout)
-        for future in done:
-            try:
-                hits.extend(future.result() or [])
-            except Exception as exc:  # noqa: BLE001
-                log.warn(f"[Metadata]搜索任务失败: {exc}")
-        for future in not_done:
-            future.cancel()
-            log.warn(f"[Metadata]搜索超时，忽略 provider: {futures[future]}")
-        executor.shutdown(wait=False, cancel_futures=True)
+        # 单 provider 也不能无限等：外部元数据源遇到 Cloudflare/SSL 抖动时
+        # 会重试到 120s。用独立 daemon 线程硬超时，避免卡死线程长期占用搜索线程池。
+        effective_timeout = wait_timeout or (20.0 if len(selected) == 1 else 8.0)
+        tasks = {item.descriptor.provider_key: (lambda item=item: search_one(item)) for item in selected}
+        payload_map, timed_out = run_parallel_with_timeout(tasks, effective_timeout)
+        for provider_key, payloads in payload_map.items():
+            hits.extend(payloads)
+        for provider_key in timed_out:
+            log.warn(f"[Metadata]搜索超时，忽略 provider: {provider_key}")
         hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
-        return hits[:limit]
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for hit in hits:
+            ref = hit.get("ref") or {}
+            provider = str(ref.get("provider") or hit.get("provider") or "")
+            external_id = str(ref.get("external_id") or hit.get("external_id") or "")
+            media_type_key = str(hit.get("media_type") or "")
+            key = (provider, external_id, media_type_key)
+            if provider and external_id:
+                if key in seen:
+                    continue
+                seen.add(key)
+            deduped.append(hit)
+        return deduped[:limit]
 
     def compose_for_ref(
         self,
@@ -1196,6 +1212,7 @@ class MetadataService:
         refs: list[ProviderRef] | None = None,
         allow_private: bool = False,
         permissions: set[str] | None = None,
+        with_episodes: bool = True,
     ) -> dict[str, Any] | None:
         """按外部锚点合成快照；显式 refs 时保留聚合来源上下文."""
         if refs:
@@ -1239,7 +1256,7 @@ class MetadataService:
         snapshot = self.compose_for_media(
             media_info,
             content_profile=content_profile,
-            with_episodes=True,
+            with_episodes=with_episodes,
             user_id=user_id,
             refs_override=refs,
         )
@@ -1248,6 +1265,144 @@ class MetadataService:
         data = snapshot.model_dump(mode="json")
         data.setdefault("extra", {})["douban.season"] = season
         return data
+
+    @staticmethod
+    def _episode_count_from_record(record: dict[str, Any] | None, season: int) -> int:
+        if not isinstance(record, dict):
+            return 0
+        seasons = record.get("seasons")
+        if isinstance(seasons, list):
+            for item in seasons:
+                if not isinstance(item, dict):
+                    continue
+                if int(item.get("season_number") or 0) != int(season):
+                    continue
+                count = item.get("episode_count")
+                if str(count or "").isdigit() and int(str(count)) > 0:
+                    return int(str(count))
+        raw_extra = record.get("extra")
+        extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+        for key in ("episodes_count", "total_episodes", "episode_count"):
+            value = record.get(key) or extra.get(key)
+            if str(value or "").isdigit() and int(str(value)) > 0:
+                return int(str(value))
+        for key, value in extra.items():
+            if str(key).endswith(".eps") or str(key).endswith(".episodes_count"):
+                if str(value or "").isdigit() and int(str(value)) > 0:
+                    return int(str(value))
+        return 0
+
+    def resolve_season_episode_count(
+        self,
+        *,
+        provider: str,
+        external_id: str,
+        title: str,
+        year: str | None = None,
+        media_type: MediaType = MediaType.TV,
+        season: int = 1,
+        content_profile: str = "default",
+        allow_private: bool = False,
+        permissions: set[str] | None = None,
+    ) -> int:
+        """按来源优先级从可用 provider 解析指定季集数，不在 API 层硬编码来源."""
+        self._ensure_builtin()
+        source_record = None
+        try:
+            source_record = self.lookup(
+                provider,
+                external_id,
+                media_type=media_type,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+        except Exception:  # noqa: BLE001 - 来源详情失败继续用其他 provider
+            source_record = None
+        count = self._episode_count_from_record(source_record, season)
+        if count:
+            return count
+
+        # 豆瓣 API 的 episodes_count 对分季条目经常为 0，但网页分集页可用；
+        # 来源 provider 明确时优先取它的 HTML 分集数量，再回退其他 provider。
+        if provider and external_id:
+            try:
+                episodes = self.episodes(
+                    provider,
+                    external_id,
+                    season,
+                    allow_private=allow_private,
+                    permissions=permissions,
+                )
+            except Exception:  # noqa: BLE001 - HTML 分集失败继续其他 provider
+                episodes = []
+            if episodes:
+                return len(episodes)
+
+        query = str(title or "").strip()
+        if not query:
+            return 0
+        candidates = self._registry.list_providers(
+            capability=ProviderCapability.SEARCH,
+            content_profile=content_profile if content_profile != "default" else None,
+            media_type=media_type,
+        )
+        candidates.sort(key=lambda item: int(getattr(item.descriptor, "default_priority", 100)))
+        for item in candidates:
+            key = str(item.descriptor.provider_key)
+            if key == provider:
+                continue
+            if item.descriptor.visibility == "private":
+                required = item.descriptor.required_permission or "metadata:private:view"
+                if not allow_private or (
+                    permissions is not None and "*" not in permissions and required not in permissions
+                ):
+                    continue
+            hits = []
+            try:
+                hits = run_with_timeout(
+                    lambda key=key: self.search(
+                        query=query,
+                        provider=key,
+                        media_type=media_type,
+                        content_profile=content_profile,
+                        limit=5,
+                        allow_private=allow_private,
+                        permissions=permissions,
+                        wait_timeout=5,
+                    ),
+                    6.0,
+                    name=f"episode-count-search-{key}",
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            for hit in hits or []:
+                hit_title = str(hit.get("title") or "")
+                parsed_hit = StringUtils.get_keyword_from_string(hit_title) if hit_title else None
+                hit_season = parsed_hit[2] if parsed_hit else None
+                if season > 1 and hit_season and int(hit_season) != int(season):
+                    continue
+                ref = hit.get("ref") or {}
+                external = str(ref.get("external_id") or "")
+                if not external:
+                    continue
+                try:
+                    record = run_with_timeout(
+                        lambda external=external, key=key: self.lookup(
+                            key,
+                            external,
+                            media_type=media_type,
+                            allow_private=allow_private,
+                            permissions=permissions,
+                        ),
+                        6.0,
+                        name=f"episode-count-lookup-{key}",
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                count = self._episode_count_from_record(record, season)
+                if count:
+                    return count
+        return 0
 
     def similar_for_ref(
         self,
@@ -1394,7 +1549,11 @@ class MetadataService:
         runtime = self._orchestrator.runtime_for(target.descriptor)
         try:
             runtime.acquire()
-            record = target.detail(ref, None)
+            record = run_with_timeout(
+                lambda: target.detail(ref, None),
+                METADATA_DETAIL_TIMEOUT,
+                name=f"metadata-detail-{provider}",
+            )
             runtime.record_success()
             data = record.model_dump(mode="json") if record is not None else None
             if isinstance(data, dict) and self._has_detail_payload(data):
@@ -1472,6 +1631,8 @@ class MetadataService:
                 ):
                     continue
             visible.append(provider)
+        # 内置 provider 置顶，插件保持注册顺序；来源由注册表动态判定
+        visible.sort(key=lambda item: 0 if self._registry.is_builtin_provider(item.descriptor.provider_key) else 1)
 
         def probe(provider):
             try:
@@ -1484,8 +1645,23 @@ class MetadataService:
                 }
 
         if probe_health:
-            with ThreadPoolExecutor(max_workers=min(8, len(visible) or 1)) as pool:
-                healths = list(pool.map(probe, visible))
+            tasks = {
+                provider.descriptor.provider_key: (lambda provider=provider: probe(provider)) for provider in visible
+            }
+            health_map, timed_out = run_parallel_with_timeout(tasks, 10.0)
+            healths = []
+            for provider in visible:
+                key = provider.descriptor.provider_key
+                healths.append(
+                    health_map.get(
+                        key,
+                        {
+                            "provider": key,
+                            "ok": False,
+                            "message": "健康检查超时" if key in timed_out else "健康检查失败",
+                        },
+                    )
+                )
         else:
             healths = [{} for _ in visible]
 

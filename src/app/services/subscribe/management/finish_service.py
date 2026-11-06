@@ -1,14 +1,18 @@
 """Subscribe finish service - 完成订阅."""
 
+import re
 from typing import Any
 
 import log
+from app.domain.lifecycle import LifecycleStatus
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType
 from app.events import Event
 from app.events.constants import SUBSCRIBE_FINISHED
 from app.events.payloads import SubscribeFinishedPayload
+from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.media import MediaInfo
+from app.services.lifecycle_service import LifecycleProjector
 from app.services.subscribe.management.utils import tv_filter_signature
 
 
@@ -38,6 +42,37 @@ def _history_scope(row: Any) -> dict[str, Any]:
         "metadata_policy": getattr(row, "METADATA_POLICY", None),
         "naming_profile": getattr(row, "NAMING_PROFILE", None),
     }
+
+
+def _record_subscription_completed(row: Any, rssid: int, media_type: str = "tv") -> None:
+    identity_id = str(getattr(row, "IDENTITY_ID", "") or "")
+    if not identity_id:
+        return
+    profile = str(getattr(row, "CONTENT_PROFILE", "") or "default")
+    if profile == "anime":
+        media_type = "anime"
+    match = re.search(r"\d+", str(getattr(row, "SEASON", "") or ""))
+    season = int(match.group()) if match else 0
+    try:
+        LifecycleProjector().record_subscription_outcome(
+            identity_id=identity_id,
+            series_key=getattr(row, "SERIES_KEY", None),
+            status=LifecycleStatus.SUCCEEDED,
+            event_type="subscribe.completed",
+            media_type=media_type,
+            season=season,
+            title=getattr(row, "NAME", None),
+            year=getattr(row, "YEAR", None),
+            poster=getattr(row, "IMAGE", None),
+            source_provider=getattr(row, "ANCHOR_PROVIDER", None) or getattr(row, "PROVIDER", None),
+            content_profile=profile,
+            user_id=getattr(row, "USER_ID", None),
+            message="订阅已完成",
+            payload={"source": "SUBSCRIBE", "rssid": rssid},
+            event_key=f"subscribe-completed:{rssid}",
+        )
+    except Exception as exc:  # noqa: BLE001 - 事件写入失败不应阻断完成流程
+        log.warn(f"[Subscribe]记录订阅完成事件失败 rssid={rssid}: {exc}")
 
 
 class SubscribeFinishService:
@@ -74,6 +109,7 @@ class SubscribeFinishService:
             if tv_filter_signature(row) != primary_sig:
                 continue
             log.info(f"[Subscribe]联动完成兄弟订阅 rssid={sid}（同一媒体共享下载）")
+            _record_subscription_completed(row, int(sid), "tv")
             delete_subscribe_fn(mtype=MediaType.TV, rssid=sid)
 
     def finish_rss_subscribe(self, rssid: int | None, media: Any, delete_subscribe_fn) -> None:
@@ -107,6 +143,7 @@ class SubscribeFinishService:
                 user_id=owner_user_id,
                 **_history_scope(row),
             )
+            _record_subscription_completed(row, rssid, "movie")
             delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
         else:
             rss = self._tv_repo.get_all(rssid=rssid)
@@ -140,6 +177,7 @@ class SubscribeFinishService:
                 user_id=owner_user_id,
                 **_history_scope(row),
             )
+            _record_subscription_completed(row, rssid, "tv")
             delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
             self._finish_sibling_tvs(row, media, delete_subscribe_fn)
 
@@ -179,122 +217,159 @@ class SubscribeFinishService:
         """
         if not rssid:
             return
-        rss = self._tv_repo.get_all(rssid=rssid)
-        if not rss:
+        lock = get_lock_manager().create_lock(f"subscribe:finalize:tv:{rssid}", ttl_seconds=60)
+        locked = lock.acquire()
+        if not locked and lock.last_error is None:
+            log.warn(f"[Subscribe]电视剧订阅 {rssid} 正在定稿，跳过重复事件")
             return
-        row = rss[0]
-        resolved_type = mtype or MediaType.TV
-        row_profile = str(getattr(row, "CONTENT_PROFILE", "") or "").strip()
-        if row_profile == "anime" and resolved_type != MediaType.ANIME:
-            resolved_type = MediaType.ANIME
-        elif resolved_type == MediaType.ANIME and row_profile in ("", "default"):
-            row_profile = "anime"
-        media = MediaInfo(
-            type=resolved_type,
-            tmdb_id=str(row.TMDBID or "") if _row_ref(row).startswith("tmdb:") else "",
-        )
-        media.title = row.NAME
-        media.year = row.YEAR
-        owner_user_id = getattr(row, "USER_ID", None)
-        media.poster_path = str(getattr(row, "IMAGE", "") or "")
-        media.user_id = owner_user_id
-        season_str = str(row.SEASON).strip() if row.SEASON is not None else ""
-        if season_str.isdigit():
-            media.begin_season = int(season_str)
-        media.over_edition = bool(row.OVER_EDITION)
-        media.content_profile = row_profile or "default"
-        media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
-        media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
-        media.keyword = getattr(row, "KEYWORD", None)
-        media.provider = getattr(row, "PROVIDER", None)
-        media.metadata_ref = getattr(row, "METADATA_REF", None)
-        media.total_episodes = int(row.TOTAL or 0)
-        total = row.TOTAL or row.TOTAL_EP
-        scope = _history_scope(row)
-        if resolved_type == MediaType.ANIME and str(scope.get("content_profile") or "").strip() in ("", "default"):
-            scope["content_profile"] = "anime"
-        self._history_repo.upsert(
-            rssid=rssid,
-            rtype=MediaTypeMapper.to_tmdb(resolved_type),
-            name=row.NAME,
-            year=row.YEAR,
-            season=row.SEASON,
-            tmdbid=row.TMDBID if _row_ref(row).startswith("tmdb:") else "",
-            image=row.IMAGE,
-            desc=row.DESC,
-            total=total,
-            start=row.CURRENT_EP,
-            user_id=owner_user_id,
-            **scope,
-        )
-        delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
-        self._finish_sibling_tvs(row, media, delete_subscribe_fn)
-        self._event_bus.publish(
-            Event(
-                event_type=SUBSCRIBE_FINISHED,
-                payload=SubscribeFinishedPayload(media_info=media.to_dict(), rssid=rssid),
+        if not locked:
+            log.warn(f"[Subscribe]订阅 {rssid} 定稿锁后端不可用，继续无锁执行：{lock.last_error}")
+        try:
+            rss = self._tv_repo.get_all(rssid=rssid)
+            if not rss:
+                return
+            row = rss[0]
+            resolved_type = mtype or MediaType.TV
+            row_profile = str(getattr(row, "CONTENT_PROFILE", "") or "").strip()
+            if row_profile == "anime" and resolved_type != MediaType.ANIME:
+                resolved_type = MediaType.ANIME
+            elif resolved_type == MediaType.ANIME and row_profile in ("", "default"):
+                row_profile = "anime"
+            media = MediaInfo(
+                type=resolved_type,
+                tmdb_id=str(row.TMDBID or "") if _row_ref(row).startswith("tmdb:") else "",
             )
-        )
-        log.info(f"[Subscribe]{resolved_type.value} {media.get_title_string()} 订阅完成（转移确认），删除订阅...")
-        self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
+            media.title = row.NAME
+            media.year = row.YEAR
+            owner_user_id = getattr(row, "USER_ID", None)
+            media.poster_path = str(getattr(row, "IMAGE", "") or "")
+            media.user_id = owner_user_id
+            season_str = str(row.SEASON).strip() if row.SEASON is not None else ""
+            if season_str.isdigit():
+                media.begin_season = int(season_str)
+            media.over_edition = bool(row.OVER_EDITION)
+            media.content_profile = row_profile or "default"
+            media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
+            media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
+            media.keyword = getattr(row, "KEYWORD", None)
+            media.provider = getattr(row, "PROVIDER", None)
+            media.metadata_ref = getattr(row, "METADATA_REF", None)
+            media.total_episodes = int(row.TOTAL or 0)
+            total = row.TOTAL or row.TOTAL_EP
+            scope = _history_scope(row)
+            if resolved_type == MediaType.ANIME and str(scope.get("content_profile") or "").strip() in ("", "default"):
+                scope["content_profile"] = "anime"
+            self._history_repo.upsert(
+                rssid=rssid,
+                rtype=MediaTypeMapper.to_tmdb(resolved_type),
+                name=row.NAME,
+                year=row.YEAR,
+                season=row.SEASON,
+                tmdbid=row.TMDBID if _row_ref(row).startswith("tmdb:") else "",
+                image=row.IMAGE,
+                desc=row.DESC,
+                total=total,
+                start=row.CURRENT_EP,
+                user_id=owner_user_id,
+                **scope,
+            )
+            _record_subscription_completed(row, rssid, resolved_type.value)
+            delete_subscribe_fn(mtype=MediaType.TV, rssid=rssid)
+            self._finish_sibling_tvs(row, media, delete_subscribe_fn)
+            if self._download_repo and media.over_edition:
+                identity_id = str(getattr(row, "IDENTITY_ID", "") or "")
+                anchor_provider = str(getattr(row, "ANCHOR_PROVIDER", "") or "")
+                anchor_external = str(getattr(row, "ANCHOR_EXTERNAL_ID", "") or "")
+                if identity_id or (anchor_provider and anchor_external):
+                    self._download_repo.delete_by_identity(
+                        identity_id=identity_id or None,
+                        anchor_provider=anchor_provider or None,
+                        anchor_external_id=anchor_external or None,
+                        season_prefix=media.get_season_string(),
+                    )
+                elif media.tmdb_id:
+                    self._download_repo.delete_by_tmdb(media.tmdb_id, media.get_season_string())
+            self._event_bus.publish(
+                Event(
+                    event_type=SUBSCRIBE_FINISHED,
+                    payload=SubscribeFinishedPayload(media_info=media.to_dict(), rssid=rssid),
+                )
+            )
+            log.info(f"[Subscribe]{resolved_type.value} {media.get_title_string()} 订阅完成（转移确认），删除订阅...")
+            self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
+        finally:
+            if locked:
+                lock.release()
 
     def finalize_movie_by_rssid(self, rssid: int | None, delete_subscribe_fn) -> None:
         """转移确认后按订阅行定稿电影订阅：写历史、删订阅、发通知。"""
         if not rssid:
             return
-        rss = self._movie_repo.get_all(rssid=rssid)
-        if not rss:
+        lock = get_lock_manager().create_lock(f"subscribe:finalize:movie:{rssid}", ttl_seconds=60)
+        locked = lock.acquire()
+        if not locked and lock.last_error is None:
+            log.warn(f"[Subscribe]电影订阅 {rssid} 正在定稿，跳过重复事件")
             return
-        row = rss[0]
-        owner_user_id = getattr(row, "USER_ID", None)
-        over_edition = bool(getattr(row, "OVER_EDITION", False))
-        # 删除订阅前固化通知/历史所需字段（尤其是 IMAGE 海报）。
-        image = str(getattr(row, "IMAGE", "") or "")
-        media = MediaInfo(
-            type=MediaType.MOVIE,
-            tmdb_id=str(row.TMDBID or "") if _row_ref(row).startswith("tmdb:") else "",
-        )
-        media.title = row.NAME
-        media.year = row.YEAR
-        media.poster_path = image
-        media.user_id = owner_user_id
-        media.over_edition = over_edition
-        media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
-        media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
-        media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
-        media.keyword = getattr(row, "KEYWORD", None)
-        media.provider = getattr(row, "PROVIDER", None)
-        media.metadata_ref = getattr(row, "METADATA_REF", None)
-        self._history_repo.upsert(
-            rssid=rssid,
-            rtype=MediaTypeMapper.to_tmdb(MediaType.MOVIE),
-            name=row.NAME,
-            year=row.YEAR,
-            tmdbid=row.TMDBID if _row_ref(row).startswith("tmdb:") else "",
-            image=image,
-            desc=row.DESC,
-            user_id=owner_user_id,
-            **_history_scope(row),
-        )
-        delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
-        # 仅洗版电影完成后清理下载历史（允许后续升级重下），优先按多元身份清理。
-        if self._download_repo and over_edition:
-            identity_id = str(getattr(row, "IDENTITY_ID", "") or "")
-            anchor_provider = str(getattr(row, "ANCHOR_PROVIDER", "") or "")
-            anchor_external = str(getattr(row, "ANCHOR_EXTERNAL_ID", "") or "")
-            if identity_id or (anchor_provider and anchor_external):
-                self._download_repo.delete_by_identity(
-                    identity_id=identity_id or None,
-                    anchor_provider=anchor_provider or None,
-                    anchor_external_id=anchor_external or None,
-                )
-            elif row.TMDBID:
-                self._download_repo.delete_by_tmdb(row.TMDBID, None)
-        self._event_bus.publish(
-            Event(
-                event_type=SUBSCRIBE_FINISHED,
-                payload=SubscribeFinishedPayload(media_info=media.to_dict(), rssid=rssid),
+        if not locked:
+            log.warn(f"[Subscribe]订阅 {rssid} 定稿锁后端不可用，继续无锁执行：{lock.last_error}")
+        try:
+            rss = self._movie_repo.get_all(rssid=rssid)
+            if not rss:
+                return
+            row = rss[0]
+            owner_user_id = getattr(row, "USER_ID", None)
+            over_edition = bool(getattr(row, "OVER_EDITION", False))
+            # 删除订阅前固化通知/历史所需字段（尤其是 IMAGE 海报）。
+            image = str(getattr(row, "IMAGE", "") or "")
+            media = MediaInfo(
+                type=MediaType.MOVIE,
+                tmdb_id=str(row.TMDBID or "") if _row_ref(row).startswith("tmdb:") else "",
             )
-        )
-        log.info(f"[Subscribe]movie {media.get_title_string()} 订阅完成（转移确认），删除订阅...")
-        self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
+            media.title = row.NAME
+            media.year = row.YEAR
+            media.poster_path = image
+            media.user_id = owner_user_id
+            media.over_edition = over_edition
+            media.content_profile = str(getattr(row, "CONTENT_PROFILE", None) or "default")
+            media.anchor_provider = getattr(row, "ANCHOR_PROVIDER", None)
+            media.anchor_external_id = getattr(row, "ANCHOR_EXTERNAL_ID", None)
+            media.keyword = getattr(row, "KEYWORD", None)
+            media.provider = getattr(row, "PROVIDER", None)
+            media.metadata_ref = getattr(row, "METADATA_REF", None)
+            self._history_repo.upsert(
+                rssid=rssid,
+                rtype=MediaTypeMapper.to_tmdb(MediaType.MOVIE),
+                name=row.NAME,
+                year=row.YEAR,
+                tmdbid=row.TMDBID if _row_ref(row).startswith("tmdb:") else "",
+                image=image,
+                desc=row.DESC,
+                user_id=owner_user_id,
+                **_history_scope(row),
+            )
+            _record_subscription_completed(row, rssid, "movie")
+            delete_subscribe_fn(mtype=MediaType.MOVIE, rssid=rssid)
+            # 仅洗版电影完成后清理下载历史（允许后续升级重下），优先按多元身份清理。
+            if self._download_repo and over_edition:
+                identity_id = str(getattr(row, "IDENTITY_ID", "") or "")
+                anchor_provider = str(getattr(row, "ANCHOR_PROVIDER", "") or "")
+                anchor_external = str(getattr(row, "ANCHOR_EXTERNAL_ID", "") or "")
+                if identity_id or (anchor_provider and anchor_external):
+                    self._download_repo.delete_by_identity(
+                        identity_id=identity_id or None,
+                        anchor_provider=anchor_provider or None,
+                        anchor_external_id=anchor_external or None,
+                    )
+                elif row.TMDBID:
+                    self._download_repo.delete_by_tmdb(row.TMDBID, None)
+            self._event_bus.publish(
+                Event(
+                    event_type=SUBSCRIBE_FINISHED,
+                    payload=SubscribeFinishedPayload(media_info=media.to_dict(), rssid=rssid),
+                )
+            )
+            log.info(f"[Subscribe]movie {media.get_title_string()} 订阅完成（转移确认），删除订阅...")
+            self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
+        finally:
+            if locked:
+                lock.release()

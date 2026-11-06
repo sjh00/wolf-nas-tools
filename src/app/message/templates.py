@@ -29,9 +29,8 @@ DEFAULT_MESSAGE_TEMPLATES = {
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
             "📺 类型："
-            "{% if content_profile and content_profile != 'default' %}"
-            "{{ profile_label|default(content_profile) }}"
-            "{% else %}{{ media_info.type.value }}{% endif %}\n"
+            "{% if profile_label %}{{ profile_label }}"
+            "{% else %}{{ type_label }}{% endif %}\n"
             "{% if media_info.category and category_flag %}📁 类别：{{ media_info.category }}\n{% endif %}"
             "{% if media_info.get_resource_type_string() %}"
             "📦 质量：{{ media_info.get_resource_type_string() }}\n{% endif %}"
@@ -54,16 +53,15 @@ DEFAULT_MESSAGE_TEMPLATES = {
     },
     "rss_added": {
         "title": (
-            "📌 {% if media_info.type.value == '电影' %}{{ media_info.get_title_string() }}"
+            "📌 {% if media_info.type.value == 'movie' %}{{ media_info.get_title_string() }}"
             "{% else %}{{ media_info.get_title_string() }} {{ media_info.get_season_string() }}"
             "{% endif %} 已添加订阅"
         ),
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
             "📺 类型："
-            "{% if content_profile and content_profile != 'default' %}"
-            "{{ profile_label|default(content_profile) }}"
-            "{% else %}{{ media_info.type.value }}{% endif %}\n"
+            "{% if profile_label %}{{ profile_label }}"
+            "{% else %}{{ type_label }}{% endif %}\n"
             "{% if keyword %}🔢 关键词：{{ keyword }}\n{% endif %}"
             "{% if source_provider %}📡 来源：{{ source_provider }}\n{% endif %}"
             "{% if filter_restype or filter_pix or filter_team or filter_include or filter_exclude %}"
@@ -84,9 +82,8 @@ DEFAULT_MESSAGE_TEMPLATES = {
         "text": (
             "{% if media_info.vote_average %}⭐ {{ media_info.get_vote_string() }}\n{% endif %}"
             "📺 类型："
-            "{% if content_profile and content_profile != 'default' %}"
-            "{{ profile_label|default(content_profile) }}"
-            "{% else %}{{ media_info.type.value }}{% endif %}"
+            "{% if profile_label %}{{ profile_label }}"
+            "{% else %}{{ type_label }}{% endif %}"
             "{% if keyword %}\n🔢 关键词：{{ keyword }}{% endif %}"
             "{% if source_provider %}\n📡 来源：{{ source_provider }}{% endif %}"
         ),

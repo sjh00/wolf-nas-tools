@@ -375,9 +375,12 @@ class Torrent:
                 continue
             if not source_info.get("episodes"):
                 continue
+            if "episodes" in target_info and not target_info.get("episodes"):
+                # 空列表表示“已无缺失”，不能被媒体库缺失集重新填充，
+                # 否则已完成但尚未转移的集会被再次下载。
+                continue
             if not target_info.get("episodes"):
-                target_episodes = source_info.get("episodes")
-                target[title][index]["episodes"] = target_episodes
+                target[title][index]["episodes"] = source_info.get("episodes")
                 continue
             target_episodes = list(set(target_info.get("episodes")).intersection(set(source_info.get("episodes"))))
             target[title][index]["episodes"] = target_episodes
@@ -413,29 +416,30 @@ class Torrent:
                 collection_priority = 0
             season_len = str(len(x.get_season_list())).rjust(2, "0")
             episode_len = str(len(episode_list)).rjust(4, "0")
-            # 排序：合集、资源规则、做种/站点（按下载顺序设置）、季集、标题（标题仅作平局决胜）
+            # 排序：合集、下载顺序、规则第二、站点/做种兜底、季集、标题
             # res_order/site_order = 100-pri（pri 越小优先级越高，主站通常配 1），降序即 pri 小在前
             if download_order == "seeder":
                 return "{}{}{}{}{}{}".format(
                     str(collection_priority).rjust(1, "0"),
-                    str(x.res_order).rjust(3, "0"),
                     str(x.seeders).rjust(10, "0"),
-                    str(x.site_order).rjust(3, "0"),
+                    str(x.res_order).rjust(3, "0"),
+                    str(x.site_order).rjust(4, "0"),
                     f"{season_len}{episode_len}",
                     str(x.title).ljust(100, " "),
                 )
             else:
+                # 站点优先：站点顺序 > 规则顺序 > 做种数
                 return "{}{}{}{}{}{}".format(
                     str(collection_priority).rjust(1, "0"),
+                    str(x.site_order).rjust(4, "0"),
                     str(x.res_order).rjust(3, "0"),
-                    str(x.site_order).rjust(3, "0"),
                     str(x.seeders).rjust(10, "0"),
                     f"{season_len}{episode_len}",
                     str(x.title).ljust(100, " "),
                 )
 
         # 匹配的资源中排序分组选最好的一个下载
-        # 按站点顺序、资源匹配顺序、做种人数下载数逆序排序
+        # 规则固定第二：站点优先=站点>规则>做种；做种优先=做种>规则>站点
         media_list = sorted(media_list, key=lambda x: get_sort_str(x), reverse=True)
         # 控重
         can_download_list_item = []

@@ -55,11 +55,14 @@ from app.services.media_service import (
 )
 from app.services.metadata_service import MetadataService
 from app.services.search_service import Searcher
+from app.services.series_service import SeriesService
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
 from app.services.transfer.retention_service import RetentionPolicy, RetentionService
+from app.services.web.utils import get_mediainfo_from_id
 from app.utils import StringUtils
 from app.utils.response import fail, success
+from app.utils.timeout import run_with_timeout
 
 router = APIRouter()
 
@@ -106,6 +109,7 @@ class MetadataSearchRequest(BaseModel):
     media_type: str | None = None
     content_profile: str = "default"
     limit: int = 20
+    timeout_seconds: float | None = None
 
 
 class IdentityMergeRequest(BaseModel):
@@ -274,6 +278,8 @@ class MediaDetailByRefRequest(BaseModel):
     media_type: str | None = None
     content_profile: str = "default"
     content_id: str | None = None
+    title: str | None = None
+    year: str | None = None
 
 
 class FieldOverrideRequest(BaseModel):
@@ -381,7 +387,8 @@ def _record_detail_data(record: dict, media_type: MediaType, status: dict | None
         "crews": crews,
         "actor_profiles": actor_profiles,
         "fact": facts,
-        "seasons": [],
+        "seasons": record.get("seasons") or [],
+        "episode_count": record.get("episode_count"),
         "links": [],
         "link": "",
         "similar": [],
@@ -969,6 +976,71 @@ def media_detail(
     return success(data=result)
 
 
+def _minimal_detail_record(req: "MediaDetailByRefRequest", media_type: MediaType | None, svc: MetadataService) -> dict:
+    """来源详情不可用时，用锚点/前端标题构造最小记录，并补齐豆瓣分集数."""
+    mtype = media_type or MediaType.MOVIE
+    base_title = str(req.title or f"{req.provider}:{req.external_id}")
+    season_number = SeriesService.split_title_season(str(req.title or ""))[1] or 1
+    record = {
+        "provider": req.provider,
+        "external_id": req.external_id,
+        "mediaid": f"{req.provider}:{req.external_id}",
+        "metadata_ref": f"{req.provider}:{req.external_id}",
+        "title": base_title,
+        "year": str(req.year or ""),
+        "type": mtype.value,
+        "refs": [{"provider": req.provider, "external_id": req.external_id}],
+        "images": {},
+        "ratings": {},
+        "genres": [],
+        "credits": [],
+    }
+    try:
+        legacy = run_with_timeout(
+            lambda: get_mediainfo_from_id(mtype, f"{req.provider}:{req.external_id}"),
+            3.0,
+            name="media-detail-legacy",
+        )
+    except Exception:  # noqa: BLE001 - 详情兜底不能再抛错
+        legacy = None
+    if legacy is not None:
+        record["title"] = str(getattr(legacy, "title", None) or record["title"])
+        record["year"] = str(getattr(legacy, "year", None) or record["year"])
+        record["overview"] = str(getattr(legacy, "overview", None) or "")
+        poster = getattr(legacy, "get_poster_image", lambda: "")()
+        if poster:
+            record["images"] = {"poster": [{"url": poster}]}
+        total = getattr(legacy, "total_episodes", None)
+        if total:
+            record["episode_count"] = int(total)
+            record["seasons"] = [
+                {
+                    "season_number": int(season_number),
+                    "episode_count": int(total),
+                    "name": f"第{season_number}季",
+                }
+            ]
+    if not record.get("seasons") and base_title:
+        total = svc.resolve_season_episode_count(
+            provider=req.provider,
+            external_id=req.external_id,
+            title=str(record.get("title") or base_title),
+            year=str(req.year or record.get("year") or "") or None,
+            media_type=mtype,
+            season=season_number,
+        )
+        if total:
+            record["episode_count"] = total
+            record["seasons"] = [
+                {
+                    "season_number": int(season_number),
+                    "episode_count": int(total),
+                    "name": f"第{season_number}季",
+                }
+            ]
+    return record
+
+
 @router.post("/detail_by_ref", response_model=CommonResponse, summary="按外部锚点获取媒体详情")
 def media_detail_by_ref(
     req: MediaDetailByRefRequest,
@@ -981,17 +1053,21 @@ def media_detail_by_ref(
     media_type = MediaType.from_string(request_type) if request_type else None
     if media_type == MediaType.UNKNOWN:
         media_type = None
-    try:
-        record = svc.lookup(
-            req.provider,
-            req.external_id,
-            media_type=media_type,
-            allow_private=allow_private,
-            permissions=permissions,
-        )
-    except Exception:  # noqa: BLE001 - 上游抓取/熔断返回明确错误
-        return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
+    record = None
     is_custom_profile = content_profile != "default"
+    if is_custom_profile:
+        try:
+            record = svc.lookup(
+                req.provider,
+                req.external_id,
+                media_type=media_type,
+                allow_private=allow_private,
+                permissions=permissions,
+            )
+        except Exception:  # noqa: BLE001 - 上游抓取/熔断时仍可用前端已有标题展示
+            record = _minimal_detail_record(req, media_type, svc)
+            if record is None:
+                return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
     if is_custom_profile and req.content_id:
         # 前端已知道内容编号时，优先按编号取聚合详情，避免来源 slug 失效。
         try:
@@ -1018,19 +1094,18 @@ def media_detail_by_ref(
             )
         except Exception:  # noqa: BLE001 - 聚合回退失败按原错误处理
             record = None
-    if not record:
+    if not record and is_custom_profile:
         return fail(msg="无法获取媒体详情")
     if is_custom_profile:
-        content_id = str((record.get("extra") or {}).get("adult.content_id") or "")
-        if not content_id:
-            content_id = next(
-                (
-                    str(ref.get("external_id") or "")
-                    for ref in record.get("refs") or []
-                    if ref.get("provider") == "content_id"
-                ),
-                "",
-            )
+        assert record is not None
+        content_id = next(
+            (
+                str(ref.get("external_id") or "")
+                for ref in record.get("refs") or []
+                if ref.get("provider") == "content_id"
+            ),
+            "",
+        )
         if content_id and req.provider != content_profile:
             try:
                 aggregate = svc.lookup(
@@ -1051,26 +1126,48 @@ def media_detail_by_ref(
             user=current_user,
         )
         return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
-    snapshot = svc.compose_for_ref(
-        req.provider,
-        req.external_id,
-        media_type=media_type or MediaType.MOVIE,
-        content_profile=content_profile,
-        include_tmdb=True,
-        user_id=current_user.user_id,
-        allow_private=allow_private,
-        permissions=permissions,
-    )
+    record = record or {}
+    try:
+        snapshot = run_with_timeout(
+            lambda: svc.compose_for_ref(
+                req.provider,
+                req.external_id,
+                media_type=media_type or MediaType.MOVIE,
+                content_profile=content_profile,
+                include_tmdb=True,
+                user_id=current_user.user_id,
+                allow_private=allow_private,
+                permissions=permissions,
+                with_episodes=False,
+            ),
+            8.0,
+            name="media-detail",
+        )
+    except Exception:  # noqa: BLE001 - 上游慢/失败时走最小记录兜底
+        snapshot = None
     if not snapshot:
-        if is_custom_profile:
-            status = sub_svc.get_subscribe_by_anchor(
-                str(record.get("provider") or req.provider),
-                str(record.get("external_id") or req.external_id),
-                media_type or MediaType.MOVIE,
-                user=current_user,
-            )
-            return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
-        return fail(msg="无法获取媒体详情")
+        if not record:
+            try:
+                record = svc.lookup(
+                    req.provider,
+                    req.external_id,
+                    media_type=media_type,
+                    allow_private=allow_private,
+                    permissions=permissions,
+                )
+            except Exception:  # noqa: BLE001
+                record = None
+        if not record:
+            record = _minimal_detail_record(req, media_type, svc)
+        if not record:
+            return fail(msg="无法获取媒体详情")
+        status = sub_svc.get_subscribe_by_anchor(
+            str(record.get("provider") or req.provider),
+            str(record.get("external_id") or req.external_id),
+            media_type or MediaType.MOVIE,
+            user=current_user,
+        )
+        return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
     fields = snapshot.get("fields") or {}
     images = snapshot.get("images") or {}
     poster = next(
@@ -1167,6 +1264,26 @@ def media_detail_by_ref(
                     "season_number": number,
                     "name": f"第 {number} 季",
                     "episode_count": episodes_count,
+                }
+            )
+    if not seasons and media_type in {MediaType.TV, MediaType.ANIME}:
+        title_hint = str(_field_value(fields, "title") or req.title or "")
+        base_hint, parsed_hint = SeriesService.split_title_season(title_hint)
+        season_hint = int(parsed_hint or 1)
+        total_hint = svc.resolve_season_episode_count(
+            provider=req.provider,
+            external_id=req.external_id,
+            title=title_hint or base_hint,
+            year=str(req.year or "") or None,
+            media_type=media_type or MediaType.TV,
+            season=season_hint,
+        )
+        if total_hint:
+            seasons.append(
+                {
+                    "season_number": season_hint,
+                    "name": f"第 {season_hint} 季",
+                    "episode_count": int(total_hint),
                 }
             )
     facts = []
@@ -1281,6 +1398,7 @@ def metadata_search(
             limit=req.limit,
             allow_private=allow_private,
             permissions=permissions,
+            wait_timeout=req.timeout_seconds,
         )
     )
 

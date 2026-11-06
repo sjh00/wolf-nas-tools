@@ -30,12 +30,14 @@ class DownloadMonitor:
         interval: int = 30,
         max_workers: int = 4,
         history_repo: Any | None = None,
+        path_exists: Any | None = None,
     ):
         self._client_factory = client_factory
         self._interval = interval
         self._max_workers = max_workers
         self._event_bus = event_bus
         self._history_repo = history_repo
+        self._path_exists = path_exists or os.path.exists
         self._processed_ids: set[str] = set()
         self._executor: ThreadExecutor | None = None
         self._running = False
@@ -109,7 +111,12 @@ class DownloadMonitor:
                         self._processed_ids.add(uid)
                         continue
                     try:
-                        if self._history_repo.get_by_source(task_path) is not None:
+                        history = self._history_repo.get_by_source(task_path)
+                        if history is None and task_path:
+                            dir_lookup = getattr(self._history_repo, "get_by_source_dir", None)
+                            if dir_lookup is not None:
+                                history = dir_lookup(task_path)
+                        if history is not None:
                             self._processed_ids.add(uid)
                             continue
                         # 启动期残留任务：下载器里仍标记完成，但路径已不存在时
@@ -161,13 +168,13 @@ class DownloadMonitor:
         if not previous_ids:
             # 首次全量拉取并建立快照
             trans_tasks = client.get_transfer_task(tag=tag, match_path=match_path)
-            self._last_snapshot[did] = {str(task.get("id")) for task in trans_tasks if task.get("id")}
+            self._last_snapshot[did] = self._snapshot_ids(trans_tasks)
             self._emit_new_tasks(did, trans_tasks)
             return
 
         # 后续只拉取增量任务：先获取全部候选 id 列表，再针对新增 id 调用详情接口
         all_tasks = client.get_transfer_task(tag=tag, match_path=match_path)
-        current_ids = {str(task.get("id")) for task in all_tasks if task.get("id")}
+        current_ids = self._snapshot_ids(all_tasks)
         new_ids = current_ids - previous_ids
         # 已从下载器消失的任务，回收其 processed 标记，允许该 id 重新下载时再次触发
         for removed_id in previous_ids - current_ids:
@@ -181,12 +188,26 @@ class DownloadMonitor:
         new_tasks = client.get_transfer_task(tag=tag, match_path=match_path, ids=list(new_ids))
         self._emit_new_tasks(did, new_tasks)
 
+    def _snapshot_ids(self, trans_tasks: list[dict]) -> set[str]:
+        """只把路径可用的任务纳入完成快照，路径恢复后仍能重新触发。"""
+        result: set[str] = set()
+        for task in trans_tasks:
+            task_id = str(task.get("id") or "")
+            task_path = str(task.get("path") or "")
+            if task_id and (not task_path or self._path_exists(task_path)):
+                result.add(task_id)
+        return result
+
     def _emit_new_tasks(self, did: str, trans_tasks: list[dict]) -> None:
         """发布新增下载完成任务事件."""
         for task in trans_tasks:
             task_id = str(task.get("id")) if task.get("id") else ""
             task_path = task.get("path") or ""
             if not task_id or not task_path:
+                continue
+            if not self._path_exists(task_path):
+                # 下载器残留任务/路径映射失效，不再触发转移和失败通知。
+                log.debug(f"[DownloadMonitor]跳过不存在的下载路径: {task_path}")
                 continue
 
             uid = self._make_id(did, task_id)

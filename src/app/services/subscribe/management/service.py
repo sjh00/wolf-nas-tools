@@ -4,6 +4,7 @@ import datetime
 import re
 import time
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Any
 
 import log
@@ -11,9 +12,11 @@ from app.db.repositories.rbac.rbac_user_repo_adapter import RBACUserRepositoryAd
 from app.db.repositories.transfer_repository import TransferRepository
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SystemConfigKey
+from app.domain.lifecycle import LifecycleStatus
 from app.domain.mediatypes import MediaType
 from app.media import MediaInfo
 from app.media.external.bangumi import Bangumi
+from app.services.lifecycle_service import LifecycleProjector
 from app.services.subscribe.management.add_service import SubscribeAddService
 from app.services.subscribe.management.finish_service import SubscribeFinishService
 from app.services.subscribe.management.query_service import SubscribeQueryService, _normalized_anchor
@@ -101,12 +104,15 @@ class SubscribeService:
             self._download_repo,
             self._transfer_history_manager,
             metadata_service,
+            self._sites,
+            self._indexer_service,
         )
         self._finish_svc = SubscribeFinishService(
             self._movie_repo, self._tv_repo, self._history_repo, self._message, self._event_bus, self._download_repo
         )
         if user_repo is None:
             user_repo = RBACUserRepositoryAdapter()
+        self._user_repo = user_repo
         self._query_svc = SubscribeQueryService(
             self._movie_repo,
             self._tv_repo,
@@ -126,12 +132,17 @@ class SubscribeService:
 
     @property
     def default_subscribe_setting_mov(self) -> dict | None:
-        return self._system_config.get(SystemConfigKey.DefaultSubscribeSettingMOV) or {}
+        return self._system_config.get(SystemConfigKey.DefaultSubscribeSettingMovie) or {}
 
     def update_rss_subscribe(self, *args, **kwargs):
         return self._update_svc.update_rss_subscribe(*args, **kwargs)
 
     def add_rss_subscribe(self, *args, **kwargs):
+        # 插件/系统创建订阅未带用户时，归属首个超级管理员，避免订阅用户为空。
+        if kwargs.get("user_id") is None:
+            admin_ids = self._user_repo.get_user_ids_by_role_code("superadmin")
+            if admin_ids:
+                kwargs["user_id"] = admin_ids[0]
         return self._add_svc.add_rss_subscribe(*args, **kwargs)
 
     def finish_rss_subscribe(self, rssid, media):
@@ -306,11 +317,108 @@ class SubscribeService:
     ) -> dict | None:
         return self._query_svc.get_subscribe_by_anchor(anchor_provider, anchor_external_id, mtype, user=user)
 
-    def get_subscribe_seasons(self, tmdbid=None, title=None, year=None, user=None):
-        return self._query_svc.get_subscribe_seasons(tmdbid, title, year, user=user)
+    def get_subscribe_seasons(
+        self,
+        tmdbid=None,
+        title=None,
+        year=None,
+        user=None,
+        anchor_provider=None,
+        anchor_external_id=None,
+    ):
+        return self._query_svc.get_subscribe_seasons(
+            tmdbid,
+            title,
+            year,
+            user=user,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+        )
+
+    def get_subscribe_id_by_anchor(
+        self,
+        mtype,
+        anchor_provider,
+        anchor_external_id,
+        season=None,
+        user=None,
+    ) -> int | None:
+        return self._query_svc.get_subscribe_id_by_anchor(
+            mtype,
+            anchor_provider,
+            anchor_external_id,
+            season=season,
+            user=user,
+        )
 
     def check_history(self, type_str, name, year=None, season=None):
         return self._query_svc.check_history(type_str, name, year, season)
+
+    def cancel_subscribe(
+        self,
+        mtype,
+        title=None,
+        year=None,
+        season=None,
+        rssid=None,
+        tmdbid=None,
+        user=None,
+        reason: str = "user_removed",
+    ):
+        """用户取消订阅：先快照订阅行，删除成功后投影 cancel 事件."""
+        rows = self._subscription_snapshot(mtype, rssid, title, year, season, tmdbid, user)
+        deleted = self.delete_subscribe(mtype, title, year, season, rssid, tmdbid, user=user)
+        if deleted:
+            self._record_cancelled(rows, reason)
+        return deleted
+
+    def _subscription_snapshot(self, mtype, rssid, title, year, season, tmdbid, user) -> list[dict]:
+        data: dict = {}
+        if not rssid:
+            rssid = self.get_subscribe_id(
+                mtype,
+                title or "",
+                year,
+                season,
+                tmdbid,
+                user_id=user.user_id if user is not None else None,
+            )
+        if not rssid:
+            return []
+        if mtype == MediaType.MOVIE:
+            data = self.get_subscribe_movies(rid=int(rssid), user=user)
+        else:
+            data = self.get_subscribe_tvs(rid=int(rssid), user=user)
+        return list((data or {}).values())
+
+    @staticmethod
+    def _record_cancelled(rows: list[dict], reason: str) -> None:
+        if not rows:
+            return
+        projector = LifecycleProjector()
+        for row in rows:
+            identity_id = str(row.get("identity_id") or "")
+            if not identity_id:
+                continue
+            media_type = str(row.get("type") or "")
+            season = _parse_season_number(row.get("season")) if media_type in {"tv", "anime"} else 0
+            projector.record_subscription_outcome(
+                identity_id=identity_id,
+                series_key=row.get("series_key"),
+                status=LifecycleStatus.CANCELLED,
+                event_type="subscribe.cancelled",
+                media_type=media_type or "movie",
+                season=season,
+                title=row.get("name"),
+                year=row.get("year"),
+                poster=row.get("poster") or row.get("image"),
+                source_provider=row.get("anchor_provider") or row.get("provider"),
+                content_profile=row.get("content_profile"),
+                user_id=row.get("user_id"),
+                message="订阅已取消",
+                payload={"source": "SUBSCRIBE", "rssid": row.get("id"), "reason": reason},
+                event_key=f"subscribe-cancelled:{row.get('id')}",
+            )
 
     def delete_subscribe(self, mtype, title=None, year=None, season=None, rssid=None, tmdbid=None, user=None):
         return self._query_svc.delete_subscribe(mtype, title, year, season, rssid, tmdbid, user=user)
@@ -382,6 +490,13 @@ class SubscribeService:
 
     def refresh_rss_metainfo(self):
         return self._refresh_svc.refresh_rss_metainfo(self.get_subscribe_movies, self.get_subscribe_tvs)
+
+    def reset_stale_searching(self, timeout_minutes: int = 90) -> int:
+        """SEARCHING 看门狗：超时未推进的订阅回到 ERROR，等待下一轮重试."""
+        cutoff = (datetime.datetime.now() - timedelta(minutes=max(1, int(timeout_minutes)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        return self._movie_repo.reset_stale_searching(cutoff)
 
     def update_rss_state(self, rtype, rssid, state):
         if rtype == MediaType.MOVIE:
@@ -466,6 +581,16 @@ class SubscribeService:
                 continue
             siblings.append(row)
         return siblings
+
+    def clear_subscribe_tv_lack(self, rssid, media_info=None) -> None:
+        """整季已全部拿到时清空缺失集，避免状态回退后按旧缺集重复下载."""
+        targets = [rssid]
+        if media_info is not None:
+            for sibling in self._find_tv_siblings(rssid, media_info):
+                targets.append(getattr(sibling, "id", None))
+        for target in targets:
+            if target:
+                self._tv_repo.update_lack(title=None, year=None, season=None, rssid=target, lack_episodes=[])
 
     def update_subscribe_tv_lack(self, rssid, media_info, seasoninfo):
         self._apply_tv_lack(rssid, media_info, seasoninfo)

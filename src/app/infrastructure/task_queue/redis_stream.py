@@ -10,7 +10,12 @@ from redis.exceptions import RedisError, ResponseError
 
 import log
 from app.infrastructure.task_queue.base import TaskQueue
-from app.infrastructure.task_queue.models import QueueUnavailableError, Task, TaskStatus
+from app.infrastructure.task_queue.models import (
+    QueueUnavailableError,
+    Task,
+    TaskStatus,
+    retry_delay_seconds,
+)
 
 
 class RedisStreamTaskQueue(TaskQueue):
@@ -128,6 +133,9 @@ class RedisStreamTaskQueue(TaskQueue):
                 self._finish_stream_entry(str(stream_id))
                 continue
             now = time.time()
+            if task.next_retry_at and task.next_retry_at > now:
+                # 指数退避未到期：保留在 pending，下次 claim 再检查
+                continue
             task.status = TaskStatus.RUNNING
             task.stream_id = str(stream_id)
             task.lease_owner = consumer
@@ -185,7 +193,10 @@ class RedisStreamTaskQueue(TaskQueue):
                 task.status = TaskStatus.QUEUED
                 task.lease_owner = ""
                 task.lease_until = 0.0
+                delay = retry_delay_seconds(task.attempts)
+                task.next_retry_at = time.time() + delay
                 self._write_hash(task)
+                log.info(f"[TaskQueue]任务将退避重试 {task.id} attempts={task.attempts} delay={delay:.0f}s")
                 # 不 ACK，保留 pending，由 XAUTOCLAIM 在 retry_idle_ms 后重投
                 return True
             task.status = TaskStatus.DEAD if retryable else TaskStatus.FAILED
@@ -264,15 +275,18 @@ class RedisStreamTaskQueue(TaskQueue):
     def _reserve_dedup(self, dedup_key: str, task_id: str) -> Task | None:
         key = self._dedup_key(dedup_key)
         kwargs = {"ex": self.dedup_ttl_seconds} if self.dedup_ttl_seconds else {}
-        if self._client.set(key, task_id, nx=True, **kwargs):
-            return None
-        existing_id = self._client.get(key)
-        if existing_id:
+        for _ in range(5):
+            if self._client.set(key, task_id, nx=True, **kwargs):
+                return None
+            existing_id = self._client.get(key)
+            if not existing_id:
+                continue
             existing = self.get(str(existing_id))
             if existing is not None:
                 return existing
+            # 占位存在但任务 hash 尚未写入：删除后重新竞争，不能无占位直接入队。
             self._client.delete(key)
-        return None
+        raise QueueUnavailableError("dedup key 初始化竞争，拒绝无去重入队")
 
     def _release_dedup(self, dedup_key: str, task_id: str) -> None:
         if not dedup_key:

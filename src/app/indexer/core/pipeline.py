@@ -3,8 +3,8 @@
 
 三阶段全局批量处理模型：
 1. 本地过滤（Local Filter）：遍历所有站点结果，做 meta_info 解析和规则过滤
-2. 批量识别（Batch Identify）：跨站点收集需要 TMDB 的候选，去重后并发查询
-3. 匹配过滤（Match Filter）：用 TMDB 结果统一匹配和过滤
+2. 批量识别（Batch Identify）：跨站点收集需要身份识别的候选，去重后并发查询
+3. 匹配过滤（Match Filter）：用识别结果统一匹配和过滤
 
 关键设计：所有站点的搜索结果收集完成后，统一进入流水线处理，
 实现真正的"批量识别"（跨站点去重，一次并发查询所有不重复名称）。
@@ -17,7 +17,7 @@ from app.domain.enums import ProgressKey, SearchType
 from app.indexer.core.batch_identifier import BatchIdentifier
 from app.indexer.core.models import FilterStats, PipelineResult
 from app.indexer.core.result_filter import ResultFilter
-from app.infrastructure.progress import ProgressTracker
+from app.infrastructure.progress import ProgressTracker, ScopedProgressTracker
 
 
 class SearchPipeline:
@@ -44,6 +44,8 @@ class SearchPipeline:
         in_from: SearchType | None = None,
         progress_key=ProgressKey.Search,
         search_name="",
+        progress_range: tuple[float, float] | None = None,
+        progress=None,
     ):
         """
         执行三阶段全局批量搜索过滤流水线
@@ -58,9 +60,15 @@ class SearchPipeline:
         """
         start_time = datetime.datetime.now()
         total_raw = len(all_results)
+        if progress is None:
+            progress = (
+                ScopedProgressTracker(self.progress, progress_key, progress_range[0], progress_range[1])
+                if progress_range
+                else self.progress
+            )
 
         # ---------- 阶段1：本地解析和过滤 ----------
-        self.progress.update_max(
+        progress.update_max(
             ptype=progress_key,
             value=60,
             text=f"本地解析过滤 {total_raw} 条结果...",
@@ -74,26 +82,26 @@ class SearchPipeline:
 
         # ---------- 阶段2：批量识别（跨站点去重） ----------
         if candidates:
-            ident_count = sum(1 for c in candidates if not c.skip_tmdb)
-            self.progress.update_max(
+            ident_count = sum(1 for c in candidates if not c.identity_anchored)
+            progress.update_max(
                 ptype=progress_key,
                 value=70,
                 text=f"批量识别 {ident_count} 条不重复结果...",
             )
             self.batch_identifier.identify(candidates, progress_key=progress_key, match_media=match_media)
 
-        # ---------- 阶段3：TMDB匹配和最终过滤 ----------
+        # ---------- 阶段3：身份匹配和最终过滤 ----------
         if match_media and candidates:
-            self.progress.update_max(
+            progress.update_max(
                 ptype=progress_key,
                 value=85,
-                text=f"TMDB 匹配过滤 {len(candidates)} 条候选...",
+                text=f"身份匹配过滤 {len(candidates)} 条候选...",
             )
             matched_results, match_stats = self.result_filter.match_filter(
                 candidates=candidates,
                 match_media=match_media,
                 filter_args=filter_args,
-                progress=self.progress,
+                progress=progress,
                 progress_key=progress_key,
             )
         else:
@@ -114,7 +122,7 @@ class SearchPipeline:
             f"有效 {total_stats.index_sucess}，"
             f"耗时 {elapsed} 秒"
         )
-        self.progress.update_max(
+        progress.update_max(
             ptype=progress_key,
             value=95,
             text=(

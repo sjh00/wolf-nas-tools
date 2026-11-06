@@ -10,7 +10,8 @@ from app.core.settings import settings
 from app.db.repositories.lifecycle_repository import LifecycleRepository
 from app.domain.entities.transfer_task import SourceType, TransferTask
 from app.domain.lifecycle import LifecycleStage, LifecycleStatus
-from app.infrastructure.task_queue import Task, TaskQueue, TaskWorker, create_task_queue
+from app.infrastructure.task_queue import Task, TaskQueue, TaskStatus, TaskWorker, create_task_queue
+from app.services.identity_resolver import IdentityResolver
 from app.services.lifecycle_service import LifecycleProjector
 
 
@@ -63,7 +64,9 @@ class TransferQueueService:
     def stop(self) -> None:
         self._failed = False
         if self._worker is not None:
-            self._worker.stop()
+            if not self._worker.stop():
+                log.warn("[TransferQueue]仍有转移任务运行，保留队列等待任务结束")
+                return
             self._worker = None
         if self._queue is not None:
             self._queue.close()
@@ -73,40 +76,53 @@ class TransferQueueService:
         self.start()
         if self._queue is None:
             return False
+        if self._is_library_done(payload):
+            log.info(f"[TransferQueue]跳过已入库的重复转移: {payload.get('downloader_id')}:{payload.get('task_id')}")
+            return True
         dedup = str(payload.get("dedup_key") or f"{payload.get('downloader_id')}:{payload.get('task_id')}")
         try:
             task = self._queue.enqueue("transfer.task", payload, dedup_key=dedup)
+            if task.status.terminal:
+                if task.status == TaskStatus.SUCCEEDED:
+                    log.info(f"[TransferQueue]跳过已成功的重复转移任务 {task.id}")
+                    return True
+                # 失败/死信/取消不视为幂等成功，允许创建一次新的重试任务。
+                task = self._queue.enqueue("transfer.task", payload, dedup_key=f"{dedup}:retry:{task.id}")
+                if task.status.terminal:
+                    log.warn(f"[TransferQueue]重试任务仍处于终态 {task.id} status={task.status.value}")
+                    return False
             self._record(payload, LifecycleStage.TRANSFER_QUEUED, LifecycleStatus.QUEUED, "transfer.queued", task)
             return True
         except Exception as exc:  # noqa: BLE001
             log.warn(f"[TransferQueue]入队失败，回退直连: {exc}")
             return False
 
+    def _is_library_done(self, payload: dict[str, Any]) -> bool:
+        identity_id = str(payload.get("identity_id") or "")
+        if not identity_id:
+            return False
+        repo = LifecycleRepository()
+        season = int(payload.get("season") or 0)
+        episode = int(payload.get("episode") or 0)
+        current = repo.get_current(identity_id, season=season, episode=episode)
+        if current is None:
+            # 只有电影/无季集任务才允许用聚合状态；分集或季包不能被整部聚合状态跳过。
+            if season or episode:
+                return False
+            current = repo.get_grouped_identity(identity_id)
+        stage = (
+            str(current.get("STAGE") or "") if isinstance(current, dict) else str(getattr(current, "STAGE", "") or "")
+        )
+        status = (
+            str(current.get("STATUS") or "") if isinstance(current, dict) else str(getattr(current, "STATUS", "") or "")
+        )
+        return stage == LifecycleStage.IN_LIBRARY.value and status == LifecycleStatus.SUCCEEDED.value
+
     def _handle_task(self, task: Task) -> dict[str, Any]:
         payload = task.payload
-        identity_id = str(payload.get("identity_id") or "")
-        if identity_id:
-            repo = LifecycleRepository()
-            current = repo.get_current(
-                identity_id,
-                season=int(payload.get("season") or 0),
-                episode=int(payload.get("episode") or 0),
-            )
-            if current is None:
-                current = repo.get_grouped_identity(identity_id)
-            stage = (
-                str(current.get("STAGE") or "")
-                if isinstance(current, dict)
-                else str(getattr(current, "STAGE", "") or "")
-            )
-            status = (
-                str(current.get("STATUS") or "")
-                if isinstance(current, dict)
-                else str(getattr(current, "STATUS", "") or "")
-            )
-            if stage == LifecycleStage.IN_LIBRARY.value and status == LifecycleStatus.SUCCEEDED.value:
-                log.info(f"[TransferQueue]跳过已入库的旧转移任务 {task.id} identity={identity_id}")
-                return {"success": True, "skipped": True}
+        if self._is_library_done(payload):
+            log.info(f"[TransferQueue]跳过已入库的旧转移任务 {task.id} identity={payload.get('identity_id')}")
+            return {"success": True, "skipped": True}
         downloader_id = str(payload.get("downloader_id") or "")
         task_id = str(payload.get("task_id") or "")
         source_type_value = str(payload.get("source_type") or SourceType.DOWNLOADER.value)
@@ -118,9 +134,8 @@ class TransferQueueService:
 
             def _post_process(_task: TransferTask, success: bool, msg: str) -> None:
                 if not success:
+                    # 失败保持原标签，保留 30 分钟兜底扫描和重启后的重试机会。
                     log.warn(f"[TransferQueue]任务 {task_id} 转移失败: {msg}")
-                    if client:
-                        client.set_torrents_status(ids=task_id, tags=tags)
                     return
                 if payload.get("operation") == "move":
                     log.info(f"[TransferQueue]移动模式删除种子: {task_id}")
@@ -172,7 +187,20 @@ class TransferQueueService:
     ) -> None:
         if self._lifecycle is None:
             return
-        identity_id = str(payload.get("identity_id") or "")
+        media_type = str(payload.get("media_type") or "movie")
+        season = int(payload.get("season") or 0)
+        resolved = IdentityResolver().resolve_values(
+            identity_id=payload.get("identity_id"),
+            provider=payload.get("anchor_provider") or payload.get("source_provider"),
+            external_id=payload.get("anchor_external_id"),
+            title=payload.get("title"),
+            year=payload.get("year"),
+            media_type=media_type,
+            content_profile=payload.get("content_profile"),
+            season=season,
+            allow_local=True,
+        )
+        identity_id = resolved.identity_id
         if not identity_id:
             return
         try:
@@ -181,8 +209,8 @@ class TransferQueueService:
                 stage=stage,
                 status=status,
                 event_type=event_type,
-                media_type=str(payload.get("media_type") or "movie"),
-                season=int(payload.get("season") or 0),
+                media_type=media_type,
+                season=season,
                 episode=int(payload.get("episode") or 0),
                 run_id=payload.get("run_id") or f"transfer:{payload.get('task_id')}",
                 trace_id=payload.get("trace_id") or f"identity:{identity_id}",

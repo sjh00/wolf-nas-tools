@@ -19,6 +19,12 @@ from api.deps import (
 )
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import DomainError, ServiceError  # noqa: F401
+from app.db.repositories.indexer_site_config_repository import IndexerSiteConfigRepository
+from app.indexer.contract.gateway import IndexerGateway
+from app.indexer.contract.global_registry import get_global_registry
+from app.indexer.contract.http import HttpIndexerProvider
+from app.indexer.contract.models import IndexerQuery
+from app.indexer.contract.site_catalog import external_indexer_sites
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.common import CommonResponse
 from app.services.indexer_service import IndexerService
@@ -119,10 +125,19 @@ class SiteResourcesRequest(BaseModel):
     keyword: str | None = None
 
 
+class IndexerProviderTestRequest(BaseModel):
+    base_url: str
+    token: str | None = None
+    timeout: float = 30
+    info_path: str = "/api/indexer/info"
+
+
 class IndexerSiteConfigUpdateRequest(BaseModel):
     site_name: str
+    source: str | None = None
     enabled: bool | None = None
     download_setting: int | None = None
+    priority: int | None = None
     default_settings: dict | None = None
 
 
@@ -289,6 +304,102 @@ def get_site_definitions(
     return success(data=data)
 
 
+@router.get("/sites/indexer-providers", response_model=CommonResponse, summary="列出已注册索引器 provider")
+def list_indexer_providers(
+    _user=Depends(require_any_permission("site:view", "site:manage")),
+):
+    data = []
+    for provider in get_global_registry().list():
+        try:
+            info = provider.info()
+            data.append(
+                {
+                    "provider_id": info.provider_id,
+                    "name": info.name,
+                    "api_version": info.api_version,
+                    "capabilities": list(info.capabilities),
+                    "sites": [{"id": site.id, "name": site.name} for site in info.sites],
+                    "health": provider.health().ok,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            data.append({"provider_id": provider.provider_id, "error": str(exc), "health": False})
+    return success(data=data)
+
+
+def _external_indexer_sites() -> list[dict]:
+    sites = external_indexer_sites()
+    try:
+        settings = {(str(row.SOURCE), str(row.SITE_NAME)): row for row in IndexerSiteConfigRepository().list_all()}
+    except Exception as exc:  # noqa: BLE001 - 站点配置表不可用时退化为默认值，不能让站点列表整体 500
+        log.debug(f"读取站点配置失败，使用默认值: {exc}")
+        return sites
+    for site in sites:
+        row = settings.get((str(site.get("source") or ""), str(site.get("name") or "")))
+        if row is not None:
+            site["enabled"] = bool(row.ENABLED)
+            site["download_setting"] = row.DOWNLOAD_SETTING
+    return sites
+
+
+@router.post("/sites/indexer-providers/test", response_model=CommonResponse, summary="测试 HTTP 索引器连通性")
+def test_indexer_provider(
+    req: IndexerProviderTestRequest,
+    user=Depends(require_any_permission("site:view", "site:manage")),
+):
+    base_url = req.base_url.strip()
+    if not base_url:
+        return fail(msg="索引器地址不能为空")
+    provider = HttpIndexerProvider(
+        base_url,
+        token=req.token or None,
+        timeout=float(req.timeout or 30),
+        provider_id="test",
+        info_path=req.info_path,
+    )
+    try:
+        info = provider.info()
+        return success(
+            data={
+                "ok": True,
+                "name": info.name,
+                "api_version": info.api_version,
+                "capabilities": list(info.capabilities),
+                "sites": [{"id": site.id, "name": site.name} for site in info.sites],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return fail(msg=f"连接失败: {exc}")
+    finally:
+        provider.close()
+
+
+@router.get("/sites/indexer-providers/search", response_model=CommonResponse, summary="调试索引器 provider 搜索")
+def search_indexer_providers(
+    keyword: str = "",
+    limit: int = 5,
+    _user=Depends(require_any_permission("site:view", "site:manage")),
+):
+    gateway = IndexerGateway(get_global_registry())
+    page = gateway.search(IndexerQuery(keyword=keyword, limit=max(1, min(50, limit))))
+    return success(
+        data={
+            "total": page.total,
+            "items": [
+                {
+                    "provider_id": item.provider_id,
+                    "site": item.site,
+                    "site_name": item.site_name,
+                    "item_id": item.item_id,
+                    "title": item.title,
+                }
+                for item in page.items
+            ],
+            "warnings": page.warnings,
+        }
+    )
+
+
 @router.post("/sites", response_model=CommonResponse, summary="获取站点列表")
 def get_sites(
     req: SiteFilterRequest,
@@ -303,6 +414,30 @@ def get_sites(
         basic=bool(req.basic),
         source=req.source,
     )
+    external_sites = _external_indexer_sites()
+    if req.source:
+        external_sites = [site for site in external_sites if site.get("source") == req.source]
+    existing = {(str(site.get("source") or ""), str(site.get("name") or "")): site for site in sites}
+    for external in external_sites:
+        key = (str(external.get("source") or ""), str(external.get("name") or ""))
+        current = existing.get(key)
+        if current is not None:
+            external["enabled"] = current.get("enabled", external["enabled"])
+            external["download_setting"] = current.get("download_setting", external.get("download_setting"))
+        sites.append(external)
+    # 统一优先级：显式配置优先，内置回退站点自身 pri，第三方/插件默认 100
+    priority_map = IndexerSiteConfigRepository().get_priority_map()
+    for site in sites:
+        source = str(site.get("source") or "builtin")
+        name = str(site.get("name") or "")
+        configured = priority_map.get(f"{source}:{name}")
+        site["priority"] = (
+            configured
+            if configured is not None
+            else int(site.get("pri") or 0)
+            if source == "builtin"
+            else 100
+        )
     # 无站点管理权限的用户按站点授权过滤（ADR-021 4.3）
     grant_service = getattr(app_context, "site_grant_service", None)
     can_manage = user.is_superadmin or "site:manage" in user.permissions or "*" in user.permissions
@@ -387,6 +522,43 @@ def get_site_user_statistics(
     return success(data=statistics)
 
 
+def _provider_resources(index_id: str, keyword: str, page: int, page_size: int) -> dict:
+    parts = index_id.split(":", 2)
+    if len(parts) != 3:
+        raise ValueError("无效的 provider 站点 id")
+    _, provider_id, site_id = parts
+    provider = get_global_registry().get(provider_id)
+    if provider is None:
+        raise ValueError("索引器 provider 未注册")
+    query = IndexerQuery(
+        keyword=keyword or None,
+        sites=(site_id,),
+        offset=max(0, page) * page_size,
+        limit=page_size,
+    )
+    result = provider.search(query) if keyword else provider.list(query)
+    return {
+        "list": [
+            {
+                "id": item.item_id,
+                "indexer": item.site_name or item.site,
+                "title": item.title,
+                "description": item.description,
+                "size": item.size_bytes,
+                "seeders": item.seeders or 0,
+                "leechers": item.peers or 0,
+                "pubdate": item.published_at,
+                "labels": [],
+                "enclosure": item.download_url or item.magnet or item.ed2k or "",
+                "page_url": item.detail_url,
+            }
+            for item in result.items
+        ],
+        "has_more": result.has_more,
+        "total": result.total,
+    }
+
+
 @router.post("/sites/resources", response_model=CommonResponse, summary="获取站点资源列表")
 def list_site_resources(
     req: SiteResourcesRequest,
@@ -397,6 +569,18 @@ def list_site_resources(
     allowed = _allowed_site_names(user, app_context)
     if not _index_id_allowed(allowed, app_context, req.id):
         return fail(msg="无权查看该站点资源")
+    if str(req.id or "").startswith("provider:"):
+        try:
+            return success(
+                data=_provider_resources(
+                    str(req.id),
+                    str(req.keyword or ""),
+                    int(req.page or 0),
+                    int(req.page_size or 100),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            return fail(msg=str(exc))
     resources = svc.list_site_resources(
         index_id=req.id or "",
         page=req.page or 0,
@@ -415,9 +599,11 @@ def update_indexer_site_config(
     idx_svc: IndexerService = Depends(get_indexer_service),
 ):
     if req.enabled is not None:
-        idx_svc.update_site_enabled(req.site_name, req.enabled)
+        idx_svc.update_site_enabled(req.site_name, req.enabled, source=req.source)
     if req.download_setting is not None:
-        idx_svc.update_site_download_setting(req.site_name, req.download_setting)
+        idx_svc.update_site_download_setting(req.site_name, req.download_setting, source=req.source)
+    if req.priority is not None:
+        idx_svc.update_site_priority(req.site_name, req.priority, source=req.source)
     if req.default_settings is not None:
         idx_svc.update_site_default_settings(req.site_name, req.default_settings)
     return success()
@@ -445,10 +631,13 @@ def batch_update_indexer_site_config(
         site_name = item.get("site_name")
         if not site_name:
             continue
+        source = item.get("source")
         if "enabled" in item:
-            idx_svc.update_site_enabled(site_name, bool(item.get("enabled")))
+            idx_svc.update_site_enabled(site_name, bool(item.get("enabled")), source=source)
         if "download_setting" in item:
-            idx_svc.update_site_download_setting(site_name, item.get("download_setting"))
+            idx_svc.update_site_download_setting(site_name, item.get("download_setting"), source=source)
+        if "priority" in item:
+            idx_svc.update_site_priority(site_name, int(item.get("priority") or 0), source=source)
         if "default_settings" in item:
             idx_svc.update_site_default_settings(site_name, item.get("default_settings"))
     return success()
@@ -587,15 +776,28 @@ def get_visible_sites(
 
     sites = []
     for item in merged.values():
-        if visible is None:
-            grants = None
-        else:
+        grants: set[str] | None = None
+        if visible is not None:
             grants = set()
             for key in (f"{item['source']}:{item['name']}", f"{item['source']}:*", item["name"]):
                 grants |= visible.get(key, set())
         perms = _permissions(item["name"], grants)
         if perms:
             sites.append({**item, "permissions": perms})
+    for site in _external_indexer_sites():
+        if visible is None:
+            perms = _permissions(site["name"], None)
+        else:
+            site_grants: set[str] = set()
+            for key in (
+                f"{site['source']}:{site['name']}",
+                f"{site['source']}:*",
+                site["name"],
+            ):
+                site_grants |= visible.get(key, set())
+            perms = _permissions(site["name"], site_grants)
+        if perms:
+            sites.append({**site, "permissions": perms})
     custom_rss_service = getattr(app_context, "custom_rss_service", None)
     if custom_rss_service is not None:
         sites.extend(custom_rss_service.visible_sites(current_user))

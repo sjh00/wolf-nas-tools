@@ -6,12 +6,14 @@ from typing import Any
 
 import log
 from app.core.constants import ANIME_GENREIDS
+from app.db.repositories.media_series_repository import MediaSeriesRepository
 from app.domain.entities.custom_rss import custom_rss_id
 from app.domain.mediatypes import MediaType
 from app.infrastructure.cache_system.caches import TMDBCache
 from app.media.display_image_policy import transform_display_image
 from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.auth import UserContext
+from app.services.search_subject import SearchSubject
 from app.services.subscribe.management.utils import parse_rss_desc
 from app.utils.json_utils import JsonUtils
 
@@ -275,6 +277,8 @@ class SubscribeQueryService:
                 "download_setting": download_setting,
                 "fuzzy_match": fuzzy_match,
                 "state": rss_movie.STATE,
+                "retry_count": int(getattr(rss_movie, "RETRY_COUNT", 0) or 0),
+                "next_retry_at": getattr(rss_movie, "NEXT_RETRY_AT", None),
                 "poster": note_info.get("poster"),
                 "release_date": note_info.get("release_date"),
                 "vote": note_info.get("vote"),
@@ -289,6 +293,10 @@ class SubscribeQueryService:
     ) -> dict:
         """获取电视剧订阅（user 非空时按数据归属过滤）"""
         ret_dict = {}
+        try:
+            series_map = {row.SERIES_KEY: row for row in MediaSeriesRepository().list_series(limit=500)}
+        except Exception:
+            series_map = {}
         rss_tvs = self._tv_repo.get_all(rssid=rid, state=state, user=user)
         usernames = self._usernames(rss_tvs)
         rss_sites_valid = self._sites.get_site_names(rss=True)
@@ -353,9 +361,15 @@ class SubscribeQueryService:
             search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
             anchor_provider, anchor_external_id = _normalized_anchor(rss_tv.ANCHOR_PROVIDER, rss_tv.ANCHOR_EXTERNAL_ID)
             metadata_ref = _canonical_ref(rss_tv)
+            subject = SearchSubject.classify(
+                note_info.get("media_type"),
+                rss_tv.CONTENT_PROFILE,
+                anchor_provider,
+                anchor_external_id or tmdbid,
+            )
             resolved_type = (
-                "anime"
-                if rss_tv.CONTENT_PROFILE == "anime" or anchor_provider == "bangumi"
+                subject.display_type.value
+                if subject.display_type
                 else _resolve_subscribe_type(note_info.get("media_type"), tmdbid, note_info.get("genres"))
             )
             # 历史动漫订阅可能仍是 default 画像；序列化时按实际类型归到 anime 画像，
@@ -368,6 +382,7 @@ class SubscribeQueryService:
                     anchor_provider == "bangumi" and keyword_text.isdigit()
                 ):
                     keyword = rss_tv.NAME
+            series_row = series_map.get(getattr(rss_tv, "SERIES_KEY", None) or "")
             ret_dict[str(rss_tv.ID)] = {
                 "id": rss_tv.ID,
                 "user_id": rss_tv.USER_ID,
@@ -377,6 +392,9 @@ class SubscribeQueryService:
                 "season": rss_tv.SEASON,
                 "tmdbid": rss_tv.TMDBID if metadata_ref.startswith("tmdb:") else "",
                 "identity_id": rss_tv.IDENTITY_ID,
+                "series_key": getattr(rss_tv, "SERIES_KEY", None),
+                "series_title": series_row.TITLE if series_row else None,
+                "series_total_seasons": series_row.TOTAL_SEASONS if series_row else None,
                 "anchor_provider": anchor_provider,
                 "anchor_external_id": anchor_external_id,
                 "provider": getattr(rss_tv, "PROVIDER", None),
@@ -413,6 +431,8 @@ class SubscribeQueryService:
                 "current_ep": current_ep,
                 "fuzzy_match": fuzzy_match,
                 "state": rss_tv.STATE,
+                "retry_count": int(getattr(rss_tv, "RETRY_COUNT", 0) or 0),
+                "next_retry_at": getattr(rss_tv, "NEXT_RETRY_AT", None),
                 "poster": note_info.get("poster"),
                 "release_date": note_info.get("release_date"),
                 "vote": note_info.get("vote"),
@@ -462,6 +482,8 @@ class SubscribeQueryService:
         title: str | None = None,
         year: str | None = None,
         user: UserContext | None = None,
+        anchor_provider: str | None = None,
+        anchor_external_id: str | None = None,
     ) -> list[int]:
         """获取某部剧集已订阅的季号列表
 
@@ -472,7 +494,12 @@ class SubscribeQueryService:
         tmdbid_str = str(tmdbid) if tmdbid else ""
         for rss_tv in self._tv_repo.get_all(user=user):
             matched = False
-            if tmdbid_str and str(rss_tv.tmdb_id) == tmdbid_str:
+            if anchor_provider and anchor_external_id:
+                matched = (
+                    str(getattr(rss_tv, "anchor_provider", "") or "") == anchor_provider
+                    and str(getattr(rss_tv, "anchor_external_id", "") or "") == anchor_external_id
+                )
+            elif tmdbid_str and str(rss_tv.tmdb_id) == tmdbid_str:
                 matched = True
             elif not tmdbid_str and title and rss_tv.name == title:
                 matched = not year or str(rss_tv.year) == str(year)
@@ -480,6 +507,26 @@ class SubscribeQueryService:
                 continue
             seasons.update(self._parse_season_numbers(rss_tv.season))
         return sorted(seasons)
+
+    def get_subscribe_id_by_anchor(
+        self,
+        mtype: MediaType,
+        anchor_provider: str | None,
+        anchor_external_id: str | None,
+        season: str | None = None,
+        user: UserContext | None = None,
+    ) -> int | None:
+        if not anchor_provider or not anchor_external_id:
+            return None
+        rows = self._movie_repo.get_all(user=user) if mtype == MediaType.MOVIE else self._tv_repo.get_all(user=user)
+        for row in rows:
+            if (
+                str(getattr(row, "anchor_provider", "") or "") == anchor_provider
+                and str(getattr(row, "anchor_external_id", "") or "") == anchor_external_id
+                and (season is None or str(getattr(row, "season", "") or "") == season)
+            ):
+                return int(row.id)
+        return None
 
     @staticmethod
     def _parse_season_numbers(season_str: str | None) -> list[int]:

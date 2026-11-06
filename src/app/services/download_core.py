@@ -11,7 +11,9 @@ DownloadCore - 下载核心业务逻辑
 依赖注入：所有外部依赖通过构造函数传入。
 """
 
+import hashlib
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -19,6 +21,7 @@ from typing import Any
 import log
 from app.core.constants import PT_TAG, RMT_MEDIAEXT
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
+from app.core.settings import settings
 from app.core.system_config import SystemConfig
 from app.db.repositories.config_repo_adapter import DownloaderRepositoryAdapter
 from app.db.repositories.download_repo_adapter import (
@@ -33,6 +36,7 @@ from app.downloader.strategy import RemoveStrategy
 from app.events.bus import EventBus
 from app.events.registry import EventHandlerRegistry  # noqa: F401
 from app.infrastructure.cache_system import get_cache_manager
+from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.task_queue import QueueUnavailableError
 from app.media import meta_info
 from app.mediaserver import MediaServer
@@ -63,6 +67,15 @@ _DOWNLOAD_UNRETRYABLE_TTL = 6 * 3600
 
 # 链接单飞锁数量上限，超过后清理未占用的锁避免字典无限增长
 _LINK_LOCKS_MAX = 1024
+
+
+def _torrent_lock_key(media_info) -> str:
+    value = str(getattr(media_info, "enclosure", "") or getattr(media_info, "page_url", "") or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"(?i)btih:([a-f0-9]{32,40})", value)
+    identity = match.group(1).lower() if match else value.lower()
+    return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:32]
 
 
 class DownloadCore:
@@ -204,7 +217,21 @@ class DownloadCore:
 
     # ---------- 核心下载方法 ----------
 
-    def download(
+    def download(self, *args, **kwargs):
+        media_info = kwargs.get("media_info") or (args[0] if args else None)
+        key = _torrent_lock_key(media_info)
+        if not key:
+            return self._download_locked(*args, **kwargs)
+        lock = get_lock_manager().create_lock(f"torrent:{key}", ttl_seconds=300)
+        if not lock.acquire():
+            log.info(f"[Downloader]同一种子正在其他实例处理，跳过重复下载: {key}")
+            return None, None, "同一种子正在处理，跳过重复下载"
+        try:
+            return self._download_locked(*args, **kwargs)
+        finally:
+            lock.release()
+
+    def _download_locked(
         self,
         media_info,
         is_paused=None,
@@ -332,7 +359,10 @@ class DownloadCore:
         download_items: list = []
         # 每轮重置种子解析缓存；失败负缓存由 TTL 控制跨轮保留
         self._episode_cache.clear()
-        download_order = self._client_factory.download_order if self._client_factory else None
+        # 优先读当前配置；工厂缓存只在配置缺失时兜底，避免切换优先规则后仍用旧值
+        download_order = (settings.get("pt") or {}).get("download_order") or (
+            self._client_factory.download_order if self._client_factory else None
+        )
         # 订阅下载保留有序多站点候选，失败后可回退到下一个候选
         download_list = Torrent.get_download_list(media_list, download_order, collapse=False)
 
@@ -386,6 +416,14 @@ class DownloadCore:
                 if item not in download_items:
                     download_items.append(item)
 
+        def _update_history_episode(download_id, item):
+            try:
+                update_se = getattr(self._download_repo, "update_download_history_se", None)
+                if update_se:
+                    update_se(download_id, item)
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"[Downloader]回填下载记录季集失败: {e}")
+
         # 3. 电视剧单集匹配
         if need_tvs:
             download_items, need_tvs = EpisodeStrategy.download_episodes(
@@ -418,6 +456,7 @@ class DownloadCore:
                 remove_torrents_callback=lambda ids, downloader_id: self.delete_torrents(
                     downloader_id=downloader_id, ids=ids, delete_file=False
                 ),
+                update_history_callback=_update_history_episode,
             )
 
         left_medias = [item for item in media_list if item not in download_items]
