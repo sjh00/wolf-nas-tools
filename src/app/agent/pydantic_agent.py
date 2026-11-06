@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, TypeAdapter, create_model
-from pydantic_ai import Agent, BinaryContent
+from pydantic_ai import Agent, BinaryContent, capture_run_messages
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -52,6 +53,10 @@ from app.utils.json_utils import JsonUtils
 _CONFIRM_MARKER = "__need_confirm__"
 _CHECKPOINT_MAX = 4000  # checkpoint 消息历史长度上限
 _TOOL_RESULT_MAX_CHARS = 20000  # 单次工具结果回传模型的最大字符数（防塞爆上下文）
+# 单轮工具循环步数默认上限：一次「查状态 → 查详情 → 执行操作 → 复核」通常要 4-8 步，
+# 复杂排查（多站点、多订阅、批量核对）会更多。早期默认 8 会让正常问题撞上请求上限，
+# 用户看到的是「request_limit of 9」这类与业务无关的报错。
+DEFAULT_MAX_STEPS = 20
 # checkpoint JSON → pydantic-ai 消息重建（带 kind 判别）
 _CHECKPOINT_TA = TypeAdapter(list[ModelMessage])
 
@@ -220,7 +225,7 @@ class PydanticChatAgent:
         svc,
         tool_executor,
         memory: ConversationStore | None = None,
-        max_steps: int = 8,
+        max_steps: int = DEFAULT_MAX_STEPS,
         long_term: SemanticMemory | None = None,
         extract_memory: bool = True,
     ):
@@ -446,6 +451,8 @@ class PydanticChatAgent:
             except Exception as e:
                 log.warn(f"[PydanticAgent]长程记忆注入失败: {e}")
 
+        # 在 try 外声明：超限异常分支需要读取它，放在 try 内会让静态检查认为可能未绑定
+        run_messages: list[Any] = []
         try:
             agent = self._build_agent(
                 session_id,
@@ -466,16 +473,31 @@ class PydanticChatAgent:
                     question,
                     *[BinaryContent(data=data, media_type=media_type) for data, media_type in images],
                 ]
-            result = asyncio.run(
-                agent.run(
-                    prompt,
-                    instructions=instructions or None,
-                    message_history=message_history or None,
-                    usage_limits=self._usage_limits(),
+            # capture_run_messages：超限抛异常时仍能拿到本轮已完成的消息，
+            # 用于把「已查到的内容」交付给用户，而不是整轮作废
+            with capture_run_messages() as captured:
+                run_messages = captured
+                result = asyncio.run(
+                    agent.run(
+                        prompt,
+                        instructions=instructions or None,
+                        message_history=message_history or None,
+                        usage_limits=self._usage_limits(),
+                    )
                 )
-            )
         except AgentCancelledError:
             raise
+        except UsageLimitExceeded as e:
+            # 工具调用轮次用尽：模型已经把一部分事实查出来了，直接报错等于白跑。
+            # 这里把已有的助手文本交付出去，并说明是「本轮工具次数用尽」而不是识别/服务故障。
+            partial = self._extract_partial_answer(run_messages)
+            log.warn(f"[PydanticAgent]工具调用轮次用尽（{self._usage_limits().request_limit} 次请求）: {e}")
+            if partial:
+                return f"{partial}\n\n---\n（本轮工具调用已达上限，以上为已获取到的内容。继续提问可接着处理。）"
+            return (
+                "这个请求需要连续调用较多工具，本轮已达到调用上限。"
+                "可以换个更具体的问法，或把需求拆成几步依次提问。"
+            )
         except Exception as e:
             log.error(f"[PydanticAgent]运行出错: {e}")
             return f"请求出错: {e}"
@@ -601,8 +623,31 @@ class PydanticChatAgent:
 
         max_steps 语义≈工具循环步数，每步约消耗一次模型请求 → request_limit = max_steps + 1。
         """
-        steps = max(2, int(self._max_steps or 8))
+        # 无效配置（None / 0 / 负数 / 1）统一回退默认值：
+        # 早期写成 max(2, ...)，会把误配的 0/1 压成「2 步」，任何工具调用都跑不完；
+        # 而 `x or default` 对负数无效。这里显式判断下限。
+        try:
+            configured = int(self._max_steps or 0)
+        except (TypeError, ValueError):
+            configured = 0
+        steps = configured if configured >= 2 else DEFAULT_MAX_STEPS
         return UsageLimits(request_limit=steps + 1)
+
+    @staticmethod
+    def _extract_partial_answer(run_messages: list) -> str:
+        """从已完成的模型消息里提取助手文本（工具轮次用尽时兜底交付）.
+
+        取最后一条带文本的 ModelResponse：那通常是模型在调用工具前给出的
+        判断或小结。只保留非空文本，去掉纯空白与工具调用占位。
+        """
+        for message in reversed(list(run_messages or [])):
+            if not isinstance(message, ModelResponse):
+                continue
+            texts = [part.content.strip() for part in getattr(message, "parts", []) if isinstance(part, TextPart)]
+            joined = "\n".join(t for t in texts if t)
+            if joined:
+                return joined
+        return ""
 
     # ------------------------------------------------------------------ checkpoint
 

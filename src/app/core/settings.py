@@ -281,7 +281,9 @@ class AgentLongTermMemoryConfig(BaseModel):
 class AgentMemoryConfig(BaseModel):
     """记忆配置"""
 
-    max_steps: int = 8
+    # 单轮工具循环步数上限。一次典型操作（查状态→查详情→执行→复核）需 4-8 步，
+    # 复杂排查更多；过小会让正常问题撞上请求上限并报与业务无关的错误。
+    max_steps: int = 20
     short_term: AgentShortTermMemoryConfig = Field(default_factory=AgentShortTermMemoryConfig)
     long_term: AgentLongTermMemoryConfig = Field(default_factory=AgentLongTermMemoryConfig)
 
