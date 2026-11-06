@@ -178,7 +178,6 @@ media:
   # 文件管理、自定义识别等默认路径
   media_default_path:
   # 默认文件转移方式
-  default_rmt_mode: copy
   # 默认TMDB信息语种
   tmdb_language: zh
   # 默认元数据策略：tmdb_primary / douban_primary / bangumi_primary
@@ -195,6 +194,14 @@ media:
 subscribe:
   # 【队列搜索间隔】：每次 run() 执行队列搜索的间隔（秒），默认 300
   queue_interval: 300
+  # 【每轮订阅数上限】默认 20
+  batch_limit: 20
+  # 【订阅搜索并发数】站点限流较低时调小（M-Team 5/min 建议 2），默认 3
+  batch_workers: 3
+  # 【站点搜索并发】同一站点允许同时进行的搜索数，默认 1
+  site_search_concurrency: 1
+  # 【站点搜索排队超时】等待站点搜索许可的秒数，超时则本轮延迟，默认 30
+  site_search_timeout: 30
   # 【RSS 轮询间隔】：RSS 站点轮询检查间隔（秒），建议不少于 30 分钟，配置为空或 0 则不启用
   rss_interval: 1800
   # 【主动搜索间隔】：通过索引器主动搜索订阅的间隔（小时），配置小于 6 小时时强制为 6 小时
@@ -245,9 +252,7 @@ laboratory:
   # 浏览器自动化默认指纹画像：用户登录同步真实浏览器指纹后自动写入，全局后台流程使用
   chrome_fp_profile_id: ""
   # 【TMDB缓存过期策略】：是否开启TMDB缓存过期策略，默认7天过期，过期缓存将被删除,  7天内访问过期时间可以被刷新
-  tmdb_cache_expire: true
   # 【默认搜索豆瓣资源】：开启将使用豆瓣进行电影电视剧的名称搜索，否则使用TMDB的数据
-  use_douban_titles: false
   # 【精确搜索使用英文名称】：开启后对于精确搜索场景（远程搜索、订阅搜索等）将会使用英文名检索站点资源以提升匹配度，但对有些站点资源标题全是中文的则需要关闭，否则匹配不到
   search_multi_language: true
   # 展示公开站点

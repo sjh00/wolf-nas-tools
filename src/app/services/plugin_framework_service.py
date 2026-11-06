@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import threading
+import uuid
 from copy import deepcopy
 from pathlib import Path
 
@@ -24,11 +25,27 @@ from app.db.repositories.plugin_framework_repository import PluginFrameworkRepos
 from app.db.repositories.rbac_repo_adapter import RBACMenuRepositoryAdapter, RBACRoleRepositoryAdapter
 from app.domain.entities.plugin import PluginConfigEntity, PluginManifestEntity
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
+from app.plugin_framework.dependency_manager import PluginDependencyManager
 from app.plugin_framework.private_pack import file_sha256, safe_extract, validate_private_manifest
 from app.plugin_framework.registry import PluginRegistry
 from app.plugin_framework.sandbox import PluginSandbox
 from app.schemas.plugin import PluginManifest
 from app.utils.json_utils import JsonUtils
+from version import APP_VERSION
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    """配置按字典深度合并，避免一个设置页用旧快照覆盖其他页保存的键。"""
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+_lifecycle_state = threading.local()
 
 
 class PluginFrameworkService:
@@ -42,6 +59,7 @@ class PluginFrameworkService:
         plugin_registry: PluginRegistry,
         plugin_sandbox: PluginSandbox,
         hook_system=None,
+        metadata_service=None,
     ):
         self._repo = repo
         self._menu_repo = menu_repo
@@ -49,6 +67,7 @@ class PluginFrameworkService:
         self._plugin_registry = plugin_registry
         self._plugin_sandbox = plugin_sandbox
         self._hook_system = hook_system
+        self._metadata_service = metadata_service
         self._plugins_dir = os.path.join(settings.data_path, "plugins")
         if not os.path.exists(self._plugins_dir):
             os.makedirs(self._plugins_dir)
@@ -57,6 +76,48 @@ class PluginFrameworkService:
         if self._hook_system is None:
             raise RuntimeError("插件钩子系统尚未初始化")
         return self._hook_system
+
+    def _invalidate_metadata_cache(self) -> None:
+        service = self._metadata_service
+        if service is not None:
+            try:
+                service.bump_detail_cache_version()
+            except Exception as exc:  # noqa: BLE001 - 缓存失效失败不影响插件生命周期
+                log.warn(f"[Plugin]刷新元数据缓存版本失败: {exc}")
+
+    @contextlib.contextmanager
+    def _lifecycle_guard(self, plugin_id: str):
+        """按 plugin_id 串行化 enable/disable/reload/uninstall，同线程可重入."""
+        held = getattr(_lifecycle_state, "held", None)
+        if held is None:
+            held = set()
+            _lifecycle_state.held = held
+        if plugin_id in held:
+            yield
+            return
+        lock = get_lock_manager().create_lock(f"plugin:lifecycle:{plugin_id}", ttl_seconds=300)
+        if not lock.acquire():
+            raise PluginInstallingError(f"插件 {plugin_id} 正在执行其他生命周期操作，请稍后再试")
+        held.add(plugin_id)
+        try:
+            yield
+        finally:
+            held.discard(plugin_id)
+            lock.release()
+
+    @staticmethod
+    def _version_tuple(value: str) -> tuple[int, ...]:
+        parts = str(value or "").strip().lstrip("vV").split(".")
+        result: list[int] = []
+        for part in parts:
+            digits = "".join(ch for ch in part if ch.isdigit())
+            result.append(int(digits or 0))
+        return tuple(result)
+
+    def _check_min_app_version(self, manifest: PluginManifest) -> None:
+        required = str(manifest.min_app_version or "").strip()
+        if required and self._version_tuple(required) > self._version_tuple(APP_VERSION):
+            raise PluginManifestInvalidError(f"插件要求主程序 >= {required}，当前版本 {APP_VERSION}")
 
     def _get_plugin_parent_menu(self):
         """获取 Plugin 父菜单"""
@@ -421,9 +482,15 @@ class PluginFrameworkService:
 
     def save_config(self, plugin_id: str, config: dict) -> None:
         """保存插件配置；插件重载不阻塞保存接口."""
-        entity = PluginConfigEntity(plugin_id=plugin_id, config=config)
+        current = self.get_config(plugin_id) or {}
+        effective = _deep_merge(current, config)
+        entity = PluginConfigEntity(plugin_id=plugin_id, config=effective)
         self._repo.save_config(entity)
-        self._get_hook_system().emit("plugin.config_changed", {"plugin_id": plugin_id, "config": config})
+        self._get_hook_system().emit("plugin.config_changed", {"plugin_id": plugin_id, "config": effective})
+        manifest = self.get_manifest(plugin_id)
+        if manifest is not None and manifest.backend.metadata.indexer_providers:
+            # 索引器 provider 在启用时由 Sandbox 构造，配置变更后需要重新实例化。
+            self.reload_plugin(plugin_id)
 
     def install(self, zip_path: str, expected_sha256: str | None = None) -> PluginManifest:
         """安装插件包（多实例部署时通过分布式锁保证只有一个实例执行安装）"""
@@ -445,11 +512,9 @@ class PluginFrameworkService:
             lock.release()
 
     def _do_install(self, zip_path: str) -> PluginManifest:
-        """实际安装逻辑"""
-        extract_dir = os.path.join(self._plugins_dir, "__tmp_install")
-        if os.path.exists(extract_dir):
-            shutil.rmtree(extract_dir)
-        os.makedirs(extract_dir)
+        """实际安装逻辑：先暂存新版本，任一步失败恢复旧目录、清单与运行实例."""
+        extract_dir = os.path.join(self._plugins_dir, f".staging-{uuid.uuid4().hex}")
+        os.makedirs(extract_dir, exist_ok=False)
 
         safe_extract(zip_path, extract_dir)
 
@@ -465,108 +530,186 @@ class PluginFrameworkService:
                         break
 
         if not os.path.exists(manifest_path):
-            shutil.rmtree(extract_dir)
+            shutil.rmtree(extract_dir, ignore_errors=True)
             raise PluginManifestInvalidError("插件包缺少 manifest.json")
 
-        with open(manifest_path, encoding="utf-8") as f:
-            manifest_data = JsonUtils.load(f)
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest_data = JsonUtils.load(f)
 
-        manifest = PluginManifest.from_dict(manifest_data)
-        if manifest.backend.metadata.visibility == "private":
-            validate_private_manifest(manifest)
-        if not manifest.id or not manifest.name:
-            shutil.rmtree(extract_dir)
-            raise PluginManifestInvalidError("manifest.json 缺少 id 或 name")
+            manifest = PluginManifest.from_dict(manifest_data)
+            self._check_min_app_version(manifest)
+            if manifest.backend.metadata.visibility == "private":
+                validate_private_manifest(manifest)
+            if not manifest.id or not manifest.name:
+                raise PluginManifestInvalidError("manifest.json 缺少 id 或 name")
 
-        # manifest 所在的真实目录（处理 macOS 压缩的子文件夹情况）
-        plugin_root = os.path.dirname(manifest_path)
-        target_dir = os.path.join(self._plugins_dir, f"{manifest.id}-{manifest.version}")
+            # manifest 所在的真实目录（处理 macOS 压缩的子文件夹情况）
+            plugin_root = os.path.dirname(manifest_path)
+            if manifest.backend.dependencies:
+                ok, err = PluginDependencyManager.install_dependencies(
+                    dependencies=manifest.backend.dependencies,
+                    plugin_id=manifest.id,
+                    plugin_path=plugin_root,
+                )
+                if not ok:
+                    raise PluginError(
+                        f"插件依赖安装失败: {err}",
+                        errcode=ErrorCode.OPERATION_FAILED,
+                        http_status=400,
+                    )
+            target_dir = os.path.join(self._plugins_dir, f"{manifest.id}-{manifest.version}")
 
-        existing = self._repo.get_manifest_by_id(manifest.id)
-        was_enabled = bool(existing.ENABLED) if existing else False
-        new_manifest_json = JsonUtils.dumps(manifest.to_dict(), ensure_ascii=False)
-        # 同版本重装也覆盖文件：仅比较 manifest 会忽略同版本内的代码修复
-        if os.path.exists(target_dir):
-            shutil.rmtree(target_dir)
-        os.makedirs(target_dir)
-        # 将插件内容移到目标目录
-        for item in os.listdir(plugin_root):
-            shutil.move(os.path.join(plugin_root, item), target_dir)
-        # 清理临时目录
-        if os.path.exists(extract_dir):
-            shutil.rmtree(extract_dir)
+            existing = self._repo.get_manifest_by_id(manifest.id)
+            was_enabled = bool(existing.ENABLED) if existing else False
+            old_entity = PluginManifestEntity.from_orm(existing) if existing else None
+            old_manifest = self.get_manifest(manifest.id) if existing else None
+            new_manifest_json = JsonUtils.dumps(manifest.to_dict(), ensure_ascii=False)
+            backup_dir: str | None = None
+            reload_after_install = False
 
-        # 检查是否已存在同名插件
-        if existing:
-            # manifest 不同，视为版本更新
-            if bool(existing.ENABLED):
-                self.disable(manifest.id)
-            old_path = str(existing.PATH or "")
-            if old_path and os.path.exists(old_path) and old_path != target_dir:
-                shutil.rmtree(old_path)
-            entity = PluginManifestEntity(
-                id=manifest.id,
-                name=manifest.name,
-                version=manifest.version,
-                author=manifest.author,
-                description=manifest.description,
-                category=manifest.category,
-                tags=manifest.tags,
-                icon=manifest.icon,
-                color=manifest.color,
-                manifest_json=new_manifest_json,
-                enabled=was_enabled,
-                path=target_dir,
-            )
-            ok = self._repo.update_manifest(entity)
-            if not ok:
-                raise PluginError("插件清单更新数据库失败", errcode=ErrorCode.DATABASE_ERROR, http_status=500)
-            log.info(f"[PluginFrameworkService] 插件更新成功: {manifest.id}@{manifest.version}")
+            with self._lifecycle_guard(manifest.id):
+                if was_enabled:
+                    self.disable(manifest.id)
+                try:
+                    # 同版本重装也要保留旧目录到成功后再删，供失败回滚
+                    if os.path.exists(target_dir):
+                        backup_dir = f"{target_dir}.bak-{uuid.uuid4().hex[:8]}"
+                        os.replace(target_dir, backup_dir)
+                    os.makedirs(target_dir)
+                    for item in os.listdir(plugin_root):
+                        shutil.move(os.path.join(plugin_root, item), target_dir)
+
+                    if existing:
+                        entity = PluginManifestEntity(
+                            id=manifest.id,
+                            name=manifest.name,
+                            version=manifest.version,
+                            author=manifest.author,
+                            description=manifest.description,
+                            category=manifest.category,
+                            tags=manifest.tags,
+                            icon=manifest.icon,
+                            color=manifest.color,
+                            manifest_json=new_manifest_json,
+                            enabled=was_enabled,
+                            path=target_dir,
+                        )
+                        ok = self._repo.update_manifest(entity)
+                        if not ok:
+                            raise PluginError(
+                                "插件清单更新数据库失败",
+                                errcode=ErrorCode.DATABASE_ERROR,
+                                http_status=500,
+                            )
+                        log.info(f"[PluginFrameworkService] 插件更新成功: {manifest.id}@{manifest.version}")
+                    else:
+                        entity = PluginManifestEntity(
+                            id=manifest.id,
+                            name=manifest.name,
+                            version=manifest.version,
+                            author=manifest.author,
+                            description=manifest.description,
+                            category=manifest.category,
+                            tags=manifest.tags,
+                            icon=manifest.icon,
+                            color=manifest.color,
+                            manifest_json=new_manifest_json,
+                            enabled=False,
+                            path=target_dir,
+                        )
+                        ok = self._repo.insert_manifest(entity)
+                        if not ok:
+                            raise PluginError(
+                                "插件清单写入数据库失败",
+                                errcode=ErrorCode.DATABASE_ERROR,
+                                http_status=500,
+                            )
+                        log.info(f"[PluginFrameworkService] 插件安装成功: {manifest.id}@{manifest.version}")
+
+                    self._plugin_registry.update_manifest_cache(
+                        manifest, enabled=was_enabled if existing else False, installed=True
+                    )
+                    if was_enabled:
+                        # 升级前已启用：先恢复启用状态；加载线程必须在 guard 释放后启动
+                        self.enable(manifest.id)
+                        reload_after_install = True
+                except Exception:
+                    self._rollback_install(
+                        plugin_id=manifest.id,
+                        target_dir=target_dir,
+                        backup_dir=backup_dir,
+                        old_entity=old_entity,
+                        old_manifest=old_manifest,
+                        was_enabled=was_enabled,
+                    )
+                    raise
+
+                if backup_dir and os.path.exists(backup_dir):
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                if existing and old_entity and old_entity.path and old_entity.path != target_dir:
+                    shutil.rmtree(old_entity.path, ignore_errors=True)
+
+            if reload_after_install:
+                threading.Thread(
+                    target=self._do_enable,
+                    args=(manifest.id,),
+                    daemon=True,
+                    name=f"plugin-enable-{manifest.id}",
+                ).start()
+            self._invalidate_metadata_cache()
+            self._get_hook_system().emit("plugin.install", {"plugin_id": manifest.id})
+            return manifest
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    def _rollback_install(
+        self,
+        *,
+        plugin_id: str,
+        target_dir: str,
+        backup_dir: str | None,
+        old_entity: PluginManifestEntity | None,
+        old_manifest: PluginManifest | None,
+        was_enabled: bool,
+    ) -> None:
+        """安装失败时恢复旧目录、旧 manifest 与旧运行实例."""
+        shutil.rmtree(target_dir, ignore_errors=True)
+        if backup_dir and os.path.exists(backup_dir):
+            os.replace(backup_dir, target_dir)
+        if old_entity is not None:
+            self._repo.update_manifest(old_entity)
         else:
-            entity = PluginManifestEntity(
-                id=manifest.id,
-                name=manifest.name,
-                version=manifest.version,
-                author=manifest.author,
-                description=manifest.description,
-                category=manifest.category,
-                tags=manifest.tags,
-                icon=manifest.icon,
-                color=manifest.color,
-                manifest_json=JsonUtils.dumps(manifest.to_dict(), ensure_ascii=False),
-                enabled=False,
-                path=target_dir,
-            )
-            ok = self._repo.insert_manifest(entity)
-            if not ok:
-                raise PluginError("插件清单写入数据库失败", errcode=ErrorCode.DATABASE_ERROR, http_status=500)
-            log.info(f"[PluginFrameworkService] 插件安装成功: {manifest.id}@{manifest.version}")
+            self._repo.delete_manifest(plugin_id)
 
-        self._plugin_registry.update_manifest_cache(manifest, installed=True)
+        state = self._plugin_registry.get_state(plugin_id)
+        if old_manifest is not None:
+            self._plugin_registry.update_manifest_cache(old_manifest, enabled=was_enabled, installed=True)
+        elif state is not None:
+            state.enabled = False
+            state.installed = False
+
         if was_enabled:
-            # 升级前已启用：更新后恢复启用状态并重新加载，避免插件无感消失
-            self.enable(manifest.id)
-            threading.Thread(
-                target=self._do_enable,
-                args=(manifest.id,),
-                daemon=True,
-            ).start()
-        self._get_hook_system().emit("plugin.install", {"plugin_id": manifest.id})
-        return manifest
+            old_path = str(old_entity.path or "") if old_entity else ""
+            if old_path and os.path.exists(old_path):
+                try:
+                    self._plugin_sandbox.unload(plugin_id, uninstalling=False)
+                except Exception as exc:  # noqa: BLE001
+                    log.warn(f"[Plugin]回滚时卸载失败实例失败: {plugin_id} - {exc}")
+                try:
+                    if self._plugin_sandbox.load(plugin_id):
+                        self._sync_plugin_menus(plugin_id)
+                    else:
+                        log.error(f"[Plugin]回滚后旧版本加载失败: {plugin_id}")
+                except Exception as exc:  # noqa: BLE001
+                    log.error(f"[Plugin]回滚后旧版本加载异常: {plugin_id} - {exc}")
+        self._invalidate_metadata_cache()
+        log.warn(f"[PluginFrameworkService] 安装失败，已回滚到旧版本: {plugin_id}")
 
     def uninstall(self, plugin_id: str, purge_data: bool = False) -> None:
         """卸载插件；purge_data=True 时同时删除插件数据目录和日志."""
-        lock_key = f"plugin:uninstall:{plugin_id}"
-        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=300)
-        acquired = lock.acquire()
-        if not acquired:
-            log.info(f"[Plugin]插件卸载正在进行中，跳过: {plugin_id}")
-            raise PluginInstallingError("插件卸载正在执行中，请稍后再试")
-
-        try:
+        with self._lifecycle_guard(plugin_id):
             self._do_uninstall(plugin_id, purge_data=purge_data)
-        finally:
-            lock.release()
 
     def _do_uninstall(self, plugin_id: str, purge_data: bool = False) -> None:
         """实际卸载逻辑"""
@@ -591,13 +734,14 @@ class PluginFrameworkService:
             if state:
                 state.installed = False
                 state.enabled = False
+            self._invalidate_metadata_cache()
             self._get_hook_system().emit("plugin.uninstall", {"plugin_id": plugin_id})
             log.info(f"[PluginFrameworkService] 内置插件软卸载: {plugin_id}")
             return
 
         # 第三方插件硬卸载：先让运行时清理，再删除代码和数据
         sandbox = self._plugin_sandbox
-        sandbox.unload(plugin_id, purge_data=purge_data)
+        sandbox.unload(plugin_id, purge_data=purge_data, uninstalling=True)
         if target_dir and os.path.exists(str(target_dir)):
             shutil.rmtree(str(target_dir))
         self._get_hook_system().unregister_all(plugin_id)
@@ -606,6 +750,7 @@ class PluginFrameworkService:
         self._remove_plugin_menus(plugin_id)
 
         self._repo.delete_manifest(plugin_id)
+        self._invalidate_metadata_cache()
         self._repo.delete_config(plugin_id)
         if purge_data:
             self._purge_plugin_data(plugin_id)
@@ -644,45 +789,48 @@ class PluginFrameworkService:
         return {"plugin_id": manifest.id, "name": manifest.name, "version": manifest.version}
 
     def update_market_plugin(self, zip_bytes: bytes, plugin_id: str) -> dict:
-        """市场来源更新：卸载旧实例（配置保留）→ 装新版本 → 启用加载，并清理旧版本目录
+        """市场来源更新：走统一安装流程，失败时回滚旧目录、清单与运行实例.
 
         PLUGIN_CONFIG 按 plugin_id 存储且安装不删除，配置天然跨版本保留。
         """
-        sandbox = self._plugin_sandbox
-        if sandbox.get_plugin_instance(plugin_id) is not None:
-            sandbox.unload(plugin_id)
-        # registry.install 会 INSERT PLUGIN_MANIFEST（同 id 主键冲突），
-        # 更新前先删除旧清单行（配置 PLUGIN_CONFIG 保留，跨版本不删）
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="nexus_market_")
         try:
-            self._repo.delete_manifest(plugin_id)
-        except Exception as e:  # noqa: BLE001
-            log.warn(f"[PluginFrameworkService]更新前清理旧清单失败: {e}")
-        result = self.install_market_plugin(zip_bytes, enabled=True)
-        # 清理同插件旧版本目录（保留配置，仅清文件）
-        try:
-            base = os.path.join(self._plugins_dir, f"{plugin_id}-")
-            new_dir = os.path.join(self._plugins_dir, f"{plugin_id}-{result['version']}")
-            for entry in os.listdir(self._plugins_dir):
-                entry_path = os.path.join(self._plugins_dir, entry)
-                if entry.startswith(base) and os.path.abspath(entry_path) != os.path.abspath(new_dir):
-                    shutil.rmtree(entry_path, ignore_errors=True)
-        except Exception as e:  # noqa: BLE001
-            log.warn(f"[PluginFrameworkService]清理旧版本目录失败: {e}")
-        return result
+            with os.fdopen(fd, "wb") as f:
+                f.write(zip_bytes)
+            manifest = self.install(tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+        if manifest.id != plugin_id:
+            raise PluginError(
+                f"插件包 id 与目标不一致: {manifest.id} != {plugin_id}",
+                errcode=ErrorCode.OPERATION_FAILED,
+                http_status=400,
+            )
+        return {"plugin_id": manifest.id, "name": manifest.name, "version": manifest.version}
 
     def _do_enable(self, plugin_id: str) -> None:
         """后台线程执行插件加载和初始化"""
         try:
-            log.info(f"[PluginFrameworkService] 开始加载插件: {plugin_id}")
-            sandbox = self._plugin_sandbox
-            ok = sandbox.load(plugin_id)
-            if ok:
-                self._get_hook_system().emit("plugin.enable", {"plugin_id": plugin_id})
-                log.info(f"[PluginFrameworkService] 插件已启用: {plugin_id}")
-            else:
-                log.error(f"[PluginFrameworkService] 插件加载返回失败: {plugin_id}")
-        except Exception as e:
-            log.error(f"[PluginFrameworkService] 插件后台加载异常 {plugin_id}: {e}")
+            with self._lifecycle_guard(plugin_id):
+                state = self._plugin_registry.get_state(plugin_id)
+                if state is not None and not state.enabled:
+                    log.info(f"[PluginFrameworkService] 插件已禁用，跳过加载: {plugin_id}")
+                    return
+                try:
+                    log.info(f"[PluginFrameworkService] 开始加载插件: {plugin_id}")
+                    sandbox = self._plugin_sandbox
+                    ok = sandbox.load(plugin_id)
+                    if ok:
+                        self._get_hook_system().emit("plugin.enable", {"plugin_id": plugin_id})
+                        log.info(f"[PluginFrameworkService] 插件已启用: {plugin_id}")
+                    else:
+                        log.error(f"[PluginFrameworkService] 插件加载返回失败: {plugin_id}")
+                except Exception as e:
+                    log.error(f"[PluginFrameworkService] 插件后台加载异常 {plugin_id}: {e}")
+        except PluginInstallingError:
+            log.warn(f"[PluginFrameworkService] 插件加载跳过，生命周期锁仍被占用: {plugin_id}")
 
     def refresh_plugin_menus_at_startup(self) -> None:
         """启动时：同步已启用插件的菜单，清理已卸载插件的残留菜单."""
@@ -708,51 +856,58 @@ class PluginFrameworkService:
 
     def enable(self, plugin_id: str) -> None:
         """启用插件（更新数据库和注册表缓存）"""
-        orm_model = self._repo.get_manifest_by_id(plugin_id)
-        if not orm_model:
-            raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
+        with self._lifecycle_guard(plugin_id):
+            orm_model = self._repo.get_manifest_by_id(plugin_id)
+            if not orm_model:
+                raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
 
-        # 首次启用时标记为已安装
-        if not getattr(orm_model, "INSTALLED", True):
-            self._repo.set_manifest_installed(plugin_id, True)
-
-        self._repo.set_manifest_enabled(plugin_id, True)
-
-        # 同步插件菜单到 RBAC
-        self._sync_plugin_menus(plugin_id)
-
-        # 同步更新注册表缓存，否则后台线程加载时缓存仍为 False
-
-        state = self._plugin_registry.get_state(plugin_id)
-        if state:
-            state.enabled = True
-            state.installed = True
-        else:
             manifest = self.get_manifest(plugin_id)
-            if manifest:
-                self._plugin_registry.update_manifest_cache(manifest, enabled=True, installed=True)
+            if manifest is not None:
+                self._check_min_app_version(manifest)
+            # 首次启用时标记为已安装
+            if not getattr(orm_model, "INSTALLED", True):
+                self._repo.set_manifest_installed(plugin_id, True)
+
+            self._repo.set_manifest_enabled(plugin_id, True)
+
+            # 同步插件菜单到 RBAC
+            self._sync_plugin_menus(plugin_id)
+
+            # 同步更新注册表缓存，否则后台线程加载时缓存仍为 False
+
+            state = self._plugin_registry.get_state(plugin_id)
+            if state:
+                state.enabled = True
+                state.installed = True
+            else:
+                manifest = self.get_manifest(plugin_id)
+                if manifest:
+                    self._plugin_registry.update_manifest_cache(manifest, enabled=True, installed=True)
+            self._invalidate_metadata_cache()
 
     def disable(self, plugin_id: str) -> None:
         """禁用插件"""
-        orm_model = self._repo.get_manifest_by_id(plugin_id)
-        if not orm_model:
-            raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
+        with self._lifecycle_guard(plugin_id):
+            orm_model = self._repo.get_manifest_by_id(plugin_id)
+            if not orm_model:
+                raise PluginNotInstalledError(f"插件未安装: {plugin_id}")
 
-        sandbox = self._plugin_sandbox
-        sandbox.unload(plugin_id)
-        self._repo.set_manifest_enabled(plugin_id, False)
+            sandbox = self._plugin_sandbox
+            sandbox.unload(plugin_id)
+            self._repo.set_manifest_enabled(plugin_id, False)
+            self._invalidate_metadata_cache()
 
-        # 删除插件菜单
-        self._remove_plugin_menus(plugin_id)
+            # 删除插件菜单
+            self._remove_plugin_menus(plugin_id)
 
-        # 同步更新注册表缓存
+            # 同步更新注册表缓存
 
-        state = self._plugin_registry.get_state(plugin_id)
-        if state:
-            state.enabled = False
+            state = self._plugin_registry.get_state(plugin_id)
+            if state:
+                state.enabled = False
 
-        self._get_hook_system().emit("plugin.disable", {"plugin_id": plugin_id})
-        log.info(f"[PluginFrameworkService] 插件已禁用: {plugin_id}")
+            self._get_hook_system().emit("plugin.disable", {"plugin_id": plugin_id})
+            log.info(f"[PluginFrameworkService] 插件已禁用: {plugin_id}")
 
     def get_logs(self, plugin_id: str, page: int = 1, page_size: int = 20) -> dict:
         """获取插件日志"""
@@ -854,8 +1009,11 @@ class PluginFrameworkService:
         ).start()
 
     def _reload_plugin_background(self, plugin_id: str) -> None:
-        try:
-            if not self._plugin_sandbox.reload(plugin_id):
-                log.error(f"[Plugin]插件 {plugin_id} 热重载失败")
-        except Exception as e:  # noqa: BLE001 - 后台任务失败写入日志
-            log.error(f"[Plugin]插件 {plugin_id} 热重载异常: {e}")
+        with self._lifecycle_guard(plugin_id):
+            try:
+                if not self._plugin_sandbox.reload(plugin_id):
+                    log.error(f"[Plugin]插件 {plugin_id} 热重载失败")
+                else:
+                    self._invalidate_metadata_cache()
+            except Exception as e:  # noqa: BLE001 - 后台任务失败写入日志
+                log.error(f"[Plugin]插件 {plugin_id} 热重载异常: {e}")

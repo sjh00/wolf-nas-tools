@@ -11,17 +11,29 @@ import datetime
 import os
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, wait
 from typing import TYPE_CHECKING
 
 import log
+from app.core.constants import site_priority_order
 from app.core.system_config import SystemConfig
 from app.db.repositories.download_repository import DownloadRepository
 from app.db.repositories.indexer_config_repo_adapter import IndexerConfigRepositoryAdapter
 from app.db.repositories.indexer_site_config_repo_adapter import IndexerSiteConfigRepositoryAdapter
 from app.domain.enums import ProgressKey, SearchType, SystemConfigKey
-from app.indexer.client._base import _IIndexClient
+from app.indexer.client.base import IndexerClientBase
 from app.indexer.configuration import IndexerHelper
+from app.indexer.contract import (
+    IndexerGateway,
+    IndexerItem,
+    IndexerProviderRegistry,
+    IndexerQuery,
+    PriorityProvider,
+    SiteIndexerProvider,
+    get_global_registry,
+    load_providers,
+)
+from app.indexer.contract.site_catalog import external_indexer_sites
 from app.indexer.core.pipeline import SearchPipeline
 from app.indexer.registry import get_all_clients, get_client_class
 from app.infrastructure.cache_system import get_cache_manager
@@ -158,6 +170,26 @@ def collect_search_results(futures: dict, timeout_for, on_advance=None) -> list:
     return results
 
 
+def resolve_indexer_priority(
+    indexer: object,
+    configured: int | str | None,
+    site_priorities: dict[str, int],
+) -> int:
+    """解析索引器优先级：索引器显式配置 > 站点管理优先级 > 公共兜底.
+
+    `site_priorities` 来自 CONFIG_SITE.PRI（用户在站点管理里设置的顺序），
+    必须优先于 public 索引器的固定兜底值，否则公共站会与主站并列。
+    """
+    if configured is not None:
+        return int(configured)
+    name = str(getattr(indexer, "name", "") or "")
+    if name in site_priorities:
+        return int(site_priorities[name])
+    if getattr(indexer, "public", False):
+        return 100
+    return int(getattr(indexer, "pri", 100) or 100)
+
+
 class Indexer:
     """索引器管理.
 
@@ -193,8 +225,9 @@ class Indexer:
         self.site_grant_service: SiteGrantService | None = None
         self._client = None
         self._client_type = None
-        self._clients: dict[str, _IIndexClient] = {}
+        self._clients: dict[str, IndexerClientBase] = {}
         self._clients_lock = threading.Lock()
+        self._external_registry = IndexerProviderRegistry()
 
     def _ensure_client(self) -> None:
         """延迟加载 builtin 索引器客户端（兼容旧调用）"""
@@ -208,7 +241,7 @@ class Indexer:
         with self._clients_lock:
             if self._clients:
                 return
-            clients: dict[str, _IIndexClient] = {}
+            clients: dict[str, IndexerClientBase] = {}
             builtin_cfg = self._idx_config_repo.get_by_client_id("builtin")
             if builtin_cfg is None or builtin_cfg.enabled:
                 builtin = self.__get_client("builtin")
@@ -263,6 +296,73 @@ class Indexer:
     def get_client_type(self):
         self._ensure_client()
         return self._client_type
+
+    def _ensure_external_providers(self) -> None:
+        registry = IndexerProviderRegistry()
+        for provider in get_global_registry().list():
+            try:
+                registry.register(provider, replace=True)
+            except ValueError:
+                pass
+        config = self._system_config.get(SystemConfigKey.IndexerConfig) or {}
+        specs = config.get("providers") if isinstance(config, dict) else None
+        if isinstance(specs, list):
+            try:
+                load_providers(registry, specs)
+            except Exception as exc:  # noqa: BLE001
+                log.warn(f"[Indexer]加载外部 provider 失败: {exc}")
+        self._external_registry = registry
+
+    def build_search_registry(self, filter_args: dict | None = None) -> IndexerProviderRegistry:
+        """构建站点级 provider 注册表；旧客户端只作为 provider 内部实现。"""
+        self._ensure_clients()
+        registry = IndexerProviderRegistry()
+        priority_map = self._site_config_repo.get_priority_map()
+        site_priorities: dict[str, int] = {}
+        for site in self._site_cache.get_sites(public=True):
+            site_name = str(site.get("name") or "")
+            site_pri = site.get("pri")
+            if site_name and site_pri is not None:
+                site_priorities[site_name] = int(str(site_pri))
+        for client in self._clients.values():
+            source = client.get_client_id()
+            for indexer in self._filter_indexers(client, check=True, filter_args=filter_args):
+                configured = priority_map.get(f"{source}:{indexer.name}")
+                pri = resolve_indexer_priority(indexer, configured, site_priorities)
+                provider = SiteIndexerProvider(client, indexer, site_priority_order(pri))
+                registry.register(
+                    PriorityProvider(provider, {indexer.name: pri}, default=pri),
+                    replace=True,
+                )
+        self._ensure_external_providers()
+        site_filter = (filter_args or {}).get("site")
+        external_sites: dict[str, set[str]] = {}
+        for site in external_indexer_sites():
+            external_sites.setdefault(str(site.get("source") or ""), set()).add(str(site.get("name") or ""))
+        site_filter_set = set(site_filter) if site_filter is not None else None
+        user_id = filter_args.get("user_id") if filter_args else None
+        visible = None
+        grant_service = self.site_grant_service
+        if user_id and grant_service is not None:
+            visible = grant_service.get_visible_sites_by_id(user_id)
+        for provider in self._external_registry.list():
+            provider_sites = external_sites.get(provider.provider_id, set())
+            allowed_sites = provider_sites
+            if visible is not None and grant_service is not None:
+                allowed_sites = set()
+                for site in provider_sites:
+                    if grant_service.is_site_allowed(visible, site, provider.provider_id, usage="search"):
+                        allowed_sites.add(site)
+                # 外部 provider 一次搜索会覆盖其全部站点；部分授权时整体跳过，避免越权站点。
+                if not allowed_sites or allowed_sites != provider_sites:
+                    continue
+            requested = site_filter_set if site_filter_set is not None else allowed_sites
+            if not (requested & allowed_sites):
+                continue
+            prefix = f"{provider.provider_id}:"
+            priorities = {key[len(prefix) :]: value for key, value in priority_map.items() if key.startswith(prefix)}
+            registry.register(PriorityProvider(provider, priorities), replace=True)
+        return registry
 
     def get_indexers(self, check=False):
         """获取默认搜索索引器的站点列表（兼容旧调用）"""
@@ -384,148 +484,139 @@ class Indexer:
         return None
 
     def search_by_keyword(self, key_word, filter_args: dict, match_media=None, in_from: SearchType | None = None):
-        """
-        根据关键字调用所有已配置索引器并发搜索
-
-        :param key_word: 搜索关键词
-        :param filter_args: 过滤条件
-        :param match_media: 需要匹配的媒体信息
-        :param in_from: 搜索渠道
-        :return: 命中的资源媒体信息列表
-        """
+        """统一通过 IndexerGateway 搜索所有内置、第三方和插件索引器。"""
         if not key_word:
             return []
-
-        # 优先使用调用方传入的 per-session progress key（WEB 搜索按会话隔离进度）
+        filter_args = filter_args or {}
+        site_filter = filter_args.get("site")
+        if site_filter is not None and len(site_filter) == 0:
+            log.info("站点列表为空，跳过搜索")
+            return []
         progress_key = filter_args.get("progress_key") or (
             ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search
         )
-        self._ensure_clients()
-        if not self._clients:
-            log.warn("没有配置索引器，无法搜索！")
+        progress = filter_args.get("progress_child") or self.progress
+        registry = self.build_search_registry(filter_args)
+        if not registry.list():
+            log.error("没有可用索引器站点，无法搜索！")
             return []
 
-        # 扁平化所有 (client, indexer) 工作项
-        work_items = []
-        for client in self._clients.values():
-            indexers = self._filter_indexers(client, check=True, filter_args=filter_args)
-            for indexer in indexers:
-                order_seq = 100 - int(getattr(indexer, "pri", 0))
-                work_items.append((client, indexer, order_seq))
-
-        # 同域名索引器去重：内置优先，跳过被内置覆盖的第三方(如 jackett)重复站点
-        builtin_domains = {
-            StringUtils.get_url_domain(getattr(indexer, "domain", "") or "")
-            for client, indexer, _ in work_items
-            if client.get_client_id() == "builtin"
-        }
-        builtin_domains.discard("")
-        if builtin_domains:
-            filtered_items = []
-            for client, indexer, order_seq in work_items:
-                if client.get_client_id() != "builtin":
-                    dom = StringUtils.get_url_domain(getattr(indexer, "domain", "") or "")
-                    if dom and dom in builtin_domains:
-                        log.info(f"[Indexer]跳过第三方重复站点 {indexer.name}（内置已覆盖 {dom}）")
-                        continue
-                filtered_items.append((client, indexer, order_seq))
-            work_items = filtered_items
-
-        if not work_items:
-            log.warn("没有可用索引器站点，无法搜索！")
-            return []
-
+        sites = site_filter or ()
+        if isinstance(sites, str):
+            sites = (sites,)
         start_time = datetime.datetime.now()
-        max_workers = min(len(work_items), 15)
 
-        if filter_args and filter_args.get("site"):
-            log.info("开始搜索 %s，站点：%s，并发数：%s ..." % (key_word, filter_args.get("site"), max_workers))
-            self.progress.update(
-                ptype=progress_key, text="开始搜索 {}，站点：{} ...".format(key_word, filter_args.get("site"))
+        def set_progress(pct: float, text: str) -> None:
+            progress.update_max(ptype=progress_key, value=int(pct), text=text)
+
+        site_statuses: list[dict] = []
+
+        def on_provider_progress(completed, total, provider, count, error):
+            name = getattr(provider, "provider_id", "provider") if provider else "provider"
+            suffix = f"，返回 {count} 条" if count else (f"，失败：{error}" if error else "")
+            set_progress(
+                5 + (50 * completed / total if total else 0),
+                f"索引器搜索 {completed}/{total}（{name}）{suffix}",
             )
-        else:
-            log.info("开始并行搜索 %s，工作项：%s，并发数：%s ..." % (key_word, len(work_items), max_workers))
-            self.progress.update(ptype=progress_key, text=f"开始并行搜索 {key_word}，站点数：{len(work_items)} ...")
-
-        # ---------- 阶段1：单层并发搜索，站点级超时熔断 ----------
-        executor = ThreadPoolExecutor(max_workers=max_workers)
-        try:
-            futures = {
-                executor.submit(client.search, order_seq, indexer, key_word, filter_args, match_media, in_from): (
-                    client,
-                    indexer,
+            if provider is not None:
+                site_statuses.append(
+                    {
+                        "name": name,
+                        "status": "error" if error else "ok",
+                        "count": count,
+                        "error": error or "",
+                    }
                 )
-                for client, indexer, order_seq in work_items
-            }
+                detail = progress.get_process(progress_key)
+                if detail is not None:
+                    detail["sites"] = list(site_statuses)
 
-            tracker = get_site_latency_tracker()
-            site_statuses: list[dict] = []
+        set_progress(2, f"准备索引器，站点/提供方 {len(registry.list())} 个 ...")
+        page = IndexerGateway(
+            registry, max_workers=min(24, max(1, len(registry.list()))), on_progress=on_provider_progress
+        ).search(
+            IndexerQuery(
+                keyword=key_word,
+                sites=tuple(sites),
+                content_profile=filter_args.get("content_profile"),
+                offset=0,
+                limit=500,
+            )
+        )
+        raw_results = [self._provider_to_raw(item) for item in page.items]
+        if page.warnings:
+            log.warn(f"[Indexer]provider 告警: {page.warnings}")
+        set_progress(58, f"聚合 {len(raw_results)} 条结果，开始识别过滤 ...")
 
-            def _on_advance(completed, total, indexer, timed_out, elapsed, site_status=None):
-                tracker.record(indexer, elapsed)
-                pct = 10 + round(50 * (completed / total))
-                tag = "超时跳过" if timed_out else "完成"
-                text = f"站点搜索 {completed}/{total} {tag}（{indexer.name}）"
-                if site_status:
-                    if site_status.get("status") == "ok":
-                        text += f"：{site_status['count']} 条"
-                    elif site_status.get("error"):
-                        text += f"：{site_status['error']}"
-                self.progress.update_max(ptype=progress_key, value=pct, text=text)
-                if site_status:
-                    site_statuses.append(site_status)
-                    detail = self.progress.get_process(progress_key)
-                    if detail is not None:
-                        detail["sites"] = list(site_statuses)
-
-            all_raw_results = collect_search_results(futures, timeout_for=tracker.timeout_for, on_advance=_on_advance)
-        finally:
-            executor.shutdown(wait=False)
-
-        # ---------- 阶段2：去重 + 统一批量识别和过滤 ----------
         pipeline_result = self._pipeline.process(
-            all_results=self._dedup(all_raw_results),
+            all_results=self._dedup(raw_results),
             filter_args=filter_args,
             match_media=match_media,
             in_from=in_from,
             progress_key=progress_key,
             search_name=key_word,
+            progress=progress,
         )
-
         end_time = datetime.datetime.now()
-        failed_sites = [s for s in site_statuses if s.get("status") in ("error", "timeout")]
         failed_summary = ""
-        if failed_sites:
-            failed_summary = "；失败站点：" + "、".join(
-                f"{s['name']}({s.get('error') or s['status']})" for s in failed_sites
-            )
+        if page.warnings:
+            failed_summary = "；provider 告警：" + "；".join(page.warnings)
         log.info(
-            f"搜索关键词 {key_word} 所有站点完成，"
-            f"原始结果 {len(all_raw_results)} 条，有效资源数：{len(pipeline_result.results)}，"
+            f"搜索关键词 {key_word} 所有 provider 完成，"
+            f"原始结果 {len(raw_results)} 条，有效资源数：{len(pipeline_result.results)}，"
             f"总耗时 {(end_time - start_time).seconds} 秒{failed_summary}"
         )
-        self.progress.update(
+        progress.update(
             ptype=progress_key,
             text=(
-                f"搜索关键词 {key_word} 所有站点完成，"
-                f"有效资源数：{len(pipeline_result.results)}，"
+                f"搜索关键词 {key_word} 完成，有效资源数：{len(pipeline_result.results)}，"
                 f"总耗时 {(end_time - start_time).seconds} 秒{failed_summary}"
             ),
         )
-
         return pipeline_result.results
 
     @staticmethod
+    def _provider_to_raw(item: IndexerItem) -> dict:
+        extra = item.extra
+        return {
+            "title": item.title,
+            "enclosure": item.download_url or item.magnet or item.ed2k or "",
+            "size": item.size_bytes or 0,
+            "seeders": item.seeders or 0,
+            "peers": item.peers or 0,
+            "page_url": item.detail_url,
+            "description": item.description,
+            "_indexer_name": item.site or item.site_name,
+            "_indexer_display_name": item.site_name or item.site,
+            "_indexer_source": str(extra.get("source") or item.provider_id.split(":", 1)[0]),
+            "_indexer_public": bool(extra.get("public", False)),
+            "_external_indexer": bool(extra.get("external")),
+            "_indexer_order": site_priority_order(item.priority),
+            "uploadvolumefactor": extra.get("uploadvolumefactor"),
+            "downloadvolumefactor": extra.get("downloadvolumefactor"),
+            "labels": extra.get("labels"),
+            "imdbid": extra.get("imdbid"),
+        }
+
+    @staticmethod
     def _dedup(results: list[dict]) -> list[dict]:
-        """按 (title, size) 去重；builtin 来源优先，同来源 order_seq 大者（pri 小=主站）优先"""
+        """按 (title, size, site) 去重；跨站同种子保留为备用候选.
+
+        builtin 来源优先，同来源 order_seq 大者（pri 小=主站）优先；仅合并同一
+        站点的重复条目，避免首选站下载失败时丢失其他站点候选。
+        """
         ordered = sorted(
             results,
-            key=lambda r: (0 if r.get("_indexer_source") == "builtin" else 1, -r.get("_indexer_order", 0)),
+            key=lambda r: (
+                -int(r.get("_indexer_order", 0) or 0),
+                0 if str(r.get("_indexer_source") or "") == "builtin" else 1,
+            ),
         )
         seen: set[tuple] = set()
         deduped: list[dict] = []
         for r in ordered:
-            key = (r.get("title", ""), r.get("size", ""))
+            site = str(r.get("_indexer_name") or r.get("_indexer_source") or "")
+            key = (r.get("title", ""), r.get("size", ""), site)
             if key not in seen:
                 seen.add(key)
                 deduped.append(r)

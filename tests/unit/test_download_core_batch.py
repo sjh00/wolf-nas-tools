@@ -254,8 +254,8 @@ class TestBatchDownloadFlow:
         core, pipeline = mock_core
         core._client_factory.download_order = "seeder"
 
-        movie1 = MockMediaItem(type=MediaType.MOVIE, enclosure="url1", title="A")
-        movie2 = MockMediaItem(type=MediaType.MOVIE, enclosure="url2", title="B")
+        movie1 = MockMediaItem(type=MediaType.MOVIE, enclosure="url1", title="A", tmdb_id=1)
+        movie2 = MockMediaItem(type=MediaType.MOVIE, enclosure="url2", title="B", tmdb_id=2)
 
         def mock_download(**kwargs):
             return "thunder-1", "tid1", ""
@@ -524,10 +524,10 @@ class TestGetDownloadDirInfo:
         from app.downloader.client_factory import DownloadClientFactory
 
         media = self._media(MediaType.MOVIE)
-        media.content_profile = "adult"
+        media.content_profile = "demo"
         dirs = [
             {"type": "movie", "save_path": "/data/movies"},
-            {"type": "adult", "save_path": "/data/av"},
+            {"type": "demo", "save_path": "/data/av"},
         ]
         info = DownloadClientFactory.get_download_dir_info(media, dirs)
         assert info["path"] == "/data/av"

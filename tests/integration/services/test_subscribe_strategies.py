@@ -3,8 +3,10 @@
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+from app.core.settings import settings as app_settings
 from app.domain.entities.rss import SubscribeState
 from app.domain.mediatypes import MediaType
+from app.media.models import MediaInfo
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.search_engine import SubscribeSearchEngine
 from app.services.subscribe.strategies.indexer_search import IndexerSearchStrategy
@@ -29,7 +31,7 @@ class TestDownloadCoordinator:
         coord = DownloadCoordinator(lock_manager=lock_manager)
         media = self._make_media()
         assert coord.try_acquire(media) is True
-        lock_manager.create_lock.assert_called_once_with("subscribe:download:123:S01", ttl_seconds=300)
+        lock_manager.create_lock.assert_called_once_with("subscribe:download:identity:tmdb:123:S01", ttl_seconds=300)
 
     def test_try_acquire_already_held(self):
         lock_manager = MagicMock()
@@ -339,6 +341,27 @@ class TestRssFeedStrategy:
         subscribe.finish_rss_subscribe.assert_not_called()
         subscribe.update_rss_state.assert_called_once_with(MediaType.TV, 5, SubscribeState.COMPLETED.value)
 
+    def test_rss_tv_full_coverage_clears_lack_before_completed(self):
+        """整季覆盖后清空缺集，避免状态回退时旧缺集触发重复下载."""
+        strategy = self._make_strategy()
+        media = MediaInfo(title="Demo", type=MediaType.TV)
+        media.tmdb_id = "335790"
+        media.begin_season = 1
+        media.begin_episode = 1
+        media.end_episode = 2
+        media.total_episodes = 2
+        media.rssid = 7
+        media.over_edition = False
+        media.enclosure = ""
+        media.user_id = 1
+        cast(Any, strategy.downloader).batch_download.return_value = ([media], {})
+
+        strategy._download_matched_torrents([media], {})
+
+        subscribe = cast(Any, strategy.subscribe)
+        subscribe.clear_subscribe_tv_lack.assert_called_once_with(7, media)
+        subscribe.update_rss_state.assert_called_once_with(MediaType.TV, 7, SubscribeState.COMPLETED.value)
+
     def test_rss_movie_marks_pending_transfer(self):
         """电影下载成功登记“待转移”（COMPLETED），由转移落盘确认后定稿。"""
         strategy = self._make_strategy()
@@ -361,6 +384,69 @@ class TestRssFeedStrategy:
         subscribe = cast(Any, strategy.subscribe)
         subscribe.finish_rss_subscribe.assert_not_called()
         subscribe.update_rss_state.assert_called_once_with(MediaType.MOVIE, 7, SubscribeState.COMPLETED.value)
+
+    def _movie(self, *, title: str, site_order: int, seeders: int, res_order: int) -> MagicMock:
+        media = MagicMock()
+        media.type = MediaType.MOVIE
+        media.rssid = 7
+        media.title = title
+        media.site_order = site_order
+        media.seeders = seeders
+        media.res_order = res_order
+        media.over_edition = False
+        media.tmdb_id = 9
+        media.total_episodes = 0
+        media.begin_episode = None
+        media.get_episode_list.return_value = []
+        return media
+
+    def _selected_movies(self, strategy, medias: list, order: str = "site") -> list:
+        cast(Any, strategy.downloader).batch_download.return_value = ([], {})
+        with patch.object(
+            type(app_settings),
+            "get",
+            side_effect=lambda key, default=None: {"pt": {"download_order": order}}.get(key, default),
+        ):
+            strategy._download_matched_torrents(medias, {})
+        return cast(Any, strategy.downloader).batch_download.call_args[0][1]
+
+    def test_rss_site_mode_same_site_prefers_higher_rule(self):
+        """站点优先：同站点内规则顺序第二，优先于做种数."""
+        strategy = self._make_strategy()
+        low_seed = self._movie(title="LowSeed", site_order=9999, seeders=5, res_order=99)
+        high_seed = self._movie(title="HighSeed", site_order=9999, seeders=500, res_order=1)
+
+        selected = self._selected_movies(strategy, [low_seed, high_seed])
+
+        assert [item.title for item in selected] == ["LowSeed", "HighSeed"]
+
+    def test_rss_seeder_mode_prefers_more_seeders_over_site(self):
+        """做种数优先：低优先级站点做种更多时应胜出."""
+        preferred_site = self._movie(title="PreferredSite", site_order=9999, seeders=5, res_order=1)
+        other_site = self._movie(title="OtherSite", site_order=0, seeders=500, res_order=99)
+
+        strategy = self._make_strategy()
+        selected = self._selected_movies(strategy, [preferred_site, other_site], order="seeder")
+
+        assert [item.title for item in selected] == ["OtherSite", "PreferredSite"]
+
+    def test_rss_movie_keeps_at_most_three_fallback_candidates(self):
+        strategy = self._make_strategy()
+        medias = [self._movie(title=f"C{i}", site_order=9999, seeders=10 - i, res_order=1) for i in range(5)]
+
+        selected = self._selected_movies(strategy, medias)
+
+        assert [item.title for item in selected] == ["C0", "C1", "C2"]
+
+    def test_rss_site_mode_keeps_higher_priority_site(self):
+        """站点优先：低优先级站点做种再多也不能越过站点顺序."""
+        preferred_site = self._movie(title="PreferredSite", site_order=9999, seeders=5, res_order=1)
+        other_site = self._movie(title="OtherSite", site_order=0, seeders=500, res_order=99)
+
+        strategy = self._make_strategy()
+        selected = self._selected_movies(strategy, [other_site, preferred_site])
+
+        assert [item.title for item in selected] == ["PreferredSite", "OtherSite"]
 
     def test_get_default_rss_sites_no_system_config(self):
         strategy = self._make_strategy()

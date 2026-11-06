@@ -176,7 +176,8 @@ class TestBaseSearchStrategy:
         assert result is media
         # 第二次调用应走缓存，identify 只调用一次
         result2 = strategy._get_media_info(None, "Name", "2024", MediaType.MOVIE)
-        assert result2 is media
+        assert result2 is not media
+        assert result2.title == media.title
         strategy._media_service.identify.assert_called_once()
 
     def test_get_media_info_with_tmdbid_caches(self, strategy):
@@ -290,6 +291,38 @@ class TestSubscribeSearchEnforcesOwnerScope:
         _, kwargs = strategy._searcher.search_one_media.call_args
         assert kwargs["user_id"] == 8
 
+    def test_search_tvs_applies_anime_type_and_episode_offset(self, strategy):
+        """动漫订阅落 ANIME，并把规范季的 EPISODE_OFFSET 传给下载策略."""
+        strategy._system_config = None
+        strategy._service.get_subscribe_tvs.return_value = {
+            "1": {
+                "id": 1,
+                "name": "Demo Anime",
+                "season": "S03",
+                "total": 18,
+                "user_id": 8,
+                "content_profile": "anime",
+                "series_key": "series:demo",
+                "anchor_provider": "bangumi",
+                "anchor_external_id": "1",
+            }
+        }
+        strategy._tv_repo = MagicMock()
+        strategy._tv_episode_repo = MagicMock()
+        strategy._tv_episode_repo.get.return_value = None
+        strategy._series_service.get_episode_offset = MagicMock(return_value=24)
+        media = _MediaInfo()
+        media.type = "tv"
+        strategy._searcher.search_one_media.return_value = (None, {}, None, None)
+        strategy._downloader.check_exists_medias.return_value = (False, {}, None)
+        with patch.object(strategy, "_get_media_info", return_value=media):
+            strategy._search_tvs()
+
+        kwargs = strategy._searcher.search_one_media.call_args.kwargs
+        assert media.type == MediaType.ANIME
+        entry = kwargs["no_exists"]["series:demo:S03"][0]
+        assert entry["episode_offset"] == 24
+
 
 class TestProviderRefSearch:
     def test_get_media_info_content_id_skips_tmdb(self, strategy):
@@ -325,7 +358,7 @@ class TestProviderRefSearch:
 
 
 def test_plugin_anchor_never_queries_tmdb(strategy):
-    """JavDB 等插件来源只用自己的锚点，不借用 TMDB 识别."""
+    """DemoMeta 等插件来源只用自己的锚点，不借用 TMDB 识别."""
     strategy._media_cache.get_tmdb_info = MagicMock()
 
     result = strategy._get_media_info(
@@ -333,13 +366,13 @@ def test_plugin_anchor_never_queries_tmdb(strategy):
         "JUR-897",
         "2026",
         MediaType.MOVIE,
-        anchor_provider="javdb",
+        anchor_provider="demo_meta",
         anchor_external_id="JUR-897",
-        content_profile="adult",
+        content_profile="demo",
     )
 
     assert result is not None
-    assert result.anchor_provider == "javdb"
+    assert result.anchor_provider == "demo_meta"
     assert result.anchor_external_id == "JUR-897"
     assert result.tmdb_id == ""
     assert not result.provider_data
@@ -373,9 +406,9 @@ def test_external_movie_anchor_without_provider_data_is_not_error(strategy):
             "id": 1,
             "name": "JUR-897",
             "tmdbid": "",
-            "anchor_provider": "javdb",
+            "anchor_provider": "demo_meta",
             "anchor_external_id": "JUR-897",
-            "content_profile": "adult",
+            "content_profile": "demo",
         }
     }
     strategy._movie_repo = MagicMock()

@@ -5,16 +5,25 @@ Handles RSS movies, TV shows, episodes and history related database operations.
 
 from __future__ import annotations
 
+import datetime
 import difflib
 import re
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from typing import cast as type_cast
 
 from sqlalchemy import Integer, and_, cast, or_
 from sqlalchemy.exc import IntegrityError
 
 import log
-from app.db.models import SubscribeHistory, SubscribeMovies, SubscribeTorrents, SubscribeTvEpisodes, SubscribeTvs
+from app.db.models import (
+    SubscribeHistory,
+    SubscribeMovies,
+    SubscribeSearchCursor,
+    SubscribeTorrents,
+    SubscribeTvEpisodes,
+    SubscribeTvs,
+)
 from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.data_scope import apply_owner_scope
 from app.domain.entities.rss import SubscribeState
@@ -22,8 +31,21 @@ from app.domain.mediatypes import MediaType
 from app.media.metadata.legacy import parse_legacy_ref
 from app.media.metadata.policy import ANCHOR_POLICY
 from app.schemas.auth import UserContext
+from app.services.identity_resolver import IdentityResolver
 from app.utils.json_utils import JsonUtils
 from app.utils.string_utils import season_variants
+
+_SEASON_PATTERN = re.compile(r"^S?(\d+)$", re.IGNORECASE)
+
+
+def _normalize_tv_season(value: object) -> str:
+    """订阅季号统一为 Sxx；范围/自定义值保持原样。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _SEASON_PATTERN.fullmatch(text)
+    return f"S{int(match.group(1)):02d}" if match else text
+
 
 if TYPE_CHECKING:
     from app.media.models import MediaInfo
@@ -112,6 +134,32 @@ def _history_scope(
         "METADATA_POLICY": metadata_policy or ANCHOR_POLICY.get(provider),
         "NAMING_PROFILE": naming_profile,
     }
+
+
+def _require_subscription_identity(
+    *,
+    identity_id: str | None,
+    anchor_provider: str | None,
+    anchor_external_id: str | None,
+    media_info: MediaInfo,
+    media_type: str,
+    content_profile: str | None,
+) -> str | None:
+    resolved = IdentityResolver().resolve_values(
+        identity_id=identity_id,
+        provider=anchor_provider,
+        external_id=anchor_external_id,
+        title=getattr(media_info, "title", None),
+        year=getattr(media_info, "year", None),
+        media_type=media_type,
+        content_profile=content_profile,
+        allow_local=False,
+    )
+    if resolved.identity_id:
+        return resolved.identity_id
+    if anchor_provider and anchor_external_id:
+        raise ValueError("可识别的订阅缺少规范 IDENTITY_ID")
+    return identity_id
 
 
 class SubscribeRepository(BaseRepository):
@@ -468,6 +516,14 @@ class SubscribeRepository(BaseRepository):
             return -1
         if not media_info.title:
             return -1
+        identity_id = _require_subscription_identity(
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            media_info=media_info,
+            media_type=MediaType.MOVIE.value,
+            content_profile=content_profile,
+        )
 
         with self.session() as db:
             # 重复判定按归属用户维度；有 provider 锚点时按锚点去重，避免同名不同来源互相覆盖
@@ -512,6 +568,7 @@ class SubscribeRepository(BaseRepository):
                     NOTE=note,
                     KEYWORD=keyword,
                     ADD_DATE=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    STATE_UPDATED_AT=time.strftime("%Y-%m-%d %H:%M:%S"),
                     USER_ID=user_id,
                     IDENTITY_ID=identity_id,
                     ANCHOR_PROVIDER=anchor_provider,
@@ -579,8 +636,12 @@ class SubscribeRepository(BaseRepository):
                 update_fields[col] = None if v is None else (1 if v else 0)
             elif col == "DESC":
                 update_fields[col] = _trim_desc(v if isinstance(v, str) else str(v))
+            elif k == "season":
+                update_fields[col] = _normalize_tv_season(v)
             else:
                 update_fields[col] = v
+        if "STATE" in update_fields:
+            update_fields["STATE_UPDATED_AT"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if not update_fields:
             return 0
         with self.session() as db:
@@ -644,13 +705,69 @@ class SubscribeRepository(BaseRepository):
         """
         if not title and not rssid:
             return
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
         with self.session() as db:
             if rssid:
-                db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid)).update({"STATE": state})
+                update_values: dict[str, Any] = {"STATE": state, "STATE_UPDATED_AT": now}
+                if state != SubscribeState.ERROR.value:
+                    update_values.update({"RETRY_COUNT": 0, "NEXT_RETRY_AT": None})
+                db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid)).update(type_cast(Any, update_values))
             else:
+                update_values: dict[str, Any] = {"STATE": state, "STATE_UPDATED_AT": now}
+                if state != SubscribeState.ERROR.value:
+                    update_values.update({"RETRY_COUNT": 0, "NEXT_RETRY_AT": None})
                 db.query(SubscribeMovies).filter(
                     SubscribeMovies.NAME == title, SubscribeMovies.YEAR == str(year)
-                ).update({"STATE": state})
+                ).update(type_cast(Any, update_values))
+
+    def schedule_rate_limit_retry(self, kind: str, rssid: int | None, delay_seconds: int) -> None:
+        """限流失败：写指数退避时间，ERROR 重试到期前不再处理."""
+        if not rssid:
+            return
+        now = datetime.datetime.now()
+        next_at = (now + datetime.timedelta(seconds=max(1, int(delay_seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        now_text = now.strftime("%Y-%m-%d %H:%M:%S")
+        model = SubscribeMovies if kind == "movie" else SubscribeTvs
+        with self.session() as db:
+            row = db.get(model, int(rssid))
+            if row is None:
+                return
+            row.RETRY_COUNT = int(getattr(row, "RETRY_COUNT", 0) or 0) + 1
+            row.NEXT_RETRY_AT = next_at
+            row.STATE = SubscribeState.ERROR.value
+            row.STATE_UPDATED_AT = now_text
+
+    def reset_stale_searching(self, cutoff: str) -> int:
+        """将长期停留在 SEARCHING 的订阅重置为 ERROR，避免看门狗缺失导致永久卡住."""
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        total = 0
+        with self.session() as db:
+            for model in (SubscribeMovies, SubscribeTvs):
+                stale = db.query(model).filter(
+                    model.STATE == SubscribeState.SEARCHING.value,
+                    or_(model.STATE_UPDATED_AT.is_(None), model.STATE_UPDATED_AT < cutoff),
+                )
+                total += stale.update(
+                    {"STATE": SubscribeState.ERROR.value, "STATE_UPDATED_AT": now},
+                    synchronize_session=False,
+                )
+        return total
+
+    def get_search_cursor(self, kind: str) -> int:
+        """读取批量搜索轮转游标；缺失或异常时从 0 开始."""
+        with self.session() as db:
+            row = db.get(SubscribeSearchCursor, kind)
+            return int(row.POSITION or 0) if row is not None else 0
+
+    def set_search_cursor(self, kind: str, position: int) -> None:
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self.session() as db:
+            row = db.get(SubscribeSearchCursor, kind)
+            if row is None:
+                db.add(SubscribeSearchCursor(KIND=kind, POSITION=int(position), UPDATED_AT=now))
+            else:
+                row.POSITION = int(position)
+                row.UPDATED_AT = now
 
     # ==================== RSS TV Shows ====================
 
@@ -853,6 +970,7 @@ class SubscribeRepository(BaseRepository):
         rssid: int | None = None,
         user_id: int | None = None,
         identity_id: str | None = None,
+        series_key: str | None = None,
         anchor_provider: str | None = None,
         anchor_external_id: str | None = None,
         content_profile: str | None = None,
@@ -887,10 +1005,18 @@ class SubscribeRepository(BaseRepository):
             return -1
         if not media_info.title:
             return -1
+        identity_id = _require_subscription_identity(
+            identity_id=identity_id,
+            anchor_provider=anchor_provider,
+            anchor_external_id=anchor_external_id,
+            media_info=media_info,
+            media_type=getattr(getattr(media_info, "type", None), "value", "tv") or "tv",
+            content_profile=content_profile,
+        )
         if fuzzy_match and media_info.begin_season is None:
             season_str = ""
         else:
-            season_str = media_info.get_season_string()
+            season_str = _normalize_tv_season(media_info.get_season_string())
 
         with self.session() as db:
             if not rssid:
@@ -948,8 +1074,10 @@ class SubscribeRepository(BaseRepository):
                     NOTE=note,
                     KEYWORD=keyword,
                     ADD_DATE=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    STATE_UPDATED_AT=time.strftime("%Y-%m-%d %H:%M:%S"),
                     USER_ID=user_id,
                     IDENTITY_ID=identity_id,
+                    SERIES_KEY=series_key,
                     ANCHOR_PROVIDER=anchor_provider,
                     ANCHOR_EXTERNAL_ID=anchor_external_id,
                     CONTENT_PROFILE=content_profile,
@@ -1020,8 +1148,12 @@ class SubscribeRepository(BaseRepository):
                 update_fields[col] = None if v is None else (1 if v else 0)
             elif col == "DESC":
                 update_fields[col] = _trim_desc(v if isinstance(v, str) else str(v))
+            elif k == "season":
+                update_fields[col] = _normalize_tv_season(v)
             else:
                 update_fields[col] = v
+        if "STATE" in update_fields:
+            update_fields["STATE_UPDATED_AT"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if not update_fields:
             return 0
         # 开始集数变更时，同步重置持久化的缺失集列表与 LACK，
@@ -1209,15 +1341,25 @@ class SubscribeRepository(BaseRepository):
         """
         if not title and not rssid:
             return
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
         with self.session() as db:
             if rssid:
-                db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update({"STATE": state})
+                update_values: dict[str, Any] = {"STATE": state, "STATE_UPDATED_AT": now}
+                if state != SubscribeState.ERROR.value:
+                    update_values.update({"RETRY_COUNT": 0, "NEXT_RETRY_AT": None})
+                db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update(type_cast(Any, update_values))
             else:
                 cond = _season_filter(SubscribeTvs.SEASON, season)
                 query = db.query(SubscribeTvs).filter(SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year))
                 if cond is not None:
                     query = query.filter(cond)
                 query.update({"STATE": state})
+                update_values: dict[str, Any] = {"STATE": state, "STATE_UPDATED_AT": now}
+                if state != SubscribeState.ERROR.value:
+                    update_values.update({"RETRY_COUNT": 0, "NEXT_RETRY_AT": None})
+                db.query(SubscribeTvs).filter(
+                    SubscribeTvs.NAME == title, SubscribeTvs.YEAR == str(year), SubscribeTvs.SEASON == season
+                ).update(type_cast(Any, update_values))
 
     # ==================== RSS TV Episodes ====================
 

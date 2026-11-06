@@ -49,6 +49,8 @@ def _init_engine():
                     autoflush=False,
                     autocommit=False,
                     expire_on_commit=False,
+                    # close 后禁止复用：复用会静默重开事务并泄漏连接
+                    close_resets_only=False,
                 )
                 log.info(f"[DB]连接预算：{DatabaseFactory.describe_pool_budget()}")
 
@@ -73,6 +75,8 @@ def _init_scheduler_engine():
                     autoflush=False,
                     autocommit=False,
                     expire_on_commit=False,
+                    # close 后禁止复用，避免后台任务跨作用域泄漏连接
+                    close_resets_only=False,
                 )
 
 
@@ -122,6 +126,17 @@ def scheduler_engine_context() -> Iterator[None]:
         yield
     finally:
         _db_override.reset(token)
+
+
+@contextmanager
+def background_engine_context() -> Iterator[None]:
+    """后台任务 DB 上下文：与调度任务共用后台连接池，和 API 主池隔离。
+
+    适用于 ThreadExecutor、队列 worker 等非请求线程；已在后台上下文内时
+    由调用方直接复用，不重复设置。
+    """
+    with scheduler_engine_context():
+        yield
 
 
 def new_session():

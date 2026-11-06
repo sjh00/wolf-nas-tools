@@ -16,7 +16,6 @@ from api.deps import (
     get_system_config_service,
 )
 from api.routers import subscription as subscription_router
-from app.domain.enums import SystemConfigKey
 from app.domain.mediatypes import MediaType
 from app.schemas.auth import UserContext
 
@@ -31,7 +30,7 @@ def mock_subscribe_service():
     svc.add_rss_subscribe.return_value = (0, "ok", _MockMediaInfo())
     svc.update_rss_subscribe.return_value = (0, "ok", _MockMediaInfo())
     svc.get_subscribe_id.return_value = 42
-    svc.delete_subscribe.return_value = None
+    svc.cancel_subscribe.return_value = None
     svc.get_subscribe_movies.return_value = {"1": {"title": "Movie"}}
     svc.get_subscribe_tvs.return_value = {"1": {"title": "TV"}}
     svc.default_subscribe_setting_tv = {"restype": "1080p"}
@@ -67,6 +66,16 @@ def mock_monitor():
 def mock_system_config():
     cfg = MagicMock()
     cfg.set.return_value = None
+
+    def _get(key):
+        name = str(getattr(key, "value", key))
+        if name.startswith("DefaultSubscribeSettingTV"):
+            return {"restype": "1080p"}
+        if name.startswith("DefaultSubscribeSettingMovie"):
+            return {"restype": "4k"}
+        return {}
+
+    cfg.get.side_effect = _get
     return cfg
 
 
@@ -155,7 +164,7 @@ class TestSubscriptionRouter:
         assert resp.status_code == 200
         assert resp.json()["code"] == 0
         mock_system_config.set.assert_called_once()
-        assert mock_system_config.set.call_args.kwargs["key"] == SystemConfigKey.DefaultSubscribeSettingTV
+        assert mock_system_config.set.call_args.kwargs["key"] == "DefaultSubscribeSettingTV::u1"
 
     def test_delete_rss_history(self, client, mock_history_service):
         resp = client.post("/api/v1/subscription/history/delete", json={"rssid": "1"})
@@ -178,7 +187,7 @@ class TestSubscriptionRouter:
             json={"name": "Movie", "type": "movie", "rssid": "1", "tmdbid": "123"},
         )
         assert resp.status_code == 200
-        mock_subscribe_service.delete_subscribe.assert_called_once()
+        mock_subscribe_service.cancel_subscribe.assert_called_once()
 
     def test_remove_rss_media_tv(self, client, mock_subscribe_service):
         resp = client.post(
@@ -186,14 +195,14 @@ class TestSubscriptionRouter:
             json={"name": "TV", "type": "tv", "season": "S01", "rssid": "1"},
         )
         assert resp.status_code == 200
-        args = mock_subscribe_service.delete_subscribe.call_args
+        args = mock_subscribe_service.cancel_subscribe.call_args
         assert args.kwargs["mtype"].value == "tv"
 
     def test_remove_rss_media_rssid_only(self, client, mock_subscribe_service):
         resp = client.post("/api/v1/subscription/remove", json={"rssid": "1"})
         assert resp.status_code == 200
-        assert mock_subscribe_service.delete_subscribe.call_count == 2
-        mtypes = {c.kwargs["mtype"] for c in mock_subscribe_service.delete_subscribe.call_args_list}
+        assert mock_subscribe_service.cancel_subscribe.call_count == 2
+        mtypes = {c.kwargs["mtype"] for c in mock_subscribe_service.cancel_subscribe.call_args_list}
         assert MediaType.MOVIE in mtypes
         assert MediaType.TV in mtypes
 
@@ -217,9 +226,9 @@ class TestSubscriptionRouter:
         assert resp.status_code == 200
         assert resp.json()["data"]["restype"] == "4k"
 
-    def test_get_default_rss_setting_empty(self, client, mock_subscribe_service):
-        mock_subscribe_service.default_subscribe_setting_tv = None
-        mock_subscribe_service.default_subscribe_setting_mov = None
+    def test_get_default_rss_setting_empty(self, client, mock_system_config):
+        mock_system_config.get.side_effect = None
+        mock_system_config.get.return_value = None
         resp = client.post("/api/v1/subscription/default_setting", json={"mtype": "tv"})
         assert resp.status_code == 200
         assert resp.json()["code"] == 0
@@ -250,7 +259,7 @@ class TestSubscriptionRouter:
 
     def test_movie_list_excludes_custom_profiles(self, client, mock_subscribe_service):
         mock_subscribe_service.get_subscribe_movies.return_value = {
-            "1": {"id": 1, "content_profile": "adult"},
+            "1": {"id": 1, "content_profile": "demo"},
             "2": {"id": 2, "content_profile": "default"},
             "3": {"id": 3},
         }
@@ -262,11 +271,11 @@ class TestSubscriptionRouter:
 
     def test_movie_list_filters_custom_profile(self, client, mock_subscribe_service):
         mock_subscribe_service.get_subscribe_movies.return_value = {
-            "1": {"id": 1, "content_profile": "adult"},
+            "1": {"id": 1, "content_profile": "demo"},
             "2": {"id": 2, "content_profile": "default"},
         }
 
-        resp = client.post("/api/v1/subscription/movie/list", json={"content_profile": "adult"})
+        resp = client.post("/api/v1/subscription/movie/list", json={"content_profile": "demo"})
 
         assert resp.status_code == 200
         assert [item["id"] for item in resp.json()["data"]] == [1]

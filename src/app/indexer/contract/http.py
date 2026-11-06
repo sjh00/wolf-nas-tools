@@ -1,0 +1,187 @@
+"""标准 HTTP 索引器 provider。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from app.sites.search_gate import get_site_search_gate
+
+from .models import IndexerHealth, IndexerInfo, IndexerItem, IndexerPage, IndexerQuery, IndexerSite
+
+
+class HttpIndexerProvider:
+    """通过标准 /api/indexer/* JSON 契约接入任意远程索引器。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        timeout: float = 30.0,
+        client: httpx.Client | None = None,
+        provider_id: str = "remote-indexer",
+        info_path: str = "/api/indexer/info",
+        search_path: str = "/api/indexer/search",
+        list_path: str = "/api/indexer/list",
+        icon: str = "",
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.provider_id = provider_id
+        self._info_path = info_path
+        self._search_path = search_path
+        self._list_path = list_path
+        self._icon = icon
+        self._client = client or httpx.Client(
+            timeout=timeout,
+            headers={"Authorization": f"Bearer {token}"} if token else {},
+        )
+        self._sites: tuple[IndexerSite, ...] | None = None
+
+    def info(self) -> IndexerInfo:
+        payload = self._request(self._info_path)
+        sites = tuple(
+            IndexerSite(
+                id=str(site.get("id") or site.get("name") or ""),
+                name=str(site.get("name") or site.get("id") or ""),
+                public=True,
+            )
+            for site in payload.get("sites", [])
+        )
+        self._sites = sites
+        return IndexerInfo(
+            provider_id=self.provider_id,
+            name=str(payload.get("name") or "Remote Indexer"),
+            icon=str(payload.get("icon") or self._icon or ""),
+            version=str(payload.get("version") or "1"),
+            api_version=str(payload.get("api_version") or "1"),
+            capabilities=tuple(payload.get("capabilities") or ("search", "list")),
+            sites=sites,
+            resource_types=tuple(payload.get("resource_types") or ("magnet",)),
+        )
+
+    def health(self) -> IndexerHealth:
+        try:
+            self._request(self._info_path)
+            return IndexerHealth(ok=True)
+        except Exception as exc:  # noqa: BLE001
+            return IndexerHealth(ok=False, message=str(exc))
+
+    def search(self, query: IndexerQuery) -> IndexerPage:
+        query = query.normalized()
+        params = self._params(query)
+        if not self._apply_site_filter(query, params):
+            return IndexerPage(offset=query.offset, limit=query.limit)
+        if query.keyword:
+            params["keyword"] = query.keyword
+        return self._page(self._search_path, params, query)
+
+    def list(self, query: IndexerQuery) -> IndexerPage:
+        query = query.normalized()
+        params = self._params(query)
+        if not self._apply_site_filter(query, params):
+            return IndexerPage(offset=query.offset, limit=query.limit)
+        return self._page(self._list_path, params, query)
+
+    def _apply_site_filter(self, query: IndexerQuery, params: dict[str, Any]) -> bool:
+        """把选中的站点收敛到本 provider 实际拥有的站点；无交集则不发起搜索。"""
+        if not query.sites:
+            return True
+        if self._sites is None:
+            try:
+                self.info()
+            except Exception:  # noqa: BLE001
+                return False
+        names = {site.name for site in self._sites or ()} | {site.id for site in self._sites or ()}
+        matching = [site for site in query.sites if site in names]
+        if not matching:
+            return False
+        params["site"] = matching[0]
+        return True
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _page(self, path: str, params: dict[str, Any], query: IndexerQuery) -> IndexerPage:
+        gate_key = f"provider:{self.provider_id}:{params.get('site') or 'all'}"
+        with get_site_search_gate().acquire(gate_key, timeout=30.0):
+            payload = self._request(path, params)
+        items = [self._to_item(row) for row in payload.get("items", [])]
+        return IndexerPage(
+            items=[item for item in items if item is not None],
+            total=int(payload.get("total") or 0),
+            offset=int(payload.get("offset") or query.offset),
+            limit=int(payload.get("limit") or query.limit),
+            has_more=bool(payload.get("has_more")),
+            next_offset=payload.get("next_offset"),
+        )
+
+    def _request(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        response = self._client.get(f"{self.base_url}{path}", params=params)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _params(query: IndexerQuery) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "offset": query.offset,
+            "limit": query.limit,
+            "dedup": True,
+        }
+        return params
+
+    def _site_public(self, row: dict[str, Any], site: str) -> bool:
+        """外部索引器未返回促销字段时，按 provider 站点目录判断是否公开免费."""
+        if row.get("public") is not None:
+            return bool(row.get("public"))
+        if not site:
+            return True
+        if self._sites is None:
+            try:
+                self.info()
+            except Exception:  # noqa: BLE001
+                return True
+        for entry in self._sites or ():
+            if site in (entry.id, entry.name):
+                return entry.public
+        return True
+
+    def _to_item(self, row: dict[str, Any]) -> IndexerItem | None:
+        title = str(row.get("title") or "").strip()
+        if not title:
+            return None
+        site = str(row.get("site") or "")
+        return IndexerItem(
+            provider_id=self.provider_id,
+            site=site,
+            site_name=str(row.get("site_name") or site),
+            item_id=str(row.get("item_id") or row.get("info_hash") or ""),
+            title=title,
+            category=str(row.get("category") or ""),
+            size_bytes=_int_or_none(row.get("size_bytes") or row.get("size")),
+            published_at=str(row.get("published_at") or row.get("publish_date") or ""),
+            detail_url=str(row.get("detail_url") or ""),
+            download_url=str(row.get("download_url") or ""),
+            magnet=row.get("magnet"),
+            ed2k=row.get("ed2k"),
+            info_hash=row.get("info_hash"),
+            resource_type=str(row.get("resource_type") or "magnet"),
+            description=str(row.get("description") or ""),
+            extra={
+                "external": True,
+                "uploadvolumefactor": row.get("uploadvolumefactor") or row.get("upload_volume_factor"),
+                "downloadvolumefactor": row.get("downloadvolumefactor") or row.get("download_volume_factor"),
+                "public": self._site_public(row, site),
+                "labels": row.get("labels"),
+                "imdbid": row.get("imdbid"),
+            },
+        )
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None

@@ -18,6 +18,7 @@ from app.domain.enums import SystemConfigKey
 from app.indexer import Indexer
 from app.indexer.client import BuiltinIndexer
 from app.indexer.configuration import IndexerHelper
+from app.indexer.contract.site_catalog import external_indexer_sites
 from app.schemas.download import IndexerStatisticsDTO
 from app.schemas.indexer import (
     IndexerClientInfoDTO,
@@ -83,7 +84,12 @@ class IndexerService:
                 seen.add(key)
                 result.append(UserIndexerDTO(id=str(indexer.id), name=indexer.name))
         rows = self._site_config_repo.list_all(enabled=True, source_ne="builtin")
+        # 插件 provider 的站点由 external_indexer_sites() 统一暴露（带 display_name 与 provider 前缀），
+        # 这里只保留内置/第三方索引器，避免同一站点出现两张卡片。
+        external_sources = {str(site.get("source") or "") for site in external_indexer_sites()}
         for row in rows:
+            if row.source in external_sources:
+                continue
             key = row.site_name.lower()
             if key in seen:
                 continue
@@ -116,17 +122,29 @@ class IndexerService:
             )
         return result
 
-    def update_site_enabled(self, site_name: str, enabled: bool) -> None:
-        """更新第三方站点启用状态"""
+    def update_site_enabled(self, site_name: str, enabled: bool, source: str | None = None) -> None:
+        """更新第三方站点启用状态；provider 站点首次写入时补齐来源。"""
+        if source:
+            self._site_config_repo.upsert_site(site_name=site_name, source=source, enabled=enabled)
+            return
         self._site_config_repo.update_enabled(site_name=site_name, enabled=enabled)
 
-    def update_site_download_setting(self, site_name: str, download_setting: int | None) -> None:
-        """更新第三方站点下载设置"""
+    def update_site_download_setting(
+        self, site_name: str, download_setting: int | None, source: str | None = None
+    ) -> None:
+        """更新第三方站点下载设置；provider 站点首次写入时补齐来源。"""
+        if source:
+            self._site_config_repo.upsert_site(site_name=site_name, source=source, download_setting=download_setting)
+            return
         self._site_config_repo.update_download_setting(site_name=site_name, download_setting=download_setting)
 
     def update_site_default_settings(self, site_name: str, default_settings: dict | None) -> None:
         """更新站点默认设置"""
         self._site_config_repo.update_default_settings(site_name=site_name, default_settings=default_settings)
+
+    def update_site_priority(self, site_name: str, priority: int, source: str | None = None) -> None:
+        """更新站点搜索优先级；数值越小越优先。"""
+        self._site_config_repo.set_priority(site_name=site_name, source=source or "builtin", priority=priority)
 
     def sync_third_party_sites(self, client_id: str) -> bool:
         """手动同步指定第三方索引器的站点列表"""

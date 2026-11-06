@@ -1,8 +1,8 @@
-from typing import Any
+from typing import Any, get_args, get_origin
 
 import cn2an
 import regex as re
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import log
 from app.core.constants import ANIME_GENREIDS
@@ -168,6 +168,46 @@ class MediaInfo(BaseModel):
 
     model_config = {"extra": "allow"}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_scalar_fields(cls, data):
+        """统一在模型边界归一标量类型，避免不同生产者/历史队列 payload 类型漂移."""
+        if not isinstance(data, dict):
+            return data
+        for name, field in cls.model_fields.items():
+            if name not in data:
+                continue
+            value = data[name]
+            annotation = field.annotation
+            origin = get_origin(annotation)
+            args = get_args(annotation)
+            optional_str = str in args
+            optional_int = int in args
+            nullable = type(None) in args
+            if origin is None:
+                optional_str = annotation is str
+                optional_int = annotation is int
+                nullable = False
+            # int | str 是双形态字段，保留生产者给定的原始类型。
+            if optional_str and optional_int:
+                continue
+            if optional_str and value is not None and not isinstance(value, str):
+                if isinstance(value, (bool, float, int)):
+                    data[name] = str(value)
+            elif optional_int:
+                if value == "":
+                    data[name] = 0
+                elif value is None:
+                    # Optional[int] 的 None 是有效值，不能降级成 0。
+                    if not nullable:
+                        data[name] = 0
+                elif isinstance(value, str):
+                    try:
+                        data[name] = int(value)
+                    except ValueError:
+                        data[name] = 0
+        return data
+
     # ---- 识别相关 ----
     fileflag: bool = False
     org_string: str | None = None
@@ -178,6 +218,7 @@ class MediaInfo(BaseModel):
     anchor_provider: str | None = None
     anchor_external_id: str | None = None
     identity_id: str | None = None
+    series_key: str | None = None
     provider: str | None = None
     metadata_ref: str | None = None
 
@@ -306,6 +347,8 @@ class MediaInfo(BaseModel):
         return ""
 
     def get_season_string(self) -> str:
+        if self.type == MediaType.MOVIE:
+            return ""
         if self.begin_season is not None:
             b = self.begin_season
             e = self.end_season
@@ -908,6 +951,7 @@ class MediaInfo(BaseModel):
             "provider": self.provider,
             "metadata_ref": self.metadata_ref,
             "identity_id": self.identity_id,
+            "series_key": self.series_key,
             "keyword": self.keyword,
             "original_language": self.original_language,
             "original_title": self.original_title,

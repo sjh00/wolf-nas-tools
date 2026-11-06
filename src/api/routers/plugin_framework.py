@@ -267,8 +267,23 @@ def _plugin_api_response(result):
     return success(data=result)
 
 
+_PLUGIN_WRITE_ACTIONS = {
+    "apply",
+    "create",
+    "delete",
+    "import",
+    "merge",
+    "remove",
+    "save",
+    "sync_tags",
+    "update",
+}
+
+
 async def _dispatch_plugin_api(plugin_id: str, api_path: str, params: dict, method: str):
     """在线程池中执行同步 handler；async handler 直接 await."""
+    if method == "GET" and str(params.get("action") or "").strip().lower() in _PLUGIN_WRITE_ACTIONS:
+        return fail(code=ErrorCode.PERMISSION_DENIED, msg="写操作只允许 POST")
     handler = api_registry.get_api_handler(plugin_id, api_path, method)
     if not handler:
         return fail(msg=f"插件接口不存在: {api_path}")
@@ -338,6 +353,7 @@ def get_plugin_logs(
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """获取插件日志"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     result = svc.get_logs(plugin_id, page, page_size)
     return success(data=result)
 
@@ -360,6 +376,7 @@ def get_plugin_readme(
     svc: PluginFrameworkService = Depends(get_plugin_framework_service),
 ):
     """获取插件 README"""
+    _assert_private_plugin_access(svc, plugin_id, user)
     content = svc.get_readme(plugin_id)
     return success(data=content)
 
@@ -458,10 +475,18 @@ def get_plugin_asset(
     if not plugin_path:
         return fail(code=ErrorCode.PLUGIN_NOT_FOUND, msg="插件未找到")
 
-    # /assets/ 是虚拟前缀，实际文件位于插件根目录下
+    # /assets/ 是虚拟前缀；仅暴露 frontend/ 前端构建产物，禁止读取后端源码。
     relative_path = file_path
     if relative_path.startswith("assets/"):
         relative_path = relative_path[len("assets/") :]
+    relative_posix = relative_path.replace("\\", "/")
+    safe_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico"}
+    is_frontend = relative_posix.startswith("frontend/")
+    is_public_image = (
+        not relative_posix.startswith("backend/") and os.path.splitext(relative_posix)[1].lower() in safe_suffixes
+    )
+    if not (is_frontend or is_public_image):
+        return fail(code=ErrorCode.RESOURCE_NOT_FOUND, msg="资源不存在")
 
     target = os.path.join(plugin_path, relative_path)
     real_plugin_path = os.path.realpath(plugin_path)

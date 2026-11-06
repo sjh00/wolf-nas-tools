@@ -13,9 +13,7 @@
    交付给用户，并说明这是「本轮工具次数用尽」而非服务故障
 """
 
-from unittest.mock import MagicMock
 
-import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
 from pydantic_ai.usage import UsageLimits
 
@@ -49,7 +47,7 @@ class TestUsageLimits:
 
     def test_none_falls_back_to_default(self):
         agent = _agent()
-        agent._max_steps = None
+        agent._max_steps = None  # type: ignore[assignment]
         assert agent._usage_limits().request_limit == DEFAULT_MAX_STEPS + 1
 
     def test_non_numeric_falls_back_to_default(self):
@@ -84,7 +82,7 @@ class TestExtractPartialAnswer:
 
     def test_handles_none_and_empty(self):
         assert PydanticChatAgent._extract_partial_answer([]) == ""
-        assert PydanticChatAgent._extract_partial_answer(None) == ""
+        assert PydanticChatAgent._extract_partial_answer(None) == ""  # type: ignore[arg-type]
 
     def test_joins_multiple_text_parts(self):
         messages = [ModelResponse(parts=[TextPart(content="第一段"), TextPart(content="第二段")])]

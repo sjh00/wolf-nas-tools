@@ -15,6 +15,7 @@ from app.db.models import SEARCHRESULTINFO
 from app.db.repositories.base_repository import BaseRepository
 from app.domain.mediatypes import MediaType
 from app.media.metadata.policy import ANCHOR_POLICY
+from app.services.identity_resolver import IdentityResolver
 from app.utils.json_utils import JsonUtils
 
 
@@ -56,6 +57,7 @@ class SearchRepository(BaseRepository):
                 db.query(SEARCHRESULTINFO).delete(synchronize_session=False)
 
             mappings = []
+            resolver = IdentityResolver()
             for media_item in media_items:
                 if media_item.type == MediaType.ANIME:
                     mtype = MediaType.ANIME.value
@@ -71,6 +73,11 @@ class SearchRepository(BaseRepository):
                     enclosure = enclosure.split("&")[0]
                 elif enclosure and len(enclosure) > 4000:
                     enclosure = enclosure[:4000]
+
+                resolved = resolver.resolve_media(media_item, allow_local=False)
+                anchor_provider = resolved.provider
+                anchor_external = resolved.external_id
+                identity_id = resolved.identity_id
 
                 mapping = {
                     "TORRENT_NAME": media_item.org_string or "",
@@ -88,9 +95,9 @@ class SearchRepository(BaseRepository):
                     "IMAGE": (media_item.get_backdrop_image(default=False, original=True) or ""),
                     "POSTER": (media_item.get_poster_image() or ""),
                     "TMDBID": media_item.tmdb_id or "",
-                    "IDENTITY_ID": getattr(media_item, "identity_id", None) or "",
-                    "ANCHOR_PROVIDER": getattr(media_item, "anchor_provider", None) or "",
-                    "ANCHOR_EXTERNAL_ID": getattr(media_item, "anchor_external_id", None) or "",
+                    "IDENTITY_ID": identity_id,
+                    "ANCHOR_PROVIDER": anchor_provider,
+                    "ANCHOR_EXTERNAL_ID": anchor_external,
                     "CONTENT_PROFILE": getattr(media_item, "content_profile", None) or "default",
                     "METADATA_POLICY": getattr(media_item, "metadata_policy", None)
                     or ANCHOR_POLICY.get(str(getattr(media_item, "anchor_provider", "") or ""), ""),

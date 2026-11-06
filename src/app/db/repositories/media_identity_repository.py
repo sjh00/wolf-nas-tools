@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models.download import DOWNLOADHISTORY
@@ -19,6 +20,14 @@ from app.db.models.subscribe import SubscribeMovies, SubscribeTvs
 from app.db.models.transfer import TRANSFERHISTORY
 from app.db.repositories.base_repository import BaseRepository
 from app.utils.ulid import new_ulid
+
+
+def _normalize_ref_media_type(media_type: str | None) -> str | None:
+    """TMDB 等外部引用中 anime 与 tv 是同一实体，统一用 tv 做唯一键."""
+    value = str(media_type or "").strip()
+    if not value:
+        return None
+    return "tv" if value == "anime" else value
 
 
 class MediaIdentityRepository(BaseRepository):
@@ -70,6 +79,7 @@ class MediaIdentityRepository(BaseRepository):
                 db.add(identity)
                 db.commit()
                 db.refresh(identity)
+                db.expunge(identity)
                 return identity
             changed = False
             if title and identity.CANONICAL_TITLE != title:
@@ -86,7 +96,139 @@ class MediaIdentityRepository(BaseRepository):
                 changed = True
             if changed:
                 db.commit()
+                db.refresh(identity)
+            db.expunge(identity)
             return identity
+
+    def ensure_identity_for_ref(
+        self,
+        provider: str,
+        external_id: str,
+        *,
+        scope: str = "default",
+        media_type: str | None = None,
+        content_profile: str = "default",
+        title: str | None = None,
+        year: str | None = None,
+        url: str | None = None,
+        link_method: str = "identity_boundary",
+    ) -> str:
+        """按外部引用查找身份；不存在时创建身份和 ref，返回 IDENTITY_ID."""
+        provider = str(provider or "").strip()
+        external_id = str(external_id or "").strip()
+        if not provider or not external_id:
+            return ""
+        normalized_type = media_type if media_type and media_type != "unknown" else None
+        found = self.find_by_ref(provider, external_id, scope=scope, media_type=normalized_type)
+        if found is not None:
+            return found.IDENTITY_ID
+        identity = self.ensure_identity(
+            media_type=normalized_type or "unknown",
+            content_profile=content_profile or "default",
+            title=title,
+            year=year,
+        )
+        try:
+            self.upsert_ref(
+                identity.IDENTITY_ID,
+                provider=provider,
+                external_id=external_id,
+                media_type=normalized_type,
+                scope=scope,
+                url=url,
+                link_method=link_method,
+                is_primary=True,
+            )
+        except ValueError:
+            found = self.find_by_ref(provider, external_id, scope=scope, media_type=normalized_type)
+            return found.IDENTITY_ID if found is not None else ""
+        return identity.IDENTITY_ID
+
+    def get_display_ref(self, identity_id: str) -> MediaExternalRef | None:
+        """返回适合展示的来源引用：优先真实 provider，content_id 仅作最后兜底."""
+        if not identity_id:
+            return None
+        with self.readonly() as db:
+            return (
+                db.query(MediaExternalRef)
+                .filter(MediaExternalRef.IDENTITY_ID == identity_id)
+                .order_by(
+                    case((MediaExternalRef.PROVIDER == "content_id", 1), else_=0),
+                    MediaExternalRef.IS_PRIMARY.desc(),
+                    MediaExternalRef.ID.asc(),
+                )
+                .first()
+            )
+
+    def get_primary_ref(self, identity_id: str) -> MediaExternalRef | None:
+        """返回身份的 primary ref（没有 primary 时取最早一条）."""
+        if not identity_id:
+            return None
+        with self.readonly() as db:
+            return (
+                db.query(MediaExternalRef)
+                .filter(MediaExternalRef.IDENTITY_ID == identity_id)
+                .order_by(MediaExternalRef.IS_PRIMARY.desc(), MediaExternalRef.ID.asc())
+                .first()
+            )
+
+    def find_by_external_id(
+        self,
+        external_id: str,
+        *,
+        media_type: str | None = None,
+    ) -> MediaIdentity | None:
+        """跨 provider 按外部编号查找身份（同一编号可能同时有内容锚点和真实 provider 引用）."""
+        value = str(external_id or "").strip()
+        if not value:
+            return None
+        normalized_type = _normalize_ref_media_type(media_type)
+        with self.readonly() as db:
+            query = db.query(MediaExternalRef).filter(MediaExternalRef.EXTERNAL_ID == value)
+            if normalized_type:
+                if normalized_type == "tv":
+                    query = query.filter(MediaExternalRef.MEDIA_TYPE.in_(("tv", "anime")))
+                else:
+                    query = query.filter(MediaExternalRef.MEDIA_TYPE == normalized_type)
+            ref = query.order_by(MediaExternalRef.IS_PRIMARY.desc(), MediaExternalRef.ID.asc()).first()
+            if ref is None:
+                return None
+            return db.query(MediaIdentity).filter(MediaIdentity.IDENTITY_ID == ref.IDENTITY_ID).first()
+
+    def find_by_title(
+        self,
+        title: str | None,
+        year: str | None = None,
+        media_type: str | None = None,
+    ) -> MediaIdentity | None:
+        """按标题/年份/类型查找已有身份，用于无 anchor 的下载/转移归并."""
+        text = str(title or "").strip()
+        if not text:
+            return None
+        # 动漫在部分历史数据中落为 tv，标题匹配时按同一类型族处理
+        normalized_type = str(media_type or "")
+        if normalized_type in {"anime", "tv"}:
+            types: tuple[str, ...] = ("anime", "tv")
+        elif normalized_type:
+            types = (normalized_type,)
+        else:
+            types = ()
+        with self.readonly() as db:
+            query = db.query(MediaIdentity).filter(MediaIdentity.CANONICAL_TITLE == text)
+            if year:
+                query = query.filter(MediaIdentity.YEAR == str(year))
+            if types:
+                query = query.filter(MediaIdentity.MEDIA_TYPE.in_(types))
+            found = query.first()
+            if found is not None:
+                return found
+            # 标题可能有空白/大小写差异，退回不区分大小写匹配
+            query = db.query(MediaIdentity).filter(func.lower(MediaIdentity.CANONICAL_TITLE) == text.lower())
+            if year:
+                query = query.filter(MediaIdentity.YEAR == str(year))
+            if types:
+                query = query.filter(MediaIdentity.MEDIA_TYPE.in_(types))
+            return query.first()
 
     def find_by_ref(
         self,
@@ -98,6 +240,19 @@ class MediaIdentityRepository(BaseRepository):
     ) -> MediaIdentity | None:
         with self.readonly() as db:
             ref = self._find_ref(db, provider, external_id, scope, media_type)
+            if ref is None and scope != "default":
+                # 同一外部实体可能先以 season/profile scope 创建；仍归属同一作品
+                ref = self._find_ref(db, provider, external_id, "default", media_type)
+            if ref is None:
+                ref = (
+                    db.query(MediaExternalRef)
+                    .filter(
+                        MediaExternalRef.PROVIDER == provider,
+                        MediaExternalRef.EXTERNAL_ID == str(external_id),
+                    )
+                    .order_by(MediaExternalRef.IS_PRIMARY.desc(), MediaExternalRef.ID.asc())
+                    .first()
+                )
             if ref is None:
                 return None
             return db.query(MediaIdentity).filter(MediaIdentity.IDENTITY_ID == ref.IDENTITY_ID).first()
@@ -119,6 +274,7 @@ class MediaIdentityRepository(BaseRepository):
         reviewed: bool = False,
         is_primary: bool = False,
     ) -> MediaExternalRef:
+        media_type = _normalize_ref_media_type(media_type)
         with self.session() as db:
             ref = self._find_ref(db, provider, external_id, scope, media_type)
             if ref is None:
@@ -339,6 +495,7 @@ class MediaIdentityRepository(BaseRepository):
         scope: str,
         media_type: str | None = None,
     ) -> MediaExternalRef | None:
+        media_type = _normalize_ref_media_type(media_type)
         query = db.query(MediaExternalRef).filter(
             MediaExternalRef.PROVIDER == provider,
             MediaExternalRef.EXTERNAL_ID == str(external_id),
@@ -348,6 +505,11 @@ class MediaIdentityRepository(BaseRepository):
             typed = query.filter(MediaExternalRef.MEDIA_TYPE == media_type).first()
             if typed is not None:
                 return typed
+            if media_type == "tv":
+                # 兼容历史 anime 引用，避免再次创建重复身份
+                legacy = query.filter(MediaExternalRef.MEDIA_TYPE == "anime").first()
+                if legacy is not None:
+                    return legacy
             # 兼容未回填类型的历史记录。
             return query.filter(MediaExternalRef.MEDIA_TYPE.is_(None)).first()
         return query.first()

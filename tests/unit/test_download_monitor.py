@@ -29,6 +29,7 @@ class TestDownloadMonitor:
             event_bus=mock_bus,
             interval=1,
             max_workers=2,
+            path_exists=lambda _path: True,
         )
         return m, mock_factory, mock_bus
 
@@ -60,8 +61,13 @@ class TestDownloadMonitor:
         assert "tr1:task1" in m._processed_ids
 
     def test_warmup_skips_stale_path_without_history(self, mock_factory, mock_bus):
+        """启动期残留任务（下载器仍标完成但路径已不存在）必须被认领跳过。
+
+        否则重启后会被增量检查重放，转移必然失败并产生「无法识别」误通知。
+        """
         history = MagicMock()
         history.get_by_source.return_value = None
+        history.get_by_source_dir.return_value = None
         m = DownloadMonitor(
             client_factory=mock_factory,
             event_bus=mock_bus,
@@ -84,6 +90,7 @@ class TestDownloadMonitor:
         target.write_bytes(b"x")
         history = MagicMock()
         history.get_by_source.return_value = None
+        history.get_by_source_dir.return_value = None
         m = DownloadMonitor(
             client_factory=mock_factory,
             event_bus=mock_bus,

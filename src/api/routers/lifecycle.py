@@ -15,6 +15,7 @@ from app.db.repositories.lifecycle_repository import (
     lifecycle_event_to_dict,
     lifecycle_row_to_dict,
 )
+from app.domain.lifecycle import stage_rank
 from app.schemas.auth import UserContext
 from app.services.lifecycle_action_service import LifecycleActionError, LifecycleActionService
 from app.services.lifecycle_service import LifecycleReconciler
@@ -60,6 +61,19 @@ def _row_payload(row) -> dict[str, Any]:
         "missing": bool(data.get("MISSING")),
         "elapsed_seconds": max(0, elapsed),
     }
+
+
+def _collapse_timeline(rows: list[Any]) -> list[Any]:
+    """同一阶段保留最后一次事件，并按阶段顺序展示，避免回填事件重复/乱序."""
+    latest: dict[str, Any] = {}
+    for row in rows:
+        current = latest.get(str(row.STAGE))
+        if current is None or (row.OCCURRED_AT, row.ID) >= (current.OCCURRED_AT, current.ID):
+            latest[str(row.STAGE)] = row
+    return sorted(
+        latest.values(),
+        key=lambda event: (stage_rank(str(event.STAGE)), event.OCCURRED_AT, event.ID),
+    )
 
 
 def _event_payload(row) -> dict[str, Any]:
@@ -234,29 +248,34 @@ def list_lifecycle_episodes(
         total_ep = int(summary.get("total_ep") or 0)
         if total_ep <= 0:
             continue
+        completed_ep = max(0, min(total_ep, int(summary.get("completed_ep") or 0)))
+        missing_episodes = {int(item) for item in summary.get("missing_episodes") or []}
+        profile = str(summary.get("content_profile") or first.get("content_profile") or "default")
+        media_type = "anime" if profile == "anime" else (first.get("media_type") or "tv")
         for episode in range(1, total_ep + 1):
             if (season, episode) in existing:
                 continue
+            missing = episode in missing_episodes if missing_episodes else episode > completed_ep
             payloads.append(
                 _row_payload(
                     {
                         "IDENTITY_ID": identity_id,
-                        "MEDIA_TYPE": first.get("media_type") or "tv",
+                        "MEDIA_TYPE": media_type,
                         "SEASON": season,
                         "EPISODE": episode,
                         "TITLE": first.get("title") or summary.get("name"),
-                        "YEAR": first.get("year"),
+                        "YEAR": first.get("year") or summary.get("year"),
                         "POSTER": first.get("poster"),
-                        "STAGE": "subscribed",
-                        "STATUS": "queued",
-                        "PROGRESS": 0,
-                        "SOURCE_PROVIDER": first.get("source_provider"),
-                        "CONTENT_PROFILE": first.get("content_profile"),
-                        "USER_ID": first.get("user_id"),
+                        "STAGE": "subscribed" if missing else "in_library",
+                        "STATUS": "queued" if missing else "succeeded",
+                        "PROGRESS": 0 if missing else 100,
+                        "SOURCE_PROVIDER": first.get("source_provider") or summary.get("anchor_provider"),
+                        "CONTENT_PROFILE": profile,
+                        "USER_ID": first.get("user_id") or summary.get("user_id"),
                         "EPISODE_COUNT": 1,
-                        "COMPLETED_EPISODES": 0,
-                        "IN_LIBRARY_EPISODES": 0,
-                        "MISSING": True,
+                        "COMPLETED_EPISODES": 0 if missing else 1,
+                        "IN_LIBRARY_EPISODES": 0 if missing else 1,
+                        "MISSING": missing,
                     }
                 )
             )
@@ -272,7 +291,14 @@ def list_lifecycle_events(
     limit: int = Query(default=200, ge=1, le=1000),
     current_user: UserContext = Depends(require_any_permission("library:view", "library:manage")),
 ):
-    rows = LifecycleRepository().list_events(
-        identity_id, season=season, episode=episode, limit=limit, user=current_user
+    repo = LifecycleRepository()
+    snapshot = repo.get_current(identity_id, season=season, episode=episode, user=current_user)
+    rows = repo.list_events(
+        identity_id,
+        season=season,
+        episode=episode,
+        limit=limit,
+        user=current_user,
+        until=snapshot.LAST_EVENT_AT if snapshot is not None else None,
     )
-    return success(data=[_event_payload(row) for row in rows])
+    return success(data=[_event_payload(row) for row in _collapse_timeline(rows)])

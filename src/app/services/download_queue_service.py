@@ -16,9 +16,10 @@ import log
 from app.core.settings import settings
 from app.domain.lifecycle import LifecycleStage, LifecycleStatus
 from app.domain.mediatypes import MediaType
-from app.infrastructure.task_queue import Task, TaskQueue, TaskWorker, create_task_queue
+from app.infrastructure.task_queue import Task, TaskQueue, TaskStatus, TaskWorker, create_task_queue
 from app.media.models import MediaInfo
 from app.services.lifecycle_service import LifecycleProjector
+from app.services.series_service import SeriesService
 from app.utils.json_utils import JsonUtils
 
 _MAX_QUEUED_TORRENT_BYTES = 20 * 1024 * 1024
@@ -55,10 +56,10 @@ class DownloadQueueService:
             stacks = list(self._stacks.values())
             self._stacks.clear()
         for queue, worker, _ in stacks:
-            try:
-                worker.stop()
-            finally:
-                queue.close()
+            if not worker.stop():
+                log.warn("[DownloadQueue]仍有下载任务运行，保留队列等待任务结束")
+                continue
+            queue.close()
 
     def start(self) -> None:
         """启动所有已配置的 Nexus 队列下载器 worker，恢复重启前未完成任务."""
@@ -111,6 +112,10 @@ class DownloadQueueService:
         task_id = uuid.uuid4().hex
         max_active = self._max_active(downloader_id)
         torrent_b64 = self._read_torrent(torrent_file)
+        try:
+            SeriesService().ensure_media_series(media_info)
+        except Exception as exc:  # noqa: BLE001 - 剧集映射失败不阻断下载
+            log.debug(f"[DownloadQueue]规范剧集解析失败: {exc}")
         history_id = self._history_repo.insert_download_history(
             media_info=media_info,
             downloader=str(downloader_id),
@@ -156,16 +161,28 @@ class DownloadQueueService:
             self._history_repo.delete_download_history_by_id(history_id)
             raise
         if task.id != task_id:
-            # 幂等命中已有任务，删除本次占位历史
-            self._history_repo.delete_download_history_by_id(history_id)
-        else:
-            self._record_media(
-                media_info,
-                LifecycleStage.DOWNLOAD_QUEUED,
-                LifecycleStatus.QUEUED,
-                "download.queued",
-                task,
-            )
+            if task.status != TaskStatus.SUCCEEDED:
+                if task.status in {TaskStatus.FAILED, TaskStatus.DEAD, TaskStatus.CANCELLED}:
+                    # 终态失败不吞新请求：换 dedup key，复用本次 task_id 重新入队。
+                    task = queue.enqueue(
+                        "download.add",
+                        payload,
+                        dedup_key=f"{dedup_key}:retry:{task.id}",
+                        task_id=task_id,
+                    )
+                if task.id != task_id:
+                    self._history_repo.delete_download_history_by_id(history_id)
+                    return task
+            else:
+                self._history_repo.delete_download_history_by_id(history_id)
+                return task
+        self._record_media(
+            media_info,
+            LifecycleStage.DOWNLOAD_QUEUED,
+            LifecycleStatus.QUEUED,
+            "download.queued",
+            task,
+        )
         return task
 
     def _ensure_stack(self, downloader_id: str, max_active: int) -> tuple[TaskQueue, TaskWorker, int]:
@@ -245,14 +262,8 @@ class DownloadQueueService:
                     error=error or "下载器添加任务失败",
                 )
                 raise RuntimeError(error or "下载器添加任务失败")
-            self._record_media(
-                media_info,
-                LifecycleStage.DOWNLOADED,
-                LifecycleStatus.SUCCEEDED,
-                "download.completed",
-                task,
-                progress=100,
-            )
+            # 下载器只完成了“添加任务”；真正的完成由 download.completed 事件投影，
+            # 这里不能提前标记为 downloaded。
             return {"download_id": download_id}
         finally:
             if torrent_path:

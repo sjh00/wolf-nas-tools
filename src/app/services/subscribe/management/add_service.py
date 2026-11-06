@@ -1,7 +1,10 @@
 """Subscribe add service - 添加订阅."""
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any, cast
+
+import httpx
 
 import log
 from app.domain.entities.rss import SubscribeState
@@ -10,10 +13,14 @@ from app.domain.mediatypes import MediaType
 from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
+from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.media import meta_info
 from app.media.display_image_policy import unwrap_display_image_url
 from app.media.metadata import ProviderRef
 from app.media.metadata.registry import registry as metadata_registry
+from app.services.search_subject import SearchSubject
+from app.services.series_service import SeriesService
+from app.services.subscribe.default_settings import get_default_setting
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
 
@@ -92,6 +99,53 @@ def _split_provider_ref(value: Any) -> tuple[str, str] | None:
     return aliases.get(provider, provider), external_id
 
 
+def _season_number(value, default: int = 0) -> int:
+    text = str(value or "").strip()
+    if text.upper().startswith("S"):
+        text = text[1:]
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _preferred_profile_poster(
+    image: str,
+    content_profile: str | None,
+    mediaid: str | int | None,
+    media_type: Any,
+) -> str:
+    """自定义画像优先使用插件元数据海报，并验证外部图片可访问性。"""
+    if not image or not content_profile or content_profile == "default":
+        return image
+    ref = _split_provider_ref(mediaid)
+    if ref:
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_resolve_provider_poster, content_profile, ref[1], media_type)
+        try:
+            poster, _source = future.result(timeout=3)
+        except Exception:  # noqa: BLE001 - 超时/失败回退原图
+            poster = ""
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        if poster:
+            return poster
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        referer = image_referer_registry.resolve(image)
+        if referer:
+            headers["Referer"] = referer
+        with httpx.Client(timeout=2.5, follow_redirects=True) as client:
+            response = client.get(image, headers=headers)
+            if response.status_code < 400:
+                return image
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"[Subscribe]海报可访问性检查失败，使用空海报: {exc}")
+    return ""
+
+
 class SubscribeAddService:
     """添加订阅服务"""
 
@@ -107,6 +161,9 @@ class SubscribeAddService:
         download_repo=None,
         transfer_history_manager=None,
         metadata_service=None,
+        site_cache=None,
+        indexer_service=None,
+        series_service=None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -118,6 +175,9 @@ class SubscribeAddService:
         self._download_repo = download_repo
         self._transfer_history_manager = transfer_history_manager
         self._metadata_service = metadata_service
+        self._site_cache = site_cache
+        self._indexer_service = indexer_service
+        self._series_service = series_service or SeriesService()
 
     @property
     def default_subscribe_setting_tv(self) -> dict | None:
@@ -125,7 +185,7 @@ class SubscribeAddService:
 
     @property
     def default_subscribe_setting_mov(self) -> dict | None:
-        return self._system_config.get(SystemConfigKey.DefaultSubscribeSettingMOV) or {}
+        return self._system_config.get(SystemConfigKey.DefaultSubscribeSettingMovie) or {}
 
     def _identity_fields(
         self,
@@ -184,9 +244,13 @@ class SubscribeAddService:
             posters = images.get("poster") or []
             if posters:
                 poster = posters[0].get("url")
-        resolved_type = media_type or MediaType.from_string(str(record.get("media_type") or ""))
-        if content_profile == "anime" or str(record.get("media_type") or "").lower() == "anime":
-            resolved_type = MediaType.ANIME
+        subject = SearchSubject.classify(
+            media_type or record.get("media_type"),
+            content_profile,
+            provider,
+            external_id,
+        )
+        resolved_type = subject.display_type or media_type or MediaType.from_string(str(record.get("media_type") or ""))
         if resolved_type not in (MediaType.MOVIE, MediaType.TV, MediaType.ANIME):
             resolved_type = MediaType.MOVIE
         media_info = meta_info(title=title, mtype=resolved_type)
@@ -205,7 +269,9 @@ class SubscribeAddService:
         media_info.overview = overview
         media_info.type = resolved_type
         extra = record.get("extra") or {}
-        season_number = int(season or 1)
+        # 豆瓣等“一季一个条目”的来源，该条目自身只有一季，季号固定为 1；
+        # 标题里的“第二季”只是条目标题，不作为订阅季号，避免生成第2季空目录。
+        season_number = _season_number(season, 1)
         total_episodes = (
             record.get("episode_count")
             or extra.get("bangumi.eps")
@@ -224,17 +290,14 @@ class SubscribeAddService:
         media_info.content_profile = content_profile or record.get("content_profile") or "default"
         return media_info
 
-    def _default_setting_for(self, mtype: Any, content_profile: str | None) -> dict:
-        """按载体和内容画像读取默认订阅设置；画像配置为空时回退到载体默认."""
-        if mtype in (MediaType.TV, MediaType.ANIME):
-            return self.default_subscribe_setting_tv or {}
-        profile = str(content_profile or "").strip()
-        if profile and profile != "default":
-            key = f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}"
-            setting = self._system_config.get(key)
-            if isinstance(setting, dict) and setting:
-                return setting
-        return self.default_subscribe_setting_mov or {}
+    def _default_setting_for(
+        self,
+        mtype: Any,
+        content_profile: str | None,
+        user_id: int | str | None = None,
+    ) -> dict:
+        """按用户、载体和内容画像读取默认订阅设置；用户级缺失回退全局."""
+        return get_default_setting(self._system_config, mtype, content_profile, user_id)
 
     def add_rss_subscribe(
         self,
@@ -280,11 +343,14 @@ class SubscribeAddService:
             return -1, "标题或类型有误", None
         if image:
             image = unwrap_display_image_url(image)
+            image = _preferred_profile_poster(image, content_profile, mediaid, mtype)
         year = int(year) if str(year).isdigit() else ""
+        requested_season = season
+        series_key = None
 
         # 新增订阅且未显式传值时，应用默认订阅设置
         if not rssid:
-            default_rss_setting = self._default_setting_for(mtype, content_profile)
+            default_rss_setting = self._default_setting_for(mtype, content_profile, user_id)
             if default_rss_setting:
                 default_restype = default_rss_setting.get("restype")
                 default_pix = default_rss_setting.get("pix")
@@ -295,6 +361,9 @@ class SubscribeAddService:
                 default_free = default_rss_setting.get("free")
                 default_download_setting = default_rss_setting.get("download_setting")
                 default_over_edition = default_rss_setting.get("over_edition")
+                default_rss_sites = default_rss_setting.get("rss_sites")
+                default_search_sites = default_rss_setting.get("search_sites")
+                default_save_path = default_rss_setting.get("save_path")
                 if filter_restype is None and default_restype:
                     filter_restype = default_restype
                 if filter_pix is None and default_pix:
@@ -309,17 +378,35 @@ class SubscribeAddService:
                     filter_exclude = default_exclude
                 if filter_free is None and default_free is not None:
                     filter_free = bool(default_free)
-                if over_edition is None and default_over_edition:
-                    over_edition = 1 if default_over_edition == "1" else 0
-                if download_setting is None and default_download_setting:
+                if over_edition is None and default_over_edition is not None:
+                    over_edition = 1 if str(default_over_edition) == "1" else 0
+                if download_setting is None and default_download_setting is not None:
                     download_setting = (
                         int(default_download_setting)
                         if str(default_download_setting).replace("-", "").isdigit()
                         else None
                     )
-                # 站点留空表示"全部当前用户可见站点"：不再强制继承默认设置，
-                # 由搜索/RSS 执行时按用户可见站点兜底，避免"未配置即搜不到"
+                # 订阅创建时把默认站点/目录写入订阅自身，编辑时无需再依赖运行时兜底。
+                if not rss_sites and default_rss_sites:
+                    rss_sites = default_rss_sites
+                if not search_sites and default_search_sites:
+                    search_sites = default_search_sites
+                if not save_path and default_save_path:
+                    save_path = str(default_save_path)
 
+        # 未配置默认站点时，把当前可见站点固化为订阅快照，避免编辑时读不到。
+        site_cache = getattr(self, "_site_cache", None)
+        indexer_service = getattr(self, "_indexer_service", None)
+        if not rss_sites and site_cache is not None:
+            try:
+                rss_sites = site_cache.get_site_names(rss=True)
+            except Exception as exc:  # noqa: BLE001 - 站点快照失败不阻断订阅
+                log.warn(f"[Subscribe]读取订阅站点快照失败: {exc}")
+        if not search_sites and indexer_service is not None:
+            try:
+                search_sites = indexer_service.get_user_indexer_names()
+            except Exception as exc:  # noqa: BLE001
+                log.warn(f"[Subscribe]读取搜索站点快照失败: {exc}")
         rss_sites = rss_sites or []
         if isinstance(rss_sites, str):
             rss_sites = rss_sites.split(",")
@@ -342,7 +429,7 @@ class SubscribeAddService:
                 descriptor = getattr(metadata_registry.get_provider(provider_ref[0]), "descriptor", None)
                 if name and getattr(descriptor, "visibility", "public") == "private":
                     # 私有插件来源已有标题时先落库，详情和海报由插件列表异步补全，
-                    # 避免被 JavLibrary/Cloudflare 等详情请求阻塞。
+                    # 避免被外部详情源/Cloudflare 请求阻塞。
                     media_info = meta_info(title=name, mtype=mtype)
                     media_info.title = name
                     media_info.cn_name = name
@@ -376,6 +463,13 @@ class SubscribeAddService:
                 if media_info is not None:
                     media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
                     mtype = media_info.type
+                    # 插件详情源熔断/超时时，用内容画像聚合源补海报，避免订阅卡片空白。
+                    if not media_info.poster_path and content_profile:
+                        profile_ref = _split_provider_ref(mediaid)
+                        if profile_ref:
+                            poster, _ = _resolve_provider_poster(content_profile, profile_ref[1], mtype)
+                            if poster:
+                                media_info.poster_path = poster
                     # 元数据来源判定为动漫时同步切换内容画像，避免落库成默认电视剧。
                     if mtype == MediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
                         content_profile = "anime"
@@ -409,7 +503,24 @@ class SubscribeAddService:
                     title = "%s %s".strip() % (name, year)
                 media_info = self._media.get_media_info(title=title, mtype=mtype, strict=bool(year), cache=False)
             if media_info is None:
-                return 1, "无法查询到媒体信息", None
+                # 外部详情源失败时，订阅已带锚点/海报就不应失败；用请求信息建立最小身份。
+                if name and (mediaid or source_ref or image):
+                    media_info = meta_info(title=name, mtype=mtype)
+                    media_info.title = name
+                    media_info.cn_name = name
+                    media_info.year = year or media_info.year
+                    media_info.type = mtype
+                    media_info.content_profile = content_profile or "default"
+                    media_info.provider = source_provider
+                    media_info.metadata_ref = source_ref
+                    anchor_ref = _split_provider_ref(mediaid or source_ref)
+                    if anchor_ref:
+                        media_info.anchor_provider = anchor_ref[0]
+                        media_info.anchor_external_id = anchor_ref[1]
+                    if image:
+                        media_info.poster_path = image
+                else:
+                    return 1, "无法查询到媒体信息", None
             if image:
                 media_info.poster_path = image
             has_source = bool(
@@ -435,14 +546,85 @@ class SubscribeAddService:
                         total_episode = media_info.total_episodes or 0
                 else:
                     total_episode = total_ep or (
-                        self._media.get_tmdb_season_episodes_num(tv_info=media_info.provider_data, season=int(season))
+                        self._media.get_tmdb_season_episodes_num(
+                            tv_info=media_info.provider_data, season=_season_number(season)
+                        )
                         if media_info.provider_data
                         else (media_info.total_episodes or 0)
                     )
+                if not total_episode:
+                    # 豆瓣/Bangumi 等非 TMDB 来源没有 provider_data，不能只依赖 TMDB 季集接口。
+                    # 统一走 MetadataService 的 provider 优先级解析，避免总集数落成 0。
+                    ref = media_info.get_media_ref()
+                    source_provider = (
+                        str(getattr(media_info, "anchor_provider", "") or "")
+                        or (ref.provider if ref is not None else "")
+                        or str(provider or "")
+                    )
+                    source_external = str(getattr(media_info, "anchor_external_id", "") or "") or (
+                        ref.external_id if ref is not None else ""
+                    )
+                    if self._metadata_service is not None and source_provider and source_external:
+                        try:
+                            total_episode = self._metadata_service.resolve_season_episode_count(
+                                provider=source_provider,
+                                external_id=source_external,
+                                title=str(name or media_info.title or ""),
+                                year=str(media_info.year or year or "") or None,
+                                media_type=mtype,
+                                season=_season_number(season, 1),
+                                content_profile=str(content_profile or "default"),
+                                allow_private=allow_private,
+                                permissions=permissions,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 季集解析失败保留 0，订阅仍可编辑
+                            log.warn(f"[SubscribeAdd]解析季集数失败 {name} S{season}: {exc}")
                 if not total_episode and media_info.provider_data:
                     return 3, f"第{season}季获取剧集数失败，请确认该季是否存在", media_info
-                media_info.begin_season = int(season or 0)
+                media_info.begin_season = _season_number(season, 0)
                 media_info.total_episodes = total_episode
+                series_key = None
+                if mtype in (MediaType.TV, MediaType.ANIME):
+                    series_provider = str(
+                        getattr(media_info, "anchor_provider", "")
+                        or getattr(media_info, "provider", "")
+                        or provider
+                        or ""
+                    )
+                    series_external = str(getattr(media_info, "anchor_external_id", "") or "")
+                    if not series_external:
+                        ref = _split_provider_ref(mediaid or metadata_ref)
+                        if ref:
+                            series_provider, series_external = ref
+                    if not series_external and media_info.tmdb_id:
+                        series_provider, series_external = "tmdb", str(media_info.tmdb_id)
+                    series_service = getattr(self, "_series_service", None)
+                    if series_provider and series_external and series_service is not None:
+                        try:
+                            resolution = series_service.resolve(
+                                provider=series_provider,
+                                external_id=str(series_external),
+                                title=str(name or media_info.title or ""),
+                                year=str(media_info.year or year or "") or None,
+                                season_number=requested_season,
+                                scope=str(content_profile or "default"),
+                                total_episodes=media_info.total_episodes,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 规范剧集失败不阻断订阅
+                            log.warn(f"[Subscribe]规范剧集解析失败，继续使用原锚点: {exc}")
+                        else:
+                            series_key = resolution.series_key
+                            media_info.begin_season = resolution.season_number
+                            # 续订断点必须按“解析后的真实季”查询；否则 S02 新订阅会拿 S01 的
+                            # 转移历史把 current_ep 推到 total+1，导致整季被判为无缺失、无法下载。
+                            season = resolution.season_number
+                            setattr(media_info, "series_key", resolution.series_key)
+                            if resolution.title:
+                                # 统一剧集模型：标题用母标题，季由 SEASON 字段表达
+                                media_info.title = resolution.title
+                                base_keyword, _ = SeriesService.split_title_season(str(keyword or ""))
+                                keyword = base_keyword or resolution.title
+                                name = resolution.title
                 if total_ep:
                     total = total_ep
                 else:
@@ -451,78 +633,63 @@ class SubscribeAddService:
                 # 避免重新订阅从头重复下载已下载剧集，或前端传入旧 current_ep 导致进度卡住。
                 # current_ep 语义 = 首个待下载集（与 RSS 兜底 range(current_ep, total+1) 一致）；
                 # 已获得连续 N 集 → 首个待下载 = N+1。转移记录集数最可靠，二者取较大值。
-                if media_info.tmdb_id and not str(media_info.tmdb_id).startswith("DB:"):
+                # 重订阅续订：统一按 media_ref/identity 查询历史，TMDB 只是 provider 之一。
+                ref = media_info.get_media_ref()
+                identity_id = getattr(media_info, "identity_id", None)
+                if ref is not None or identity_id:
                     continue_ep = 0
-                    # start = 订阅起点（首个待下载集）：中途订阅从第 N 集开始跟踪时，
-                    # 历史只有 N 之后的集，须从 N 数起而非从第 1 集（否则误判为 0）
                     sub_start = int(current_ep) if current_ep and str(current_ep).isdigit() else 1
+                    season_no = _season_number(season, 1)
+                    media_type = str(media_info.type.value) if media_info.type else None
+                    identity_ref = f"id:{identity_id}" if identity_id else ""
+                    provider_ref = f"{ref.provider}:{ref.external_id}" if ref is not None else ""
                     if self._transfer_history_manager:
-                        try:
-                            continue_ep = self._transfer_history_manager.get_contiguous_transferred_episode_by_tmdb(
-                                media_info.tmdb_id, int(season or 1), start=sub_start
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            log.debug(f"[SubscribeAdd] 查询转移历史失败: {e}")
-                    if self._download_repo:
-                        try:
-                            continue_ep = max(
-                                continue_ep,
-                                self._download_repo.get_contiguous_completed_episode_by_tmdb(
-                                    media_info.tmdb_id, int(season or 1), start=sub_start
-                                ),
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            log.debug(f"[SubscribeAdd] 查询下载历史失败: {e}")
-                    if continue_ep > 0:
-                        # 历史推导只向前：取 历史推导点 与 已传入/显式 current_ep 的较大者，
-                        # 避免前端回传旧进度把已转移的集误标回缺失
-                        current_ep = max(current_ep or 0, continue_ep + 1)
-                        log.info(
-                            f"[SubscribeAdd]{media_info.get_title_string()} S{season} "
-                            f"历史记录已有 {continue_ep} 集，从第 {current_ep} 集开始续订"
-                        )
-                else:
-                    # 非 TMDB 订阅按统一身份恢复断点，避免重订阅后从第 1 集重复下载。
-                    ref = media_info.get_media_ref()
-                    if ref is not None:
-                        continue_ep = 0
-                        sub_start = int(current_ep) if current_ep and str(current_ep).isdigit() else 1
-                        ref_key = f"{ref.provider}:{ref.external_id}"
-                        if self._transfer_history_manager:
+                        for ref_key in [value for value in (identity_ref, provider_ref) if value]:
                             try:
-                                continue_ep = self._transfer_history_manager.get_contiguous_transferred_episode_by_ref(
-                                    ref_key,
-                                    int(season or 1),
-                                    media_type=str(media_info.type.value) if media_info.type else None,
-                                    start=sub_start,
+                                continue_ep = max(
+                                    continue_ep,
+                                    self._transfer_history_manager.get_contiguous_transferred_episode_by_ref(
+                                        ref_key,
+                                        season_no,
+                                        media_type=media_type,
+                                        start=sub_start,
+                                    ),
                                 )
                             except Exception as e:  # noqa: BLE001
                                 log.debug(f"[SubscribeAdd] 查询转移历史失败: {e}")
-                        if self._download_repo:
+                    if self._download_repo:
+                        for ref_identity in [identity_id, None]:
+                            if not ref_identity and ref is None:
+                                continue
                             try:
                                 continue_ep = max(
                                     continue_ep,
                                     self._download_repo.get_contiguous_completed_episode_by_ref(
-                                        identity_id=getattr(media_info, "identity_id", None),
-                                        anchor_provider=ref.provider,
-                                        anchor_external_id=ref.external_id,
-                                        season=int(season or 1),
+                                        identity_id=ref_identity,
+                                        anchor_provider=ref.provider if ref is not None else None,
+                                        anchor_external_id=ref.external_id if ref is not None else None,
+                                        season=season_no,
                                         start=sub_start,
                                     ),
                                 )
                             except Exception as e:  # noqa: BLE001
                                 log.debug(f"[SubscribeAdd] 查询下载历史失败: {e}")
-                        if continue_ep > 0:
-                            current_ep = max(current_ep or 0, continue_ep + 1)
-                            log.info(
-                                f"[SubscribeAdd]{media_info.get_title_string()} S{season} "
-                                f"身份历史已有 {continue_ep} 集，从第 {current_ep} 集开始续订"
-                            )
+                    if continue_ep > 0:
+                        current_ep = max(current_ep or 0, continue_ep + 1)
+                        log.info(
+                            f"[SubscribeAdd]{media_info.get_title_string()} S{season} "
+                            f"身份历史已有 {continue_ep} 集，从第 {current_ep} 集开始续订"
+                        )
+                if not current_ep and total:
+                    # 新订阅未指定进度时，首个待下载集必须是 1，不能落成 0。
+                    current_ep = 1
                 if current_ep:
                     # 首个待下载集为 current_ep → 缺失集数 = total - current_ep + 1
                     lack = max(0, total - current_ep + 1)
                 else:
                     lack = total
+                if not total_ep:
+                    total_ep = total
                 identity_fields = self._identity_fields(
                     media_info,
                     mtype,
@@ -535,6 +702,7 @@ class SubscribeAddService:
                     media_info=media_info,
                     total=total,
                     lack=lack,
+                    series_key=series_key,
                     **identity_fields,
                     state=state,
                     rss_sites=rss_sites,
@@ -609,8 +777,8 @@ class SubscribeAddService:
                 media_info.poster_path = image
             if year:
                 media_info.year = str(year)
-            if season:
-                media_info.begin_season = int(season)
+            if season and not getattr(media_info, "series_key", None):
+                media_info.begin_season = _season_number(season)
             if mtype == MediaType.MOVIE:
                 identity_fields = self._identity_fields(
                     media_info,
@@ -656,6 +824,7 @@ class SubscribeAddService:
                     media_info=media_info,
                     total=0,
                     lack=0,
+                    series_key=series_key,
                     **identity_fields,
                     state=SubscribeState.RUNNING.value,
                     rss_sites=rss_sites,

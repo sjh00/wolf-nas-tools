@@ -24,6 +24,22 @@ class TRANSFERHISTORY(Base):
         Index("INDX_TRANSFER_HISTORY_SOURCE", "SOURCE_PATH", "SOURCE_FILENAME"),
         Index("INDX_TRANSFER_HISTORY_TMDBID", "TMDBID"),
         Index("INDX_TRANSFER_HISTORY_DEST", "DEST_PATH", "DEST_FILENAME"),
+        Index(
+            "uq_transfer_history_source_dest_backend",
+            "SOURCE_PATH",
+            "SOURCE_FILENAME",
+            "DEST_PATH",
+            "DEST_FILENAME",
+            "DST_BACKEND",
+            unique=True,
+            mysql_length={
+                "SOURCE_PATH": 128,
+                "SOURCE_FILENAME": 128,
+                "DEST_PATH": 128,
+                "DEST_FILENAME": 128,
+                "DST_BACKEND": 64,
+            },
+        ),
     )
 
     ID: Mapped[int] = mapped_column(Integer, Sequence("ID"), primary_key=True)
@@ -44,6 +60,7 @@ class TRANSFERHISTORY(Base):
     DST_BACKEND: Mapped[str | None] = mapped_column(String(64), nullable=True)
     DATE: Mapped[str] = mapped_column(String(20), index=True)
     IDENTITY_ID: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    SERIES_KEY: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     ANCHOR_PROVIDER: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ANCHOR_EXTERNAL_ID: Mapped[str | None] = mapped_column(String(255), nullable=True)
     CONTENT_PROFILE: Mapped[str | None] = mapped_column(String(64), nullable=True)

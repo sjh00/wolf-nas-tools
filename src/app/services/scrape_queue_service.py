@@ -7,14 +7,23 @@ from typing import Any
 
 import log
 from app.core.settings import settings
+from app.db.repositories.finalize_receipt_repository import FinalizeReceiptRepository
 from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepositoryAdapter
 from app.domain.lifecycle import LifecycleStage, LifecycleStatus
+from app.domain.media_ref import media_identity_key
 from app.domain.mediatypes import MediaType
 from app.events import Event
 from app.events.bus import EventBus
 from app.events.constants import MEDIA_EPISODE_TRANSFERRED, MEDIA_TRANSFER_FINISHED, SUBTITLE_DOWNLOAD
 from app.events.payloads import MediaEpisodeTransferredPayload, MediaTransferFinishedPayload, SubtitleDownloadPayload
-from app.infrastructure.task_queue import QueueUnavailableError, Task, TaskQueue, TaskWorker, create_task_queue
+from app.infrastructure.task_queue import (
+    QueueUnavailableError,
+    Task,
+    TaskQueue,
+    TaskStatus,
+    TaskWorker,
+    create_task_queue,
+)
 from app.infrastructure.thread import ThreadExecutor
 from app.media.models import MediaInfo
 from app.media.scraper import Scraper
@@ -43,12 +52,14 @@ class ScrapeQueueService:
         event_bus: EventBus | None = None,
         queue_name: str = "scrape",
         lifecycle: LifecycleProjector | None = None,
+        receipt_repo: FinalizeReceiptRepository | None = None,
     ):
         self._scraper = scraper
         self._max_workers = max(1, int(max_workers))
         self._message = message
         self._event_bus = event_bus
         self._lifecycle = lifecycle
+        self._receipt_repo = receipt_repo or FinalizeReceiptRepository()
         self._queue_name = queue_name
         self._queues: dict[str, TaskQueue] = {}
         self._workers: list[TaskWorker] = []
@@ -94,8 +105,12 @@ class ScrapeQueueService:
 
     def stop(self, shutdown_executor: bool = True) -> None:
         self._started = False
+        stopped = True
         for worker in self._workers:
-            worker.stop()
+            stopped = worker.stop() and stopped
+        if not stopped:
+            log.warn("[ScrapeQueue]仍有刮削任务运行，保留队列等待任务结束")
+            return
         for queue in self._queues.values():
             queue.close()
         self._workers.clear()
@@ -113,6 +128,9 @@ class ScrapeQueueService:
         finalize: dict[str, Any] | None = None,
     ) -> None:
         """提交单文件刮削；成功后由任务发布最终转移事件."""
+        if not dir_path or not file_name:
+            log.error(f"[ScrapeQueue]拒绝空路径刮削任务: dir={dir_path!r} file={file_name!r}")
+            return
         payload = {
             "media": JsonUtils.model_to_jsonable(media),
             "dir_path": dir_path,
@@ -130,6 +148,9 @@ class ScrapeQueueService:
         self._executor.submit(self._run_file_payload, payload, None)
 
     def submit_folder_scrape(self, path: str, dst_backend=None, mode: str = "force_all") -> None:
+        if not path:
+            log.error("[ScrapeQueue]拒绝空路径刮削任务")
+            return
         payload = {
             "path": path,
             "backend_id": str(getattr(dst_backend, "id", "") or ""),
@@ -146,7 +167,13 @@ class ScrapeQueueService:
         if queue is None:
             return None
         try:
-            return queue.enqueue(task_type, payload, dedup_key=dedup_key)
+            task = queue.enqueue(task_type, payload, dedup_key=dedup_key)
+            if task.status.terminal and task.status != TaskStatus.SUCCEEDED:
+                # 失败/死信/取消不吞新请求，换 dedup key 再排一次。
+                task = queue.enqueue(task_type, payload, dedup_key=f"{dedup_key}:retry:{task.id}")
+                if task.status.terminal:
+                    return None
+            return task
         except Exception as exc:  # noqa: BLE001
             log.warn(f"[ScrapeQueue]入队失败，回退线程池: {exc}")
             return None
@@ -167,11 +194,17 @@ class ScrapeQueueService:
             backend,
         )
         finalize = payload.get("finalize") or {}
+        already_in_library = bool(self._lifecycle and self._lifecycle.is_in_library(media))
         if ok:
-            self._finalize(media, finalize, metadata_ok=True)
+            if not already_in_library:
+                self._finalize(media, finalize, metadata_ok=True)
             if task is not None:
                 self._record_media(
                     media, LifecycleStage.SCRAPED, LifecycleStatus.SUCCEEDED, "scrape.completed", task, progress=100
+                )
+                # 刮削只发生在最终媒体库路径，完成即代表文件已入库。
+                self._record_media(
+                    media, LifecycleStage.IN_LIBRARY, LifecycleStatus.SUCCEEDED, "library.present", task, progress=100
                 )
             return {"scraped": True}
         if task is not None:
@@ -183,8 +216,7 @@ class ScrapeQueueService:
                 task,
                 error="刮削失败",
             )
-        if task is None or task.attempts + 1 >= task.max_attempts:
-            self._finalize(media, finalize, metadata_ok=False)
+        # 元数据失败不能触发入库/订阅完成事件；文件是否已落盘由生命周期单独表达。
         raise RuntimeError(f"刮削失败: {payload.get('dir_path')}/{payload.get('file_name')}")
 
     def _run_folder_task(self, task: Task) -> dict[str, Any]:
@@ -201,18 +233,50 @@ class ScrapeQueueService:
             ExceptionUtils.exception_traceback(exc)
             raise RuntimeError(f"目录刮削失败 {path}: {exc}") from exc
 
+    def finalize_duplicate(self, media: MediaInfo, finalize: dict[str, Any]) -> None:
+        """目标已存在且元数据完整：记录入库、发送消息并发布转移完成事件。"""
+        if self._lifecycle is not None and self._lifecycle.is_in_library(media):
+            return
+        key = f"library:duplicate:{media.get_title_string()}:{media.get_season_string()}:{media.get_episode_string()}"
+        self._record_media(
+            media,
+            LifecycleStage.IN_LIBRARY,
+            LifecycleStatus.SUCCEEDED,
+            "library.present",
+            None,
+            progress=100,
+            event_key=key,
+        )
+        self._finalize(media, finalize, metadata_ok=True)
+
     def _finalize(self, media: MediaInfo, finalize: dict[str, Any], *, metadata_ok: bool) -> None:
         if not finalize or self._event_bus is None:
             return
+        receipt_key = self._finalize_receipt_key(media)
+        try:
+            if not self._receipt_repo.claim(receipt_key):
+                log.info(f"[ScrapeQueue]定稿已处理，跳过重复通知: {receipt_key}")
+                return
+        except Exception as exc:  # noqa: BLE001 - 收据不可用时继续定稿，避免阻塞入库
+            log.warn(f"[ScrapeQueue]定稿收据写入失败，继续处理: {exc}")
         in_from = finalize.get("in_from")
-        if metadata_ok and media.type == MediaType.MOVIE and self._message is not None:
+        notify = bool(finalize.get("notify", True))
+        if metadata_ok and notify and self._message is not None:
             try:
-                self._message.send_transfer_movie_message(
-                    in_from,
-                    media,
-                    int(finalize.get("exist_filenum") or 0),
-                    bool(finalize.get("category_flag")),
-                )
+                if media.type == MediaType.MOVIE:
+                    self._message.send_transfer_movie_message(
+                        in_from,
+                        media,
+                        int(finalize.get("exist_filenum") or 0),
+                        bool(finalize.get("category_flag")),
+                    )
+                elif media.type in (MediaType.TV, MediaType.ANIME):
+                    self._message.send_transfer_tv_message(
+                        [media],
+                        in_from,
+                        int(finalize.get("exist_filenum") or 0),
+                        bool(finalize.get("category_flag")),
+                    )
             except Exception as exc:  # noqa: BLE001
                 log.warn(f"[ScrapeQueue]发送入库消息失败: {exc}")
 
@@ -262,6 +326,15 @@ class ScrapeQueueService:
                 )
             )
 
+    @staticmethod
+    def _finalize_receipt_key(media: MediaInfo) -> str:
+        try:
+            identity = media_identity_key(media)
+        except Exception:  # noqa: BLE001 - 兜底避免收据影响定稿
+            identity = f"{getattr(media, 'type', '')}:{media.get_name()}:{getattr(media, 'year', '')}"
+        episodes = ",".join(str(item) for item in (media.get_episode_list() or []))
+        return f"{identity}|s{media.get_season_seq()}|e{episodes}"
+
     def _scrape_file(self, media, dir_path, file_name, file_ext, dst_backend, *, force: bool = False) -> bool:
         try:
             result = self._scraper.gen_scraper_files(
@@ -288,6 +361,7 @@ class ScrapeQueueService:
         *,
         progress: int | None = None,
         error: str | None = None,
+        event_key: str | None = None,
     ) -> None:
         if self._lifecycle is None:
             return
@@ -303,7 +377,7 @@ class ScrapeQueueService:
                 retry_count=task.attempts if task else 0,
                 error=error,
                 payload={"queue": task.queue_name, "task_id": task.id} if task else {},
-                event_key=f"scrape:{task.id}:{event_type}:{task.attempts}" if task else None,
+                event_key=event_key or (f"scrape:{task.id}:{event_type}:{task.attempts}" if task else None),
             )
         except Exception as exc:  # noqa: BLE001
             log.warn(f"[Lifecycle]记录刮削生命周期失败: {exc}")

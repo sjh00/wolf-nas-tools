@@ -21,14 +21,14 @@ from api.deps import (
 from app.core.error_codes import ErrorCode
 from app.core.system_config import SystemConfig
 from app.domain.entities.custom_rss import custom_rss_id
-from app.domain.enums import SystemConfigKey
 from app.domain.media_type_utils import MediaTypeMapper
 from app.domain.mediatypes import MediaType, normalize_media_type_input
 from app.media import meta_info
-from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
 from app.services.apikey_service import APIKeyService
+from app.services.metadata_permissions import can_use_private_metadata
+from app.services.subscribe.default_settings import default_setting_key, get_default_setting
 from app.services.subscribe.management.calendar_service import SubscribeCalendarService
 from app.services.subscribe.management.history_service import SubscribeHistoryService
 from app.services.subscribe.management.service import SubscribeService
@@ -189,7 +189,7 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "channel": channel,
         "keyword": req.keyword,
         "fuzzy_match": req.fuzzy_match,
-        "mediaid": req.mediaid,
+        "mediaid": req.mediaid or req.metadata_ref,
         "metadata_ref": req.metadata_ref,
         "provider": req.provider,
         "rss_sites": req.rss_sites,
@@ -220,7 +220,7 @@ def _build_update_kwargs(req: AddRssMediaRequest) -> dict:
         "year": req.year,
         "keyword": req.keyword,
         "fuzzy_match": req.fuzzy_match,
-        "mediaid": req.mediaid,
+        "mediaid": req.mediaid or req.metadata_ref,
         "metadata_ref": req.metadata_ref,
         "provider": req.provider,
         "content_profile": profile,
@@ -271,13 +271,18 @@ def _invoke_for_seasons(
     msg = ""
     media_info = None
     if isinstance(season, list):
+        codes: list[int] = []
         for sea in season:
-            kwargs["season"] = sea
+            kwargs["season"] = _normalize_season(sea) or sea
             kwargs.pop("total_ep", None)
             kwargs.pop("current_ep", None)
             code, msg, media_info = invoke(**kwargs)
-            if code != 0:
-                break
+            codes.append(code)
+            if code not in (0, 9):
+                return code, msg, media_info
+        if codes and all(item == 9 for item in codes):
+            return 9, "订阅已存在", media_info
+        return 0, "添加订阅成功", media_info
     else:
         kwargs["season"] = season
         if total_ep is not None:
@@ -342,16 +347,12 @@ def add_rss_media(
     kwargs["user_id"] = user.user_id
     permissions = set(getattr(user, "permissions", []) or [])
     allow_private = bool(getattr(user, "is_superadmin", False)) or "metadata:private:view" in permissions
-    profile = str(kwargs.get("content_profile") or "").strip()
-    # core 画像（default/anime）是公共能力；其余画像与 private provider 需要显式授权。
-    provider_key = str(req.provider or "").strip().lower()
-    if not provider_key:
-        metadata_ref = str(req.metadata_ref or "")
-        if ":" in metadata_ref:
-            provider_key = metadata_ref.split(":", 1)[0].strip().lower()
-    descriptor = getattr(metadata_registry.get_provider(provider_key), "descriptor", None) if provider_key else None
-    private_provider = getattr(descriptor, "visibility", "public") == "private"
-    if not allow_private and (private_provider or profile not in ("", "default", "anime")):
+    if not can_use_private_metadata(
+        user,
+        provider=req.provider,
+        metadata_ref=req.metadata_ref,
+        content_profile=kwargs.get("content_profile"),
+    ):
         return fail(msg="无权创建该内容画像的订阅")
     kwargs["allow_private"] = allow_private
     kwargs["permissions"] = None if getattr(user, "is_superadmin", False) else permissions
@@ -407,6 +408,13 @@ def update_rss_media(
     kwargs["user"] = user
     if not req.rssid:
         return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="缺少订阅ID", page=req.page, name=req.name, rssid=None)
+    if not can_use_private_metadata(
+        user,
+        provider=req.provider,
+        metadata_ref=req.metadata_ref,
+        content_profile=kwargs.get("content_profile"),
+    ):
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="无权使用该内容画像", rssid=req.rssid)
 
     denied = _check_site_grants(app_context, user, kwargs)
     if denied:
@@ -463,8 +471,15 @@ def refresh_rss(
     req: RefreshRssRequest,
     user: UserContext = Depends(require_permission("subscription:manage")),
     monitor: SubscriptionMonitor = Depends(get_subscription_monitor),
+    svc: SubscribeService = Depends(get_subscribe_service),
 ):
     mtype, _profile = _resolve_type_and_profile(req.type, req.content_profile)
+    if mtype == MediaType.MOVIE:
+        owned = svc.get_subscribe_movies(rid=req.rssid, user=user)
+    else:
+        owned = svc.get_subscribe_tvs(rid=req.rssid, user=user)
+    if not owned:
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="订阅不存在或无权访问", rssid=req.rssid)
     monitor.refresh_subscription(mtype=mtype.value, rssid=req.rssid)
     return success(data=req.page)
 
@@ -480,16 +495,24 @@ def remove_rss_media(
         name = meta_info(title=name).get_name()
     rssid = req.rssid
     mtype, _profile = _resolve_type_and_profile(req.type, req.content_profile)
+    if rssid is None and req.anchor_provider and req.anchor_external_id:
+        rssid = svc.get_subscribe_id_by_anchor(
+            mtype,
+            req.anchor_provider,
+            req.anchor_external_id,
+            season=_normalize_season(req.season),
+            user=user,
+        )
     deleted = 0
     if rssid:
-        deleted = int(svc.delete_subscribe(mtype=mtype, rssid=rssid, user=user) or 0)
+        deleted = int(svc.cancel_subscribe(mtype=mtype, rssid=rssid, user=user) or 0)
         if deleted == 0 and not str(req.type or "").strip() and not str(req.content_profile or "").strip():
             # 只有调用方未指定类型时，才尝试另一张表。
             other = MediaType.TV if mtype == MediaType.MOVIE else MediaType.MOVIE
-            deleted = int(svc.delete_subscribe(mtype=other, rssid=rssid, user=user) or 0)
+            deleted = int(svc.cancel_subscribe(mtype=other, rssid=rssid, user=user) or 0)
     elif mtype == MediaType.MOVIE:
         deleted = int(
-            svc.delete_subscribe(
+            svc.cancel_subscribe(
                 mtype=MediaType.MOVIE,
                 title=name or "",
                 year=req.year,
@@ -502,7 +525,7 @@ def remove_rss_media(
     elif mtype in (MediaType.TV, MediaType.ANIME):
         # 动漫订阅存于电视剧表，删除同样走 TV
         deleted = int(
-            svc.delete_subscribe(
+            svc.cancel_subscribe(
                 mtype=MediaType.TV,
                 title=name or "",
                 season=_normalize_season(req.season),
@@ -539,18 +562,10 @@ def rss_detail(
 def get_default_rss_setting(
     req: GetDefaultSubscribeSettingRequest,
     user: UserContext = Depends(require_any_permission("subscription:view", "subscription:manage")),
-    svc: SubscribeService = Depends(get_subscribe_service),
+    cfg: SystemConfig = Depends(get_system_config_service),
 ):
     parsed, profile = _resolve_type_and_profile(req.mtype, req.content_profile)
-    if parsed in (MediaType.TV, MediaType.ANIME):
-        setting = svc.default_subscribe_setting_tv
-    elif parsed == MediaType.MOVIE:
-        if profile and profile != "default":
-            setting = SystemConfig().get(f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}") or {}
-        else:
-            setting = svc.default_subscribe_setting_mov
-    else:
-        setting = {}
+    setting = get_default_setting(cfg, parsed, profile, user.user_id)
     if setting:
         return success(data=setting)
     return success(data={})
@@ -567,13 +582,10 @@ def save_default_rss_setting(
     data.pop("mtype", None)
     profile = (data.pop("content_profile", None) or "").strip()
     parsed, profile = _resolve_type_and_profile(mtype, profile)
-    # 动漫与电视剧共用一份默认设置（读取侧同样把 ANIME 归到 TV），否则动漫页保存会被静默丢弃
-    if parsed in (MediaType.TV, MediaType.ANIME):
-        cfg.set(key=SystemConfigKey.DefaultSubscribeSettingTV, value=data)
-    elif parsed == MediaType.MOVIE and profile and profile != "default":
-        cfg.set(key=f"{SystemConfigKey.DefaultSubscribeSettingMOV.value}::{profile}", value=data)
-    elif parsed == MediaType.MOVIE:
-        cfg.set(key=SystemConfigKey.DefaultSubscribeSettingMOV, value=data)
+    # 默认设置按用户保存；超级管理员同时更新全局兜底，供新用户继承。
+    cfg.set(key=default_setting_key(parsed, profile, user.user_id), value=data)
+    if user.is_superadmin:
+        cfg.set(key=default_setting_key(parsed, profile, None), value=data)
     return success()
 
 
@@ -701,6 +713,8 @@ def get_tv_subscribed_seasons(
         title=req.name,
         year=req.year,
         user=user,
+        anchor_provider=req.anchor_provider,
+        anchor_external_id=req.anchor_external_id,
     )
     return success(data={"seasons": seasons})
 

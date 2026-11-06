@@ -137,7 +137,14 @@ class _IDownloadClient(metaclass=_DownloadClientMeta):
             if match_path and not replace_flag:
                 continue
             subpath = self._get_content_subpath(torrent) or torrent.name or ""
-            trans_tasks.append({"path": os.path.join(true_path, subpath).replace("\\", "/"), "id": torrent.id})
+            trans_tasks.append(
+                {
+                    "path": os.path.join(true_path, subpath).replace("\\", "/"),
+                    "id": torrent.id,
+                    "name": torrent.name or "",
+                    "tags": list(labels),
+                }
+            )
         if tag_filtered:
             log.debug(f"[{self.client_name}]{self.name} 标签隔离：{tag_filtered} 个种子未包含指定标签：{tag}（已忽略）")
         if no_path:
@@ -294,9 +301,11 @@ class _IDownloadClient(metaclass=_DownloadClientMeta):
     @staticmethod
     def get_replace_path(path: str, downloaddir: list | None) -> tuple[str, bool]:
         """对目录路径进行转换"""
-        if not path or not downloaddir:
+        if not path:
             return "", False
         path = os.path.normpath(path)
+        if not downloaddir:
+            return path, False
         for attr in downloaddir:
             save_path = attr.get("save_path")
             if not save_path:

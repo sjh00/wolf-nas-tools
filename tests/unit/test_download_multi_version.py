@@ -1,4 +1,4 @@
-"""DownloadService 下载前多版本检测 单元测试."""
+﻿"""DownloadService 下载前多版本检测 单元测试."""
 
 from typing import Any
 from unittest.mock import MagicMock
@@ -84,6 +84,7 @@ class TestDownloadFromLinkConfirm:
             page_url="",
             size="0",
             seeders="0",
+            peers="0",
             uploadvolumefactor="1",
             downloadvolumefactor="1",
             dl_dir="",
@@ -112,6 +113,7 @@ class TestDownloadFromLinkConfirm:
             page_url="",
             size="0",
             seeders="0",
+            peers="0",
             uploadvolumefactor="1",
             downloadvolumefactor="1",
             dl_dir="",

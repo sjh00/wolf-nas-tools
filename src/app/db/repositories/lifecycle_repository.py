@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -10,7 +11,7 @@ from sqlalchemy import func
 import log
 from app.db.models.download import DOWNLOADHISTORY
 from app.db.models.lifecycle import MediaLifecycle, MediaLifecycleEvent
-from app.db.models.subscribe import SubscribeTvEpisodes, SubscribeTvs
+from app.db.models.subscribe import SubscribeHistory, SubscribeMovies, SubscribeTvEpisodes, SubscribeTvs
 from app.db.models.transfer import TRANSFERHISTORY
 from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.data_scope import apply_owner_scope
@@ -26,10 +27,14 @@ class LifecycleRepository(BaseRepository):
     ) -> bool:
         """幂等写入事件并更新当前快照；EVENT_KEY 已存在时返回 False."""
         with self.session() as db:
-            exists = db.query(MediaLifecycleEvent.ID).filter(MediaLifecycleEvent.EVENT_KEY == event.EVENT_KEY).first()
+            exists = db.query(MediaLifecycleEvent).filter(MediaLifecycleEvent.EVENT_KEY == event.EVENT_KEY).first()
             if exists is not None:
                 if update_snapshot:
-                    self._apply_snapshot(db, event, snapshot)
+                    # 重复事件必须按首次发生时间修复快照；否则重启后的旧事件
+                    # 会被误判为新一轮流转，把已入库状态打回转移排队。
+                    repair_snapshot = dict(snapshot)
+                    repair_snapshot["LAST_EVENT_AT"] = exists.OCCURRED_AT
+                    self._apply_snapshot(db, exists, repair_snapshot)
                 db.commit()
                 return False
             db.add(event)
@@ -56,8 +61,27 @@ class LifecycleRepository(BaseRepository):
             return
         current_rank = stage_rank(current.STAGE)
         event_rank = stage_rank(event.STAGE)
-        advanced = event_rank > current_rank
-        regressed = event_rank < current_rank
+        # 已入库/已刮削/已转移后再次出现下载/搜索/转移排队事件，视为新一轮流转；
+        # 否则阶段单调会永久掩盖重下/洗版活动。
+        restart_events = {
+            "download.queued",
+            "download.started",
+            "search.started",
+            "transfer.queued",
+            "transfer.started",
+            "scrape.queued",
+            "scrape.started",
+            "reconcile.download.queued",
+            "reconcile.download.downloading",
+        }
+        terminal_stages = {"in_library", "scraped", "transferred", "downloaded"}
+        restart = (
+            str(current.STAGE or "") in terminal_stages
+            and str(event.EVENT_TYPE or "") in restart_events
+            and event.OCCURRED_AT > (current.STAGE_STARTED_AT or event.OCCURRED_AT)
+        )
+        advanced = restart or event_rank > current_rank
+        regressed = event_rank < current_rank and not restart
         if not advanced and event.OCCURRED_AT < (current.LAST_EVENT_AT or event.OCCURRED_AT):
             # 旧事件不回退状态，但可以用更具体的元数据来源修复 content_id 兜底。
             provider = str(snapshot.get("SOURCE_PROVIDER") or "")
@@ -79,6 +103,7 @@ class LifecycleRepository(BaseRepository):
                 "LAST_ERROR",
                 "NEXT_RETRY_AT",
                 "RETRY_COUNT",
+                "LAST_EVENT_AT",
             }
         for key, value in snapshot.items():
             if key in skip_keys:
@@ -91,7 +116,7 @@ class LifecycleRepository(BaseRepository):
                 and current.SOURCE_PROVIDER not in {None, "", "content_id"}
             ):
                 continue
-            if key == "LAST_EVENT_AT" and advanced:
+            if key == "LAST_EVENT_AT" and advanced and not restart:
                 value = max(value, current.LAST_EVENT_AT or value)
             setattr(current, key, value)
         if advanced:
@@ -169,7 +194,14 @@ class LifecycleRepository(BaseRepository):
             }
 
     def list_events(
-        self, identity_id: str, season: int = 0, episode: int = 0, limit: int = 200, *, user=None
+        self,
+        identity_id: str,
+        season: int = 0,
+        episode: int = 0,
+        limit: int = 200,
+        *,
+        user=None,
+        until: datetime | None = None,
     ) -> list[MediaLifecycleEvent]:
         with self.readonly() as db:
             query = db.query(MediaLifecycleEvent).filter(
@@ -179,6 +211,9 @@ class LifecycleRepository(BaseRepository):
             )
             if user is not None:
                 query = apply_owner_scope(query, MediaLifecycleEvent, user, include_shared=False)
+            if until is not None:
+                # 只展示快照已采纳的事件；新一轮中被旧规则忽略的事件不混入当前时间线
+                query = query.filter(MediaLifecycleEvent.OCCURRED_AT <= until)
             rows = (
                 query.order_by(MediaLifecycleEvent.OCCURRED_AT.asc(), MediaLifecycleEvent.ID.asc())
                 .limit(max(1, min(1000, int(limit))))
@@ -261,10 +296,21 @@ class LifecycleRepository(BaseRepository):
                     if key not in activity or occurred > activity[key]:
                         activity[key] = occurred
             subscription_map = _subscription_map(db, identities)
-        grouped = _group_lifecycle_rows(rows)
-        for item in grouped:
-            item["ACTIVITY_AT"] = activity.get(str(item.get("IDENTITY_ID")), datetime.min)
-        _apply_subscription_state(grouped, subscription_map)
+            active_identities = _active_subscription_identities(db, identities)
+            completed_identities = _completed_subscription_identities(db, identities)
+            cancelled_identities = _cancelled_subscription_identities(db, identities)
+            grouped = _group_lifecycle_rows(rows)
+            for item in grouped:
+                item["ACTIVITY_AT"] = activity.get(str(item.get("IDENTITY_ID")), datetime.min)
+            _apply_subscription_state(
+                grouped, subscription_map, active_identities, completed_identities, cancelled_identities
+            )
+            existing = {str(item.get("IDENTITY_ID") or "") for item in grouped}
+            synthetic = _active_subscription_items(db, user, existing)
+        if keyword:
+            key = keyword.strip().lower()
+            synthetic = [item for item in synthetic if key in str(item.get("TITLE") or "").lower()]
+        grouped.extend(synthetic)
         grouped.sort(
             key=lambda item: (item.get("ACTIVITY_AT") or datetime.min, item.get("ID") or 0),
             reverse=True,
@@ -319,7 +365,13 @@ class LifecycleRepository(BaseRepository):
             grouped = _group_lifecycle_rows(rows)
             if not grouped:
                 return None
-            _apply_subscription_state(grouped, _subscription_map(db, [identity_id]))
+            _apply_subscription_state(
+                grouped,
+                _subscription_map(db, [identity_id]),
+                _active_subscription_identities(db, [identity_id]),
+                _completed_subscription_identities(db, [identity_id]),
+                _cancelled_subscription_identities(db, [identity_id]),
+            )
             return grouped[0]
 
     def resolve_identity_by_anchor(self, provider: str | None, external_id: str | None) -> str | None:
@@ -385,6 +437,26 @@ class LifecycleRepository(BaseRepository):
                 .all()
             )
 
+    def list_blocked_downloads(self, limit: int = 500) -> list[MediaLifecycle]:
+        """下载阶段被标记 blocked 的快照，供活跃下载心跳恢复."""
+        with self.readonly() as db:
+            return (
+                db.query(MediaLifecycle)
+                .filter(
+                    MediaLifecycle.IDENTITY_ID != "preview",
+                    MediaLifecycle.STATUS == LifecycleStatus.BLOCKED.value,
+                    MediaLifecycle.STAGE.in_(
+                        [
+                            LifecycleStage.DOWNLOAD_QUEUED.value,
+                            LifecycleStage.DOWNLOADING.value,
+                        ]
+                    ),
+                )
+                .order_by(MediaLifecycle.LAST_EVENT_AT.asc())
+                .limit(max(1, int(limit)))
+                .all()
+            )
+
     def list_subscription_summaries(self, identity_id: str, *, user=None) -> list[dict[str, Any]]:
         """读取订阅侧总集数，用于补齐尚未进入生命周期记录的分集。"""
         with self.readonly() as db:
@@ -418,6 +490,10 @@ class LifecycleRepository(BaseRepository):
                         "missing_episodes": missing_by_rss.get(str(row.ID), []),
                         "state": row.STATE,
                         "name": row.NAME,
+                        "year": getattr(row, "YEAR", None),
+                        "anchor_provider": getattr(row, "ANCHOR_PROVIDER", None) or getattr(row, "PROVIDER", None),
+                        "content_profile": getattr(row, "CONTENT_PROFILE", None),
+                        "user_id": getattr(row, "USER_ID", None),
                     }
                 )
             return result
@@ -430,7 +506,15 @@ class LifecycleRepository(BaseRepository):
             rows = query.all()
             identities = list({str(row.IDENTITY_ID) for row in rows})
             grouped = _group_lifecycle_rows(rows)
-            _apply_subscription_state(grouped, _subscription_map(db, identities))
+            _apply_subscription_state(
+                grouped,
+                _subscription_map(db, identities),
+                _active_subscription_identities(db, identities),
+                _completed_subscription_identities(db, identities),
+                _cancelled_subscription_identities(db, identities),
+            )
+            existing = {str(item.get("IDENTITY_ID") or "") for item in grouped}
+            grouped.extend(_active_subscription_items(db, user, existing))
         by_status: dict[str, int] = {}
         by_stage: dict[str, int] = {}
         for item in grouped:
@@ -441,6 +525,121 @@ class LifecycleRepository(BaseRepository):
     @staticmethod
     def event_payload(value: Any) -> str:
         return JsonUtils.dumps(JsonUtils.to_jsonable(value or {}))
+
+
+def _active_subscription_items(db, user, existing: set[str]) -> list[dict[str, Any]]:
+    """把当前活跃订阅补进读模型，避免没有生命周期事件时漏掉在途订阅."""
+    result: list[dict[str, Any]] = []
+    now = datetime.now()
+    specs = ((SubscribeTvs, "tv"), (SubscribeMovies, "movie"))
+    for model, default_type in specs:
+        query = db.query(model).filter(
+            model.STATE.in_(["D", "S", "R"]),
+            model.IDENTITY_ID.isnot(None),
+        )
+        if user is not None:
+            query = apply_owner_scope(query, model, user, include_shared=False)
+        for row in query.all():
+            identity_id = str(getattr(row, "IDENTITY_ID", "") or "")
+            if not identity_id or identity_id in existing:
+                continue
+            total = int(getattr(row, "TOTAL", 0) or getattr(row, "TOTAL_EP", 0) or 0)
+            current = int(getattr(row, "CURRENT_EP", 0) or 0)
+            lack = int(getattr(row, "LACK", 0) or 0)
+            if total and 0 < current <= total:
+                lack = max(0, total - current + 1)
+            completed = max(0, total - lack) if total else 0
+            profile = str(getattr(row, "CONTENT_PROFILE", "") or "default")
+            media_type = "anime" if profile == "anime" else default_type
+            season_match = re.search(r"\d+", str(getattr(row, "SEASON", "") or ""))
+            season = int(season_match.group()) if season_match else 0
+            state = str(getattr(row, "STATE", "") or "")
+            stage = LifecycleStage.SEARCHING.value if state == "S" else LifecycleStage.SUBSCRIBED.value
+            result.append(
+                {
+                    "ID": 0,
+                    "IDENTITY_ID": identity_id,
+                    "MEDIA_TYPE": media_type,
+                    "SEASON": season,
+                    "EPISODE": 0,
+                    "TITLE": getattr(row, "NAME", None),
+                    "YEAR": getattr(row, "YEAR", None),
+                    "POSTER": getattr(row, "POSTER", None) or getattr(row, "IMAGE", None),
+                    "STAGE": stage,
+                    "STATUS": "queued" if state == "D" else "running",
+                    "RUN_ID": None,
+                    "TRACE_ID": None,
+                    "PROGRESS": round(completed * 100 / total) if total else 0,
+                    "SOURCE_PROVIDER": getattr(row, "ANCHOR_PROVIDER", None) or getattr(row, "PROVIDER", None),
+                    "CONTENT_PROFILE": profile,
+                    "USER_ID": getattr(row, "USER_ID", None),
+                    "STAGE_STARTED_AT": now,
+                    "LAST_EVENT_AT": now,
+                    "NEXT_RETRY_AT": None,
+                    "RETRY_COUNT": 0,
+                    "LAST_ERROR": None,
+                    "EPISODE_COUNT": total or (1 if default_type == "movie" else 0),
+                    "COMPLETED_EPISODES": completed,
+                    "IN_LIBRARY_EPISODES": completed,
+                    "SUBSCRIBED_EPISODES": completed,
+                    "MISSING": False,
+                    "ACTIVITY_AT": now,
+                }
+            )
+    return result
+
+
+def _active_subscription_identities(db, identities: list[str]) -> set[str]:
+    """当前仍存在的订阅身份（含电影/剧集），用于识别已取消订阅."""
+    if not identities:
+        return set()
+    active: set[str] = set()
+    for model in (SubscribeTvs, SubscribeMovies):
+        rows = (
+            db.query(model.IDENTITY_ID)
+            .filter(
+                model.IDENTITY_ID.in_(identities),
+                model.IDENTITY_ID.isnot(None),
+            )
+            .all()
+        )
+        active.update(str(row[0]) for row in rows if row[0])
+    return active
+
+
+def _completed_subscription_identities(db, identities: list[str]) -> set[str]:
+    """已有完成订阅历史的身份，不能再被投影成“已取消”."""
+    if not identities:
+        return set()
+    rows = (
+        db.query(SubscribeHistory.IDENTITY_ID)
+        .filter(
+            SubscribeHistory.IDENTITY_ID.in_(identities),
+            SubscribeHistory.IDENTITY_ID.isnot(None),
+        )
+        .all()
+    )
+    return {str(row[0]) for row in rows if row[0]}
+
+
+def _cancelled_subscription_identities(db, identities: list[str]) -> set[str]:
+    """根据最新订阅事件判断取消状态；后续 search.started 表示重新订阅."""
+    if not identities:
+        return set()
+    rows = (
+        db.query(MediaLifecycleEvent.IDENTITY_ID, MediaLifecycleEvent.EVENT_TYPE)
+        .filter(
+            MediaLifecycleEvent.IDENTITY_ID.in_(identities),
+            MediaLifecycleEvent.EVENT_TYPE.in_(["search.started", "subscribe.cancelled", "subscribe.completed"]),
+        )
+        .order_by(MediaLifecycleEvent.ID.asc())
+        .all()
+    )
+    latest: dict[str, str] = {}
+    for identity, event_type in rows:
+        if identity:
+            latest[str(identity)] = str(event_type)
+    return {identity for identity, event_type in latest.items() if event_type == "subscribe.cancelled"}
 
 
 def _subscription_map(db, identities: list[str]) -> dict[str, tuple[int, str, int]]:
@@ -475,11 +674,41 @@ def _subscription_map(db, identities: list[str]) -> dict[str, tuple[int, str, in
     return result
 
 
-def _apply_subscription_state(grouped: list[dict[str, Any]], subscription_map: dict[str, tuple[int, str, int]]) -> None:
+def _apply_subscription_state(
+    grouped: list[dict[str, Any]],
+    subscription_map: dict[str, tuple[int, str, int]],
+    active_identities: set[str] | None = None,
+    completed_identities: set[str] | None = None,
+    cancelled_identities: set[str] | None = None,
+) -> None:
     """用订阅总集数约束整季状态，避免只统计已产生生命周期记录的分集。"""
+    active_identities = active_identities or set()
+    completed_identities = completed_identities or set()
+    cancelled_identities = cancelled_identities or set()
     for item in grouped:
-        sub = subscription_map.get(str(item.get("IDENTITY_ID")))
+        identity = str(item.get("IDENTITY_ID") or "")
+        sub = subscription_map.get(identity)
+        if (
+            identity not in active_identities
+            and identity in cancelled_identities
+            and str(item.get("STAGE") or "") != LifecycleStage.IN_LIBRARY.value
+        ):
+            item["STATUS"] = LifecycleStatus.CANCELLED.value
+            continue
         if not sub:
+            # 订阅已取消/删除但生命周期仍停在订阅中：投影为已取消，不保留“进行中”假象。
+            if (
+                identity not in active_identities
+                and identity not in completed_identities
+                and str(item.get("STAGE") or "") in {LifecycleStage.SUBSCRIBED.value, LifecycleStage.SEARCHING.value}
+                and str(item.get("STATUS") or "")
+                in {
+                    LifecycleStatus.QUEUED.value,
+                    LifecycleStatus.RUNNING.value,
+                    LifecycleStatus.RETRYING.value,
+                }
+            ):
+                item["STATUS"] = LifecycleStatus.CANCELLED.value
             continue
         total_ep, sub_state, subscribed_episodes = sub
         completed = int(item.get("COMPLETED_EPISODES") or 0)
@@ -491,10 +720,20 @@ def _apply_subscription_state(grouped: list[dict[str, Any]], subscription_map: d
             item["PROGRESS"] = round(completed * 100 / total_ep)
         if sub_state in {"D", "S", "R"}:
             # 活跃订阅只在存在真实队列任务时进入下载/转移/刮削阶段；
-            # 否则停留在订阅中，避免把“等待下一集”误报成下载中。
+            # 已刮削/已入库的分集保留终态，避免把“等待下一集”覆盖成订阅中。
             active_stage = str(item.get("ACTIVE_STAGE") or "")
-            item["STAGE"] = active_stage or LifecycleStage.SUBSCRIBED.value
-            item["STATUS"] = "queued" if sub_state == "D" else "running"
+            stage_value = str(item.get("STAGE") or "")
+            terminal = {LifecycleStage.SCRAPED.value, LifecycleStage.IN_LIBRARY.value}
+            if active_stage:
+                item["STAGE"] = active_stage
+                item["STATUS"] = "queued" if sub_state == "D" else "running"
+            elif stage_value not in terminal:
+                item["STAGE"] = LifecycleStage.SUBSCRIBED.value
+                item["STATUS"] = "queued" if sub_state == "D" else "running"
+            elif item.get("STATUS") == LifecycleStatus.SUCCEEDED.value:
+                # 订阅仍活跃，只是最新一集已入库；保留已入库阶段，
+                # 但状态回到进行中，避免整部剧从“进行中”列表消失。
+                item["STATUS"] = "queued" if sub_state == "D" else "running"
         elif sub_state == "E":
             item["STATUS"] = "failed"
         elif sub_state == "N":

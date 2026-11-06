@@ -14,6 +14,7 @@ from typing import Any
 
 import log
 from app.core.exceptions import PluginError
+from app.indexer.contract.http import HttpIndexerProvider
 from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.media.metadata.registry import registry as metadata_registry
 from app.media.scraper.processor_registry import scraper_processor_registry
@@ -340,9 +341,11 @@ class PluginSandbox:
 
         except PluginError as e:
             log.error(f"[Sandbox] 插件加载失败 {plugin_id}: {e}")
+            self.unload(plugin_id, uninstalling=False)
             return False
         except Exception as e:  # noqa: BLE001
             log.error(f"[Sandbox] 插件加载失败 {plugin_id}: {e}")
+            self.unload(plugin_id, uninstalling=False)
             return False
 
     def _load_manifest_metadata(self, ctx, plugin_id: str, plugin_path: str, manifest) -> None:
@@ -353,6 +356,7 @@ class PluginSandbox:
         specs = (
             ("providers", ctx.register_metadata_provider),
             ("discovery_providers", ctx.register_discovery_provider),
+            ("indexer_providers", ctx.register_indexer_provider),
             ("content_profiles", lambda key, obj: ctx.register_metadata_profile("content", key, obj)),
             ("match_profiles", lambda key, obj: ctx.register_metadata_profile("match", key, obj)),
             ("parser_profiles", lambda key, obj: ctx.register_metadata_profile("parser", key, obj)),
@@ -365,7 +369,32 @@ class PluginSandbox:
             for item in getattr(metadata, field, []) or []:
                 key = item.get("key")
                 entry = item.get("entry")
-                if not key or not entry:
+                if not key:
+                    continue
+                if field == "indexer_providers" and item.get("type") == "http":
+                    try:
+                        config = ctx.get_config() or {}
+                        base_url = str(config.get("base_url") or "").strip()
+                        if not base_url:
+                            continue
+                        register(
+                            key,
+                            HttpIndexerProvider(
+                                base_url,
+                                token=config.get("token") or None,
+                                timeout=float(config.get("timeout") or 30),
+                                provider_id=key,
+                                icon=str(item.get("icon") or getattr(manifest, "icon", "") or ""),
+                                info_path=str(config.get("info_path") or "/api/indexer/info"),
+                                search_path=str(config.get("search_path") or "/api/indexer/search"),
+                                list_path=str(config.get("list_path") or "/api/indexer/list"),
+                            ),
+                        )
+                        log.info(f"[Sandbox]索引器已注册 {plugin_id}: {key}")
+                    except Exception as exc:  # noqa: BLE001
+                        log.warn(f"[Sandbox]索引器注册失败 {plugin_id} {key}: {exc}")
+                    continue
+                if not entry:
                     continue
                 try:
                     module_name, class_name = entry.split(":", 1)
@@ -385,8 +414,8 @@ class PluginSandbox:
             getattr(metadata, "image_referers", None),
         )
 
-    def unload(self, plugin_id: str, purge_data: bool = False) -> None:
-        """卸载插件；purge_data 仅传给插件的清理钩子."""
+    def unload(self, plugin_id: str, purge_data: bool = False, *, uninstalling: bool = False) -> None:
+        """卸载插件；只有真正卸载时才调用 on_uninstall."""
         ctx = self._contexts.pop(plugin_id, None)
         if ctx is not None:
             with contextlib.suppress(Exception):
@@ -394,7 +423,7 @@ class PluginSandbox:
 
         instance = self._instances.get(plugin_id)
         if instance:
-            if hasattr(instance, "on_uninstall"):
+            if uninstalling and hasattr(instance, "on_uninstall"):
                 try:
                     instance.on_uninstall(purge_data)
                 except Exception as exc:  # noqa: BLE001 - 清理失败不阻断卸载
@@ -402,7 +431,7 @@ class PluginSandbox:
             try:
                 if hasattr(instance, "on_disable"):
                     instance.on_disable()
-            except PluginError as e:
+            except Exception as e:  # noqa: BLE001 - 单个钩子失败不能阻断资源清理
                 log.error(f"[Sandbox] 插件禁用失败 {plugin_id}: {e}")
 
             self._instances.pop(plugin_id, None)

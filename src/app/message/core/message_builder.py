@@ -36,7 +36,11 @@ def _should_notify_fail(key: str) -> bool:
 def _type_label(media_info, profile: str) -> str:
     """消息中的用户可见类型：普通媒体用电影/电视剧，扩展画像用插件标签."""
     if profile and profile != "default":
-        return message_template_registry.label(profile) or profile
+        label = message_template_registry.label(profile)
+        if label:
+            return label
+        if profile.lower() in {"anime", "tv", "movie"}:
+            return media_info.type.display_name
     return media_info.type.display_name
 
 
@@ -56,6 +60,8 @@ def _source_provider(item) -> str:
             desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
     if not provider:
         return ""
+    if provider == "content_id" and not metadata_ref:
+        return "番号识别"
     if getattr(desc, "virtual", False):
         return "未知来源"
     return str(getattr(desc, "display_name", "") or provider)
@@ -67,7 +73,8 @@ def _message_variables(item, *, source_provider: str | None = None) -> dict[str,
     source = source_provider if source_provider is not None else _source_provider(item)
     return {
         "content_profile": profile,
-        "profile_label": message_template_registry.label(profile) or (profile if profile != "default" else ""),
+        "profile_label": message_template_registry.label(profile) or "",
+        "type_label": _type_label(item, profile),
         "source_provider": source,
         "keyword": str(getattr(item, "keyword", "") or ""),
         "filter_restype": str(getattr(item, "filter_restype", "") or ""),
@@ -300,9 +307,14 @@ class MessageBuilder:
                 )
 
     def send_transfer_tv_message(
-        self, message_medias: dict, in_from: Enum, exist_filenum: int = 0, category_flag: bool = False
+        self,
+        message_medias: dict | list,
+        in_from: Enum,
+        exist_filenum: int = 0,
+        category_flag: bool = False,
     ) -> None:
-        for item_info in message_medias.values():
+        items = message_medias.values() if isinstance(message_medias, dict) else message_medias
+        for item_info in items:
             self._enrich_from_subscription(item_info)
             if item_info.total_episodes == 1:
                 msg_title = f"✅ {item_info.get_title_string()} {item_info.get_season_episode_string()} 已入库"
@@ -675,22 +687,10 @@ class MessageBuilder:
             msg_type="transfer_fail",
             variables=variables,
         )
-        for client in self._client_manager.active_clients:
-            if "transfer_fail" in (client.get("switches") or ""):
-                self._dispatcher.sendmsg(
-                    client=client,
-                    title=title,
-                    text=text,
-                    url="unidentification",
-                    msg_type="transfer_fail",
-                    variables=variables,
-                    template_engine=self._template_engine,
-                )
 
     def send_auto_remove_torrents_message(self, title: str, text: str) -> None:
         if not title or not text:
             return
-        title = f"🗑️ {title}"
         variables = {"title": title, "text": text}
         self._insert_system_message("auto_remove_torrents", variables, title, text)
         for client in self._client_manager.active_clients:

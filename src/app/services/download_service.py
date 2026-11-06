@@ -11,16 +11,20 @@ from app.core.exceptions import DomainError, ServiceError
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.domain.enums import SearchType
+from app.domain.lifecycle import LifecycleStage, LifecycleStatus
+from app.domain.mediatypes import MediaType
 from app.infrastructure.temp import temp_manager
 from app.media import MediaService
-from app.media.display_image_policy import transform_display_image
+from app.media.display_image_policy import transform_display_image, unwrap_display_image_url
 from app.media.models import MediaInfo
+from app.media.poster_resolver import preferred_profile_poster
 from app.schemas.download import (
     DownloadResultDTO,
     IndexerStatisticsDTO,
 )
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.indexer_service import IndexerService
+from app.services.lifecycle_service import LifecycleProjector
 from app.services.search_service import Searcher
 from app.services.torrentremover_core import TorrentRemoverService as TorrentRemover
 from app.sites.engine import SiteEngine
@@ -50,6 +54,7 @@ class DownloadService:
         download_history_repo: DownloadHistoryRepositoryAdapter,
         file_index_service: Any | None = None,
         subscribe_repo: SubscribeRepository | None = None,
+        lifecycle: LifecycleProjector | None = None,
     ):
         self._downloader = downloader
         self._searcher = searcher
@@ -61,6 +66,8 @@ class DownloadService:
         self._download_history_repo = download_history_repo
         self._file_index = file_index_service
         self._subscribe_repo = subscribe_repo or SubscribeRepository()
+        self._lifecycle = lifecycle
+        self._progress_reported: dict[str, int] = {}
 
     # ---------- 下载编排 ----------
 
@@ -184,6 +191,14 @@ class DownloadService:
                     media.tmdb_id = res.TMDBID
                 if res.POSTER and not media.poster_path:
                     media.poster_path = res.POSTER
+            poster = unwrap_display_image_url(media.poster_path or "")
+            media.poster_path = preferred_profile_poster(
+                poster,
+                media.content_profile,
+                media.anchor_provider,
+                media.anchor_external_id,
+                media.type,
+            )
             # 保存站点原始种子名，用于下载历史记录和后续识别
             media.org_string = res.TORRENT_NAME
             media.set_torrent_info(
@@ -191,6 +206,8 @@ class DownloadService:
                 size=res.SIZE,
                 site=res.SITE,
                 page_url=res.PAGEURL,
+                seeders=int(res.SEEDERS or 0),
+                peers=int(getattr(res, "PEERS", 0) or 0),
                 upload_volume_factor=float(res.UPLOAD_VOLUME_FACTOR if res.UPLOAD_VOLUME_FACTOR is not None else 1.0),
                 download_volume_factor=float(
                     res.DOWNLOAD_VOLUME_FACTOR if res.DOWNLOAD_VOLUME_FACTOR is not None else 1.0
@@ -231,6 +248,7 @@ class DownloadService:
         page_url: str,
         size: str,
         seeders: str,
+        peers: str,
         uploadvolumefactor: str,
         downloadvolumefactor: str,
         dl_dir: str,
@@ -261,6 +279,7 @@ class DownloadService:
         media.upload_volume_factor = float(uploadvolumefactor if uploadvolumefactor is not None else 1.0)
         media.download_volume_factor = float(downloadvolumefactor if downloadvolumefactor is not None else 1.0)
         media.seeders = int(seeders or 0)
+        media.peers = int(peers or 0)
 
         # 下载前多版本检测：命中则要求前端确认，不推送下载器
         if not confirm_strategy:
@@ -302,6 +321,8 @@ class DownloadService:
             return DownloadResultDTO(success=False, message="没有种子文件或者种子链接")
 
         uploaded_files = []
+        success_count = 0
+        failures: list[str] = []
         try:
             # 处理上传的种子文件（支持：临时文件名、绝对路径、旧 Flask 结构）
             for file_item in files:
@@ -342,8 +363,10 @@ class DownloadService:
                     user_id=user_id,
                 )
                 if errmsg:
+                    failures.append(f"{file_name}: {errmsg}")
                     log.warn(f"[Download]推送下载器失败(文件): {errmsg}")
                 else:
+                    success_count += 1
                     log.info(f"[Download]已推送到下载器(文件): {file_name}")
 
             # 处理 URL 链接
@@ -410,8 +433,10 @@ class DownloadService:
                     user_id=user_id,
                 )
                 if errmsg:
+                    failures.append(f"{title or url}: {errmsg}")
                     log.warn(f"[Download]推送下载器失败: {errmsg}")
                 else:
+                    success_count += 1
                     log.info(f"[Download]已推送到下载器: {title or url}")
         finally:
             # 清理上传的临时文件
@@ -425,6 +450,10 @@ class DownloadService:
                 except Exception as e:
                     log.warn(f"[Web]删除上传的临时文件失败: {tmp_file}, {e!s}")
 
+        if failures and success_count == 0:
+            return DownloadResultDTO(success=False, message=f"添加下载失败：{failures[0]}")
+        if failures:
+            return DownloadResultDTO(success=True, message=f"部分添加成功，{len(failures)} 个失败：{failures[0]}")
         return DownloadResultDTO(success=True, message="添加下载完成！")
 
     @staticmethod
@@ -549,11 +578,11 @@ class DownloadService:
                         completed_ids.append((did, tid))
                         continue
 
-                    # 下载器里仍在下载 → 状态纠正为 downloading。
-                    # 注意：DownloadHistoryEntity 未携带 state 字段（get_active_downloads
-                    # 只返回 downloading/completed），因此这里无条件回写：曾因下载器抖动
-                    # 被误标 completed 的记录，会在此纠正回来。
-                    active_ids.append((did, tid))
+                    self._project_download_progress(task, prog_val)
+
+                    # 任务还在下载中，确保 state 为 downloading
+                    if getattr(task, "state", None) != "downloading":
+                        active_ids.append((did, tid))
 
                     matched_count += 1
                     result.append(
@@ -629,6 +658,40 @@ class DownloadService:
             f"[DownloadService]任务在下载器 {downloader_name} 中查不到，已按完成处理：{download_id}。"
             f"若该任务实际仍在下载，请核对下载器中的种子 hash 是否与记录一致"
         )
+
+    def _project_download_progress(self, task, progress: Any) -> None:
+        """把下载器百分比投影到生命周期；按 10% 步进降频，避免刷事件."""
+        if self._lifecycle is None:
+            return
+        try:
+            value = max(0, min(100, int(float(progress))))
+        except (TypeError, ValueError):
+            return
+        key = str(getattr(task, "download_id", "") or getattr(task, "id", "") or "")
+        last = self._progress_reported.get(key)
+        if last is not None and abs(value - last) < 10:
+            return
+        self._progress_reported[key] = value
+        media = MediaInfo()
+        media.title = str(getattr(task, "title", "") or getattr(task, "torrent", "") or "")
+        media.year = str(getattr(task, "year", "") or "")
+        media.tmdb_id = str(getattr(task, "tmdb_id", "") or "")
+        media.type = MediaType.TV if str(getattr(task, "media_type", "") or "").lower() == "tv" else MediaType.MOVIE
+        media.anchor_provider = getattr(task, "anchor_provider", None)
+        media.anchor_external_id = getattr(task, "anchor_external_id", None)
+        media.identity_id = getattr(task, "identity_id", None)
+        media.content_profile = getattr(task, "content_profile", None) or "default"
+        try:
+            self._lifecycle.record_media(
+                media,
+                stage=LifecycleStage.DOWNLOADING,
+                status=LifecycleStatus.RUNNING,
+                event_type="download.progress",
+                progress=value,
+                event_key=f"download:{key}",
+            )
+        except Exception as exc:  # noqa: BLE001 - 进度投影失败不影响下载状态
+            log.debug(f"[DownloadService]下载进度投影失败 {key}: {exc}")
 
     def _build_display_info(self, task) -> tuple[str, str]:
         """根据下载历史任务构建显示标题和海报"""

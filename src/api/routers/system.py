@@ -68,6 +68,7 @@ from app.services.config_reloader import ConfigReloader
 from app.services.indexer_service import IndexerService
 from app.services.log_search_service import LogSearchService
 from app.services.log_streaming_service import LogStreamingService
+from app.services.metadata_permissions import can_use_private_metadata
 from app.services.site_config_updater import SiteConfigUpdater
 from app.services.system.config import IndexerConfigService
 from app.services.system.lifecycle import SystemLifecycleService
@@ -599,6 +600,14 @@ def search(
     """
     WEB资源搜索（后台执行，前端轮询进度和结果）
     """
+    filters = req.filters or {}
+    if not can_use_private_metadata(
+        current_user,
+        provider=req.anchor_provider or filters.get("metadata_source"),
+        metadata_ref=req.metadata_ref,
+        content_profile=req.content_profile or filters.get("content_profile"),
+    ):
+        return fail(code=ErrorCode.PERMISSION_DENIED, msg="无权使用该内容画像或元数据来源")
     session_id = str(uuid.uuid4())
     TokenCache.delete("search")
     TokenCache.set(f"search_session:{current_user.user_id}", session_id, ttl=1800)
@@ -627,7 +636,7 @@ async def search_progress(session_id: str):
 
     async def event_stream():
         tracker = ProgressTracker()
-        last_val = -1
+        last_sig = None
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 600
         missing_since: float | None = None
@@ -639,14 +648,22 @@ async def search_progress(session_id: str):
                 now = loop.time()
                 if missing_since is None:
                     missing_since = now
-                elif now - missing_since > 10:
+                elif now - missing_since > 2:
+                    # 服务重启后内存进度丢失；旧会话不应把前端锁在 0%，直接结束等待。
+                    payload = {"value": 100, "text": "搜索任务已结束", "enable": False}
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     break
                 await asyncio.sleep(0.3)
                 continue
             missing_since = None
             val = detail.get("value", 0)
-            if val != last_val:
-                last_val = val
+            signature = (
+                val,
+                detail.get("text", ""),
+                json.dumps(detail.get("sites"), ensure_ascii=False, sort_keys=True),
+            )
+            if signature != last_sig:
+                last_sig = signature
                 yield f"data: {json.dumps(detail, ensure_ascii=False)}\n\n"
             # 已结束（enable=False 且 value>=100）→ 关闭流
             if not detail.get("enable") and val >= 100:

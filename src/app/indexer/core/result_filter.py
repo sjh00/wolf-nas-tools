@@ -22,7 +22,7 @@ from app.indexer.core.filter_engine import IndexerFilterEngine, filters_from_rul
 from app.indexer.core.miss_collector import get_miss_collector
 from app.indexer.core.models import FilterStats, SearchCandidate
 from app.infrastructure.cache_system import get_cache_manager
-from app.infrastructure.progress import ProgressTracker
+from app.infrastructure.progress import ProgressTracker, ScopedProgressTracker
 from app.media.identity.matcher import get_target_matcher
 from app.media.identity.models import EDITION_MARKERS as _EDITION_MARKERS
 from app.media.parser._metainfo import meta_info
@@ -149,11 +149,17 @@ class ResultFilter:
         """
         if not meta_info or not match_media:
             return False
-
         # 年份冲突拒绝：种子有年份且与订阅年份偏差超过1年 → 不匹配
         meta_year = str(meta_info.year or "").strip()
         match_year = str(match_media.year or "").strip()
-        if meta_year and match_year and meta_year.isdigit() and match_year.isdigit():
+        if (
+            meta_year
+            and match_year
+            and meta_year.isdigit()
+            and match_year.isdigit()
+            and int(meta_year) > 0
+            and int(match_year) > 0
+        ):
             if abs(int(meta_year) - int(match_year)) > 1:
                 return False
 
@@ -177,9 +183,13 @@ class ResultFilter:
         def _norm(name):
             if not name:
                 return ""
-            return _strip_cn_tag_prefix(
+            cleaned = _strip_cn_tag_prefix(
                 StringUtils.handler_special_chars(str(name)).upper().strip()  # type: ignore[union-attr]
             )
+            # 年份/季号由独立字段处理，不能把 2026、第二季、S02 当作标题的一部分
+            cleaned = re.sub(r"第\s*[0-9一二三四五六七八九十]+\s*季", " ", cleaned)
+            cleaned = re.sub(r"(?i)(?:[Ss]|Season\s*)\s*\d{1,2}\b", " ", cleaned)
+            return re.sub(r"(?<!\d)(?:19|20)\d{2}(?!\d)", "", cleaned).strip()
 
         # 中文虚词归一化：去掉 "的"/"之"/"与"/"和" 等，解决 "黄泉使者" vs "黄泉的使者"
         def _cn_simplify(name):
@@ -196,7 +206,7 @@ class ResultFilter:
             source = mi.org_string or mi.rev_string or ""
             found = re.findall(r"(?<!\d)(19\d{2}|20[0-4]\d)(?!\d)", str(source))
             for y in found:
-                if y.isdigit() and expected_year.isdigit():
+                if y.isdigit() and expected_year.isdigit() and int(expected_year) > 0:
                     if abs(int(y) - int(expected_year)) > 1:
                         return y
             return None
@@ -239,6 +249,10 @@ class ResultFilter:
         if meta_names & match_names:
             # 所有 meta 名都在 match 中才算可靠；否则另一半名包含区分信息
             if meta_names.issubset(match_names):
+                return True
+            # 去掉年份后存在完整长名相等，视为同一作品（如 Resident Evil 2026 vs Resident Evil）
+            shared = meta_names & match_names
+            if any(len(name) >= 6 for name in shared):
                 return True
             # 有多个名称但未全部匹配 → 存在区分信息，不走快速匹配
             if len(meta_names) > 1:
@@ -375,6 +389,138 @@ class ResultFilter:
         return False
 
     @staticmethod
+    def _is_second_season_title(name: str) -> bool:
+        """识别标题中的第二季标记；豆瓣单季条目常把“2”写在标题里而非 S02."""
+        text = str(name or "")
+        return bool(
+            re.search(
+                r"(?:第\s*[二2]\s*季|\bS02\b|\bSeason[ ._-]?2\b|\bPart[ ._-]?2\b|\bII\b|"
+                r"[\u4e00-\u9fffA-Za-z][ ._-]2(?:[ ._-]|$))",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _title_specific_without_year(torrent_name: str, match_media) -> bool:
+        """无年份时判断标题是否足够具体，避免只命中系列前缀.
+
+        允许：Resident Evil The Umbrella Chronicles（同作品完整标题）
+        拒绝：RESIDENT EVIL 2 -CODEX（只命中 Resident Evil，且多出续集数字）
+        """
+        text = re.sub(r"-[a-z0-9@._]+$", " ", str(torrent_name or ""), flags=re.IGNORECASE)
+        compact = "".join(ch for ch in text.casefold() if ch.isalnum())
+        tokens = re.findall(r"[a-z]+|\d+", text.casefold())
+        tech_tokens = {
+            "pc",
+            "act",
+            "repack",
+            "proper",
+            "internal",
+            "complete",
+            "multi",
+            "dual",
+            "web",
+            "webdl",
+            "webrip",
+            "bluray",
+            "blu",
+            "ray",
+            "remux",
+            "hdrip",
+            "dvdrip",
+            "brrip",
+            "bdrip",
+            "hdtv",
+            "uhd",
+            "4k",
+            "2160p",
+            "1080p",
+            "720p",
+            "480p",
+            "hdr",
+            "hdr10",
+            "dv",
+            "dolby",
+            "vision",
+            "10bit",
+            "8bit",
+            "hevc",
+            "avc",
+            "h264",
+            "h265",
+            "x264",
+            "x265",
+            "av1",
+            "ddp",
+            "dd",
+            "dts",
+            "truehd",
+            "atmos",
+            "aac",
+            "ac3",
+            "flac",
+            "lpcm",
+            "audio",
+            "audios",
+            "sub",
+            "subs",
+            "chs",
+            "cht",
+            "gb",
+            "big5",
+            "itunes",
+            "amzn",
+            "nf",
+            "dsnp",
+            "hmax",
+            "ma",
+            "dl",
+            "p",
+            "i",
+            "hdr10plus",
+            "diy",
+            "remastered",
+            "uncut",
+            "extended",
+            "theatrical",
+            "imax",
+        }
+        for attr in ("original_title", "en_name", "title", "cn_name"):
+            candidate = str(getattr(match_media, attr, "") or "").strip()
+            if not candidate:
+                continue
+            cand_compact = "".join(ch for ch in candidate.casefold() if ch.isalnum())
+            if not cand_compact:
+                continue
+            if any("\u4e00" <= ch <= "\u9fff" for ch in candidate):
+                if cand_compact in compact:
+                    return True
+                continue
+            cand_tokens = re.findall(r"[a-z]+|\d+", candidate.casefold())
+            if not cand_tokens:
+                continue
+            for index in range(len(tokens) - len(cand_tokens) + 1):
+                if tokens[index : index + len(cand_tokens)] != cand_tokens:
+                    continue
+                rest = tokens[:index] + tokens[index + len(cand_tokens) :]
+                if rest and rest[0].isdigit() and 1 <= int(rest[0]) <= 9:
+                    continue
+                # 多出来的英文词必须是技术/版本标记；Requiem、trilogy、collection 等
+                # 说明是另一部作品或合集，不能因为共享系列名就匹配。
+                unknown = [token for token in rest if token.isalpha() and token not in tech_tokens]
+                if not unknown:
+                    return True
+        return False
+
+    @staticmethod
+    def _allow_without_year(cand, torrent_name: str, match_media) -> bool:
+        """内容编号/身份已锚定（identity_anchored）时不再用无年份标题规则误杀."""
+        if getattr(cand, "identity_anchored", False):
+            return True
+        return ResultFilter._title_specific_without_year(torrent_name, match_media)
+
+    @staticmethod
     def _type_compatible(a, b):
         if a == b:
             return True
@@ -405,6 +551,31 @@ class ResultFilter:
                 torrent_name = re.sub(r"\|\d+(\|\d+)?$", "", torrent_name)
             if not torrent_name:
                 stats.index_error += 1
+                continue
+
+            # 外部 HTTP/索引器 provider 在无元数据匹配的手动搜索中直出，
+            # 避免成人番号等无法被本地解析器识别的标题被过滤掉。
+            if item.get("_external_indexer") and not match_media:
+                # 直出也要先解析标题，保留动漫/剧集的季集信息；
+                # 只有完全无法解析时才退回 movie。
+                mi = meta_info(title=torrent_name, subtitle=description)
+                if not mi.get_name():
+                    mi = meta_info(title=torrent_name, subtitle=description, mtype=MediaType.MOVIE)
+                mi.set_torrent_info(
+                    site=item.get("_indexer_name", ""),
+                    site_order=item.get("_indexer_order", 0),
+                    enclosure=item.get("enclosure") or "",
+                    size=item.get("size"),
+                    seeders=item.get("seeders"),
+                    peers=item.get("peers"),
+                    description=description,
+                    page_url=item.get("page_url"),
+                    upload_volume_factor=item.get("uploadvolumefactor") or 1.0,
+                    download_volume_factor=item.get("downloadvolumefactor") or 1.0,
+                )
+                if mi not in direct_results:
+                    stats.index_sucess += 1
+                    direct_results.append(mi)
                 continue
 
             enclosure = item.get("enclosure")
@@ -455,7 +626,9 @@ class ResultFilter:
                         p_norm = str(StringUtils.handler_special_chars(phrase)).upper().strip()
                         m_norm = str(StringUtils.handler_special_chars(match_media.cn_name or "")).upper().strip()
                         t_norm = str(StringUtils.handler_special_chars(match_media.title or "")).upper().strip()
-                        if p_norm and (p_norm == m_norm or p_norm == t_norm or p_norm in m_norm or m_norm in p_norm):
+                        matched_cn = bool(m_norm and (p_norm == m_norm or p_norm in m_norm or m_norm in p_norm))
+                        matched_title = bool(t_norm and (p_norm == t_norm or p_norm in t_norm or t_norm in p_norm))
+                        if p_norm and (matched_cn or matched_title):
                             _, cleaned, _, _, _, _ = StringUtils.get_keyword_from_string(phrase)
                             # 剥除字幕/配音标签前缀（如 "中字攻壳机动队" → "攻壳机动队"）
                             mi.cn_name = _strip_cn_tag_prefix(cleaned or phrase)
@@ -579,7 +752,7 @@ class ResultFilter:
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=True,
+                        identity_anchored=True,
                         media_info=self._media.merge_media_info(mi, match_media),
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
@@ -595,7 +768,7 @@ class ResultFilter:
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=True,
+                        identity_anchored=True,
                         media_info=mi,
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
@@ -607,7 +780,7 @@ class ResultFilter:
             qnm_result = self.quick_name_match(mi, match_media)
             anchor_provider = str(getattr(match_media, "anchor_provider", "") or "")
             raw_tmdb = str(getattr(match_media, "tmdb_id", "") or "")
-            non_tmdb_anchor = bool(
+            external_identity_anchor = bool(
                 (anchor_provider and anchor_provider != "tmdb")
                 or getattr(match_media, "douban_id", None)
                 or (raw_tmdb and not raw_tmdb.isdigit())
@@ -624,7 +797,7 @@ class ResultFilter:
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=non_tmdb_anchor,
+                        identity_anchored=external_identity_anchor,
                         media_info=mi,
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
@@ -651,7 +824,7 @@ class ResultFilter:
                         item=item,
                         meta_info=mi,
                         res_order=res_order,
-                        skip_tmdb=non_tmdb_anchor,
+                        identity_anchored=external_identity_anchor,
                         media_info=mi,
                         indexer_name=indexer_name,
                         indexer_order=indexer_order,
@@ -677,7 +850,7 @@ class ResultFilter:
         candidates,
         match_media,
         filter_args,
-        progress: ProgressTracker | None = None,
+        progress: ProgressTracker | ScopedProgressTracker | None = None,
         progress_key=ProgressKey.Search,
     ):
         """
@@ -720,10 +893,10 @@ class ResultFilter:
             indexer_name = cand.indexer_name
             indexer_order = cand.indexer_order
 
-            if cand.skip_tmdb:
+            if cand.identity_anchored:
                 media_info = cand.media_info
                 log.info(
-                    f"[ResultFilter]{torrent_name} skip_tmdb=True, merged_media_info: "
+                    f"[ResultFilter]{torrent_name} identity_anchored=True, merged_media_info: "
                     f"tmdb_id={media_info.tmdb_id}, type={media_info.type}, "
                     f"season={media_info.begin_season}, episode={media_info.begin_episode}"
                 )
@@ -774,12 +947,18 @@ class ResultFilter:
                         continue
                 elif self._use_target_matcher():
                     # ADR-014 P3：TargetMatcher 统一判等（ID 判等 + edition 距离，可解释）
+                    if match_media is None:
+                        stats.index_match_fail += 1
+                        continue
                     result = get_target_matcher().match(media_info, match_media)
                     if not result.matched:
                         log.info(f"[ResultFilter]{torrent_name} ({cache_key}) {result.reason}")
                         stats.index_match_fail += 1
                         continue
                     media_info = self._media.merge_media_info(media_info, match_media)
+                elif match_media is None:
+                    stats.index_match_fail += 1
+                    continue
                 elif str(media_info.tmdb_id) != str(match_media.tmdb_id):
                     media_type_str = media_info.type.value if media_info.type else "Unknown"
                     match_type_str = match_media.type.value if match_media.type else "Unknown"
@@ -797,11 +976,23 @@ class ResultFilter:
             if meta_info.org_string:
                 media_info.org_string = meta_info.org_string
 
+            if (
+                filter_args.get("type") == MediaType.MOVIE
+                and match_media is not None
+                and not str(media_info.year).isdigit()
+                # identity_anchored 表示已由内容编号/外部身份锚定；编号本身足够唯一，
+                # 不应用“无年份+系列前缀”规则误杀只有编号、没有年份的标题。
+                and not self._allow_without_year(cand, torrent_name, match_media)
+            ):
+                log.info(f"[ResultFilter]{torrent_name} 无年份且标题只命中系列前缀，不匹配 {match_media.year} 年的电影")
+                stats.index_rule_fail += 1
+                continue
+
             if filter_args.get("type"):
                 if (filter_args.get("type") == MediaType.TV and media_info.type == MediaType.MOVIE) or (
                     filter_args.get("type") == MediaType.MOVIE and media_info.type == MediaType.TV
                 ):
-                    display_name = cache_key if not cand.skip_tmdb else torrent_name
+                    display_name = cache_key if not cand.identity_anchored else torrent_name
                     log.info(
                         f"[ResultFilter]{display_name} 是 {media_info.type.value}/"
                         f"{media_info.tmdb_id}，不是 {filter_args.get('type').value}"
@@ -809,8 +1000,8 @@ class ResultFilter:
                     stats.index_rule_fail += 1
                     continue
 
-            display_name = cache_key if not cand.skip_tmdb else torrent_name
-            if match_media.over_edition:
+            display_name = cache_key if not cand.identity_anchored else torrent_name
+            if match_media is not None and match_media.over_edition:
                 if media_info.type != MediaType.MOVIE and media_info.get_episode_list():
                     log.info(
                         f"[ResultFilter]"
@@ -828,10 +1019,18 @@ class ResultFilter:
                     )
                     continue
 
+            filter_seasons = filter_args.get("season") or []
+            if (
+                2 in filter_seasons
+                and str(getattr(media_info, "begin_season", "")) == "1"
+                and self._is_second_season_title(torrent_name)
+            ):
+                # 解析器把“Edgerunners 2 / 第二季”识别成 S01，按标题标记归一到 S02
+                media_info.begin_season = 2
             sey_match = self._engine.is_torrent_match_sey(
                 media_info, filter_args.get("season"), filter_args.get("episode"), filter_args.get("year")
             )
-            if cand.skip_tmdb and match_media:
+            if cand.identity_anchored and match_media:
                 # 锚点身份负责匹配；TMDB 只回填补充字段/结构，不参与本结果的判定
                 media_info.anchor_provider = match_media.anchor_provider
                 media_info.anchor_external_id = match_media.anchor_external_id
@@ -896,6 +1095,8 @@ class ResultFilter:
                 upload_volume_factor=uploadvolumefactor,
                 download_volume_factor=downloadvolumefactor,
             )
+            if match_media is not None and getattr(match_media, "series_key", None):
+                media_info.series_key = match_media.series_key
             if media_info not in ret_array:
                 stats.index_sucess += 1
                 ret_array.append(media_info)

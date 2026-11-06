@@ -6,7 +6,7 @@ PathUtils - 路径相关纯函数工具
 import os
 import re
 
-from app.core.constants import RMT_MIN_FILESIZE
+from app.core.constants import RMT_MEDIAEXT, RMT_MIN_FILESIZE
 from app.core.root_path import get_project_root
 from app.core.settings import settings
 
@@ -173,11 +173,20 @@ class PathUtils:
         """目录内是否存在下载器未完成临时文件（如迅雷 .xltd）."""
         if not path or not os.path.isdir(path):
             return False
+        media_exts = {str(ext).lower() for ext in RMT_MEDIAEXT}
         base_depth = os.path.normpath(path).count(os.sep)
         for root, dirs, files in os.walk(path):
             for name in (*dirs, *files):
-                if name.lower().endswith(INCOMPLETE_DOWNLOAD_SUFFIXES):
-                    return True
+                lower = name.lower()
+                for suffix in INCOMPLETE_DOWNLOAD_SUFFIXES:
+                    if not lower.endswith(suffix):
+                        continue
+                    # 广告/说明文件的 .url.xltd 等不能代表媒体未完成；
+                    # 只认同名媒体文件的临时标记，或临时目录本身。
+                    base = lower[: -len(suffix)]
+                    base_ext = os.path.splitext(base)[1]
+                    if os.path.isdir(os.path.join(root, name)) or not base_ext or base_ext in media_exts:
+                        return True
             if root.count(os.sep) - base_depth >= depth:
                 dirs[:] = []
         return False

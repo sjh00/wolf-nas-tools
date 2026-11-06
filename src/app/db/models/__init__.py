@@ -57,6 +57,7 @@ from app.db.models.download import (
     DOWNLOADHISTORY,
     DOWNLOADSETTING,
 )
+from app.db.models.finalize_receipt import FinalizeReceipt
 
 # 索引器统计模型
 from app.db.models.indexer import (
@@ -87,6 +88,7 @@ from app.db.models.media_identity import (
 
 # 媒体同步模型
 from app.db.models.media_library_route import MediaLibraryRoute
+from app.db.models.media_series import MediaSeries, MediaSeriesAlias, MediaSeriesSeason
 from app.db.models.media_sync import (
     MEDIASYNCITEMS,
     MEDIASYNCSTATISTIC,
@@ -151,6 +153,7 @@ from app.db.models.storage_backend import (
 from app.db.models.subscribe import (
     SubscribeHistory,
     SubscribeMovies,
+    SubscribeSearchCursor,
     SubscribeTorrents,
     SubscribeTvEpisodes,
     SubscribeTvs,

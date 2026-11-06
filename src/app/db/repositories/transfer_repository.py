@@ -16,6 +16,7 @@ from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.episode_progress import contiguous_episodes
 from app.domain.mediatypes import MediaType
 from app.schemas.media import TransferMediaDTO
+from app.services.identity_resolver import IdentityResolver
 from app.utils.string_utils import StringUtils
 
 
@@ -25,14 +26,13 @@ class TransferRepository(BaseRepository):
     处理转移历史、未识别记录和黑名单的数据库操作
     """
 
-    # ==================== Transfer History ====================
+    def _identity_for_media(self, media_info: Any, title: str | None) -> str:
+        return IdentityResolver().resolve_media(media_info, allow_local=True).identity_id
 
     def is_transfer_history_exists(
         self, source_path: str, source_filename: str, dest_path: str, dest_filename: str
     ) -> bool:
-        """
-        查询识别转移记录是否存在
-        """
+        """查询识别转移记录是否存在"""
         if not source_path or not source_filename or not dest_path or not dest_filename:
             return False
         with self.session() as db:
@@ -51,9 +51,7 @@ class TransferRepository(BaseRepository):
     def update_transfer_history_date(
         self, source_path: str, source_filename: str, dest_path: str, dest_filename: str, date: str
     ) -> None:
-        """
-        更新历史转移记录时间
-        """
+        """更新历史转移记录时间"""
         with self.session() as db:
             db.query(TRANSFERHISTORY).filter(
                 TRANSFERHISTORY.SOURCE_PATH == source_path,
@@ -259,7 +257,8 @@ class TransferRepository(BaseRepository):
                     POSTER=(media_info.poster or None),
                     DST_BACKEND=dst_backend or "local",
                     DATE=timestr,
-                    IDENTITY_ID=getattr(media_info, "identity_id", None),
+                    IDENTITY_ID=self._identity_for_media(media_info, title),
+                    SERIES_KEY=getattr(media_info, "series_key", None),
                     ANCHOR_PROVIDER=getattr(media_info, "anchor_provider", None),
                     ANCHOR_EXTERNAL_ID=getattr(media_info, "anchor_external_id", None),
                     CONTENT_PROFILE=getattr(media_info, "content_profile", None),
@@ -739,8 +738,11 @@ class TransferRepository(BaseRepository):
         """
         if not path:
             return
+        norm = os.path.normpath(path)
         with self.session() as db:
-            db.query(TRANSFERUNKNOWN).filter(TRANSFERUNKNOWN.PATH == os.path.normpath(path)).update({"STATE": "Y"})
+            db.query(TRANSFERUNKNOWN).filter(
+                or_(TRANSFERUNKNOWN.PATH == norm, TRANSFERUNKNOWN.PATH.like(f"{norm}/%"))
+            ).update({"STATE": "Y"})
 
     def delete_transfer_unknowns(self, tids: list[int]) -> None:
         """

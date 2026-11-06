@@ -32,6 +32,12 @@ def test_manual_search_ignores_default_rule():
     captured = {}
 
     class _Orchestrator:
+        def begin_search(self, *args, **kwargs):
+            pass
+
+        def end_search(self, *args, **kwargs):
+            pass
+
         def orchestrate(self, ctx):
             captured["filter_args"] = ctx.filter_args
             return [], [], 1, []
@@ -49,6 +55,12 @@ def test_custom_profile_web_search_skips_tmdb_identification():
     captured = {}
 
     class _Orchestrator:
+        def begin_search(self, *args, **kwargs):
+            pass
+
+        def end_search(self, *args, **kwargs):
+            pass
+
         def orchestrate(self, ctx):
             captured["ident_flag"] = ctx.ident_flag
             captured["filter_args"] = ctx.filter_args
@@ -58,7 +70,37 @@ def test_custom_profile_web_search_skips_tmdb_identification():
     config.get.return_value = {"search_sites": [], "rule": 10000}
     fn = make_web_search_fn(cast(Any, _Orchestrator()), config)
 
-    fn("ACHJ-097", filters={"site": [], "content_profile": "adult"}, media_type=None)
+    fn("ACHJ-097", filters={"site": [], "content_profile": "demo"}, media_type=None)
 
     assert captured["ident_flag"] is False
     assert captured["filter_args"]["rule"] == -1
+
+
+def test_default_sites_and_page_selection_are_merged():
+    config = MagicMock()
+    config.get.return_value = {"search_sites": ["M-Team"], "rule": ""}
+    args: dict = {}
+
+    _apply_default_sites(args, MediaType.TV, config, None, ["观众"])
+
+    assert args["site"] == ["M-Team", "观众"]
+
+
+def test_page_selection_used_when_default_sites_empty():
+    config = MagicMock()
+    config.get.return_value = {"search_sites": [], "rule": ""}
+    args: dict = {}
+
+    _apply_default_sites(args, MediaType.MOVIE, config, None, ["观众"])
+
+    assert args["site"] == ["观众"]
+
+
+def test_all_sites_used_when_default_and_selection_empty():
+    config = MagicMock()
+    config.get.return_value = {"search_sites": [], "rule": ""}
+    args: dict = {}
+
+    _apply_default_sites(args, MediaType.MOVIE, config, None, None)
+
+    assert args["site"] is None

@@ -49,12 +49,14 @@ class SubscriptionMonitor:
         queue_strategy: QueueSearchStrategy,
         rss_strategy: RssFeedStrategy,
         indexer_strategy: IndexerSearchStrategy,
+        rss_thread_executor: ThreadExecutor | None = None,
         coordinator: DownloadCoordinator | None = None,
         system_config: SystemConfig | None = None,
     ):
         self._coordinator = coordinator
         self._subscribe = subscribe_service
         self._thread_executor = thread_executor
+        self._rss_thread_executor = rss_thread_executor or thread_executor
         self._queue_strategy = queue_strategy
         self._rss_strategy = rss_strategy
         self._indexer_strategy = indexer_strategy
@@ -117,7 +119,7 @@ class SubscriptionMonitor:
             self._thread_executor.submit(self._run_queue_search)
         if self._should_run_rss() and not self._running_tasks.get("rss"):
             self._running_tasks["rss"] = True
-            self._thread_executor.submit(self._run_rss_feed)
+            self._rss_thread_executor.submit(self._run_rss_feed)
         if self._should_run_search() and not self._running_tasks.get("search"):
             self._running_tasks["search"] = True
             self._thread_executor.submit(self._run_indexer_search)
@@ -157,6 +159,14 @@ class SubscriptionMonitor:
             # 记录尝试时间（而非成功时间），避免策略异常时每个调度周期紧循环重试
             self._last_queue_run = datetime.datetime.now(self._tz)
             self._save_last_run_times()
+            try:
+                timeout_minutes = int(str(self._system_config.get("subscribe.searching_timeout_minutes") or 90))
+            except (TypeError, ValueError):
+                timeout_minutes = 90
+            stale = self._subscribe.reset_stale_searching(timeout_minutes)
+            if stale:
+                log.warn(f"[SubscriptionMonitor] {stale} 个订阅停留在 SEARCHING，已重置为 ERROR")
+
             self._queue_strategy.run()
 
             self._error_retry_count += 1

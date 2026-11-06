@@ -10,6 +10,8 @@ SearchService - 搜索业务层
 - SearchService：Service 层包装
 """
 
+import re
+import time
 from concurrent.futures import as_completed
 from typing import Any
 
@@ -17,6 +19,7 @@ import log
 from app.core.exceptions import RepositoryError, ServiceError
 from app.core.settings import settings
 from app.domain.enums import ProgressKey, SearchType, channel_key, channel_name
+from app.domain.episode_utils import extract_episode_number
 from app.domain.interfaces.download_repo import IDownloadHistoryRepository
 from app.domain.interfaces.search_repo import ISearchRepository
 from app.domain.mediatypes import MediaType
@@ -33,7 +36,31 @@ from app.message import Message
 from app.schemas.search import SearchMediasResultDTO, SearchOneMediaResultDTO
 from app.services.downloader_core import DownloaderCore as Downloader
 from app.services.indexer_service import IndexerService
+from app.services.search_subject import SearchSubject
+from app.services.subscription_download_guard import SubscriptionDownloadGuard
+from app.sites.search_gate import get_site_search_gate
 from app.utils.string_utils import StringUtils
+
+# 合集/多集资源不能用标题里的首个数字补成单集，否则整季包会被当成单集下载。
+_PACK_EPISODE_HINT = re.compile(
+    r"(?i)(?:complete|全集|合集|全\s*\d+\s*[集话話]"
+    r"|\bS\d{1,2}\s*E\s*\d{1,4}\s*[-~]\s*E?\d{1,4}\b"
+    r"|\bE(?:P)?\s*\d{1,4}\s*[-~]\s*E?\d{1,4}\b"
+    r"|(?<![\w.])\d{1,3}\s*[-~]\s*\d{1,3}(?![\w.]))"
+)
+
+
+def _strip_season_suffix(name: str) -> str:
+    """去掉“第二季 / Season 2 / S02”后缀，搜索词用母标题更容易命中资源."""
+    value = str(name or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = StringUtils.get_keyword_from_string(value)
+        keyword = str(parsed[1] or "").strip() if parsed else ""
+        return keyword or value
+    except Exception:  # noqa: BLE001 - 解析失败保留原名
+        return value
 
 
 class SearchQueryBuilder:
@@ -48,9 +75,15 @@ class SearchQueryBuilder:
         根据媒体信息构建多语言搜索词列表
         :return: (搜索词列表, 建议最大并发数)
         """
-        # 自定义内容画像（如 AV）只用番号/关键词搜索，避免标题带来噪声
+        # 统一由 SearchSubject 决定身份搜索模式，避免各层重复判断画像名称。
         profile = str(getattr(media_info, "content_profile", "") or "").strip()
-        if profile and profile != "default":
+        subject = SearchSubject.classify(
+            getattr(media_info, "type", None),
+            profile,
+            getattr(media_info, "anchor_provider", ""),
+            getattr(media_info, "tmdb_id", "") or getattr(media_info, "anchor_external_id", ""),
+        )
+        if subject.search_mode == "code":
             keyword = (
                 media_info.keyword
                 or getattr(media_info, "anchor_external_id", "")
@@ -60,8 +93,13 @@ class SearchQueryBuilder:
                 return [str(keyword)], 1
 
         search_name_list = []
-        if media_info.keyword:
-            search_name_list.append(media_info.keyword)
+        keyword = str(media_info.keyword or "").strip()
+        identity_values = {
+            str(getattr(media_info, "anchor_external_id", "") or ""),
+            str(getattr(media_info, "tmdb_id", "") or "").split(":")[-1],
+        }
+        if keyword and keyword not in identity_values:
+            search_name_list.append(keyword)
 
         # 中文名
         if media_info.cn_name:
@@ -85,14 +123,24 @@ class SearchQueryBuilder:
                 if en_title:
                     search_en_name = en_title
 
-        search_name_list.append(search_cn_name)
-        search_name_list.append(search_en_name)
+        for name in (search_cn_name, search_en_name):
+            if not name:
+                continue
+            base_name = _strip_season_suffix(str(name))
+            if base_name:
+                search_name_list.append(base_name)
+            search_name_list.append(str(name))
         for alias in getattr(media_info, "aliases", None) or []:
             alias_text = str(alias or "").strip()
-            if alias_text and alias_text not in search_name_list:
+            if not alias_text:
+                continue
+            base_alias = _strip_season_suffix(alias_text)
+            if base_alias and base_alias not in search_name_list:
+                search_name_list.append(base_alias)
+            if alias_text not in search_name_list:
                 search_name_list.append(alias_text)
-                if len(search_name_list) >= 6:
-                    break
+            if len(search_name_list) >= 6:
+                break
 
         # 开启多语言搜索
         max_workers = 1
@@ -146,10 +194,16 @@ class SearchExecutor:
         media_list = []
         all_task = []
 
+        total_names = len(search_names)
         with ThreadExecutor(max_workers=optimal_workers, name=self._thread_name_prefix) as executor:
-            for search_name in search_names:
+            for index, search_name in enumerate(search_names):
+                task_args = dict(filter_args)
+                task_args["progress_range"] = (
+                    index * 100 / total_names,
+                    100 / total_names,
+                )
                 try:
-                    task = executor.submit(search_func, search_name, filter_args, media_info, in_from)
+                    task = executor.submit(search_func, search_name, task_args, media_info, in_from)
                 except RuntimeError as e:
                     # 应用退出/线程池关闭时提交会抛 RuntimeError，静默跳过，避免订阅处理报错刷屏
                     log.debug(f"[Search]执行器不可用，跳过搜索：{e}")
@@ -212,7 +266,8 @@ class SearchResultProcessor:
         """按合集、集数、资源顺序、做种数/站点顺序（按 download_order）、标题排序。
 
         与 Torrent.get_download_list 的下载优先规则保持一致：
-        seeder=做种数优先（做种数在站点顺序前），否则站点顺序优先。
+        seeder=做种数优先（做种数在站点顺序前），否则站点顺序优先；
+        两种模式都按 规则顺序第二优先，再做种数/站点兜底。
         """
 
         def _sort_key(x):
@@ -232,25 +287,26 @@ class SearchResultProcessor:
             season = max(seasons) if seasons else (getattr(x, "begin_season", 0) or 0)
             episode = getattr(x, "begin_episode", 0) or 0
             if download_order == "seeder":
-                # 做种数优先：做种数在站点顺序前
+                # 做种数优先：做种数 > 规则顺序 > 站点顺序
                 order_key = "{}{}{}{}{}{}{}{}".format(
                     str(season).rjust(3, "0"),
                     str(collection_priority).rjust(1, "0"),
                     str(episode).rjust(3, "0"),
                     str(episode_count).rjust(3, "0"),
-                    str(x.res_order).rjust(3, "0"),
                     str(x.seeders).rjust(10, "0"),
-                    str(x.site_order).rjust(3, "0"),
+                    str(x.res_order).rjust(3, "0"),
+                    str(x.site_order).rjust(4, "0"),
                     str(x.title).ljust(100, " "),
                 )
             else:
+                # 站点优先：站点顺序 > 规则顺序 > 做种数
                 order_key = "{}{}{}{}{}{}{}{}".format(
                     str(season).rjust(3, "0"),
                     str(collection_priority).rjust(1, "0"),
                     str(episode).rjust(3, "0"),
                     str(episode_count).rjust(3, "0"),
+                    str(x.site_order).rjust(4, "0"),
                     str(x.res_order).rjust(3, "0"),
-                    str(x.site_order).rjust(3, "0"),
                     str(x.seeders).rjust(10, "0"),
                     str(x.title).ljust(100, " "),
                 )
@@ -258,8 +314,37 @@ class SearchResultProcessor:
 
         return sorted(media_list, key=_sort_key, reverse=True)
 
-    def filter_downloaded(self, media_list: list, force: bool = False) -> list:
-        """过滤已完成下载历史；手动刷新仅在无活动任务时允许重新下载."""
+    @staticmethod
+    def _episode_from_title(title: str) -> int | None:
+        return extract_episode_number(title)
+
+    @staticmethod
+    def fill_missing_episode(media_item) -> None:
+        """种子标题未带季集时从原始标题补全单集；合集/多集资源保持原样."""
+        if (
+            getattr(media_item, "type", None) == MediaType.MOVIE
+            or getattr(media_item, "begin_episode", None) is not None
+        ):
+            return
+        try:
+            total_episodes = int(getattr(media_item, "total_episodes", 0) or 0)
+        except (TypeError, ValueError):
+            total_episodes = 0
+        if total_episodes > 1:
+            return
+        raw_title = str(getattr(media_item, "org_string", "") or getattr(media_item, "title", "") or "")
+        if _PACK_EPISODE_HINT.search(raw_title):
+            return
+        episode = SearchResultProcessor._episode_from_title(raw_title)
+        if episode:
+            media_item.begin_episode = episode
+            if getattr(media_item, "begin_season", None) is None:
+                media_item.begin_season = 1
+
+    def filter_downloaded(self, media_list: list, force: bool = False, over_edition: bool = False) -> list:
+        """过滤已完成/在途下载；电影按整部，剧集动漫按分集，洗版模式放行."""
+        if over_edition:
+            return list(media_list)
         if force and media_list:
             media_item = media_list[0]
             ref = media_item.get_media_ref()
@@ -279,6 +364,13 @@ class SearchResultProcessor:
                     return list(media_list)
         filtered = []
         for media_item in media_list:
+            self.fill_missing_episode(media_item)
+            series_key = getattr(media_item, "series_key", None)
+            if series_key:
+                season_episode = media_item.get_season_episode_string()
+                if self._download_repo.is_completed_by_series(series_key, season_episode):
+                    log.info(f"[Searcher]{media_item.title} {season_episode} 已存在完成下载，跳过下载（series）")
+                    continue
             ref = media_item.get_media_ref()
             if ref is not None and ref.provider != "tmdb":
                 season_episode = media_item.get_season_episode_string()
@@ -348,6 +440,7 @@ class Searcher:
         self.indexer_service = indexer_service
         self._event_bus = event_bus
         self._search_auto = settings.get("pt").get("search_auto", True)
+        self._subscription_guard = SubscriptionDownloadGuard(self._download_repo)
 
     @property
     def download_repo(self):
@@ -423,6 +516,7 @@ class Searcher:
         # 1. 构建搜索词（含关键词 + 多语言名，build_search_names 内已去重）
         search_name_list, max_workers = SearchQueryBuilder.build_search_names(media_info, self.media)
 
+        search_started = time.time()
         log.info(f"[Searcher]开始搜索 {search_name_list} ...")
         optimal_workers = min(len(search_name_list), max_workers, 8)
 
@@ -432,9 +526,11 @@ class Searcher:
         def _update_progress(finish_count, total):
             if self.progress is None:
                 return
-            self.progress.update(
-                ptype=ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search,
+            pkey = ProgressKey.SubscribeSearch if in_from == SearchType.SUBSCRIBE else ProgressKey.Search
+            self.progress.update_max(
+                ptype=pkey,
                 value=round(100 * (finish_count / total)),
+                text=f"搜索关键词 {finish_count}/{total} 完成",
             )
 
         media_list = executor.execute(
@@ -446,12 +542,18 @@ class Searcher:
             progress_updater=_update_progress,
         )
 
-        # 3. 去重
+        # 3. 去重；补全单集后再排序和下载判定，保证在途与已完成使用一致键
         media_list = SearchResultDeduplicator.deduplicate(media_list)
+        for media_item in media_list:
+            SearchResultProcessor.fill_missing_episode(media_item)
 
         if len(media_list) == 0:
             log.info(f"[Searcher]{search_name_list} 未搜索到任何资源")
             return None, no_exists, 0, 0
+
+        if in_from == SearchType.SUBSCRIBE and get_site_search_gate().was_deferred_since(search_started):
+            log.warn(f"[Searcher]{search_name_list} 站点限流/排队超时，本轮延迟，不回退低优先站点")
+            return None, no_exists, len(media_list), 0
 
         processor = SearchResultProcessor(
             downloader=self.downloader,
@@ -471,8 +573,16 @@ class Searcher:
             if in_from != SearchType.SUBSCRIBE and not self._search_auto:
                 return None, no_exists, len(media_list), 0
 
-        # 4. 过滤已下载
-        filtered_media_list = processor.filter_downloaded(media_list, force=force_download)
+        # 4. 订阅侧去重：电影按整部、剧集/动漫按分集，洗版放行
+        if in_from == SearchType.SUBSCRIBE:
+            media_list = self._subscription_guard.filter_candidates(
+                media_list,
+                over_edition=bool(getattr(media_info, "over_edition", False)),
+            )
+        # 过滤已完成下载
+        filtered_media_list = processor.filter_downloaded(
+            media_list, force=force_download, over_edition=bool(getattr(media_info, "over_edition", False))
+        )
         if not filtered_media_list:
             log.info("[Searcher]所有搜索结果已在下载历史中存在，跳过下载")
             return None, no_exists, len(media_list), 0
