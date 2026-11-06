@@ -1024,10 +1024,16 @@ class MediaService:
                 if hint != MediaType.UNKNOWN and _parsed_item.type in (None, MediaType.UNKNOWN):
                     _parsed_item.type = hint
 
-        # 类型提示转成 lookup 约束：源已声明是剧集时，不允许被模糊评分翻转成同名老电影
+        # 类型提示转成 lookup 约束。
+        # 只在「确实有剧集特征」时锁定类型：即调用方声明是 tv/anime，且文件名解析出了季集。
+        # 单纯靠源目录名锁定会误伤 —— 电影目录里的内容在 TMDB 被归为 tv 的情况真实存在，
+        # 那时宁可接受异类结果也不要让整条内容变成「未识别」。
         type_hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
-        constrain_type = type_hint != MediaType.UNKNOWN
-        lookup_hint = type_hint if constrain_type else None
+        looks_episodic = any(
+            item is not None and (item.season is not None or item.episode is not None) for item in parsed_list
+        )
+        constrain_type = type_hint in (MediaType.TV, MediaType.ANIME) and looks_episodic
+        lookup_hint = type_hint if type_hint != MediaType.UNKNOWN else None
 
         # 2.3 去重后并发查 TMDB
 
