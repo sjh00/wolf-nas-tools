@@ -740,7 +740,7 @@ class TestTailMetadataLeftover:
         assert result.year == "2021"
 
     def test_site_code_prefix_stripped(self, parser):
-        """47BT.示例剧集 应去掉站点水印前缀"""
+        """`<数字>BT.片名` 应去掉站点水印前缀"""
         result = parser.parse("47BT.示例剧集.S01E06.2022.WEB-DL.2160p.10Bit.DV.HDR10.HEVC.DDP5.1.Atmos.mkv")
         assert result is not None
         assert result.title_cn == "示例剧集"
@@ -952,7 +952,7 @@ class TestCollectionNoise:
         assert is_collection_context("Sample.Action.Movie.I-VI") is True
         assert is_collection_context("Rick and Morty S01-S05") is True
         assert is_collection_context("千与千寻的神隐") is False
-        assert is_collection_context("示例乡村剧15") is False
+        assert is_collection_context("示例剧集15") is False
 
     def test_post_process_ignores_collection_parent(self, parser):
         from typing import cast

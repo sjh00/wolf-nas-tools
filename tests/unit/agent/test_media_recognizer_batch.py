@@ -1,10 +1,10 @@
 """批量识别回归测试：模型返回裸数组时不得让整批结果丢失。
 
-真实故障链（运行日志）：
+故障表现：
 
     WARNING AgentService 结构化解析失败: 1 validation error for BatchResult
       Input should be a valid dictionary or instance of BatchResult
-      [type=model_type, input_value=[{'title_en': 'Sample Title One II', ...}], input_type=list]
+      [type=model_type, input_value=[{'title_en': 'Sample Title', ...}], input_type=list]
     WARNING MediaRecognizer 识别失败或返回空结果
 
 LLM 识别内容完全正确，只是把顶层返回成 JSON 数组 `[{...}, ...]`，而 BatchResult
@@ -21,8 +21,8 @@ from app.agent.agents.media_recognizer import (
 )
 
 BARE_ARRAY_PAYLOAD = [
-    {"title_en": "Sample Title One II", "title_cn": "示例作品一II", "year": 2003, "type": "movie"},
-    {"title_en": "The Sample Title Two Rises", "title_cn": "示例作品乙", "year": 2012, "type": "movie"},
+    {"title_en": "Sample Title One", "title_cn": "示例作品一", "year": 2003, "type": "movie"},
+    {"title_en": "Sample Title Two", "title_cn": "示例作品二", "year": 2012, "type": "movie"},
 ]
 
 
@@ -30,7 +30,7 @@ class TestBatchResultShapeTolerance:
     def test_bare_array_is_wrapped(self):
         """核心回归：裸数组必须先被归一化，再进入校验。"""
         result = BatchResult.model_validate(BARE_ARRAY_PAYLOAD)
-        assert [item.title_cn for item in result.items if item] == ["示例作品一II", "示例作品乙"]
+        assert [item.title_cn for item in result.items if item] == ["示例作品一", "示例作品二"]
 
     def test_wrapped_object_still_works(self):
         result = BatchResult.model_validate({"items": BARE_ARRAY_PAYLOAD})
@@ -53,10 +53,10 @@ class TestBatchResultShapeTolerance:
     def test_null_and_junk_items_keep_alignment(self):
         """个别元素为 null / 字符串时降级为 None，绝不错位。"""
         payload = [
-            {"title_cn": "示例作品一II"},
+            {"title_cn": "示例作品一"},
             None,
             "garbage",
-            {"title_cn": "示例作品三3"},
+            {"title_cn": "示例作品三"},
         ]
         result = BatchResult.model_validate(payload)
         assert len(result.items) == 4
@@ -64,7 +64,7 @@ class TestBatchResultShapeTolerance:
         assert result.items[1] is None
         assert result.items[2] is None
         assert result.items[3] is not None
-        assert result.items[3].title_cn == "示例作品三3"
+        assert result.items[3].title_cn == "示例作品三"
 
     def test_empty_array(self):
         assert BatchResult.model_validate([]).items == []
@@ -176,8 +176,8 @@ class _StubProvider:
         return self._payload
 
 
-class TestStructuredChatProductionFailure:
-    """复现运行日志里的那条失败：走真实 AgentService.structured_chat 链路。"""
+class TestStructuredChatFailureChain:
+    """复现真实失败链路：走真实 AgentService.structured_chat 调用。"""
 
     @staticmethod
     def _service(payload: str):
@@ -191,8 +191,8 @@ class TestStructuredChatProductionFailure:
 
     def test_bare_json_array_no_longer_breaks_batch_parse(self):
         payload = (
-            '[{"title_en": "Sample Title One II", "title_cn": "示例作品一II", "year": 2003, "type": "movie"},'
-            ' {"title_en": "The Sample Title Two Rises", "title_cn": "示例作品乙", "year": 2012, '
+            '[{"title_en": "Sample Title One", "title_cn": "示例作品一", "year": 2003, "type": "movie"},'
+            ' {"title_en": "Sample Title Two", "title_cn": "示例作品二", "year": 2012, '
             '"type": "movie"}]'
         )
         svc = self._service(payload)
@@ -202,7 +202,7 @@ class TestStructuredChatProductionFailure:
             response_model=BatchResult,
         )
         assert result is not None, "裸数组不应再导致整批解析失败"
-        assert [item.title_cn for item in result.items if item] == ["示例作品一II", "示例作品乙"]
+        assert [item.title_cn for item in result.items if item] == ["示例作品一", "示例作品二"]
 
     def test_unrecognizable_payload_still_returns_none(self):
         """真正的坏输出（非 JSON）仍返回 None，由上层拆分重试兜底。"""

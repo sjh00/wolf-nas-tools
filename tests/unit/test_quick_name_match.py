@@ -320,4 +320,4 @@ def test_strip_cn_tag_prefix():
     assert _strip_cn_tag_prefix("中文字幕攻壳机动队") == "攻壳机动队"
     assert _strip_cn_tag_prefix("攻壳机动队") == "攻壳机动队"
     # 合法剧名不被误剥
-    assert _strip_cn_tag_prefix("中华小当家") == "中华小当家"
+    assert _strip_cn_tag_prefix("示例剧名") == "示例剧名"

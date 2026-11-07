@@ -1,18 +1,17 @@
-"""作品名识别缺陷回归（来自线上数据真实错误记录）。
+"""作品名识别缺陷回归。
 
-三条独立缺陷，全部在真实数据上复现过：
+三条独立缺陷，均可在构造样例上复现：
 
 1. 广告清洗误伤：`Movie.2010.CC.BluRay` / `Show.2019.TV.1080p` 里的
    `<年份>.CC` / `<年份>.TV` 被当成「数字域名广告」整段删除，年份与标题被削。
-   真实案例：`示例武侠片6.Sample.Kung.Fu.Movie.and.America.1997.CC.BDRip...`
-   → 年份丢失（year=None）→ TMDB 错配到「Once Upon a Time... in 1875」。
+   典型样例：`Show.Name.1997.CC.BDRip.1080p` → 年份丢失（year=None）
+   → TMDB 错配到另一部同年份作品。
 
-2. 片名自带年份被当出品年：`Reply.1988.S01E16.2015...`（《请回答1988》）
-   → 标题只剩 `Reply`、年份记成 1988 → 线上数据里同一部剧被记成
-   2022 / 2026 两个不同 TMDB 的电影条目。
+2. 片名自带年份被当出品年：`Reply.1988.S01E16.2015...` 这类命名
+   → 标题只剩 `Reply`、年份记成 1988 → 同一部剧被拆成多个 TMDB 条目。
 
-3. 裁词重试削掉实词：`Sample Title Cop` 整名搜不到 → 裁成
-   `Sample Title` → 恰好命中另一部同名电影 → 片名被削且认错片。
+3. 裁词重试削掉实词：多词片名整名搜不到时裁掉尾词 → 恰好命中另一部
+   同名作品 → 片名被削且认错片。
 """
 
 import pytest
@@ -29,7 +28,7 @@ from app.media.parser.base import ParserResult
 @pytest.mark.parametrize(
     "name",
     [
-        "示例武侠片6.Sample.Kung.Fu.Movie.and.America.1997.CC.BDRip.1080p.x265.10bit.DDP5.1.2Audio-DGB.mkv",
+        "Show.Name.1997.CC.BDRip.1080p.x265.10bit.DDP5.1.2Audio-GROUP.mkv",
         "Show.Name.2019.TV.1080p.WEB-DL.mkv",
         "Movie.2010.CC.BluRay.mkv",
         "Channel.2021.ME.mkv",
@@ -86,11 +85,11 @@ def test_release_year_after_episode_marker_preferred():
 def test_year_after_scene_tag_restored():
     """`1997.CC` 不再被广告规则删掉，年份可正常识别。"""
     parsed = RegexParser().parse(
-        "示例武侠片6.Sample.Kung.Fu.Movie.and.America.1997.CC.BDRip.1080p.x265.10bit.DDP5.1.2Audio-DGB.mkv"
+        "Show.Name.Part.Two.and.Three.1997.CC.BDRip.1080p.x265.10bit.DDP5.1.2Audio-GROUP.mkv"
     )
     assert parsed is not None
     assert parsed.year == "1997"
-    assert parsed.title_en == "Once Upon A Time In China And America"
+    assert parsed.title_en == "Show Name Part Two And Three"
 
 
 # ---------- 3. 裁词重试只能裁标签 ----------
@@ -106,7 +105,7 @@ class TestTrimmableTag:
         assert TmdbLookup._is_trimmable_tag(token) is False
 
     def test_trim_does_not_shrink_meaningful_title(self):
-        """`Sample Title Cop` 不得被裁成 `Sample Title`。"""
+        """多词片名（如 `Sample Title Cop`）不得被裁成 `Sample Title`。"""
         parsed = ParserResult(title_en="Sample Title Cop", year="1996", type=MediaType.MOVIE)
         lookup = TmdbLookup(client=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
         searched: list[str] = []

@@ -46,10 +46,10 @@ def _normalize_for_match(text: str) -> str:
 def _pick_primary_title(value: str | None, filename: str) -> str | None:
     """从可能被拼接的片名字段里挑出属于当前文件名的那一个。
 
-    真实故障（运行日志）：单条识别返回 `cn=示例作品甲 / 示例作品乙 / 示例作品丙 / …`，
-    模型把多个作品的片名塞进了同一个 title_cn，下游拿去查 TMDB 必然失败，
-    且会把整条记录识别成错误作品。这里在片名段数明显过多时按「与文件名的字符重合度」
-    挑一段，重合度全为 0（例如中文片名配英文文件名）时保留第一段。
+    模型有时会把多个作品的片名塞进同一个 title_cn（形如
+    `cn=作品A / 作品B / 作品C`），下游拿去查 TMDB 必然失败，且会把整条记录
+    识别成错误作品。这里在片名段数明显过多时按「与文件名的字符重合度」挑一段，
+    重合度全为 0（例如中文片名配英文文件名）时保留第一段。
     """
     if not value:
         return value
@@ -255,8 +255,8 @@ class MediaRecognizer:
         """清洗单条识别结果：拆开被拼接的多片名、去掉重复的中英同名。
 
         模型在批量/长上下文场景下容易把多条作品名合并进一个字段
-        （运行日志出现过 `cn=示例作品甲 / 示例作品乙 / 示例作品丙 / …`），
-        这类结果拿去查 TMDB 必然错配，必须在进入下游前收敛。
+        （形如 `cn=作品A / 作品B / 作品C`），这类结果拿去查 TMDB 必然错配，
+        必须在进入下游前收敛。
         """
         result.title_cn = _pick_primary_title(result.title_cn, filename)
         result.title_en = _pick_primary_title(result.title_en, filename)

@@ -64,7 +64,7 @@ _RE_BROADCAST_PREFIX = re.compile(
     r"^(?:CCTV(?:\d+K?|HD|4K)?|CETV\d*|BTV|HBTV|TJTV|SITV|CGTN|NHK|BBC|ITV|CNN|PBS)[\s._-]+",
     re.IGNORECASE,
 )
-# 站点水印前缀：47BT.示例剧集 → 示例剧集
+# 站点水印前缀：123BT.片名 → 片名
 _RE_SITE_CODE_PREFIX = re.compile(r"^(?:\d{1,3}BT)[\s._-]+", re.IGNORECASE)
 # 语言/字幕/制作/类别标记 — 出现在方括号中时应视为标签而非标题
 _LANGUAGE_SUBTITLE_RE = re.compile(

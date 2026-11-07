@@ -1,7 +1,7 @@
 """AI 识别质量与成本优化回归测试。
 
 覆盖四类问题：
-1. 串味：单条结果里拼接了多个作品的片名（运行日志真实出现过）
+1. 串味：单条结果里拼接了多个作品的片名
 2. 错位：批量结果漏条/乱序时，后续条目被记到别人身上
 3. 重复调用：同一文件名在一批里重复出现时重复请求 LLM
 4. 无效 token：提示词已列字段，却还追加完整 JSON Schema
@@ -41,14 +41,14 @@ class TestSwallowedTitles:
     """片名被拼接时只保留属于当前文件的那一段。"""
 
     def test_split_multi_title_by_overlap(self):
-        value = "示例作品甲 / 示例作品乙 / 示例作品丙 / 示例作品丁 / 示例作品戊"
+        value = "作品甲 / 作品乙 / 作品丙 / 作品丁 / 作品戊"
         picked = _pick_primary_title(value, "Some.Movie.2006.1080p.BluRay.x264-GROUP.mkv")
         # 英文文件名里没有中文片名的字符，重合度全为 0 → 保留第一段（模型通常先写主线）
-        assert picked == "示例作品甲"
+        assert picked == "作品甲"
 
     def test_picks_segment_present_in_filename(self):
-        value = "Sample Title One / 示例作品一 / 示例作品丙"
-        assert _pick_primary_title(value, "Infernal.Affairs.2002.1080p.mkv") == "Sample Title One"
+        value = "Sample Title / 示例片名 / 另一部作品"
+        assert _pick_primary_title(value, "Sample.Title.2002.1080p.mkv") == "Sample Title"
 
     def test_keeps_legitimate_bilingual_title(self):
         """两段的双语片名（含 /）不应被切断。"""
@@ -56,11 +56,11 @@ class TestSwallowedTitles:
 
     def test_recognize_sanitizes_swallowed_title(self):
         svc = _Svc(
-            single_handler=lambda _name: MediaResult(title_cn="示例作品甲 / 示例作品乙 / 示例作品丙", type="movie")
+            single_handler=lambda _name: MediaResult(title_cn="作品甲 / 作品乙 / 作品丙", type="movie")
         )
         result = MediaRecognizer(svc).recognize("Some.Movie.2006.mkv")
         assert result is not None
-        assert result.title_cn == "示例作品甲"
+        assert result.title_cn == "作品甲"
         assert "/" not in (result.title_cn or "")
 
     def test_drops_identical_cn_en(self):
