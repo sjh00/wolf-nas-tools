@@ -5,8 +5,8 @@ media.note["is_extras"] 打标记，path_resolver 把季目录固定为 extras/�
 
 但 SP 命名的特别篇从未被该规则覆盖（只认 BONUS.DISC / extras / featurettes 等
 英文关键词），于是 SP 目录里的文件被当成正片：SP09 解析出集号 9，
-直接覆盖了正片 S01E09 的位置——《示例剧集》就这样丢了 6 集正片，
-媒体库里 E04/E05/E06/E08/E09/E10 实际是 SP 特别篇。
+直接覆盖了正片 S01E09 的位置——正片集被特别篇顶替，媒体库里多个
+集号实际指向 SP 特别篇。
 
 本模块锁定三件事：
 1. SP 目录与 SPxx 文件名识别为 extras

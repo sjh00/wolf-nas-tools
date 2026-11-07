@@ -1,8 +1,8 @@
 """新条目必须落在配置的布局里（分类结构），不能被平铺布局「截胡」。
 
-真实故障：用户新增的《示例剧集》没有进「国产剧」目录，而是落到了
-`/media/gof/medialink/TV/示例剧集 (2026)/Season 1`（平铺）。
-当时 `CONFIG_MEDIA.TV_LAYOUT = category`、`TRANSFER_HISTORY.CATEGORY = 国产剧`
+真实故障：新入库剧集没有进配置的分类目录，而是落到了平铺布局
+`<库根>/TV/剧名 (年份)/Season 1`。
+当时 `CONFIG_MEDIA.TV_LAYOUT = category`、`TRANSFER_HISTORY.CATEGORY = 分类名`
 一切正常，问题在路径拼装：
 
     for media_path in self._layout_dirs(...):   # [分类路径, 平铺路径]
