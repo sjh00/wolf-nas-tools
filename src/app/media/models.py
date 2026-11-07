@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any, get_args, get_origin
 
 import cn2an
@@ -163,6 +164,27 @@ def build_category_rule_map(entities: Any) -> dict[str, dict[str, Any]]:
     return rule_map
 
 
+def _coerce_enum(enum_cls: type[Enum], value: str) -> Any:
+    """把字符串归一为该枚举成员；无法识别时优先走 `from_string` 兜底。
+
+    返回非枚举值（原样字符串）是刻意的：让 Pydantic 校验继续报错，
+    避免把真正写错的值静默吞掉。
+    """
+    text = value.strip()
+    try:
+        return enum_cls(text)
+    except ValueError:
+        pass
+    try:
+        return enum_cls(text.lower())
+    except ValueError:
+        pass
+    from_string = getattr(enum_cls, "from_string", None)
+    if callable(from_string):
+        return from_string(text)
+    return value
+
+
 class MediaInfo(BaseModel):
     """统一的媒体信息模型 — 替代 MetaBase + MediaInfoModel"""
 
@@ -190,6 +212,18 @@ class MediaInfo(BaseModel):
                 nullable = False
             # int | str 是双形态字段，保留生产者给定的原始类型。
             if optional_str and optional_int:
+                continue
+            enum_cls = next((a for a in args if isinstance(a, type) and issubclass(a, Enum)), None)
+            if enum_cls is not None:
+                # 枚举字段：空串/None 视为未识别（历史 payload 里 type 常为空串，
+                # 直接交给 Pydantic 校验会抛 ``Input should be 'tv', ...`` 并让整条
+                # 下载链路失败），非空串按枚举值或别名归一。
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    if nullable:
+                        data[name] = None
+                    continue
+                if isinstance(value, str):
+                    data[name] = _coerce_enum(enum_cls, value)
                 continue
             if optional_str and value is not None and not isinstance(value, str):
                 if isinstance(value, (bool, float, int)):

@@ -649,12 +649,17 @@ class DownloadPipeline:
             media_info.user_name = user_name
             media_info.user_id = user_id
             media_info.hit_and_run = bool(torrent_attr and torrent_attr.get("hr"))
-            self._message.send_download_message(
-                in_from=in_from,
-                can_item=media_info,
-                download_setting_name=download_setting_name,
-                downloader_name=downloader_name,
-            )
+            # 通知失败不得回滚已经推送成功的下载任务：种子里在下载器里已经建好，
+            # 这里抛异常会让调用方把整次「创建下载任务」判为失败。
+            try:
+                self._message.send_download_message(
+                    in_from=in_from,
+                    can_item=media_info,
+                    download_setting_name=download_setting_name,
+                    downloader_name=downloader_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warn(f"[Pipeline]下载通知发送失败（不影响任务）: {exc}")
 
     # ---------- 辅助 ----------
 
