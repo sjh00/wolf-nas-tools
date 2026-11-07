@@ -64,6 +64,8 @@ class MediaService:
         llm_parser: BaseParser,
     ):
         self._llm_parser = llm_parser
+        # 本地规则解析器恒可用，作为 LLM 失败时的回落路径（也是未启用 LLM 时的主路径）
+        self._regex_parser: BaseParser = RegexParser()
         self._parser = self._build_parser()
         self._lookup = tmdb_lookup
         self._episode_mapper = EpisodeMapper(self._lookup)
@@ -92,7 +94,31 @@ class MediaService:
         if cfg.get("enabled") and cfg.get("media_recognizer_enabled"):
             if self._llm_parser and self._llm_parser.ready:
                 return self._llm_parser
-        return RegexParser()
+        return self._regex_parser
+
+    def _fallback_parser(self) -> BaseParser | None:
+        """主解析器失败时的回落解析器（与主解析器互补）。
+
+        主解析器是 LLM 时回落本地规则（恒可用）；主解析器是规则时回落 LLM
+        （需 provider 就绪且不在故障冷却期）。这样无论哪一侧不可用，另一侧
+        都会继续识别，而不是整批直接标记为未识别。
+        """
+        if self._parser.is_llm:
+            return self._regex_parser
+        llm_parser = self._llm_parser
+        if llm_parser is not None and llm_parser.ready:
+            return llm_parser
+        return None
+
+    def _fallback_label(self) -> str:
+        return "本地规则" if self._parser.is_llm else "LLM"
+
+    def _parser_or_fallback(self) -> BaseParser:
+        """优先主解析器；主解析器当前不可用（如 LLM 冷却中、未就绪）时用可用的另一侧。"""
+        if self._parser.ready:
+            return self._parser
+        fallback = self._fallback_parser()
+        return fallback if fallback is not None else self._parser
 
     def _post_process(self, parsed, title: str, subtitle: str = "") -> ParserResult | None:
         """解析后处理（所有识别入口共用）：集名粘连修复 / 中文名补充 / 末尾年份提取。
@@ -251,13 +277,14 @@ class MediaService:
                 subtitle = strip_collection_noise(parent)
         title, subtitle = self._apply_words(title, subtitle)
         parsed = self._parser.parse(title, subtitle)
-        if not parsed and not self._parser.is_llm:
-            # Fallback: 默认是 RegexParser 时，用 LLM Parser 兜底
-            llm_parser = self._llm_parser
-            if llm_parser.ready:
-                parsed = llm_parser.parse(title, subtitle)
+        if not parsed:
+            # Fallback: 主解析器（LLM 或规则）失败时改用另一侧，避免直接判为未识别
+            fallback = self._fallback_parser()
+            if fallback is not None:
+                parsed = fallback.parse(title, subtitle)
                 if parsed:
-                    log.info(f"[MediaService]LLM Parser fallback 成功: {parsed.title_cn or parsed.title_en}")
+                    title_label = parsed.title_cn or parsed.title_en
+                    log.info(f"[MediaService]{self._fallback_label()}解析回落成功: {title_label}")
         if not parsed:
             if language:
                 self._lookup.client.set_language()
@@ -519,28 +546,28 @@ class MediaService:
         # 1. Parser: 批量解析所有文件名
         parsed_list = self._parser.parse_batch(titles)
 
-        # Fallback: 默认是 RegexParser 时，对解析失败的条目用 LLM Parser 重新解析
-        if not self._parser.is_llm:
-            failed_indices = [i for i, p in enumerate(parsed_list) if not p]
-            if failed_indices:
-                llm_parser = self._llm_parser
-                if llm_parser.ready:
-                    failed_titles = [titles[i] for i in failed_indices]
-                    log.info(
-                        f"[MediaService]批量识别: {len(failed_indices)} 条 Regex 解析失败，尝试 LLM Parser fallback"
-                    )
-                    llm_results = llm_parser.parse_batch(failed_titles)
-                    for j, idx in enumerate(failed_indices):
-                        if llm_results[j]:
-                            parsed_list[idx] = llm_results[j]
-                            log.info(f"[MediaService]LLM Parser fallback [{idx}]: {failed_titles[j][:60]}...")
+        # Fallback: 主解析器失败的条目改用另一侧重解析（双向，见 _fallback_parser）
+        failed_indices = [i for i, p in enumerate(parsed_list) if not p]
+        if failed_indices:
+            fallback = self._fallback_parser()
+            if fallback is not None:
+                failed_titles = [titles[i] for i in failed_indices]
+                log.info(
+                    f"[MediaService]批量识别: {len(failed_indices)} 条主解析器失败，"
+                    f"尝试{self._fallback_label()}解析回落"
+                )
+                fallback_results = fallback.parse_batch(failed_titles)
+                for j, idx in enumerate(failed_indices):
+                    if fallback_results[j]:
+                        parsed_list[idx] = fallback_results[j]
+                        log.info(f"[MediaService]{self._fallback_label()}解析回落 [{idx}]: {failed_titles[j][:60]}...")
 
         # 2. 去重: 按 (title, year, type) 分组，相同内容只查一次 TMDB
         unique_keys = {}
         key_to_indices = {}
         for idx, parsed in enumerate(parsed_list):
             if not parsed and subtitles[idx]:
-                parsed = self._parser.parse(titles[idx], subtitles[idx])
+                parsed = self._parser_or_fallback().parse(titles[idx], subtitles[idx])
                 parsed_list[idx] = parsed
             if not parsed:
                 continue
@@ -1003,11 +1030,29 @@ class MediaService:
         titles = [i["title"] for i in items]
         parsed_list = self._parser.parse_batch(titles)
 
+        # 2.1b 回落：主解析器没解析出来的条目改用另一侧重解析。
+        # 这条路径是下载器/同步源入库的主干，缺了回落会让「LLM 限流」直接
+        # 变成整批未识别，而本地规则解析器本来就能处理绝大多数规范命名。
+        failed_indices = [i for i, p in enumerate(parsed_list) if not p]
+        if failed_indices:
+            fallback = self._fallback_parser()
+            if fallback is not None:
+                failed_titles = [titles[i] for i in failed_indices]
+                log.info(
+                    f"[MediaService]文件识别: {len(failed_indices)}/{len(titles)} 条主解析器失败，"
+                    f"尝试{self._fallback_label()}解析回落"
+                )
+                fallback_results = fallback.parse_batch(failed_titles)
+                for j, idx in enumerate(failed_indices):
+                    if fallback_results[j]:
+                        parsed_list[idx] = fallback_results[j]
+                        log.info(f"[MediaService]{self._fallback_label()}解析回落: {failed_titles[j][:60]}...")
+
         # 2.2 fallback：从父目录提取信息（合集根不拼进搜索词）
         for idx, item in enumerate(items):
             parent_ctx = self._parent_context_for_identify(item["parent_name"], item["parent_parent_name"])
             if not parsed_list[idx] and parent_ctx:
-                parsed_list[idx] = self._parser.parse(item["title"], parent_ctx)
+                parsed_list[idx] = self._parser_or_fallback().parse(item["title"], parent_ctx)
             # 公共后处理（与 identify / identify_batch 一致）
             parsed_list[idx] = self._post_process(
                 parsed_list[idx],

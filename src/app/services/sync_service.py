@@ -545,8 +545,13 @@ class SyncService:
                     dst_backend=dst_backend,
                     force_scrape=True,
                 )
-                if succ_flag and flag == "unidentification":
-                    self._filetransfer.update_transfer_unknown_state(path)
+                if flag == "unidentification":
+                    if succ_flag:
+                        # 只有真正入库成功才把未识别记录标为已识别
+                        self._filetransfer.update_transfer_unknown_state(path)
+                    else:
+                        # 识别失败必须留下记录，否则用户既看不到问题也重试不了
+                        log.warn(f"[ReIdentify]识别失败，保留未识别记录：{path} - {msg}")
             except (ServiceError, RepositoryError, DomainError):
                 raise
             except Exception as err:
