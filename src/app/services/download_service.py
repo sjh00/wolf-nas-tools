@@ -341,11 +341,19 @@ class DownloadService:
                     log.warn(f"[Download]种子文件不存在: {file_path}")
                     continue
                 uploaded_files.append(file_path)
-                identify_title = batch_title or file_name
+                # 识别源优先级：调用方标题（仅单条）→ 种子内部发布名 → 原始文件名。
+                # 上传后的临时名（upload_xxxx.torrent）绝不能作为识别源，
+                # 否则下载记录与入库命名都会变成临时名。
+                identify_title = (
+                    batch_title
+                    or self._torrent_inner_name(file_path)
+                    or self._torrent_title_fallback(file_name)
+                )
                 media_info = self._media.get_media_info(title=identify_title)
                 if not media_info:
                     media_info = MediaInfo()
                     media_info.title = identify_title
+                # 页面展示与后续命名统一用识别源，避免露出临时文件名
                 media_info.org_string = identify_title
                 media_info.site = "WEB"
                 if page_url:
@@ -463,7 +471,11 @@ class DownloadService:
 
     @staticmethod
     def _resolve_uploaded_torrent(file_item) -> tuple[str, str]:
-        """解析前端传入的种子文件引用，返回 (识别用文件名, 本地路径)。"""
+        """解析前端传入的种子文件引用，返回 (识别用文件名, 本地路径)。
+
+        上传接口会把文件存成 `upload_<随机>.torrent`，因此优先使用前端回传的
+        原始文件名（`original_name`），否则识别源会变成临时名。
+        """
         if isinstance(file_item, str):
             name = os.path.basename(file_item)
             if os.path.isabs(file_item) and os.path.exists(file_item):
@@ -471,13 +483,48 @@ class DownloadService:
             return name, temp_manager.get_temp_path(name)
         if isinstance(file_item, dict):
             nested = file_item.get("upload") or {}
-            name = nested.get("filename") or file_item.get("filename") or file_item.get("name") or ""
+            temp_name = (
+                nested.get("filename") or file_item.get("filename") or file_item.get("temp_name") or ""
+            )
+            display_name = (
+                nested.get("original_name") or file_item.get("original_name") or file_item.get("name") or ""
+            )
             path = nested.get("path") or file_item.get("path") or ""
             if path and os.path.exists(path):
-                return os.path.basename(name or path), path
-            if name:
-                return os.path.basename(name), temp_manager.get_temp_path(os.path.basename(name))
+                return os.path.basename(display_name or temp_name or path), path
+            if temp_name:
+                return os.path.basename(display_name or temp_name), temp_manager.get_temp_path(
+                    os.path.basename(temp_name)
+                )
         return "", ""
+
+    @staticmethod
+    def _torrent_inner_name(file_path: str) -> str:
+        """读取种子内部的 `info.name`（发布名），作为识别源。
+
+        种子在下载器里显示的名字就是它，比上传后的临时文件名可靠；
+        读取失败返回空串，由调用方回退到其他来源。
+        """
+        try:
+            with open(file_path, "rb") as handle:
+                raw = handle.read()
+            if not raw or raw[:1] != b"d":
+                return ""
+            decoded = Torrent._safe_decode(raw) or {}
+            info = decoded.get("info") if isinstance(decoded, dict) else None
+            name = info.get("name") if isinstance(info, dict) else None
+            return str(name or "").strip()
+        except Exception as exc:  # noqa: BLE001 - 解析失败只是少一条命名线索
+            log.debug(f"[Download]解析种子内部名称失败: {file_path} - {exc}")
+            return ""
+
+    @staticmethod
+    def _torrent_title_fallback(name: str) -> str:
+        """临时文件名兜底：去掉 `.torrent` 后缀，避免页面出现 `upload_xxx.torrent`。"""
+        base = os.path.basename(str(name or "")).strip()
+        if base.lower().endswith(".torrent"):
+            base = base[: -len(".torrent")]
+        return base.strip()
 
     # ---------- 正在下载任务（含媒体信息拼装） ----------
 
