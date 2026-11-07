@@ -1568,8 +1568,13 @@ class FileTransferService:
                     failed_count += fc
                     alert_count += ac
                     alert_messages = am
-                    if fc > 0:
-                        success_flag = False
+                    # 走到这里就是「未识别」，必须判定为失败。
+                    # fc=0 只表示「不重复计数」（该路径已在未识别列表里），
+                    # 不代表识别成功；此前据此保持 success_flag=True，导致调用方
+                    # 把记录标成已识别 —— 记录消失，却没有入库、没有历史、没有通知。
+                    success_flag = False
+                    if not error_message:
+                        error_message = "无法识别媒体信息"
                     if udf_flag:
                         return {
                             "total_count": total_count,

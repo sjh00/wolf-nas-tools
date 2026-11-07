@@ -1,6 +1,7 @@
 """媒体文件名识别 Agent"""
 
 import re
+import time
 from typing import Any
 
 from pydantic import BaseModel, model_validator
@@ -26,6 +27,15 @@ _TITLE_SPLIT_RE = re.compile(r"\s*[/／|｜]\s*")
 # 分隔后段数达到该值才判定为「串味」。取 3 而不是 2，避免把
 # 合法片名（如 Face/Off、Spider-Man/蜘蛛侠 这类双语片名）误切。
 _MULTI_TITLE_THRESHOLD = 3
+
+# 调用异常（限流/欠费/网络）连续达到该次数后进入冷却期。
+# 冷却期内不再发起请求，直接由调用方回落到本地规则解析器 —— 否则一批几百条
+# 文件会逐条撞同一个 429，既刷屏又拖慢整个入库流程。
+_FAILURE_THRESHOLD = 3
+
+# 冷却时长（秒）。额度类故障通常以小时计，但这里不宜设太长：
+# 偶发网络抖动也会计数，冷却结束后重新试探一次即可自愈。
+_COOLDOWN_SECONDS = 120.0
 
 
 def _normalize_for_match(text: str) -> str:
@@ -176,10 +186,41 @@ class MediaRecognizer:
     def __init__(self, svc):
 
         self._svc = svc
+        self._failure_streak = 0
+        self._cooldown_until = 0.0
 
     @property
     def ready(self) -> bool:
+        """是否可发起识别请求。
+
+        除了 provider 配置就绪，还要看是否处于故障冷却期：连续调用异常
+        （限流/欠费/网络）后短时间内不再尝试，交由调用方回落到本地规则解析。
+        """
+        if self._cooldown_until and time.monotonic() < self._cooldown_until:
+            return False
         return self._svc.ready
+
+    @property
+    def in_cooldown(self) -> bool:
+        """是否处于故障冷却期（供调用方解释回落原因）。"""
+        return self._cooldown_until > 0 and time.monotonic() < self._cooldown_until
+
+    def _note_failure(self, error: object) -> None:
+        """记录一次调用异常；连续达到阈值后进入冷却期。"""
+        self._failure_streak += 1
+        if self._failure_streak < _FAILURE_THRESHOLD:
+            return
+        self._cooldown_until = time.monotonic() + _COOLDOWN_SECONDS
+        self._failure_streak = 0
+        log.warn(
+            f"[MediaRecognizer]LLM 连续 {_FAILURE_THRESHOLD} 次调用失败，"
+            f"暂停 {int(_COOLDOWN_SECONDS)}s 并改用本地规则解析: {error}"
+        )
+
+    def _note_success(self) -> None:
+        if self._failure_streak or self._cooldown_until:
+            self._failure_streak = 0
+            self._cooldown_until = 0.0
 
     def recognize(self, filename: str) -> MediaResult | None:
         """识别单个文件名"""
@@ -197,11 +238,13 @@ class MediaRecognizer:
             )
         except Exception as e:
             # 识别失败（如限流/网络）不应中断整批转移：降级为未识别，由后续逻辑兜底
+            self._note_failure(e)
             log.warn(f"[MediaRecognizer]识别失败，降级为未识别: {e}")
             return None
         if result:
             result = self._sanitize(result, filename)
         if result and (result.title_en or result.title_cn):
+            self._note_success()
             log.info(f"[MediaRecognizer]识别成功: cn={result.title_cn}, en={result.title_en}, type={result.type}")
         else:
             log.warn("[MediaRecognizer]识别失败或返回空结果")
@@ -317,6 +360,7 @@ class MediaRecognizer:
                 append_schema=False,
             )
         except Exception as e:  # noqa: BLE001
+            self._note_failure(e)
             log.warn(f"[MediaRecognizer]Batch 请求失败（{len(filenames)} 条）: {e}")
             return None
 
@@ -324,6 +368,7 @@ class MediaRecognizer:
         if not items:
             log.warn(f"[MediaRecognizer]Batch 结构化结果为空（{len(filenames)} 条）")
             return None
+        self._note_success()
         if len(items) < len(filenames):
             # 数量缺口过大通常是输出被截断；交给拆分重试，避免大批量条目被判成未识别
             log.warn(f"[MediaRecognizer]Batch 结果数量不足: {len(items)}/{len(filenames)}")
