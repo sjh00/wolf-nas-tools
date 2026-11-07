@@ -320,6 +320,11 @@ class DownloadService:
         if not files and not urls:
             return DownloadResultDTO(success=False, message="没有种子文件或者种子链接")
 
+        # 多文件/多链接批量添加时，调用方给的 title 只可能对应其中一个条目。
+        # 若沿用它去识别每一条，整批都会被识别成同一部作品，
+        # 因此批量场景一律按各自文件名（或链接）识别。
+        batch_title = title if (len(files) + len(urls or [])) <= 1 else None
+
         uploaded_files = []
         success_count = 0
         failures: list[str] = []
@@ -336,7 +341,7 @@ class DownloadService:
                     log.warn(f"[Download]种子文件不存在: {file_path}")
                     continue
                 uploaded_files.append(file_path)
-                identify_title = title or file_name
+                identify_title = batch_title or file_name
                 media_info = self._media.get_media_info(title=identify_title)
                 if not media_info:
                     media_info = MediaInfo()
@@ -390,22 +395,22 @@ class DownloadService:
                     )
                     if not file_path:
                         return DownloadResultDTO(success=False, message=f"下载种子文件失败： {retmsg}")
-                    identify_title = title or os.path.basename(file_path)
+                    identify_title = batch_title or os.path.basename(file_path)
                     media_info = self._media.get_media_info(title=identify_title, subtitle=description)
                     if not media_info:
                         media_info = MediaInfo()
                         media_info.title = identify_title
-                    media_info.org_string = title or os.path.basename(file_path)
+                    media_info.org_string = batch_title or os.path.basename(file_path)
                     media_info.site = site_info.get("name") or "WEB"
                     media_info.enclosure = url
                 else:
                     # magnet 链接：用前端传入的 title/description 识别
-                    identify_title = title or url
+                    identify_title = batch_title or url
                     media_info = self._media.get_media_info(title=identify_title, subtitle=description)
                     if not media_info:
                         media_info = MediaInfo()
                         media_info.title = identify_title
-                    media_info.org_string = title or url
+                    media_info.org_string = batch_title or url
                     media_info.enclosure = url
                     media_info.site = site or "WEB"
                     if size is not None:
@@ -433,11 +438,11 @@ class DownloadService:
                     user_id=user_id,
                 )
                 if errmsg:
-                    failures.append(f"{title or url}: {errmsg}")
+                    failures.append(f"{batch_title or url}: {errmsg}")
                     log.warn(f"[Download]推送下载器失败: {errmsg}")
                 else:
                     success_count += 1
-                    log.info(f"[Download]已推送到下载器: {title or url}")
+                    log.info(f"[Download]已推送到下载器: {batch_title or url}")
         finally:
             # 清理上传的临时文件
             for tmp_file in uploaded_files:
