@@ -196,8 +196,10 @@ class ScrapeQueueService:
         finalize = payload.get("finalize") or {}
         already_in_library = bool(self._lifecycle and self._lifecycle.is_in_library(media))
         if ok:
-            if not already_in_library:
-                self._finalize(media, finalize, metadata_ok=True)
+            # 已在库只意味着「不必再发入库通知」，不代表进度事件可以不发。
+            # 早前这里整体跳过定稿，导致订阅的缺失集与进度永不推进
+            # （文件已在库、历史也写了，但订阅仍显示旧集数）。
+            self._finalize(media, finalize, metadata_ok=True, notify=not already_in_library)
             if task is not None:
                 self._record_media(
                     media, LifecycleStage.SCRAPED, LifecycleStatus.SUCCEEDED, "scrape.completed", task, progress=100
@@ -249,9 +251,19 @@ class ScrapeQueueService:
         )
         self._finalize(media, finalize, metadata_ok=True)
 
-    def _finalize(self, media: MediaInfo, finalize: dict[str, Any], *, metadata_ok: bool) -> None:
+    def _finalize(
+        self,
+        media: MediaInfo,
+        finalize: dict[str, Any],
+        *,
+        metadata_ok: bool,
+        notify: bool | None = None,
+    ) -> None:
         if not finalize or self._event_bus is None:
             return
+        if notify is None:
+            # 兼容既有的 finalize 载荷字段（调用方可通过它关闭通知）
+            notify = bool(finalize.get("notify", True))
         receipt_key = self._finalize_receipt_key(media)
         try:
             if not self._receipt_repo.claim(receipt_key):
@@ -260,7 +272,6 @@ class ScrapeQueueService:
         except Exception as exc:  # noqa: BLE001 - 收据不可用时继续定稿，避免阻塞入库
             log.warn(f"[ScrapeQueue]定稿收据写入失败，继续处理: {exc}")
         in_from = finalize.get("in_from")
-        notify = bool(finalize.get("notify", True))
         if metadata_ok and notify and self._message is not None:
             try:
                 if media.type == MediaType.MOVIE:
@@ -282,18 +293,22 @@ class ScrapeQueueService:
 
         file_ext = str(finalize.get("file_ext") or "")
         ret_file_path = str(finalize.get("ret_file_path") or "")
-        if ret_file_path:
-            self._event_bus.publish(
-                Event(
-                    event_type=SUBTITLE_DOWNLOAD,
-                    payload=SubtitleDownloadPayload(
-                        media_info=media.to_dict(),
-                        file=ret_file_path,
-                        file_ext=file_ext,
-                        bluray=bool(finalize.get("bluray")),
-                    ),
+        # 通知已发过（媒体此前已在库）时，字幕与入库通知都无需重复；
+        # 但下面的「转移完成/集数入库」事件必须照常发布 —— 订阅进度、生命周期
+        # 由它们驱动，跳过会让进度永久停在旧集数。
+        if notify:
+            if ret_file_path:
+                self._event_bus.publish(
+                    Event(
+                        event_type=SUBTITLE_DOWNLOAD,
+                        payload=SubtitleDownloadPayload(
+                            media_info=media.to_dict(),
+                            file=ret_file_path,
+                            file_ext=file_ext,
+                            bluray=bool(finalize.get("bluray")),
+                        ),
+                    )
                 )
-            )
         self._event_bus.publish(
             Event(
                 event_type=MEDIA_TRANSFER_FINISHED,

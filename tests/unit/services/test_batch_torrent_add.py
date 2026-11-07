@@ -54,8 +54,9 @@ class TestBatchTorrentTitles:
         )
 
         called = [c.kwargs.get("title") for c in media.get_media_info.call_args_list]
-        assert "Movie.A.2020.torrent" in called
-        assert "Movie.B.2021.torrent" in called, "第二个文件必须用自己的名字识别"
+        # 种子内容不可解析时回退到原始文件名，并去掉 .torrent 后缀
+        assert called == ["Movie.A.2020", "Movie.B.2021"]
+        assert not any("upload_" in t for t in called)
 
     def test_single_file_keeps_caller_title(self, tmp_path, monkeypatch):
         """单文件：保留调用方给的标题（可能来自页面上下文，更准确）。"""
