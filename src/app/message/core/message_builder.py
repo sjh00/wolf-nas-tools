@@ -33,6 +33,17 @@ def _should_notify_fail(key: str) -> bool:
         return True
 
 
+def _media_type_label(media_info) -> str:
+    """媒体类型展示名；未识别（type 为空/None）时返回「未知」而不是崩掉。
+
+    识别失败（例如 LLM 限流降级）会产生 type 为空的 MediaInfo，这条路径
+    仍在正常构建下载/入库通知，不能因为取不到类型就把整个任务打挂。
+    """
+    media_type = getattr(media_info, "type", None)
+    display_name = getattr(media_type, "display_name", None)
+    return str(display_name or "未知")
+
+
 def _type_label(media_info, profile: str) -> str:
     """消息中的用户可见类型：普通媒体用电影/电视剧，扩展画像用插件标签."""
     if profile and profile != "default":
@@ -40,8 +51,8 @@ def _type_label(media_info, profile: str) -> str:
         if label:
             return label
         if profile.lower() in {"anime", "tv", "movie"}:
-            return media_info.type.display_name
-    return media_info.type.display_name
+            return _media_type_label(media_info)
+    return _media_type_label(media_info)
 
 
 def _source_provider(item) -> str:
@@ -324,9 +335,9 @@ class MessageBuilder:
                     f"共{item_info.total_episodes}集 已入库"
                 )
             if item_info.vote_average:
-                msg_str = f"{item_info.get_vote_string()}，类型：{item_info.type.display_name}"
+                msg_str = f"{item_info.get_vote_string()}，类型：{_media_type_label(item_info)}"
             else:
-                msg_str = f"类型：{item_info.type.display_name}"
+                msg_str = f"类型：{_media_type_label(item_info)}"
             if item_info.category:
                 msg_str = f"{msg_str}，类别：{item_info.category}"
             from_source = f"，来自：{StringUtils.resolve_in_from_display(in_from)}"
