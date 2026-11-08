@@ -4,6 +4,7 @@ DownloadService - 下载编排业务层
 """
 
 import os
+import re
 from typing import Any
 
 import log
@@ -81,8 +82,34 @@ class DownloadService:
         """公开方法：解析站点下载链接"""
         return self._resolve_download_url(page_url, enclosure)
 
+    @staticmethod
+    def _season_episode_key(space: str | None) -> tuple[int, int] | None:
+        """把 `S01 E50` / `S01E50` 这类季集串解析为 (季, 集)，解析不出返回 None。"""
+        text = str(space or "").upper()
+        season = re.search(r"S(\d+)", text)
+        episode = re.search(r"E(\d+)", text)
+        if not season:
+            return None
+        return (int(season.group(1)), int(episode.group(1)) if episode else 0)
+
+    def _multi_version_scope(self, media: MediaInfo) -> set[tuple[int, int]] | None:
+        """本次下载要判定的季集范围；None 表示按整部作品判定（电影或无集数信息）。"""
+        if getattr(media, "type", None) not in (MediaType.TV, MediaType.ANIME):
+            return None
+        episodes = media.get_episode_list() if hasattr(media, "get_episode_list") else []
+        if not episodes:
+            return None
+        seasons = media.get_season_list() if hasattr(media, "get_season_list") else []
+        if not seasons:
+            return None
+        return {(int(season), int(episode)) for season in seasons for episode in episodes}
+
     def _check_multi_version(self, media: MediaInfo) -> DownloadResultDTO | None:
-        """下载前多版本检测：若该作品已有 >=2 个磁盘上存在的版本，返回"需确认"。
+        """下载前多版本检测：同名同集的已入库版本 >=2 时返回"需确认"。
+
+        「多版本」指**同一集**存在多份不同规格的文件（换版场景），
+        而不是同一部剧的不同集 —— 后者在连载剧中几乎必然成立，
+        早前按整部作品统计，导致每次添加新集都会误报"多个已入库版本"。
 
         返回 None 表示无需确认，可正常推送下载。
         返回 DownloadResultDTO 且 need_confirm=True，表示命中多版本，不应推送下载器。
@@ -97,10 +124,24 @@ class DownloadService:
             return None
         # 只统计磁盘上实际存在的版本（多版本指已入库的文件）
         existing = [v for v in versions if v.get("exists")]
+
+        scope = self._multi_version_scope(media)
+        if scope is not None:
+            scoped = []
+            for version in existing:
+                key = self._season_episode_key(version.get("season_episode"))
+                if key is not None and key in scope:
+                    scoped.append(version)
+            existing = scoped
+        elif getattr(media, "type", None) in (MediaType.TV, MediaType.ANIME):
+            # 剧集但拿不到季集信息：无法判断是否为同一集，宁可不拦，
+            # 否则每添加一集新剧都会被要求处理"历史集版本"。
+            return None
+
         if len(existing) >= 2:
             return DownloadResultDTO(
                 success=False,
-                message="检测到多个已入库的版本，请选择处理方式",
+                message="检测到同一集存在多个已入库版本，请选择处理方式",
                 need_confirm=True,
                 versions=existing,
                 tmdb_id=tmdb_id,
