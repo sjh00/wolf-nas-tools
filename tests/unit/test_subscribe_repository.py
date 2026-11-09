@@ -390,7 +390,7 @@ class TestSubscribeDedup:
     def test_dedup_key_same_name_year_and_user(self):
         from types import SimpleNamespace
 
-        from app.db.repositories.subscribe_repo_adapter import _subscribe_dedup_key
+        from app.services.subscribe_repo_adapter import _subscribe_dedup_key
 
         media = SimpleNamespace(title="Demo", year="2024")
         kwargs = {"user_id": 1}
@@ -399,7 +399,7 @@ class TestSubscribeDedup:
     def test_dedup_key_differs_by_user_and_year(self):
         from types import SimpleNamespace
 
-        from app.db.repositories.subscribe_repo_adapter import _subscribe_dedup_key
+        from app.services.subscribe_repo_adapter import _subscribe_dedup_key
 
         media = SimpleNamespace(title="Demo", year="2024")
         assert _subscribe_dedup_key("movie", media, {"user_id": 1}) != _subscribe_dedup_key(

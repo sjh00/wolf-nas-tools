@@ -1,14 +1,15 @@
 """协调器 Builder — 创建 Layer 5 对象。"""
 
+from app.agent.config import get_notify_config
 from app.agent.tool_executor import ToolExecutor
 from app.agent.tools.context import ToolContext
-from app.core.system_config import SystemConfig
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
-from app.db.repositories.subscribe_repo_adapter import SubscribeHistoryRepositoryAdapter
 from app.di.builders.agent_builder import AgentRagObjects
 from app.di.models import BusinessFacades, CoordinatorObjects, InfrastructureObjects, ServiceObjects
+from app.events.bus import EventBus
+from app.events.decorators import auto_register
+from app.infrastructure.system_config import SystemConfig
 from app.infrastructure.thread import ThreadExecutor
-from app.media import MediaCache
 from app.message.agent_enhancer import AgentMessageEnhancer
 from app.services.media_library_monitor import MediaLibraryMonitorService
 from app.services.rss_processor import RssHelper
@@ -26,10 +27,28 @@ from app.services.subscribe.monitor import SubscriptionMonitor
 from app.services.subscribe.strategies.indexer_search import IndexerSearchStrategy
 from app.services.subscribe.strategies.queue_search import QueueSearchStrategy
 from app.services.subscribe.strategies.rss_feed import RssFeedStrategy
+from app.services.subscribe_repo_adapter import SubscribeHistoryRepositoryAdapter
+from app.services.subscribe_service import SubscribeService
 from app.services.system.config import SystemConfigService
 from app.services.system.lifecycle import SystemLifecycleService
 from app.services.transfer.kb_ingest_handler import register_kb_ingest_handler
 from app.sites import SiteConf
+
+
+def register_subscription_handlers(
+    *,
+    event_bus: EventBus,
+    subscribe_service: SubscribeService,
+    queue_strategy: QueueSearchStrategy,
+    thread_executor: ThreadExecutor,
+) -> None:
+    """注册订阅生命周期处理器，并 flush 构建阶段新增的 pending handlers."""
+    build_rss_auto_subscribe_handler(subscribe_service)
+    build_subscribe_add_search_handler(queue_strategy, thread_executor)
+    build_media_episode_transferred_handler(subscribe_service)
+    build_movie_transfer_finalize_handler(subscribe_service)
+    build_transfer_fail_reopen_handler(subscribe_service)
+    auto_register(event_bus)
 
 
 def build_coordinators(
@@ -61,7 +80,6 @@ def build_coordinators(
 
     download_repo = DownloadHistoryRepositoryAdapter()
     rss_repo = SubscribeHistoryRepositoryAdapter()
-    media_cache = MediaCache()
     system_config = SystemConfigService()
 
     matcher = SubscribeMatcher(site_conf=siteconf, site_cache=site_cache)
@@ -69,11 +87,11 @@ def build_coordinators(
         service=subscribe_service,
         searcher=searcher,
         media_service=media_service,
-        media_cache=media_cache,
         downloader=downloader_core,
         filter_service=filter_service,
         message=message,
         system_config=system_config,
+        metadata_gateway=services.metadata_gateway,
     )
     rsshelper = RssHelper(site_engine=site_engine)
     rss_strategy = RssFeedStrategy(
@@ -90,16 +108,17 @@ def build_coordinators(
         system_config=system_config,
         site_grant_service=services.site_grant_service,
         custom_rss=services.custom_rss_service,
+        metadata_gateway=services.metadata_gateway,
     )
     indexer_strategy = IndexerSearchStrategy(
         service=subscribe_service,
         searcher=searcher,
         media_service=media_service,
-        media_cache=media_cache,
         downloader=downloader_core,
         filter_service=filter_service,
         message=message,
         system_config=system_config,
+        metadata_gateway=services.metadata_gateway,
     )
     subscribe_search_executor = ThreadExecutor.named("subscribe_search", max_workers=4)
     subscribe_rss_executor = ThreadExecutor.named("subscribe_rss", max_workers=2)
@@ -176,7 +195,7 @@ def build_coordinators(
         message_client_service=services.message_client_service,
         rbac_service=services.rbac_service,
         site_grant_service=services.site_grant_service,
-        metadata_service=services.metadata_service,
+        metadata_gateway=services.metadata_gateway,
         media_server_config_service=services.media_server_config_service,
         indexer_config_service=services.indexer_config_service,
         system_config_service=services.system_config_service,
@@ -203,20 +222,16 @@ def build_coordinators(
 
     # Agent 通知增强（单流替换模板通知，agent 未启用时零开销）
     if facades.agent_service.ready:
-        infra.message.set_agent_enhancer(AgentMessageEnhancer(facades.agent_service))
+        infra.message.set_agent_enhancer(AgentMessageEnhancer(facades.agent_service, get_notify_config()))
 
-    # 注册 RSS 自动订阅事件处理器
-    build_rss_auto_subscribe_handler(subscribe_service)
-    # 注册手动下载后自动更新订阅状态的事件处理器
+    register_subscription_handlers(
+        event_bus=infra.event_bus,
+        subscribe_service=subscribe_service,
+        queue_strategy=queue_strategy,
+        thread_executor=thread_executor,
+    )
+    # ???????????????????????????????
     build_manual_download_subscribe_handler(subscribe_service)
-    # 注册订阅添加/更新后自动触发队列搜索的事件处理器
-    build_subscribe_add_search_handler(queue_strategy, thread_executor)
-    # 转移落盘确认后定稿订阅（写历史、删订阅、联动兄弟）
-    build_media_episode_transferred_handler(subscribe_service)
-    # 电影转移落盘确认后定稿
-    build_movie_transfer_finalize_handler(subscribe_service)
-    # 转移失败后回滚：重开订阅并复位下载历史，允许重新下载
-    build_transfer_fail_reopen_handler(subscribe_service)
 
     return CoordinatorObjects(
         subscription_monitor=subscription_monitor,

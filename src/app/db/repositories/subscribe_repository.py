@@ -9,7 +9,7 @@ import datetime
 import difflib
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from typing import cast as type_cast
 
 from sqlalchemy import Integer, and_, cast, or_
@@ -26,12 +26,12 @@ from app.db.models import (
 )
 from app.db.repositories.base_repository import BaseRepository
 from app.db.repositories.data_scope import apply_owner_scope
+from app.db.repositories.identity_resolver import IdentityResolver
 from app.domain.entities.rss import SubscribeState
-from app.domain.mediatypes import MediaType
-from app.media.metadata.legacy import parse_legacy_ref
-from app.media.metadata.policy import ANCHOR_POLICY
+from app.domain.legacy_ref import parse_legacy_ref
+from app.domain.media_types import ProviderMediaType
+from app.domain.metadata_policy import ANCHOR_POLICY
 from app.schemas.auth import UserContext
-from app.services.identity_resolver import IdentityResolver
 from app.utils.json_utils import JsonUtils
 from app.utils.string_utils import season_variants
 
@@ -48,7 +48,18 @@ def _normalize_tv_season(value: object) -> str:
 
 
 if TYPE_CHECKING:
-    from app.media.models import MediaInfo
+
+    class MediaInfo(Protocol):
+        """仓储写入所需的媒体信息最小接口."""
+
+        title: Any
+        year: Any
+        tmdb_id: Any
+        begin_season: Any
+
+        def get_poster_image(self) -> str: ...
+
+        def get_season_string(self) -> str: ...
 
 
 # DESC 列为 varchar(255)，存的是 TMDB 简介（可能超长）；SQLite 不校验长度，
@@ -105,9 +116,9 @@ def _history_scope(
     provider = str(anchor_provider or "").strip()
     external = str(anchor_external_id or "").strip()
     if not provider or not external:
-        media_type = MediaType.from_string(str(rtype or ""))
-        if media_type == MediaType.UNKNOWN:
-            media_type = MediaType.MOVIE
+        media_type = ProviderMediaType.from_value(str(rtype or ""))
+        if media_type == ProviderMediaType.UNKNOWN:
+            media_type = ProviderMediaType.MOVIE
         ref = parse_legacy_ref(tmdbid, media_type)
         if ref is not None:
             provider = provider or ref.provider
@@ -377,7 +388,7 @@ class SubscribeRepository(BaseRepository):
         """
         if not title:
             return None
-        if mtype == MediaType.MOVIE:
+        if mtype == ProviderMediaType.MOVIE:
             result = self.get_rss_movie_id(title, year, tmdbid)
         else:
             result = self.get_rss_tv_id(title, year, tmdbid)
@@ -427,7 +438,7 @@ class SubscribeRepository(BaseRepository):
         更新订阅命中的过滤规则优先级
         """
         with self.session() as db:
-            if rtype == MediaType.MOVIE:
+            if rtype == ProviderMediaType.MOVIE:
                 db.query(SubscribeMovies).filter(SubscribeMovies.ID == int(rssid)).update({"FILTER_ORDER": res_order})
             else:
                 db.query(SubscribeTvs).filter(SubscribeTvs.ID == int(rssid)).update({"FILTER_ORDER": res_order})
@@ -437,7 +448,7 @@ class SubscribeRepository(BaseRepository):
         查询当前订阅的过滤优先级
         """
         with self.session() as db:
-            if rtype == MediaType.MOVIE:
+            if rtype == ProviderMediaType.MOVIE:
                 res = db.query(SubscribeMovies.FILTER_ORDER).filter(SubscribeMovies.ID == int(rssid)).first()
             else:
                 res = db.query(SubscribeTvs.FILTER_ORDER).filter(SubscribeTvs.ID == int(rssid)).first()
@@ -521,7 +532,7 @@ class SubscribeRepository(BaseRepository):
             anchor_provider=anchor_provider,
             anchor_external_id=anchor_external_id,
             media_info=media_info,
-            media_type=MediaType.MOVIE.value,
+            media_type=ProviderMediaType.MOVIE.value,
             content_profile=content_profile,
         )
 
@@ -863,11 +874,13 @@ class SubscribeRepository(BaseRepository):
             value = row[0] if row else None
             return int(value) if value is not None else None
 
-    def find_owner_by_anchor(self, provider: str | None, external_id: str | None, mtype: MediaType) -> int | None:
+    def find_owner_by_anchor(
+        self, provider: str | None, external_id: str | None, mtype: ProviderMediaType
+    ) -> int | None:
         """按豆瓣/Bangumi 等锚点反查订阅归属用户."""
         if not provider or not external_id:
             return None
-        model = SubscribeMovies if mtype == MediaType.MOVIE else SubscribeTvs
+        model = SubscribeMovies if mtype == ProviderMediaType.MOVIE else SubscribeTvs
         with self.session() as db:
             row = (
                 db.query(model.USER_ID)

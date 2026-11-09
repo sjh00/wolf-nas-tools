@@ -9,7 +9,7 @@
 
 from unittest.mock import MagicMock
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.models import MediaInfo
 from app.services.scrape_queue_service import ScrapeQueueService
 
@@ -21,16 +21,19 @@ def _service(already_in_library: bool):
     svc._event_bus = MagicMock()
     svc._receipt_repo = MagicMock()
     svc._receipt_repo.claim.return_value = True
+    # ????????????????????????
+    svc._ensure_identity = MagicMock(return_value=True)
     svc._message = MagicMock()
     svc._record_media = MagicMock()
     svc._scrape_file = MagicMock(return_value=True)
     svc._resolve_backend = MagicMock(return_value=None)
     return svc
 
-
 def _media() -> MediaInfo:
     media = MediaInfo()
-    media.type = MediaType.TV
+    media.type = ProviderMediaType.SERIES
+    # ????????????????????????
+    media.identity_id = "01TESTIDENTITY0000000000"
     media.title = "示例剧集"
     media.tmdb_id = 1
     media.begin_season = 1
@@ -38,7 +41,6 @@ def _media() -> MediaInfo:
     media.end_episode = 5
     media.total_episodes = 10
     return media
-
 
 def _payload(media: MediaInfo) -> dict:
     from app.utils.json_utils import JsonUtils
@@ -60,14 +62,12 @@ def _payload(media: MediaInfo) -> dict:
         },
     }
 
-
 def _published_types(svc) -> list[str]:
     out = []
     for call in svc._event_bus.publish.call_args_list:
         event = call.args[0]
         out.append(getattr(event, "event_type", ""))
     return out
-
 
 class TestFinalizeOnAlreadyInLibrary:
     def test_episode_event_published_when_already_in_library(self):

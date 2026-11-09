@@ -8,10 +8,11 @@ from typing import Any
 import log
 from app.core.settings import settings
 from app.db.repositories.finalize_receipt_repository import FinalizeReceiptRepository
+from app.db.repositories.identity_resolver import IdentityResolver
 from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepositoryAdapter
 from app.domain.lifecycle import LifecycleStage, LifecycleStatus
 from app.domain.media_ref import media_identity_key
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event
 from app.events.bus import EventBus
 from app.events.constants import MEDIA_EPISODE_TRANSFERRED, MEDIA_TRANSFER_FINISHED, SUBTITLE_DOWNLOAD
@@ -53,6 +54,7 @@ class ScrapeQueueService:
         queue_name: str = "scrape",
         lifecycle: LifecycleProjector | None = None,
         receipt_repo: FinalizeReceiptRepository | None = None,
+        identity_resolver: IdentityResolver | None = None,
     ):
         self._scraper = scraper
         self._max_workers = max(1, int(max_workers))
@@ -60,6 +62,7 @@ class ScrapeQueueService:
         self._event_bus = event_bus
         self._lifecycle = lifecycle
         self._receipt_repo = receipt_repo or FinalizeReceiptRepository()
+        self._identity_resolver = identity_resolver or IdentityResolver()
         self._queue_name = queue_name
         self._queues: dict[str, TaskQueue] = {}
         self._workers: list[TaskWorker] = []
@@ -128,6 +131,7 @@ class ScrapeQueueService:
         finalize: dict[str, Any] | None = None,
     ) -> None:
         """提交单文件刮削；成功后由任务发布最终转移事件."""
+        self._ensure_identity(media)
         if not dir_path or not file_name:
             log.error(f"[ScrapeQueue]拒绝空路径刮削任务: dir={dir_path!r} file={file_name!r}")
             return
@@ -183,6 +187,8 @@ class ScrapeQueueService:
 
     def _run_file_payload(self, payload: dict[str, Any], task: Task | None) -> dict[str, Any]:
         media = MediaInfo.model_validate(payload["media"])
+        if not self._ensure_identity(media):
+            raise RuntimeError(f"刮削任务缺少规范身份: {payload.get('dir_path')}/{payload.get('file_name')}")
         backend = self._resolve_backend(payload.get("backend_id"))
         if task is not None:
             self._record_media(media, LifecycleStage.SCRAPING, LifecycleStatus.RUNNING, "scrape.started", task)
@@ -237,7 +243,12 @@ class ScrapeQueueService:
 
     def finalize_duplicate(self, media: MediaInfo, finalize: dict[str, Any]) -> None:
         """目标已存在且元数据完整：记录入库、发送消息并发布转移完成事件。"""
-        if self._lifecycle is not None and self._lifecycle.is_in_library(media):
+        if not self._ensure_identity(media):
+            log.error("[ScrapeQueue]目标已存在但无法解析规范身份，跳过定稿")
+            return
+        if self._lifecycle is not None and (
+            self._lifecycle.is_in_library(media) or self._lifecycle.has_been_in_library(media)
+        ):
             return
         key = f"library:duplicate:{media.get_title_string()}:{media.get_season_string()}:{media.get_episode_string()}"
         self._record_media(
@@ -265,6 +276,9 @@ class ScrapeQueueService:
             # 兼容既有的 finalize 载荷字段（调用方可通过它关闭通知）
             notify = bool(finalize.get("notify", True))
         receipt_key = self._finalize_receipt_key(media)
+        if not receipt_key:
+            log.warn("[ScrapeQueue]缺少规范身份，跳过定稿通知")
+            return
         try:
             if not self._receipt_repo.claim(receipt_key):
                 log.info(f"[ScrapeQueue]定稿已处理，跳过重复通知: {receipt_key}")
@@ -274,14 +288,14 @@ class ScrapeQueueService:
         in_from = finalize.get("in_from")
         if metadata_ok and notify and self._message is not None:
             try:
-                if media.type == MediaType.MOVIE:
+                if media.type == ProviderMediaType.MOVIE:
                     self._message.send_transfer_movie_message(
                         in_from,
                         media,
                         int(finalize.get("exist_filenum") or 0),
                         bool(finalize.get("category_flag")),
                     )
-                elif media.type in (MediaType.TV, MediaType.ANIME):
+                elif media.type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
                     self._message.send_transfer_tv_message(
                         [media],
                         in_from,
@@ -321,7 +335,7 @@ class ScrapeQueueService:
                 ),
             )
         )
-        if media.type in (MediaType.TV, MediaType.ANIME) and media.get_episode_list():
+        if media.type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME) and media.get_episode_list():
             self._event_bus.publish(
                 Event(
                     event_type=MEDIA_EPISODE_TRANSFERRED,
@@ -341,12 +355,18 @@ class ScrapeQueueService:
                 )
             )
 
-    @staticmethod
-    def _finalize_receipt_key(media: MediaInfo) -> str:
+    def _ensure_identity(self, media: MediaInfo) -> bool:
         try:
-            identity = media_identity_key(media)
-        except Exception:  # noqa: BLE001 - 兜底避免收据影响定稿
-            identity = f"{getattr(media, 'type', '')}:{media.get_name()}:{getattr(media, 'year', '')}"
+            return bool(self._identity_resolver.ensure_media(media).identity_id)
+        except Exception as exc:  # noqa: BLE001 - 身份解析失败由调用方决定是否阻断
+            log.warn(f"[ScrapeQueue]身份解析失败: {exc}")
+            return False
+
+    def _finalize_receipt_key(self, media: MediaInfo) -> str:
+        """执行边界已保证 identity；收据键只使用规范身份."""
+        identity = media_identity_key(media)
+        if not identity.startswith("id:"):
+            return ""
         episodes = ",".join(str(item) for item in (media.get_episode_list() or []))
         return f"{identity}|s{media.get_season_seq()}|e{episodes}"
 

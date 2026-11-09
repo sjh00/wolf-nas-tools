@@ -7,7 +7,7 @@ import posixpath
 from typing import Any
 
 import log
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.parser import meta_info
 from app.services.transfer.library_rename_models import RenameScope, ResolvedMetadata
 from app.services.transfer.library_rename_nfo import collect_nfo
@@ -43,11 +43,11 @@ _PRIORITY = {
 class LibraryMetadataResolver:
     """按 ADR-024 的优先级解析库内文件元数据."""
 
-    def __init__(self, media_service, media_server, rename_repo, download_repo):
-        self._media_service = media_service
+    def __init__(self, media_server, rename_repo, download_repo, metadata_gateway=None):
         self._media_server = media_server
         self._repo = rename_repo
         self._download_repo = download_repo
+        self._metadata_gateway = metadata_gateway
         self._ms_exact: dict[str, dict[str, Any]] = {}
         self._ms_series: list[tuple[str, dict[str, Any]]] = []
         self._ms_loaded = False
@@ -76,7 +76,7 @@ class LibraryMetadataResolver:
         self,
         backend: StorageBackend,
         path: str,
-        hint: MediaType,
+        hint: ProviderMediaType,
         scope: RenameScope,
     ) -> ResolvedMetadata | None:
         directory = posixpath.dirname(path)
@@ -116,7 +116,7 @@ class LibraryMetadataResolver:
             candidates.append(filename_candidate)
 
         if scope.reidentify_no_metadata:
-            online_candidate = from_online(path, backend, hint, self._media_service)
+            online_candidate = from_online(path, backend, hint, self._metadata_gateway)
             if online_candidate:
                 candidates.append(online_candidate)
 
@@ -141,7 +141,7 @@ class LibraryMetadataResolver:
         finalize_media(chosen.media, hint)
 
         if scope.allow_online_metadata or chosen.source == "online":
-            apply_online(chosen, self._media_service)
+            apply_online(chosen, self._metadata_gateway)
             finalize_media(chosen.media, hint)
         return chosen
 
@@ -152,7 +152,7 @@ class LibraryMetadataResolver:
             return "cache"
         return item.source
 
-    def _from_download_history(self, path: str, hint: MediaType) -> ResolvedMetadata | None:
+    def _from_download_history(self, path: str, hint: ProviderMediaType) -> ResolvedMetadata | None:
         base_name = posixpath.basename(path)
         directory = posixpath.dirname(path)
         entity = self._download_repo.get_by_path(path) or self._download_repo.get_by_path(directory)
@@ -170,8 +170,8 @@ class LibraryMetadataResolver:
         rows = self._download_repo.get_by_title(title) or []
         filtered = []
         for row in rows:
-            row_type = MediaType.from_string(str(getattr(row, "media_type", "") or ""))
-            if hint != MediaType.UNKNOWN and row_type != MediaType.UNKNOWN and row_type != hint:
+            row_type = ProviderMediaType.from_value(str(getattr(row, "media_type", "") or ""))
+            if hint != ProviderMediaType.UNKNOWN and row_type != ProviderMediaType.UNKNOWN and row_type != hint:
                 continue
             row_year = str(getattr(row, "year", "") or "")
             if parsed.year and row_year and parsed.year != row_year:

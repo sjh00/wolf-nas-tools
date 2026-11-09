@@ -22,7 +22,7 @@ from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepos
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import TransferHistoryRepositoryAdapter
 from app.domain.entities.transfer_task import SourceType, TransferTask
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.infrastructure.distributed_lock import lock_heartbeat
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
@@ -42,19 +42,17 @@ _synced_lock = threading.Lock()
 # （btstore/tv、btstore/movie、btstore/animetv），这是比 TMDB 猜测更可靠的类型线索：
 # 送错类型会让内容落到另一块盘的媒体库目录，跨盘后无法硬链接，
 # 只能退化成复制，白白多占一份空间。
-_SOURCE_DIR_TYPE_HINT: dict[str, MediaType] = {
-    "tv": MediaType.TV,
-    "movie": MediaType.MOVIE,
-    "animetv": MediaType.ANIME,
+_SOURCE_DIR_TYPE_HINT: dict[str, ProviderMediaType] = {
+    "tv": ProviderMediaType.SERIES,
+    "movie": ProviderMediaType.MOVIE,
+    "animetv": ProviderMediaType.ANIME,
 }
-
 
 def media_type_hint_from_source(source: str | None) -> str | None:
     """从同步源的配置路径推断媒体类型，无法判断时返回 None."""
     base = os.path.basename(str(source or "").rstrip("/")).strip().lower()
     hinted = _SOURCE_DIR_TYPE_HINT.get(base)
     return hinted.value if hinted else None
-
 
 # 目录同步并发任务等待上限（秒），超时按未完成处理避免永久挂起
 _SYNC_WAIT_TIMEOUT = 1800
@@ -63,7 +61,6 @@ _observer_lock = threading.Lock()
 # 整批目录同步的分布式锁 TTL（秒）。由 lock_heartbeat 续期，故可取得较短：
 # 进程意外退出后最多阻塞该时长，不会像原先固定 300s 无续期那样中途易主。
 _SYNC_TRANSFER_LOCK_TTL = 120
-
 
 class FileMonitorHandler(FileSystemEventHandler):
     def __init__(self, monpath: str, engine: "SyncEngine"):
@@ -76,7 +73,6 @@ class FileMonitorHandler(FileSystemEventHandler):
 
     def on_moved(self, event):
         self._engine.on_file_event(str(event.dest_path))
-
 
 class SyncPathConfig:
     def __init__(self, row: Any):
@@ -104,7 +100,6 @@ class SyncPathConfig:
             "compatibility": self.compatibility,
             "enabled": self.enabled,
         }
-
 
 class SyncEngine:
     """目录同步引擎.

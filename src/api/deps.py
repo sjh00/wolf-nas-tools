@@ -118,9 +118,13 @@ def get_current_user(
     auth_header: str | None = credentials.credentials if credentials else None
 
     # 1) JWT 认证（新标准）
-    user_ctx = _extract_user_from_jwt(auth_header)
-    if user_ctx:
-        return _overlay_fresh_snapshot(user_ctx, app_context.rbac_service)
+    jwt_reason = "missing"
+    if auth_header:
+        user_ctx = _extract_user_from_jwt(auth_header)
+        if user_ctx:
+            return _overlay_fresh_snapshot(user_ctx, app_context.rbac_service)
+        token = auth_header.split()[-1] if " " in auth_header else auth_header
+        _, jwt_reason = AuthService.verify_token_detail(token)
 
     # 2) 旧 Token 认证（APIv1 兼容）：映射为系统上下文（旧 API 本就是管理员粒度）
     username = _extract_user_from_token(auth_header)
@@ -138,20 +142,20 @@ def get_current_user(
     if user_ctx:
         return user_ctx
 
-    # 区分「本平台签发但已过期」与「无效凭证」：
-    # access token 仅 15 分钟有效，前端收到 401 会自动刷新并重试，
-    # 属正常轮换；只有真正无效/伪造的凭证才需要人工检查。
-    if auth_header:
-        token = auth_header.split()[-1] if " " in auth_header else auth_header
-        if AuthService.is_token_expired(token):
-            raise AuthError(
-                "登录已过期，请重新登录",
-                errcode=ErrorCode.UNAUTHORIZED,
-                http_status=status.HTTP_401_UNAUTHORIZED,
-                headers={"WWW-Authenticate": "Bearer"},
-                details={"expired": True},
-            )
-
+    if jwt_reason == "expired":
+        raise AuthError(
+            "登录已过期，请刷新 Token 或重新登录",
+            errcode=ErrorCode.TOKEN_EXPIRED,
+            http_status=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if jwt_reason == "invalid":
+        raise AuthError(
+            "Token 无效，请重新登录",
+            errcode=ErrorCode.TOKEN_INVALID,
+            http_status=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     raise AuthError(
         "安全认证未通过，请检查登录状态、Token 或 ApiKey",
         errcode=ErrorCode.UNAUTHORIZED,
@@ -268,9 +272,14 @@ def get_media_service(app_context: AppContext = Depends(get_app_context)):
     return app_context.media_service
 
 
-def get_metadata_service(app_context: AppContext = Depends(get_app_context)):
-    """获取多源元数据服务实例"""
-    return app_context.metadata_service
+def get_metadata_admin_service(app_context: AppContext = Depends(get_app_context)):
+    """获取元数据管理服务实例（仅身份写操作）"""
+    return app_context.metadata_admin_service
+
+
+def get_metadata_gateway(app_context: AppContext = Depends(get_app_context)):
+    """获取元数据网关实例（ADR-028 统一读取入口）"""
+    return app_context.metadata_gateway
 
 
 def get_discovery_service(app_context: AppContext = Depends(get_app_context)):
@@ -408,9 +417,9 @@ def get_searcher_service(app_context: AppContext = Depends(get_app_context)):
     return app_context.searcher
 
 
-def get_tmdb_blacklist_service(app_context: AppContext = Depends(get_app_context)):
-    """获取 TMDB 黑名单服务实例"""
-    return app_context.tmdb_blacklist_service
+def get_metadata_blacklist_service(app_context: AppContext = Depends(get_app_context)):
+    """获取识别黑名单服务实例"""
+    return app_context.metadata_blacklist_service
 
 
 def get_thread_executor(app_context: AppContext = Depends(get_app_context)):

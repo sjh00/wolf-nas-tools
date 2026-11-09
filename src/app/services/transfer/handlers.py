@@ -6,6 +6,7 @@ from typing import Any
 import log
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.domain.entities.transfer_task import SourceType, TransferTask
+from app.domain.media_types import media_type_registry
 from app.downloader.client_factory import DownloadClientFactory
 from app.events import Event, on_event
 from app.events.bus import EventBus
@@ -56,6 +57,7 @@ def handle_download_completed(
     media_cache: Any = None,
     sync_path_repo: Any = None,
     transfer_queue_service: Any = None,
+    metadata_gateway: Any = None,
 ) -> None:
     """下载完成事件处理器 — 触发文件转移."""
     payload = event.payload
@@ -81,8 +83,8 @@ def handle_download_completed(
             if history and history.tmdb_id:
                 tmdb_id = history.tmdb_id
                 media_type = history.media_type or ""
-                if media_cache:
-                    tmdb_info = media_cache.get_tmdb_info(mtype=media_type, tmdbid=tmdb_id)
+                if metadata_gateway is not None:
+                    tmdb_info = metadata_gateway.cached_details("tmdb", tmdb_id, media_type=media_type)
                 if history.season_episode:
                     parsed = RegexParser().parse(str(history.season_episode))
                     if parsed:
@@ -161,6 +163,10 @@ def handle_download_completed(
                     episode_no = int(season_value.split("E", 1)[1])
                 except ValueError:
                     season_no = episode_no = 0
+            profile_value = getattr(history, "CONTENT_PROFILE", None)
+            media_ref = media_type_registry.resolve_profile(profile_value) or media_type_registry.resolve(
+                media_type, profile_value
+            )
             queued = transfer_queue_service.submit(
                 {
                     "downloader_id": payload.downloader_id,
@@ -173,6 +179,8 @@ def handle_download_completed(
                     "unknown_dir": unknown_dir,
                     "provider_data": tmdb_info,
                     "media_type": media_type,
+                    "media_type_key": media_ref.key,
+                    "media_kind": media_ref.kind.value,
                     "season": season or season_no,
                     "episode": episode_no,
                     "fallback_episode": fallback_episode,
@@ -221,6 +229,7 @@ def register_download_completed_handler(
     media_cache: Any = None,
     sync_path_repo: Any = None,
     transfer_queue_service: Any = None,
+    metadata_gateway: Any = None,
 ) -> None:
     """注册下载完成事件处理器，外部显式注入依赖。"""
 
@@ -233,6 +242,7 @@ def register_download_completed_handler(
             media_cache=media_cache,
             sync_path_repo=sync_path_repo,
             transfer_queue_service=transfer_queue_service,
+            metadata_gateway=metadata_gateway,
         )
 
     event_bus.subscribe(DOWNLOAD_COMPLETED, _handler)

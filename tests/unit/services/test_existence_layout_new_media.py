@@ -17,17 +17,15 @@
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.models import MediaInfo
 from app.services.transfer.existence_checker import MediaExistenceChecker
 from app.services.transfer.path_resolver import TransferPathResolver
 
 EXT = ".mkv"
 
-
 def _norm(path):
     return str(path or "").replace("\\", "/")
-
 
 def _resolver(tv_flag=True, movie_flag=True):
     return TransferPathResolver(
@@ -44,10 +42,9 @@ def _resolver(tv_flag=True, movie_flag=True):
         anime_category_flag=False,
     )
 
-
 def _tv(episode=1, category="国产剧", title="示例剧集"):
     return MediaInfo(
-        type=MediaType.TV,
+        type=ProviderMediaType.SERIES,
         category=category,
         title=title,
         year="2026",
@@ -58,17 +55,15 @@ def _tv(episode=1, category="国产剧", title="示例剧集"):
         rev_string=f"{title}.S01E{episode:02d}.mkv",
     )
 
-
 def _movie(category="华语电影", title="功夫"):
     return MediaInfo(
-        type=MediaType.MOVIE,
+        type=ProviderMediaType.MOVIE,
         category=category,
         title=title,
         year="2004",
         org_string=f"{title}.2004.mkv",
         rev_string=f"{title}.2004.mkv",
     )
-
 
 def _mk(path: str, name: str) -> None:
     """在真实文件系统上创建目录与文件（checker 用 os.path.exists 判断）。"""
@@ -77,7 +72,6 @@ def _mk(path: str, name: str) -> None:
     os.makedirs(path, exist_ok=True)
     with open(os.path.join(path, name), "w", encoding="utf-8") as fh:
         fh.write("x")
-
 
 class TestNewTvLandsInCategoryLayout:
     def test_new_show_without_any_existing_path_uses_category_dir(self, tmp_path):
@@ -135,7 +129,6 @@ class TestNewTvLandsInCategoryLayout:
 
         assert _norm(ret_dir) == f"{_norm(root)}/示例剧集 (2026)/Season 1"
 
-
 class TestNewMovieLandsInCategoryLayout:
     def test_new_movie_uses_category_dir_not_favorites(self, tmp_path):
         """新电影落分类目录；「精选」只在片已存在时沿用。"""
@@ -165,7 +158,6 @@ class TestNewMovieLandsInCategoryLayout:
         _dir_exists, ret_dir, _file_exists, _ret_file = checker.is_media_exists(root, _movie())
 
         assert _norm(ret_dir) == f"{_norm(root)}/功夫 (2004)"
-
 
 class TestPickTargetDir:
     """_pick_target_dir 的优先级：已有文件 > 已有目录 > 首选布局。"""

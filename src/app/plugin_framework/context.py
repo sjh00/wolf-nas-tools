@@ -13,6 +13,7 @@ import log
 from app.core.settings import settings
 from app.db.repositories.plugin_framework_repo_adapter import PluginConfigRepositoryAdapter, PluginLogRepositoryAdapter
 from app.domain.entities.plugin import PluginConfigEntity
+from app.domain.media_types import MediaTypeDescriptor, media_type_registry
 from app.domain.validators.media_title import register_title_filter as register_global_title_filter
 from app.domain.validators.media_title import unregister_title_filters
 from app.indexer.contract.global_registry import register_indexer_provider, unregister_plugin_indexers
@@ -48,7 +49,7 @@ class PluginContext:
         hook_system: Any = None,
         site_engine: Any = None,
         media_service: Any = None,
-        metadata_service: Any = None,
+        metadata_gateway: Any = None,
         manifest_metadata: Any = None,
         filter_service: Any = None,
         discovery_service: Any = None,
@@ -65,7 +66,7 @@ class PluginContext:
         self._hook_system = hook_system
         self._site_engine = site_engine
         self._media_service = media_service
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
         self._metadata_manifest = manifest_metadata
         self._filter_service = filter_service
         self._discovery_service = discovery_service
@@ -264,9 +265,9 @@ class PluginContext:
         return self._media_service
 
     @property
-    def metadata_service(self) -> Any:
-        """获取元数据快照服务"""
-        return self._metadata_service
+    def metadata_gateway(self) -> Any:
+        """获取元数据网关（ADR-028 统一读取入口）"""
+        return self._metadata_gateway
 
     @property
     def hook_system(self) -> Any:
@@ -339,6 +340,18 @@ class PluginContext:
         if provider_id != key:
             log.warn(f"[PluginContext]索引器 provider_id({provider_id}) 与声明 key({key}) 不一致，使用 key")
         register_indexer_provider(provider, self._plugin_id)
+
+    def register_media_type(self, descriptor: MediaTypeDescriptor) -> None:
+        """注册插件媒体类型；key 必须属于当前插件命名空间."""
+        key = str(descriptor.key or "").strip()
+        expected = f"plugin:{self._plugin_id}:"
+        if not key.startswith(expected):
+            raise ValueError(f"媒体类型 key 必须使用 {expected} 命名空间")
+        self._assert_metadata_declared("media_types", key)
+        media_type_registry.register(descriptor)
+
+    def unregister_media_type(self, key: str) -> None:
+        media_type_registry.unregister_namespace(key)
 
     def unregister_metadata_provider(self, key: str) -> None:
         """注销本插件注册的元数据 provider."""

@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.indexer.indexer import SiteLatencyTracker, _clamp_timeouts, _env_float
 from app.media.parser.parse_cache import ParseCache
 
@@ -39,9 +39,8 @@ class TestParseCache:
     def test_key_includes_subtitle_and_mtype(self):
         k1 = ParseCache._key("t", None, None)
         k2 = ParseCache._key("t", "s", None)
-        k3 = ParseCache._key("t", None, MediaType.TV)
+        k3 = ParseCache._key("t", None, ProviderMediaType.SERIES)
         assert len({k1, k2, k3}) == 3
-
 
 class TestSiteLatencyTracker:
     def _tracker(self):
@@ -80,7 +79,6 @@ class TestSiteLatencyTracker:
         samples = t._cache.get(f"lat:{indexer.name}")
         assert len(samples or []) == 20
 
-
 class TestSiteTimeoutEnv:
     def test_missing_env_uses_default(self, monkeypatch):
         monkeypatch.delenv("WOLFNAS_INDEXER_TIMEOUT", raising=False)
@@ -104,7 +102,6 @@ class TestSiteTimeoutEnv:
 
     def test_min_above_max_aligns_to_max(self):
         assert _clamp_timeouts(60.0, 45.0) == (45.0, 45.0)
-
 
 class _MemCache:
     def __init__(self):

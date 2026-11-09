@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.subscribe.management.calendar_service import SubscribeCalendarService
 from app.services.subscribe.management.history_service import SubscribeHistoryService
 from app.services.subscribe.management.query_service import SubscribeQueryService
@@ -44,7 +44,9 @@ class TestSubscribeQueryService:
         sites.get_site_names.return_value = []
         indexer = MagicMock()
         indexer.get_user_indexer_names.return_value = []
-        svc = SubscribeQueryService(movie_repo, MagicMock(), MagicMock(), MagicMock(), sites, indexer)
+        svc = SubscribeQueryService(
+            movie_repo, MagicMock(), MagicMock(), MagicMock(), sites, indexer, metadata_gateway=MagicMock()
+        )
         result = svc.get_subscribe_movies()
         assert result == {}
 
@@ -55,58 +57,72 @@ class TestSubscribeQueryService:
         sites.get_site_names.return_value = []
         indexer = MagicMock()
         indexer.get_user_indexer_names.return_value = []
-        svc = SubscribeQueryService(MagicMock(), tv_repo, MagicMock(), MagicMock(), sites, indexer)
+        svc = SubscribeQueryService(
+            MagicMock(), tv_repo, MagicMock(), MagicMock(), sites, indexer, metadata_gateway=MagicMock()
+        )
         result = svc.get_subscribe_tvs()
         assert result == {}
 
     def test_get_subscribe_tv_episodes(self):
         episode_repo = MagicMock()
         episode_repo.get.return_value = [1, 2, 3]
-        svc = SubscribeQueryService(MagicMock(), MagicMock(), episode_repo, MagicMock(), MagicMock(), MagicMock())
+        svc = SubscribeQueryService(
+            MagicMock(), MagicMock(), episode_repo, MagicMock(), MagicMock(), MagicMock(), metadata_gateway=MagicMock()
+        )
         result = svc.get_subscribe_tv_episodes(1)
         assert result == [1, 2, 3]
 
     def test_check_history(self):
         history_repo = MagicMock()
         history_repo.check_exists.return_value = True
-        svc = SubscribeQueryService(MagicMock(), MagicMock(), MagicMock(), history_repo, MagicMock(), MagicMock())
+        svc = SubscribeQueryService(
+            MagicMock(), MagicMock(), MagicMock(), history_repo, MagicMock(), MagicMock(), metadata_gateway=MagicMock()
+        )
         assert svc.check_history("MOV", "Test", "2024", None) is True
         history_repo.check_exists.assert_called_once_with(type_str="MOV", name="Test", year="2024", season="")
 
     def test_delete_subscribe_movie(self):
         movie_repo = MagicMock()
         movie_repo.delete.return_value = True
-        svc = SubscribeQueryService(movie_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
-        from app.domain.mediatypes import MediaType
+        svc = SubscribeQueryService(
+            movie_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), metadata_gateway=MagicMock()
+        )
+        from app.domain.media_types import ProviderMediaType
 
-        svc.delete_subscribe(MediaType.MOVIE, title="错误的标题", year="2026", rssid=1, tmdbid="999")
+        svc.delete_subscribe(ProviderMediaType.MOVIE, title="错误的标题", year="2026", rssid=1, tmdbid="999")
         movie_repo.delete.assert_called_once_with(rssid=1, user=None)
 
     def test_delete_subscribe_tv(self):
         tv_repo = MagicMock()
         tv_repo.delete.return_value = True
-        svc = SubscribeQueryService(MagicMock(), tv_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock())
-        from app.domain.mediatypes import MediaType
+        svc = SubscribeQueryService(
+            MagicMock(), tv_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), metadata_gateway=MagicMock()
+        )
+        from app.domain.media_types import ProviderMediaType
 
-        svc.delete_subscribe(MediaType.TV, title="错误的标题", season="S01", rssid=1, tmdbid="999")
+        svc.delete_subscribe(ProviderMediaType.SERIES, title="错误的标题", season="S01", rssid=1, tmdbid="999")
         tv_repo.delete.assert_called_once_with(rssid=1, user=None)
 
     def test_get_subscribe_id_movie(self):
         movie_repo = MagicMock()
         movie_repo.get_id.return_value = 42
-        svc = SubscribeQueryService(movie_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
-        from app.domain.mediatypes import MediaType
+        svc = SubscribeQueryService(
+            movie_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), metadata_gateway=MagicMock()
+        )
+        from app.domain.media_types import ProviderMediaType
 
-        result = svc.get_subscribe_id(MediaType.MOVIE, "Test")
+        result = svc.get_subscribe_id(ProviderMediaType.MOVIE, "Test")
         assert result == 42
 
     def test_get_subscribe_id_tv(self):
         tv_repo = MagicMock()
         tv_repo.get_id.return_value = 42
-        svc = SubscribeQueryService(MagicMock(), tv_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock())
-        from app.domain.mediatypes import MediaType
+        svc = SubscribeQueryService(
+            MagicMock(), tv_repo, MagicMock(), MagicMock(), MagicMock(), MagicMock(), metadata_gateway=MagicMock()
+        )
+        from app.domain.media_types import ProviderMediaType
 
-        result = svc.get_subscribe_id(MediaType.TV, "Test")
+        result = svc.get_subscribe_id(ProviderMediaType.SERIES, "Test")
         assert result == 42
 
     def test_get_subscribe_movies_with_legacy_desc(self):
@@ -137,7 +153,9 @@ class TestSubscribeQueryService:
         sites.get_site_names.return_value = ["site1"]
         indexer = MagicMock()
         indexer.get_user_indexer_names.return_value = []
-        svc = SubscribeQueryService(movie_repo, MagicMock(), MagicMock(), MagicMock(), sites, indexer)
+        svc = SubscribeQueryService(
+            movie_repo, MagicMock(), MagicMock(), MagicMock(), sites, indexer, metadata_gateway=MagicMock()
+        )
         result = svc.get_subscribe_movies()
         assert "1" in result
         assert result["1"]["over_edition"] is True
@@ -195,7 +213,9 @@ class TestSubscribeQueryService:
         sites.get_site_names.return_value = []
         indexer = MagicMock()
         indexer.get_user_indexer_names.return_value = []
-        return SubscribeQueryService(MagicMock(), tv_repo, MagicMock(), MagicMock(), sites, indexer)
+        return SubscribeQueryService(
+            MagicMock(), tv_repo, MagicMock(), MagicMock(), sites, indexer, metadata_gateway=MagicMock()
+        )
 
     def test_tv_progress_uses_real_lack_not_current_ep(self):
         """回归：已下载最新 2 集（缺 1-39、CURRENT_EP 仍为 1）时进度不得显示 0%。
@@ -228,7 +248,7 @@ class TestSubscribeQueryService:
 class TestSubscribeMatcher:
     """Test suite for SubscribeMatcher."""
 
-    def _make_media(self, mtype=MediaType.MOVIE, tmdb_id="123", title="Test", year="2024", site="site1"):
+    def _make_media(self, mtype=ProviderMediaType.MOVIE, tmdb_id="123", title="Test", year="2024", site="site1"):
         media = MagicMock()
         media.type = mtype
         media.tmdb_id = tmdb_id
@@ -299,7 +319,7 @@ class TestSubscribeMatcher:
 
     def test_tv_match_by_season(self):
         matcher = SubscribeMatcher()
-        media = self._make_media(mtype=MediaType.TV, tmdb_id="123", title="Test TV")
+        media = self._make_media(mtype=ProviderMediaType.SERIES, tmdb_id="123", title="Test TV")
         rss_tvs = {"1": {"name": "Test TV", "year": "2024", "season": "S01", "tmdbid": "123", "fuzzy_match": False}}
         filter_engine = MagicMock()
         filter_engine.check_torrent_filter.return_value = (True, 1, "ok")
@@ -309,7 +329,7 @@ class TestSubscribeMatcher:
 
     def test_tv_no_match_wrong_season(self):
         matcher = SubscribeMatcher()
-        media = self._make_media(mtype=MediaType.TV, tmdb_id="123", title="Test TV")
+        media = self._make_media(mtype=ProviderMediaType.SERIES, tmdb_id="123", title="Test TV")
         media.get_season_string.return_value = "S02"
         rss_tvs = {"1": {"name": "Test TV", "year": "2024", "season": "S01", "tmdbid": "123", "fuzzy_match": False}}
         flag, msgs, info = matcher.match(media, {}, rss_tvs, None, None, None, False, None, None, None)

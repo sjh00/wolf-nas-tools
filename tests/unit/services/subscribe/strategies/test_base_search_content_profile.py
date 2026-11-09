@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.subscribe.strategies.base_search import BaseSearchStrategy
 
 # 带 media_type 与海报的 TMDB 详情，供 set_provider_data/get_poster_image 使用
@@ -30,14 +30,12 @@ def _make_strategy(tmdb_info=None):
     """构造仅含 _get_media_info 所需依赖的策略实例（绕开 __init__ 的仓储初始化）。
 
     返回 (strategy, media_cache, media_service)，便于用局部变量做 mock 断言
-    （直接访问 strategy._media_cache 会触发 pyright 的 MethodType 误报）。
     """
     s = object.__new__(BaseSearchStrategy)
     s._ident_cache = MagicMock()
     s._ident_cache.get.return_value = None
     media_cache = MagicMock()
     media_cache.get_tmdb_info.return_value = tmdb_info
-    s._media_cache = media_cache
     media_service = MagicMock()
     # identify 兜底在缺少海报时触发；返回 None 表示无需替换，保持被测路径纯净
     media_service.identify.return_value = None
@@ -45,6 +43,11 @@ def _make_strategy(tmdb_info=None):
         mi, "en_name", mi.en_name or "A Record Of A Mortals Journey To Immortality"
     )
     s._media_service = media_service
+    gateway = MagicMock()
+    gateway.cached_details.side_effect = lambda provider, external_id, **kwargs: media_cache.get_tmdb_info(
+        mtype=kwargs.get("media_type"), tmdbid=external_id
+    )
+    s._metadata_gateway = gateway
     return s, media_cache, media_service
 
 
@@ -69,7 +72,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="106449",
             name="凡人修仙传",
             year="2020",
-            mtype=MediaType.ANIME,
+            mtype=ProviderMediaType.ANIME,
             content_profile="anime",
         )
 
@@ -87,7 +90,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="106449",
             name="凡人修仙传",
             year="2020",
-            mtype=MediaType.ANIME,
+            mtype=ProviderMediaType.ANIME,
             content_profile="anime",
         )
 
@@ -103,7 +106,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="106449",
             name="凡人修仙传",
             year="2020",
-            mtype=MediaType.TV,
+            mtype=ProviderMediaType.SERIES,
             content_profile="default",
         )
 
@@ -119,7 +122,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="106449",
             name="凡人修仙传",
             year="2020",
-            mtype=MediaType.TV,
+            mtype=ProviderMediaType.SERIES,
             content_profile="",
         )
 
@@ -134,7 +137,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="106449",
             name="凡人修仙传",
             year="2020",
-            mtype=MediaType.ANIME,
+            mtype=ProviderMediaType.ANIME,
             content_profile="plugin_custom",
         )
 
@@ -152,7 +155,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="106449",
             name="凡人修仙传",
             year="2020",
-            mtype=MediaType.ANIME,
+            mtype=ProviderMediaType.ANIME,
             content_profile=profile,
         )
 
@@ -168,7 +171,7 @@ class TestGetMediaInfoContentProfile:
             tmdbid="335790",
             name="黑暗召唤师在地下恋爱中",
             year="2025",
-            mtype=MediaType.ANIME,
+            mtype=ProviderMediaType.ANIME,
             content_profile="anime",
             anchor_provider="bangumi",
             anchor_external_id="123456",

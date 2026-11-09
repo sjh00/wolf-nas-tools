@@ -10,15 +10,14 @@ import httpx
 import log
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SubscribeType, SystemConfigKey
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.infrastructure.image_proxy.referer_registry import image_referer_registry
 from app.media import meta_info
 from app.media.display_image_policy import unwrap_display_image_url
-from app.media.metadata import ProviderRef
-from app.media.metadata.registry import registry as metadata_registry
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.services.search_subject import SearchSubject
 from app.services.series_service import SeriesService
 from app.services.subscribe.default_settings import get_default_setting
@@ -26,52 +25,63 @@ from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
 
 
-def _provider_is_virtual(provider: str) -> bool:
-    desc = getattr(metadata_registry.get_provider(provider), "descriptor", None)
-    return bool(getattr(desc, "virtual", False))
+def _provider_is_virtual(provider: str, metadata_gateway: MetadataGateway | None) -> bool:
+    if metadata_gateway is None:
+        return False
+    return metadata_gateway.provider_is_virtual(provider)
 
-
-def _is_concrete_source(value: Any) -> bool:
+def _is_concrete_source(value: Any, metadata_gateway: MetadataGateway | None) -> bool:
     source = str(value or "").strip().lower()
     if not source or source in {"content_id", "unknown"}:
         return False
-    return not _provider_is_virtual(source)
+    return not _provider_is_virtual(source, metadata_gateway)
 
-
-def _source_from_record(record: Any, provider: str) -> str:
+def _source_from_record(record: Any, provider: str, metadata_gateway: MetadataGateway | None) -> str:
     """从插件记录中选出真实来源：显式来源 > refs > provider 本身."""
-    extra = getattr(record, "extra", None) or {}
+    if isinstance(record, dict):
+        extra = record.get("extra") or {}
+        refs = record.get("refs") or []
+    else:
+        extra = getattr(record, "extra", None) or {}
+        refs = getattr(record, "refs", None) or []
     if not isinstance(extra, dict):
         extra = {}
     value = extra.get("source_provider")
-    if _is_concrete_source(value):
+    if _is_concrete_source(value, metadata_gateway):
         return str(value).strip().lower()
-    for ref in getattr(record, "refs", None) or []:
-        value = getattr(ref, "provider", None)
-        if _is_concrete_source(value):
+    for ref in refs:
+        value = ref.get("provider") if isinstance(ref, dict) else getattr(ref, "provider", None)
+        if _is_concrete_source(value, metadata_gateway):
             return str(value).strip().lower()
-    return provider if _is_concrete_source(provider) else ""
+    return provider if _is_concrete_source(provider, metadata_gateway) else ""
 
-
-def _resolve_provider_poster(provider: str, external_id: str, media_type: Any) -> tuple[str, str]:
-    """从插件元数据解析真实海报和真实来源；失败时不使用 TMDB 占位图。"""
-    obj = metadata_registry.get_provider(provider)
-    detail = getattr(obj, "detail", None)
-    if obj is None or not callable(detail):
-        return "", ""
-    try:
-        record = detail(ProviderRef(provider=provider, external_id=external_id, media_type=media_type), None)
-    except Exception:  # noqa: BLE001
-        return "", ""
-    if record is None:
-        return "", ""
-    posters = (getattr(record, "images", None) or {}).get("poster") or []
-    poster = str(getattr(posters[0], "url", "") or "") if posters else ""
-    source = _source_from_record(record, provider)
-    if not source and posters:
-        source = str(getattr(posters[0], "provider", "") or "")
-    return poster, source
-
+def _resolve_provider_poster(
+    provider: str,
+    external_id: str,
+    media_type: Any,
+    metadata_gateway: MetadataGateway | None = None,
+) -> tuple[str, str]:
+    """从插件元数据解析真实海报和真实来源；失败时不使用 TMDB 占位图."""
+    if metadata_gateway is not None:
+        try:
+            record = metadata_gateway.lookup(
+                provider,
+                external_id,
+                context=MetadataContext(purpose="subscribe.poster", allow_private=True),
+                media_type=media_type,
+            )
+        except Exception:  # noqa: BLE001
+            return "", ""
+        if not record:
+            return "", ""
+        images = record.get("images") or {}
+        posters = images.get("poster") or []
+        poster = str((posters[0] or {}).get("url") or "") if posters and isinstance(posters[0], dict) else ""
+        source = _source_from_record(record, provider, metadata_gateway)
+        if not source and posters:
+            source = str((posters[0] or {}).get("provider") or "") if isinstance(posters[0], dict) else ""
+        return poster, source
+    return "", ""
 
 def _split_provider_ref(value: Any) -> tuple[str, str] | None:
     """拆分 `<provider>:<external_id>`，并归一化 DB/BG/TMDB 等旧前缀.
@@ -99,7 +109,6 @@ def _split_provider_ref(value: Any) -> tuple[str, str] | None:
     }
     return aliases.get(provider, provider), external_id
 
-
 def _season_number(value, default: int = 0) -> int:
     text = str(value or "").strip()
     if text.upper().startswith("S"):
@@ -109,12 +118,12 @@ def _season_number(value, default: int = 0) -> int:
     except (TypeError, ValueError):
         return default
 
-
 def _preferred_profile_poster(
     image: str,
     content_profile: str | None,
     mediaid: str | int | None,
     media_type: Any,
+    metadata_gateway: MetadataGateway | None = None,
 ) -> str:
     """自定义画像优先使用插件元数据海报，并验证外部图片可访问性。"""
     if not image or not content_profile or content_profile == "default":
@@ -122,7 +131,13 @@ def _preferred_profile_poster(
     ref = _split_provider_ref(mediaid)
     if ref:
         executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_resolve_provider_poster, content_profile, ref[1], media_type)
+        future = executor.submit(
+            _resolve_provider_poster,
+            content_profile,
+            ref[1],
+            media_type,
+            metadata_gateway,
+        )
         try:
             poster, _source = future.result(timeout=3)
         except Exception:  # noqa: BLE001 - 超时/失败回退原图
@@ -146,9 +161,10 @@ def _preferred_profile_poster(
         log.debug(f"[Subscribe]海报可访问性检查失败，使用空海报: {exc}")
     return ""
 
-
 class SubscribeAddService:
     """添加订阅服务"""
+
+    _metadata_gateway: MetadataGateway | None = None
 
     def __init__(
         self,
@@ -161,10 +177,10 @@ class SubscribeAddService:
         web_utils: WebUtils,
         download_repo=None,
         transfer_history_manager=None,
-        metadata_service=None,
         site_cache=None,
         indexer_service=None,
         series_service=None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -175,10 +191,81 @@ class SubscribeAddService:
         self._web_utils = web_utils
         self._download_repo = download_repo
         self._transfer_history_manager = transfer_history_manager
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
         self._site_cache = site_cache
         self._indexer_service = indexer_service
         self._series_service = series_service or SeriesService()
+
+    @property
+    def _metadata(self):
+        return self._metadata_gateway
+
+    @staticmethod
+    def _context(*, content_profile: str | None, allow_private: bool, permissions: set[str] | None) -> MetadataContext:
+        return MetadataContext(
+            permissions=frozenset(permissions or ()),
+            content_profile=str(content_profile or "default"),
+            purpose="subscribe.add",
+            allow_private=allow_private,
+        )
+
+    def _metadata_lookup(
+        self,
+        provider: str,
+        external_id: str,
+        *,
+        content_profile: str | None,
+        allow_private: bool,
+        permissions: set[str] | None,
+        media_type: ProviderMediaType | None = None,
+    ):
+        if self._metadata_gateway is None:
+            return None
+        return self._metadata_gateway.lookup(
+            provider,
+            external_id,
+            context=self._context(
+                content_profile=content_profile,
+                allow_private=allow_private,
+                permissions=permissions,
+            ),
+            media_type=media_type,
+            content_profile=content_profile,
+        )
+
+    def _season_episode_count(
+        self,
+        *,
+        provider: str,
+        external_id: str,
+        title: str,
+        year: str | None,
+        media_type: ProviderMediaType,
+        season: int,
+        content_profile: str,
+        allow_private: bool,
+        permissions: set[str] | None,
+        provider_data: dict[str, Any] | None = None,
+        prefer_detail: bool = False,
+    ) -> int:
+        if self._metadata_gateway is None:
+            return 0
+        return self._metadata_gateway.resolve_season_episode_count(
+            context=self._context(
+                content_profile=content_profile,
+                allow_private=allow_private,
+                permissions=permissions,
+            ),
+            provider=provider,
+            external_id=external_id,
+            title=title,
+            year=year,
+            media_type=media_type,
+            season=season,
+            content_profile=content_profile,
+            provider_data=provider_data,
+            prefer_detail=prefer_detail,
+        )
 
     @property
     def default_subscribe_setting_tv(self) -> dict | None:
@@ -197,9 +284,9 @@ class SubscribeAddService:
         content_profile=None,
         naming_profile=None,
     ) -> dict:
-        if self._metadata_service is None:
+        if self._metadata_gateway is None:
             return {}
-        return self._metadata_service.link_subscription(
+        return self._metadata_gateway.link_subscription(
             media_info,
             media_type=mtype,
             mediaid=mediaid,
@@ -223,7 +310,7 @@ class SubscribeAddService:
         此时跟随详情类型会把订阅建成完全不同的作品。
         其余来源（豆瓣/Bangumi/插件）仍以详情类型为准。
         """
-        concrete = (MediaType.MOVIE, MediaType.TV, MediaType.ANIME)
+        concrete = (ProviderMediaType.MOVIE, ProviderMediaType.SERIES, ProviderMediaType.ANIME)
         if (
             str(provider or "").strip().lower() == "tmdb"
             and requested in concrete
@@ -261,7 +348,7 @@ class SubscribeAddService:
         *,
         name: str | None,
         year: Any,
-        requested: MediaType,
+        requested: ProviderMediaType,
         content_profile: str | None,
         allow_private: bool,
         permissions: set[str] | None,
@@ -282,10 +369,10 @@ class SubscribeAddService:
         ]
         if any(self._titles_look_same(name, item) for item in candidates):
             return media_info
-        concrete = (MediaType.MOVIE, MediaType.TV)
+        concrete = (ProviderMediaType.MOVIE, ProviderMediaType.SERIES)
         if requested not in concrete:
             return media_info
-        alternate = MediaType.MOVIE if requested == MediaType.TV else MediaType.TV
+        alternate = ProviderMediaType.MOVIE if requested == ProviderMediaType.SERIES else ProviderMediaType.SERIES
         try:
             alt_info = self._provider_media_info(
                 "tmdb",
@@ -352,14 +439,14 @@ class SubscribeAddService:
         content_profile: str | None,
         allow_private: bool,
         permissions: set[str] | None,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         season: int | None = None,
     ):
         """用插件 provider 的详情构造 MediaInfo，自定义画像不走 TMDB 查询."""
-        if self._metadata_service is None:
+        if self._metadata is None:
             return None
         try:
-            record = self._metadata_service.lookup(
+            record = self._metadata_lookup(
                 provider,
                 external_id,
                 media_type=media_type,
@@ -385,9 +472,11 @@ class SubscribeAddService:
             provider,
             external_id,
         )
-        resolved_type = subject.display_type or media_type or MediaType.from_string(str(record.get("media_type") or ""))
-        if resolved_type not in (MediaType.MOVIE, MediaType.TV, MediaType.ANIME):
-            resolved_type = MediaType.MOVIE
+        resolved_type = (
+            subject.display_type or media_type or ProviderMediaType.from_value(str(record.get("media_type") or ""))
+        )
+        if resolved_type not in (ProviderMediaType.MOVIE, ProviderMediaType.SERIES, ProviderMediaType.ANIME):
+            resolved_type = ProviderMediaType.MOVIE
         media_info = meta_info(title=title, mtype=resolved_type)
         media_info.title = title
         media_info.cn_name = title
@@ -478,7 +567,13 @@ class SubscribeAddService:
             return -1, "标题或类型有误", None
         if image:
             image = unwrap_display_image_url(image)
-            image = _preferred_profile_poster(image, content_profile, mediaid, mtype)
+            image = _preferred_profile_poster(
+                image,
+                content_profile,
+                mediaid,
+                mtype,
+                self._metadata_gateway,
+            )
         year = int(year) if str(year).isdigit() else ""
         requested_season = season
         series_key = None
@@ -561,7 +656,11 @@ class SubscribeAddService:
         if not fuzzy_match:
             media_info = None
             if provider_ref:
-                descriptor = getattr(metadata_registry.get_provider(provider_ref[0]), "descriptor", None)
+                descriptor = (
+                    self._metadata_gateway.provider_descriptor(provider_ref[0])
+                    if self._metadata_gateway is not None
+                    else None
+                )
                 if name and getattr(descriptor, "visibility", "public") == "private":
                     # 私有插件来源已有标题时先落库，详情和海报由插件列表异步补全，
                     # 避免被外部详情源/Cloudflare 请求阻塞。
@@ -575,7 +674,12 @@ class SubscribeAddService:
                         media_info.poster_path = image
                     # 只有缺海报时才同步抓详情；已有海报直接落库，避免聚合详情阻塞订阅。
                     if not media_info.poster_path:
-                        poster, real_source = _resolve_provider_poster(provider_ref[0], provider_ref[1], mtype)
+                        poster, real_source = _resolve_provider_poster(
+                            provider_ref[0],
+                            provider_ref[1],
+                            mtype,
+                            self._metadata_gateway,
+                        )
                         if poster:
                             media_info.poster_path = poster
                         if real_source:
@@ -614,9 +718,9 @@ class SubscribeAddService:
                             external_id=provider_ref[1],
                         )
                         if resolved is not media_info and resolved.type in (
-                            MediaType.MOVIE,
-                            MediaType.TV,
-                            MediaType.ANIME,
+                            ProviderMediaType.MOVIE,
+                            ProviderMediaType.SERIES,
+                            ProviderMediaType.ANIME,
                         ):
                             # 类型被纠正：原类型下的 ID 指向的是另一部作品
                             mtype = resolved.type
@@ -633,11 +737,16 @@ class SubscribeAddService:
                     if not media_info.poster_path and content_profile:
                         profile_ref = _split_provider_ref(mediaid)
                         if profile_ref:
-                            poster, _ = _resolve_provider_poster(content_profile, profile_ref[1], mtype)
+                            poster, _ = _resolve_provider_poster(
+                                content_profile,
+                                profile_ref[1],
+                                mtype,
+                                self._metadata_gateway,
+                            )
                             if poster:
                                 media_info.poster_path = poster
                     # 元数据来源判定为动漫时同步切换内容画像，避免落库成默认电视剧。
-                    if mtype == MediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
+                    if mtype == ProviderMediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
                         content_profile = "anime"
                         media_info.content_profile = "anime"
                     anchor_ref = _split_provider_ref(mediaid)
@@ -672,7 +781,22 @@ class SubscribeAddService:
                     title = "%s %s 第%s季".strip() % (name, year, season)
                 else:
                     title = "%s %s".strip() % (name, year)
-                media_info = self._media.get_media_info(title=title, mtype=mtype, strict=bool(year), cache=False)
+                media_info = (
+                    self._metadata_gateway.resolve_by_title(
+                        title=title,
+                        media_type=mtype,
+                        year=str(year or "") or None,
+                        strict=bool(year),
+                        cache=False,
+                        context=self._context(
+                            content_profile=content_profile,
+                            allow_private=allow_private,
+                            permissions=permissions,
+                        ),
+                    )
+                    if self._metadata_gateway is not None
+                    else None
+                )
             if media_info is None:
                 # 外部详情源失败时，订阅已带锚点/海报就不应失败；用请求信息建立最小身份。
                 if name and (mediaid or source_ref or image):
@@ -703,10 +827,14 @@ class SubscribeAddService:
             )
             if not has_source:
                 return 1, "无法查询到媒体信息", None
-            if media_info.type != MediaType.MOVIE:
+            if media_info.type != ProviderMediaType.MOVIE:
                 if not season:
                     if media_info.provider_data:
-                        total_seasoninfo = self._media.get_tmdb_tv_seasons(tv_info=media_info.provider_data)
+                        total_seasoninfo = (
+                            self._metadata_gateway.season_summaries(media_info.provider_data)
+                            if self._metadata_gateway is not None
+                            else []
+                        )
                         if not total_seasoninfo:
                             return 2, "获取剧集信息失败", media_info
                         total_seasoninfo = sorted(total_seasoninfo, key=lambda x: x.get("season_number"), reverse=True)
@@ -717,8 +845,17 @@ class SubscribeAddService:
                         total_episode = media_info.total_episodes or 0
                 else:
                     total_episode = total_ep or (
-                        self._media.get_tmdb_season_episodes_num(
-                            tv_info=media_info.provider_data, season=_season_number(season)
+                        self._season_episode_count(
+                            provider="tmdb",
+                            external_id=str(getattr(media_info, "tmdb_id", "") or ""),
+                            title=str(media_info.title or name or ""),
+                            year=str(media_info.year or year or "") or None,
+                            media_type=mtype,
+                            season=_season_number(season),
+                            content_profile=str(content_profile or "default"),
+                            allow_private=allow_private,
+                            permissions=permissions,
+                            provider_data=media_info.provider_data,
                         )
                         if media_info.provider_data
                         else (media_info.total_episodes or 0)
@@ -735,9 +872,9 @@ class SubscribeAddService:
                     source_external = str(getattr(media_info, "anchor_external_id", "") or "") or (
                         ref.external_id if ref is not None else ""
                     )
-                    if self._metadata_service is not None and source_provider and source_external:
+                    if self._metadata is not None and source_provider and source_external:
                         try:
-                            total_episode = self._metadata_service.resolve_season_episode_count(
+                            total_episode = self._season_episode_count(
                                 provider=source_provider,
                                 external_id=source_external,
                                 title=str(name or media_info.title or ""),
@@ -753,9 +890,9 @@ class SubscribeAddService:
                 if not total_episode and media_info.provider_data:
                     return 3, f"第{season}季获取剧集数失败，请确认该季是否存在", media_info
                 media_info.begin_season = _season_number(season, 0)
-                media_info.total_episodes = total_episode
+                media_info.total_episodes = int(total_episode or 0)
                 series_key = None
-                if mtype in (MediaType.TV, MediaType.ANIME):
+                if mtype in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
                     series_provider = str(
                         getattr(media_info, "anchor_provider", "")
                         or getattr(media_info, "provider", "")
@@ -806,9 +943,9 @@ class SubscribeAddService:
                                 keyword = base_keyword or str(media_info.title or "")
                                 name = str(media_info.title or "")
                 if total_ep:
-                    total = total_ep
+                    total = int(total_ep)
                 else:
-                    total = media_info.total_episodes
+                    total = int(media_info.total_episodes or 0)
                 # 重订阅续订：始终从转移记录/下载历史推导断点（历史推导只向前，不倒退），
                 # 避免重新订阅从头重复下载已下载剧集，或前端传入旧 current_ep 导致进度卡住。
                 # current_ep 语义 = 首个待下载集（与 RSS 兜底 range(current_ep, total+1) 一致）；
@@ -946,7 +1083,7 @@ class SubscribeAddService:
             media_info = meta_info(title=name, mtype=mtype)
             media_info.title = name
             media_info.type = mtype
-            if mtype == MediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
+            if mtype == ProviderMediaType.ANIME and str(content_profile or "").strip() in ("", "default"):
                 content_profile = "anime"
             media_info.content_profile = content_profile or "default"
             media_info.keyword = keyword
@@ -959,7 +1096,7 @@ class SubscribeAddService:
                 media_info.year = str(year)
             if season and not getattr(media_info, "series_key", None):
                 media_info.begin_season = _season_number(season)
-            if mtype == MediaType.MOVIE:
+            if mtype == ProviderMediaType.MOVIE:
                 identity_fields = self._identity_fields(
                     media_info,
                     mtype,

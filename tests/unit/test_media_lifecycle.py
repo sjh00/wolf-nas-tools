@@ -825,13 +825,13 @@ def test_active_subscription_without_lifecycle_rows_is_visible():
 
 
 def test_record_media_projects_each_episode():
-    from app.domain.mediatypes import MediaType
+    from app.domain.media_types import ProviderMediaType
     from app.media.models import MediaInfo
 
     repo = LifecycleRepository()
     projector = LifecycleProjector(repo)
     media = MediaInfo(
-        type=MediaType.TV,
+        type=ProviderMediaType.SERIES,
         title="DEMO-EPISODE",
         begin_season=1,
         begin_episode=3,
@@ -849,3 +849,139 @@ def test_record_media_projects_each_episode():
         current = repo.get_current(identity_id, season=1, episode=episode)
         assert current is not None
         assert current.STAGE == LifecycleStage.IN_LIBRARY.value
+
+
+def test_grouped_row_keeps_poster_from_episode_row():
+    repo = LifecycleRepository()
+    projector = LifecycleProjector(repo)
+    now = datetime(2026, 11, 2, 10, 0, 0)
+    projector.record(
+        identity_id="poster-identity",
+        stage=LifecycleStage.IN_LIBRARY,
+        status=LifecycleStatus.SUCCEEDED,
+        event_type="library.present",
+        media_type="anime",
+        season=1,
+        episode=6,
+        title="Poster Demo",
+        poster="https://image.tmdb.org/t/p/w342/demo.jpg",
+        event_key="poster-ep6",
+        occurred_at=now,
+    )
+    projector.record(
+        identity_id="poster-identity",
+        stage=LifecycleStage.DOWNLOADING,
+        status=LifecycleStatus.BLOCKED,
+        event_type="download.blocked",
+        media_type="anime",
+        season=1,
+        episode=0,
+        title="Poster Demo",
+        poster=None,
+        event_key="poster-ep0-blocked",
+        occurred_at=now + timedelta(minutes=5),
+    )
+    rows, _ = repo.list_grouped(page=1, pagenum=10)
+    row = next(item for item in rows if item["IDENTITY_ID"] == "poster-identity")
+    assert row["POSTER"] == "https://image.tmdb.org/t/p/w342/demo.jpg"
+
+
+def test_new_episode_zero_row_inherits_poster_from_episode():
+    repo = LifecycleRepository()
+    projector = LifecycleProjector(repo)
+    now = datetime(2026, 11, 2, 10, 0, 0)
+    projector.record(
+        identity_id="inherit-poster",
+        stage=LifecycleStage.IN_LIBRARY,
+        status=LifecycleStatus.SUCCEEDED,
+        event_type="library.present",
+        media_type="anime",
+        season=1,
+        episode=6,
+        title="Inherit Demo",
+        poster="https://image.tmdb.org/t/p/w342/inherit.jpg",
+        event_key="inherit-ep6",
+        occurred_at=now,
+    )
+    projector.record(
+        identity_id="inherit-poster",
+        stage=LifecycleStage.DOWNLOADING,
+        status=LifecycleStatus.RUNNING,
+        event_type="download.progress",
+        media_type="anime",
+        season=1,
+        episode=0,
+        title="Inherit Demo",
+        poster=None,
+        event_key="inherit-ep0",
+        occurred_at=now + timedelta(minutes=5),
+    )
+    current = repo.get_current("inherit-poster", season=1, episode=0)
+    assert current is not None
+    assert current.POSTER == "https://image.tmdb.org/t/p/w342/inherit.jpg"
+
+
+def test_grouped_media_type_prefers_episode_rows():
+    repo = LifecycleRepository()
+    projector = LifecycleProjector(repo)
+    now = datetime(2026, 11, 2, 10, 0, 0)
+    projector.record(
+        identity_id="type-identity",
+        stage=LifecycleStage.DOWNLOADING,
+        status=LifecycleStatus.RUNNING,
+        event_type="download.progress",
+        media_type="movie",
+        season=0,
+        episode=0,
+        title="Type Demo",
+        event_key="type-e0",
+        occurred_at=now + timedelta(minutes=5),
+    )
+    for episode in (1, 2):
+        projector.record(
+            identity_id="type-identity",
+            stage=LifecycleStage.IN_LIBRARY,
+            status=LifecycleStatus.SUCCEEDED,
+            event_type="library.present",
+            media_type="anime",
+            content_profile="anime",
+            season=1,
+            episode=episode,
+            title="Type Demo",
+            event_key=f"type-e{episode}",
+            occurred_at=now,
+        )
+    rows, _ = repo.list_grouped(page=1, pagenum=10)
+    row = next(item for item in rows if item["IDENTITY_ID"] == "type-identity")
+    assert row["MEDIA_TYPE"] == "anime"
+    assert row["CONTENT_PROFILE"] == "anime"
+
+
+def test_lifecycle_uses_plugin_media_type_descriptor():
+    from app.domain.media_types import MediaKind, MediaTypeDescriptor, media_type_registry
+
+    descriptor = MediaTypeDescriptor(
+        key="plugin:test-plugin:custom",
+        kind=MediaKind.MOVIE,
+        display_name="Plugin Custom",
+        code_identity=True,
+        content_profiles=("test_profile",),
+    )
+    media_type_registry.register(descriptor)
+    try:
+        repo = LifecycleRepository()
+        projector = LifecycleProjector(repo)
+        projector.record(
+            identity_id="plugin-type-identity",
+            stage=LifecycleStage.DOWNLOADING,
+            status=LifecycleStatus.RUNNING,
+            event_type="download.progress",
+            media_type="movie",
+            content_profile="test_profile",
+            event_key="plugin-type-event",
+        )
+        current = repo.get_current("plugin-type-identity")
+        assert current is not None
+        assert current.MEDIA_TYPE == "plugin:test-plugin:custom"
+    finally:
+        media_type_registry.unregister_namespace("test-plugin")

@@ -1,6 +1,6 @@
 """内置 provider 映射适配器测试（无网络）."""
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType
 from app.media.metadata import ProviderRef, SearchQuery
 from app.media.metadata.providers import (
     douban_detail_to_record,
@@ -30,6 +30,12 @@ def _tmdb_movie() -> dict:
         "status": "Released",
         "imdb_id": "tt0111161",
         "external_ids": {"wikidata_id": "Q172241"},
+        "alternative_titles": {"titles": [{"iso_3166_1": "HK", "title": "月黑高飛", "type": ""}]},
+        "translations": {
+            "translations": [
+                {"iso_639_1": "en", "data": {"title": "The Shawshank Redemption"}},
+            ]
+        },
         "poster_path": "/poster.jpg",
         "backdrop_path": "/backdrop.jpg",
         "images": {"logos": [{"file_path": "/logo.png", "iso_639_1": "zh"}]},
@@ -69,7 +75,7 @@ def _tmdb_tv() -> dict:
 def test_tmdb_movie_mapping():
     record = tmdb_detail_to_record(
         _tmdb_movie(),
-        media_type=MediaType.MOVIE,
+        media_type=ProviderMediaType.MOVIE,
         locale="zh-CN",
         image_url=lambda path: f"https://image{path}",
     )
@@ -80,6 +86,8 @@ def test_tmdb_movie_mapping():
     assert record.year == "1994"
     assert record.runtime == 142
     assert record.ratings == {"tmdb": 8.733}
+    assert "月黑高飛" in record.aliases
+    assert "The Shawshank Redemption" in record.aliases
     assert record.genres == ["剧情", "犯罪"]
     assert record.studios == ["Castle Rock Entertainment"]
     assert record.images["poster"][0].url == "https://image/poster.jpg"
@@ -94,13 +102,37 @@ def test_tmdb_movie_mapping():
 
 
 def test_tmdb_tv_mapping_uses_name_and_networks():
-    record = tmdb_detail_to_record(_tmdb_tv(), media_type=MediaType.TV)
+    record = tmdb_detail_to_record(_tmdb_tv(), media_type=ProviderMediaType.SERIES)
 
     assert record.title == "最后生还者"
     assert record.release_date == "2023-01-15"
     assert record.runtime == 81
     assert record.labels == ["HBO"]
     assert record.seasons[0].episode_count == 9
+
+
+def test_tmdb_provider_media_type_mapping_keeps_series_and_anime():
+    tv = tmdb_detail_to_record(_tmdb_tv(), media_type=ProviderMediaType.SERIES)
+    assert tv.provider_media_type == ProviderMediaType.SERIES
+    assert tv.media_type == ProviderMediaType.SERIES
+    assert tv.media_kind == MediaKind.EPISODIC
+
+    movie = tmdb_detail_to_record(_tmdb_movie(), media_type=ProviderMediaType.MOVIE)
+    assert movie.provider_media_type == ProviderMediaType.MOVIE
+    assert movie.media_type == ProviderMediaType.MOVIE
+    assert movie.media_kind == MediaKind.MOVIE
+
+    anime = tmdb_detail_to_record(_tmdb_tv(), media_type=ProviderMediaType.ANIME)
+    assert anime.provider_media_type == ProviderMediaType.ANIME
+    assert anime.media_type == ProviderMediaType.ANIME
+    assert anime.media_kind == MediaKind.EPISODIC
+
+
+def test_douban_unknown_media_type_is_not_default_movie():
+    record = douban_detail_to_record(_douban_info(), media_type=ProviderMediaType.UNKNOWN)
+    assert record.provider_media_type == ProviderMediaType.UNKNOWN
+    assert record.media_type == ProviderMediaType.UNKNOWN
+    assert record.media_kind == MediaKind.UNKNOWN
 
 
 def _douban_info() -> dict:
@@ -127,7 +159,7 @@ def _douban_info() -> dict:
 
 
 def test_douban_mapping_and_release_date_guard():
-    record = douban_detail_to_record(_douban_info(), media_type=MediaType.MOVIE)
+    record = douban_detail_to_record(_douban_info(), media_type=ProviderMediaType.MOVIE)
 
     assert record.title == "肖申克的救赎"
     assert record.aliases == ["月黑高飞(港)", "刺激1995(台)"]
@@ -212,7 +244,7 @@ def test_tmdb_provider_adapter_maps_detail_and_episodes():
         search=_FakeTmdbSearch(),
     )
     record = provider.detail(
-        ProviderRef(provider="tmdb", external_id="100088", media_type=MediaType.TV),
+        ProviderRef(provider="tmdb", external_id="100088", media_type=ProviderMediaType.SERIES),
         None,
     )
 
@@ -221,11 +253,54 @@ def test_tmdb_provider_adapter_maps_detail_and_episodes():
     assert [episode.episode_number for episode in record.episodes] == [1, 2]
     assert (
         provider.seasons(
-            ProviderRef(provider="tmdb", external_id="100088", media_type=MediaType.TV),
+            ProviderRef(provider="tmdb", external_id="100088", media_type=ProviderMediaType.SERIES),
             None,
         )[0].episode_count
         == 9
     )
+
+
+def test_douban_provider_search_skips_non_media_and_marks_anime():
+    from app.media.metadata.providers import DoubanProvider
+
+    class _SearchApi:
+        def search(self, keyword, start=0, count=20, ts=None):
+            return {
+                "items": [
+                    {
+                        "type_name": "电视剧",
+                        "target": {
+                            "id": "37923549",
+                            "title": "FX战士久留美",
+                            "card_subtitle": "日本 / 动画 奇幻 冒险 / 小川优树 / 铃木爱奈",
+                            "rating": {"value": 8.1},
+                        },
+                    },
+                    {
+                        "type_name": "图书",
+                        "target": {"id": "37424432", "title": "FX戰士久留美 1"},
+                    },
+                    {
+                        "type_name": "电影",
+                        "target": {"id": "1292052", "title": "肖申克的救赎"},
+                    },
+                ]
+            }
+
+        def movie_detail(self, subject_id):
+            return None
+
+        def tv_detail(self, subject_id):
+            return None
+
+    provider = DoubanProvider(api=_SearchApi())
+    hits = provider.search(SearchQuery(query="FX战士久留美", limit=10), None)
+
+    assert [hit.title for hit in hits] == ["FX战士久留美", "肖申克的救赎"]
+    assert hits[0].media_type == ProviderMediaType.ANIME
+    assert hits[0].content_profile == "anime"
+    assert hits[0].ref.provider_media_type == ProviderMediaType.ANIME
+    assert hits[1].media_type == ProviderMediaType.MOVIE
 
 
 def test_douban_provider_adapter_uses_frodo_detail():
@@ -233,7 +308,7 @@ def test_douban_provider_adapter_uses_frodo_detail():
 
     provider = DoubanProvider(api=_FakeDoubanApi(_douban_info()))
     record = provider.detail(
-        ProviderRef(provider="douban", external_id="1292052", media_type=MediaType.MOVIE),
+        ProviderRef(provider="douban", external_id="1292052", media_type=ProviderMediaType.MOVIE),
         None,
     )
 
@@ -255,7 +330,10 @@ def test_bangumi_provider_adapter_maps_subject():
         "images": {"large": "https://img/bgm.jpg"},
         "rating": {"score": 8.2, "rank": 100, "total": 500},
         "tags": [{"name": "TV"}, {"name": "奇幻"}],
-        "infobox": [{"key": "动画制作", "value": "某工作室"}],
+        "infobox": [
+            {"key": "动画制作", "value": "某工作室"},
+            {"key": "英文名", "value": "The Witch of the Tenmaku"},
+        ],
     }
     provider = BangumiProvider(client=_FakeBangumi(info))
     record = provider.detail(ProviderRef(provider="bangumi", external_id="400602"), None)
@@ -265,6 +343,7 @@ def test_bangumi_provider_adapter_maps_subject():
     assert record.year == "2025"
     assert record.ratings == {"bangumi": 8.2}
     assert record.studios == ["某工作室"]
+    assert "The Witch of the Tenmaku" in record.aliases
     assert record.images["poster"][0].url == "https://img/bgm.jpg"
 
 
@@ -287,7 +366,7 @@ def test_douban_provider_attaches_html_episodes():
 
     provider = DoubanProvider(api=_FakeDoubanApi(_douban_info()), episode_scraper=_FakeEpisodeScraper())
     episodes = provider.episodes(
-        ProviderRef(provider="douban", external_id="1292052", media_type=MediaType.TV),
+        ProviderRef(provider="douban", external_id="1292052", media_type=ProviderMediaType.SERIES),
         1,
         None,
     )

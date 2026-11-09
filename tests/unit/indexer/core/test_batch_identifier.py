@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.domain.enums import IdentifyStatus
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.indexer.core.batch_identifier import BatchIdentifier
 from app.indexer.core.models import SearchCandidate
 from app.infrastructure.cache_system import get_cache_manager
@@ -20,7 +20,7 @@ from app.media.service import MediaService
 _cache_seq = itertools.count()
 
 
-def _meta(cn=None, en=None, year: str | None = "2026", mtype=MediaType.TV, seasons=(1,), episodes=(4,)):
+def _meta(cn=None, en=None, year: str | None = "2026", mtype=ProviderMediaType.SERIES, seasons=(1,), episodes=(4,)):
     return SimpleNamespace(
         cn_name=cn,
         en_name=en,
@@ -88,7 +88,7 @@ class TestDirectPass:
             title="穹庐下的魔女",
             original_title="天幕のジャードゥーガル",
             year=year,
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=288971,
             provider_data={"id": 288971, "title": "穹庐下的魔女"},
         )
@@ -123,7 +123,7 @@ class TestDirectPass:
         cands = [
             _cand(
                 "Ghostbusters 2016 1080p",
-                _meta(cn="超能敢死队", en="Ghostbusters", year="2016", mtype=MediaType.MOVIE),
+                _meta(cn="超能敢死队", en="Ghostbusters", year="2016", mtype=ProviderMediaType.MOVIE),
             )
         ]
         movie_match = MediaInfo(
@@ -131,7 +131,7 @@ class TestDirectPass:
             title="捉鬼敢死队",
             en_name="Ghostbusters",
             year="1984",
-            type=MediaType.MOVIE,
+            type=ProviderMediaType.MOVIE,
             tmdb_id=123,
         )
 
@@ -150,7 +150,7 @@ class TestDirectPass:
             title="攻壳机动队",
             original_title="攻殻機動隊",
             year="2026",
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=999999,
             provider_data={"id": 999999},
         )
@@ -200,7 +200,7 @@ class TestDirectPass:
             cn_name="攻壳机动队",
             title="攻壳机动队",
             year="2026",
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=999999,
             provider_data={"id": 999999},
         )
@@ -261,7 +261,7 @@ class TestIdentifyGroups:
             "cn_name": "穹庐下的魔女",
             "en_name": "Jaadugar",
             "year": "2026",
-            "type": MediaType.TV,
+            "type": ProviderMediaType.SERIES,
             "seasons": [1],
             "episodes": [1],
             "title": "org title",
@@ -273,7 +273,7 @@ class TestIdentifyGroups:
 
     def test_cn_name_hit_with_consensus(self):
         lookup = MagicMock()
-        hit = LookupResult(tmdb_id=288971, title="穹庐下的魔女", media_type=MediaType.TV)
+        hit = LookupResult(tmdb_id=288971, title="穹庐下的魔女", provider_media_type=ProviderMediaType.SERIES)
         lookup.lookup.return_value = hit
         svc = self._service(lookup)
 
@@ -289,7 +289,7 @@ class TestIdentifyGroups:
 
     def test_target_hit_stops_extra_name_lookups(self):
         lookup = MagicMock()
-        hit = LookupResult(tmdb_id=106449, title="凡人修仙传", media_type=MediaType.TV)
+        hit = LookupResult(tmdb_id=106449, title="凡人修仙传", provider_media_type=ProviderMediaType.SERIES)
         lookup.lookup.return_value = hit
         svc = self._service(lookup)
         group = self._group(["凡人修仙传", "Fsp Dn"])
@@ -307,8 +307,12 @@ class TestIdentifyGroups:
         冲突时采信最具体（最长）名称"""
         lookup = MagicMock()
         lookup.lookup.side_effect = [
-            LookupResult(tmdb_id=999999, title="攻壳机动队", media_type=MediaType.TV),  # cn: 2026 新剧
-            LookupResult(tmdb_id=801, title="攻壳机动队 S.A.C.", media_type=MediaType.TV),  # en: SAC
+            LookupResult(
+                tmdb_id=999999, title="攻壳机动队", provider_media_type=ProviderMediaType.SERIES
+            ),  # cn: 2026 新剧
+            LookupResult(
+                tmdb_id=801, title="攻壳机动队 S.A.C.", provider_media_type=ProviderMediaType.SERIES
+            ),  # en: SAC
         ]
         svc = self._service(lookup)
 
@@ -321,7 +325,7 @@ class TestIdentifyGroups:
 
     def test_fallback_to_en_name(self):
         lookup = MagicMock()
-        lookup.lookup.side_effect = [None, LookupResult(tmdb_id=288971, media_type=MediaType.TV)]
+        lookup.lookup.side_effect = [None, LookupResult(tmdb_id=288971, provider_media_type=ProviderMediaType.SERIES)]
         svc = self._service(lookup)
 
         result = svc.identify_groups([self._group(["穹庐下的魔女", "Jaadugar"])])
@@ -357,7 +361,7 @@ class TestIdentifyGroups:
     def test_identify_groups_uses_episode_remapper(self):
         """集数重映射走 EpisodeRemapper（发布组编号习惯优先，再交 EpisodeMapper）"""
         lookup = MagicMock()
-        lookup.lookup.return_value = LookupResult(tmdb_id=97699, media_type=MediaType.TV)
+        lookup.lookup.return_value = LookupResult(tmdb_id=97699, provider_media_type=ProviderMediaType.SERIES)
         svc = self._service(lookup)
         svc._episode_mapping_enabled = True
         svc._episode_remapper = MagicMock()
@@ -381,7 +385,9 @@ class TestConfidencePropagation:
     """ADR-014 置信度端到端透传：ResolveResult.confidence → 缓存 MediaInfo"""
 
     def _match_media(self):
-        return MediaInfo(cn_name="攻壳机动队", title="攻壳机动队", year="2026", type=MediaType.TV, tmdb_id=255358)
+        return MediaInfo(
+            cn_name="攻壳机动队", title="攻壳机动队", year="2026", type=ProviderMediaType.SERIES, tmdb_id=255358
+        )
 
     def test_resolver_hit_writes_confidence(self, identifier):
         cands = [_cand("攻壳机动队 S01E04 2026", _meta(cn="攻壳机动队"))]

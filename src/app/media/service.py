@@ -9,10 +9,9 @@ import log
 from app.core.constants import ANIME_GENREIDS
 from app.core.settings import settings
 from app.domain.enums import IdentifyStatus, MatchMode
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.domain.validators.media_title import is_valid_media_title
 from app.domain.word_processor import get_words_info, process_title
-from app.infrastructure.cache_system import cacheman
 from app.infrastructure.http.exceptions import HttpRateLimitError
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.identity import get_identity_builder
@@ -36,12 +35,12 @@ def _promote_tmdb_anime_type(info) -> None:
     仅做 tv -> anime 提升，不会降级已判定的 anime。
     """
     tmdb_info = getattr(info, "provider_data", None)
-    if not isinstance(tmdb_info, dict) or info.type == MediaType.ANIME:
+    if not isinstance(tmdb_info, dict) or info.type == ProviderMediaType.ANIME:
         return
     media_type = tmdb_info.get("media_type")
-    if not isinstance(media_type, MediaType):
-        media_type = MediaType.from_string(str(media_type or ""))
-    if media_type != MediaType.TV:
+    if not isinstance(media_type, ProviderMediaType):
+        media_type = ProviderMediaType.from_value(str(media_type or ""))
+    if media_type != ProviderMediaType.SERIES:
         return
     genres = tmdb_info.get("genre_ids") or tmdb_info.get("genres") or []
     genre_ids = set()
@@ -52,8 +51,7 @@ def _promote_tmdb_anime_type(info) -> None:
         else:
             genre_ids.add(str(genre))
     if genre_ids.intersection(set(ANIME_GENREIDS)):
-        info.type = MediaType.ANIME
-
+        info.type = ProviderMediaType.ANIME
 
 class MediaService:
     """媒体识别服务门面 —  Parser + Lookup 解耦架构"""
@@ -254,7 +252,7 @@ class MediaService:
         self,
         title: str,
         subtitle: str = "",
-        mtype: MediaType | None = None,
+        mtype: ProviderMediaType | None = None,
         strict=None,
         cache=True,
         language: str | None = None,
@@ -312,8 +310,8 @@ class MediaService:
 
         # 尝试从缓存获取
         if cache:
-            cached = self._lookup.client.redis_cache.get_media_info(
-                title=search_name, year=parsed.year or "", mtype=parsed.type
+            cached = self._lookup.client.redis_cache.get_media(
+                title=search_name, year=parsed.year or "", media_type=parsed.type
             )
             if cached and isinstance(cached, MediaInfo):
                 # 验证缓存的季集是否与当前解析结果匹配（避免不同集数标题的缓存碰撞）
@@ -367,7 +365,7 @@ class MediaService:
 
         # 3. Fallback: WEB 抓取
         if not result and self._search_tmdbweb:
-            web_info = self._lookup.search.search_web(search_name, parsed.type or MediaType.UNKNOWN)
+            web_info = self._lookup.search.search_web(search_name, parsed.type or ProviderMediaType.UNKNOWN)
             if web_info:
                 result = self._lookup._to_lookup_result(web_info)
 
@@ -375,7 +373,6 @@ class MediaService:
         if not result and self._search_keyword:
             keyword, is_movie = self._search_engine(search_name)
             if keyword:
-                cacheman["tmdb_supply"].set(search_name, keyword)
                 if is_movie:
                     search_result = self._lookup.search.search_movie(keyword)
                 else:
@@ -450,7 +447,7 @@ class MediaService:
                 "id": result.tmdb_id,
                 "title": result.title,
                 "original_title": result.original_title,
-                "media_type": result.media_type.value if result.media_type else None,
+                "media_type": result.provider_media_type.value if result.provider_media_type else None,
                 "year": result.year,
                 "overview": result.overview,
                 "vote_average": result.vote_average,
@@ -461,7 +458,7 @@ class MediaService:
             }
             # 补充全量信息（获取 genre_ids 等）
             full_info = self._lookup.get_tmdb_info(
-                mtype=result.media_type,
+                mtype=result.provider_media_type if result.provider_media_type else None,
                 tmdbid=result.tmdb_id,
                 language=language,
                 append_to_response=append_to_response,
@@ -503,8 +500,8 @@ class MediaService:
 
         # 保存到缓存
         if cache:
-            self._lookup.client.redis_cache.set_media_info(
-                title=search_name, info=info, year=parsed.year or "", mtype=parsed.type
+            self._lookup.client.redis_cache.set_media(
+                title=search_name, info=info, year=parsed.year or "", media_type=parsed.type
             )
 
         # 重置语言
@@ -673,7 +670,7 @@ class MediaService:
                         "id": looked_up.tmdb_id,
                         "title": looked_up.title,
                         "original_title": looked_up.original_title,
-                        "media_type": looked_up.media_type.value if looked_up.media_type else None,
+                        "media_type": looked_up.provider_media_type.value if looked_up.provider_media_type else None,
                         "year": looked_up.year,
                         "overview": looked_up.overview,
                         "vote_average": looked_up.vote_average,
@@ -696,7 +693,7 @@ class MediaService:
             map_items = []
             map_indices = []
             for idx, info in enumerate(results):
-                if info.type != MediaType.MOVIE and info.tmdb_id and info.begin_episode:
+                if info.type != ProviderMediaType.MOVIE and info.tmdb_id and info.begin_episode:
                     map_items.append(
                         {
                             "tmdb_id": info.tmdb_id,
@@ -766,7 +763,10 @@ class MediaService:
             hit_infos = [
                 info
                 for status, info in results.values()
-                if status == IdentifyStatus.HIT and info.type != MediaType.MOVIE and info.tmdb_id and info.begin_episode
+                if status == IdentifyStatus.HIT
+                and info.type != ProviderMediaType.MOVIE
+                and info.tmdb_id
+                and info.begin_episode
             ]
             if hit_infos:
                 map_items = [
@@ -869,7 +869,7 @@ class MediaService:
                 "id": looked_up.tmdb_id,
                 "title": looked_up.title,
                 "original_title": looked_up.original_title,
-                "media_type": looked_up.media_type.value if looked_up.media_type else None,
+                "media_type": looked_up.provider_media_type.value if looked_up.provider_media_type else None,
                 "year": looked_up.year,
                 "overview": looked_up.overview,
                 "vote_average": looked_up.vote_average,
@@ -949,7 +949,7 @@ class MediaService:
                             info.overview = str(tmdb_info["overview"])
                         info.provider_data = tmdb_info
                     self._backfill_total_episodes(info)
-                    if season and info.type != MediaType.MOVIE:
+                    if season and info.type != ProviderMediaType.MOVIE:
                         info.begin_season = int(season)
                     if episode_format:
                         begin_ep, end_ep, part = episode_format.split_episode(file_name)
@@ -967,7 +967,7 @@ class MediaService:
                 map_items = []
                 map_paths = []
                 for file_path, info in return_media_infos.items():
-                    if info.type != MediaType.MOVIE and info.tmdb_id and info.begin_episode:
+                    if info.type != ProviderMediaType.MOVIE and info.tmdb_id and info.begin_episode:
                         map_items.append(
                             {
                                 "tmdb_id": info.tmdb_id,
@@ -1065,20 +1065,20 @@ class MediaService:
                 self._fill_episode_from_parent_paths(path_map[idx], _parsed_item)
                 # 调用方已明确类型的（下载器分类 / 同步源目录名）作为权威提示：
                 # 解析器推断的类型可能缺失或被文件名误导，用提示兜底并锁定查询类型。
-                hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
-                if hint != MediaType.UNKNOWN and _parsed_item.type in (None, MediaType.UNKNOWN):
+                hint = ProviderMediaType.from_value(str(getattr(media_type, "value", media_type) or ""))
+                if hint != ProviderMediaType.UNKNOWN and _parsed_item.type in (None, ProviderMediaType.UNKNOWN):
                     _parsed_item.type = hint
 
         # 类型提示转成 lookup 约束。
         # 只在「确实有剧集特征」时锁定类型：即调用方声明是 tv/anime，且文件名解析出了季集。
         # 单纯靠源目录名锁定会误伤 —— 电影目录里的内容在 TMDB 被归为 tv 的情况真实存在，
         # 那时宁可接受异类结果也不要让整条内容变成「未识别」。
-        type_hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
+        type_hint = ProviderMediaType.from_value(str(getattr(media_type, "value", media_type) or ""))
         looks_episodic = any(
             item is not None and (item.season is not None or item.episode is not None) for item in parsed_list
         )
-        constrain_type = type_hint in (MediaType.TV, MediaType.ANIME) and looks_episodic
-        lookup_hint = type_hint if type_hint != MediaType.UNKNOWN else None
+        constrain_type = type_hint in (ProviderMediaType.SERIES, ProviderMediaType.ANIME) and looks_episodic
+        lookup_hint = type_hint if type_hint != ProviderMediaType.UNKNOWN else None
 
         # 2.3 去重后并发查 TMDB
 
@@ -1138,7 +1138,7 @@ class MediaService:
                     # 取完整 TMDB detail（含 origin_country/genre_ids 等），
                     # 确保 set_provider_data 的类型与分类判定正确，避免落到"未分类"
                     detail = self.get_tmdb_info(
-                        mtype=looked_up.media_type or parsed.type,
+                        mtype=looked_up.provider_media_type if looked_up.provider_media_type else parsed.type,
                         tmdbid=looked_up.tmdb_id,
                     )
                     if detail:
@@ -1149,9 +1149,7 @@ class MediaService:
                             "id": looked_up.tmdb_id,
                             "title": looked_up.title,
                             "name": looked_up.title,
-                            "media_type": (
-                                MediaType.from_string(looked_up.media_type.value) if looked_up.media_type else None
-                            ),
+                            "media_type": (looked_up.provider_media_type if looked_up.provider_media_type else None),
                             "year": looked_up.year,
                             "overview": looked_up.overview,
                             "vote_average": looked_up.vote_average,
@@ -1182,7 +1180,7 @@ class MediaService:
             map_items = []
             map_paths = []
             for file_path, info in return_media_infos.items():
-                if info.type != MediaType.MOVIE and info.tmdb_id and info.begin_episode:
+                if info.type != ProviderMediaType.MOVIE and info.tmdb_id and info.begin_episode:
                     map_items.append(
                         {
                             "tmdb_id": info.tmdb_id,
@@ -1252,7 +1250,7 @@ class MediaService:
 
         matched = self._best_match(clean_name, candidates)
         if matched:
-            is_movie = matched.get("media_type") == MediaType.MOVIE
+            is_movie = matched.get("media_type") == ProviderMediaType.MOVIE
             return matched.get("title"), is_movie
 
         return None, False
@@ -1297,6 +1295,10 @@ class MediaService:
         if not str(tmdbid or "").isdigit():
             return {}
         return self._lookup.get_tmdb_info(mtype, tmdbid, language, append_to_response, chinese)
+
+    def tmdb_info(self, mtype, tmdbid, language=None, append_to_response=None, chinese=True):
+        """兼容只读入口，供已持有 MediaService 的旧调用方使用."""
+        return self.get_tmdb_info(mtype, tmdbid, language, append_to_response, chinese)
 
     def get_tmdb_infos(self, title, year=None, mtype=None, language=None, page=1):
         return self._lookup.get_tmdb_infos(title, year, mtype, language, page)
@@ -1351,6 +1353,10 @@ class MediaService:
 
     def get_tmdb_en_title(self, media_info):
         return self._lookup.get_tmdb_en_title(media_info)
+
+    def en_title(self, media_info) -> str:
+        """命名/格式化只读入口，避免业务层直接依赖 TMDB 方法名."""
+        return str(self.get_tmdb_en_title(media_info) or "")
 
     def enrich_en_name(self, media_info) -> None:
         """补全英文名：en_name 为空或非拉丁（日/韩/中文原名）时取 TMDB 英文标题用于搜索与匹配."""
@@ -1447,7 +1453,12 @@ class MediaService:
         """发布组季/集重映射（种子编号 → TMDB 规范编号）"""
         if not self._episode_mapping_enabled:
             return
-        if not info or not str(info.tmdb_id).isdigit() or info.type == MediaType.MOVIE or info.begin_season is None:
+        if (
+            not info
+            or not str(info.tmdb_id).isdigit()
+            or info.type == ProviderMediaType.MOVIE
+            or info.begin_season is None
+        ):
             return
         # 已映射成功则跳过（begin_season != seeds_season 说明 remap 已生效）
         if info.seeds_season and info.begin_season != info.seeds_season:

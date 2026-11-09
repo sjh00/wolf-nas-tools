@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 from PIL import Image
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.metadata.models import Credit, FieldValue, ImageAsset, MediaMetadata, ProviderRef
 from app.media.scraper import Scraper
 from app.media.scraper.nfo_generator import NfoGenerator
@@ -63,7 +63,7 @@ def test_incomplete_existing_nfo_needs_rewrite(tmp_path):
     )
     scraper = _build_scraper()
 
-    assert scraper._nfo_needs_rewrite(str(tmp_path), "Test.Movie.2020", MediaType.MOVIE)
+    assert scraper._nfo_needs_rewrite(str(tmp_path), "Test.Movie.2020", ProviderMediaType.MOVIE)
 
 
 def test_complete_existing_nfo_does_not_need_rewrite(tmp_path):
@@ -72,7 +72,7 @@ def test_complete_existing_nfo_does_not_need_rewrite(tmp_path):
     (tmp_path / "Test.Movie.2020.nfo").write_text("<movie><plot>剧情</plot></movie>", encoding="utf-8")
     scraper = _build_scraper()
 
-    assert not scraper._nfo_needs_rewrite(str(tmp_path), "Test.Movie.2020", MediaType.MOVIE)
+    assert not scraper._nfo_needs_rewrite(str(tmp_path), "Test.Movie.2020", ProviderMediaType.MOVIE)
 
 
 def test_has_scraped_metadata_requires_poster_when_only_fanart_exists(tmp_path):
@@ -94,14 +94,14 @@ def test_has_scraped_metadata_requires_poster_when_only_fanart_exists(tmp_path):
 
 
 def test_ensure_snapshot_images_fills_missing_poster_and_keeps_fanart():
-    metadata_service = MagicMock()
-    metadata_service.lookup.return_value = {
+    metadata_gateway = MagicMock()
+    metadata_gateway.lookup.return_value = {
         "images": {"poster": [{"type": "poster", "url": "https://example.com/p.jpg"}]}
     }
-    scraper = Scraper(media_service=MagicMock(), system_config=MagicMock(), metadata_service=metadata_service)
+    scraper = Scraper(media_service=MagicMock(), system_config=MagicMock(), metadata_gateway=metadata_gateway)
     snapshot = MediaMetadata(
         identity_id="x",
-        media_type=MediaType.MOVIE,
+        media_type=ProviderMediaType.MOVIE,
         content_profile="demo",
         refs=[ProviderRef(provider="mgstage", external_id="TC-268")],
         fields={"title": FieldValue(value="TC-268", provider="demo", external_id="TC-268")},
@@ -115,10 +115,10 @@ def test_ensure_snapshot_images_fills_missing_poster_and_keeps_fanart():
 
 
 def test_ensure_snapshot_images_builds_credits_from_actor_fallback():
-    scraper = Scraper(media_service=MagicMock(), system_config=MagicMock(), metadata_service=MagicMock())
+    scraper = Scraper(media_service=MagicMock(), system_config=MagicMock(), metadata_gateway=MagicMock())
     snapshot = MediaMetadata(
         identity_id="x",
-        media_type=MediaType.MOVIE,
+        media_type=ProviderMediaType.MOVIE,
         content_profile="demo",
         fields={"title": FieldValue(value="SHKD-724", provider="demo", external_id="SHKD-724")},
         images={"poster": [ImageAsset(type="poster", url="https://example.com/p.jpg")]},

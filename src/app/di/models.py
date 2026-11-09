@@ -117,7 +117,7 @@ class ServiceObjects:
     search_orchestrator: Any
     backup_restore_service: Any
     user_manage_service: Any
-    tmdb_blacklist_service: Any
+    metadata_blacklist_service: Any
     download_service: Any
     media_cleanup_service: Any
     media_consistency_service: Any
@@ -136,6 +136,8 @@ class ServiceObjects:
     custom_rss_service: Any = None
     channel_binding_service: Any = None
     metadata_service: Any = None
+    metadata_admin_service: Any = None
+    metadata_gateway: Any = None
     discovery_service: Any = None
     scrape_queue_service: Any = None
     transfer_queue_service: Any = None

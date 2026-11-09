@@ -3,13 +3,14 @@
 from unittest.mock import MagicMock
 
 from app.infrastructure.cache_system.adapters import MemoryCacheAdapter
-from app.infrastructure.cache_system.caches import TMDBCache
+from app.infrastructure.cache_system.metadata_cache import MetadataCache
 from app.infrastructure.http.exceptions import HttpClientError
 from app.media.lookup.tmdb_detail import TmdbDetail
 
 
 def _make_detail(season_effect=None, season_return=None):
-    cache = TMDBCache(MemoryCacheAdapter())
+    # ????????????????????????
+    cache = MetadataCache(adapter=MemoryCacheAdapter())
     tv = MagicMock()
     if season_effect is not None:
         tv.season_details.side_effect = season_effect

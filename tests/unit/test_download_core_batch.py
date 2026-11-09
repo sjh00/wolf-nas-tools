@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.download_core import DownloadCore
 
 
@@ -15,7 +15,7 @@ class MockMediaItem:
     """Mock 媒体信息对象"""
 
     def __init__(self, **kwargs):
-        self.type = kwargs.get("type", MediaType.TV)
+        self.type = kwargs.get("type", ProviderMediaType.SERIES)
         self.title = kwargs.get("title", "Test")
         self.tmdb_id = kwargs.get("tmdb_id", 123)
         self.enclosure = kwargs.get("enclosure", "")
@@ -53,7 +53,6 @@ class MockMediaItem:
     def to_dict(self):
         return {"title": self.title, "type": self.type.value}
 
-
 class TestBatchDownloadFlow:
     @pytest.fixture
     def mock_core(self):
@@ -85,7 +84,7 @@ class TestBatchDownloadFlow:
 
     def test_batch_download_movie_only(self, mock_core):
         core, pipeline = mock_core
-        movie = MockMediaItem(type=MediaType.MOVIE, enclosure="url1")
+        movie = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="url1")
 
         def mock_download(**kwargs):
             return "thunder-1", "tid1", ""
@@ -99,9 +98,9 @@ class TestBatchDownloadFlow:
 
     def test_batch_download_tv_with_need_tvs(self, mock_core):
         core, pipeline = mock_core
-        movie = MockMediaItem(type=MediaType.MOVIE, enclosure="movie-url", title="Movie")
+        movie = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="movie-url", title="Movie")
         tv_item = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=123,
             season_list=[1],
             episode_list=[1, 2],
@@ -129,7 +128,7 @@ class TestBatchDownloadFlow:
     def test_batch_download_season_pack_unpack(self, mock_core):
         core, pipeline = mock_core
         season_pack = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=456,
             season_list=[1],
             episode_list=[],
@@ -156,7 +155,7 @@ class TestBatchDownloadFlow:
     def test_batch_download_unpack_from_season_pack(self, mock_core):
         core, pipeline = mock_core
         season_pack = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=789,
             season_list=[1],
             episode_list=[],
@@ -198,7 +197,7 @@ class TestBatchDownloadFlow:
     def test_batch_download_all_episodes_already_have(self, mock_core):
         core, pipeline = mock_core
         tv_item = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=999,
             season_list=[1],
             episode_list=[1, 2, 3],
@@ -219,9 +218,9 @@ class TestBatchDownloadFlow:
 
     def test_batch_download_left_medias(self, mock_core):
         core, pipeline = mock_core
-        movie = MockMediaItem(type=MediaType.MOVIE, enclosure="url1", title="Movie")
+        movie = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="url1", title="Movie")
         tv_item = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=111,
             season_list=[1],
             episode_list=[5, 6],
@@ -230,7 +229,7 @@ class TestBatchDownloadFlow:
         )
 
         def mock_download(**kwargs):
-            if kwargs["media_info"].type == MediaType.MOVIE:
+            if kwargs["media_info"].type == ProviderMediaType.MOVIE:
                 return "thunder-1", "tid1", ""
             return "thunder-1", None, "fail"
 
@@ -254,8 +253,8 @@ class TestBatchDownloadFlow:
         core, pipeline = mock_core
         core._client_factory.download_order = "seeder"
 
-        movie1 = MockMediaItem(type=MediaType.MOVIE, enclosure="url1", title="A", tmdb_id=1)
-        movie2 = MockMediaItem(type=MediaType.MOVIE, enclosure="url2", title="B", tmdb_id=2)
+        movie1 = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="url1", title="A", tmdb_id=1)
+        movie2 = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="url2", title="B", tmdb_id=2)
 
         def mock_download(**kwargs):
             return "thunder-1", "tid1", ""
@@ -264,7 +263,6 @@ class TestBatchDownloadFlow:
 
         downloaded, left = core.batch_download("WEB", [movie1, movie2])
         assert len(downloaded) == 2
-
 
 class TestDownloadShortCircuitAndCache:
     """同轮去重：失败短路与种子解析缓存."""
@@ -351,9 +349,9 @@ class TestDownloadShortCircuitAndCache:
     def test_batch_download_uses_item_owner_user_id(self, mock_core):
         """多用户：候选自带 user_id 优先，缺失时回退批量层 user_id."""
         core = mock_core
-        owned = MockMediaItem(type=MediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
+        owned = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
         owned.user_id = 7
-        fallback = MockMediaItem(type=MediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
+        fallback = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
         fallback.user_id = None
         seen: dict[str, object] = {}
 
@@ -373,9 +371,9 @@ class TestDownloadShortCircuitAndCache:
         不透传会回落到系统默认下载设置，表现为"订阅里配了分类却仍按未分类下载"。
         """
         core = mock_core
-        with_setting = MockMediaItem(type=MediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
+        with_setting = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
         with_setting.download_setting = 2
-        without_setting = MockMediaItem(type=MediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
+        without_setting = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
         without_setting.download_setting = None
         seen: dict[str, object] = {}
 
@@ -410,8 +408,8 @@ class TestDownloadShortCircuitAndCache:
     def test_candidate_exception_does_not_break_batch(self, mock_core):
         """单个候选抛异常（如详情页抓取失败）不应中断整批，应回退下一个候选."""
         core = mock_core
-        bad = MockMediaItem(type=MediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
-        good = MockMediaItem(type=MediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
+        bad = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="a", title="A", tmdb_id=1)
+        good = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="b", title="B", tmdb_id=2)
 
         def boom(**kwargs):
             if kwargs["media_info"].enclosure == "a":
@@ -425,8 +423,8 @@ class TestDownloadShortCircuitAndCache:
 
     def test_failed_candidate_falls_back_to_next(self, mock_core):
         core = mock_core
-        first = MockMediaItem(type=MediaType.MOVIE, enclosure="url-bad", title="Bad")
-        second = MockMediaItem(type=MediaType.MOVIE, enclosure="url-good", title="Good")
+        first = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="url-bad", title="Bad")
+        second = MockMediaItem(type=ProviderMediaType.MOVIE, enclosure="url-good", title="Good")
 
         def mock_download(**kwargs):
             if kwargs["media_info"].enclosure == "url-bad":
@@ -442,7 +440,7 @@ class TestDownloadShortCircuitAndCache:
     def test_failed_candidate_skipped_across_strategies(self, mock_core):
         core = mock_core
         bad = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=321,
             season_list=[1],
             episode_list=[],
@@ -450,7 +448,7 @@ class TestDownloadShortCircuitAndCache:
             org_string="Show S01 Pack",
         )
         good = MockMediaItem(
-            type=MediaType.TV,
+            type=ProviderMediaType.SERIES,
             tmdb_id=321,
             season_list=[1],
             episode_list=[],
@@ -474,7 +472,6 @@ class TestDownloadShortCircuitAndCache:
         assert downloaded == [good]
         assert attempts == ["pack-bad", "pack-good"]
 
-
 class TestGetDownloadDirInfo:
     """下载目录均衡选择测试."""
 
@@ -488,7 +485,7 @@ class TestGetDownloadDirInfo:
     def test_picks_first_when_single_match(self):
         from app.downloader.client_factory import DownloadClientFactory
 
-        media = self._media(MediaType.MOVIE)
+        media = self._media(ProviderMediaType.MOVIE)
         dirs = [{"type": "movie", "save_path": "/data/tv/movies"}]
         info = DownloadClientFactory.get_download_dir_info(media, dirs)
         assert info["path"] == "/data/tv/movies"
@@ -496,7 +493,7 @@ class TestGetDownloadDirInfo:
     def test_picks_more_free_space_among_matches(self, monkeypatch):
         from app.downloader.client_factory import DownloadClientFactory
 
-        media = self._media(MediaType.MOVIE)
+        media = self._media(ProviderMediaType.MOVIE)
         dirs = [
             {"type": "movie", "save_path": "/data/dir1"},
             {"type": "movie", "save_path": "/data/dir2"},
@@ -512,7 +509,7 @@ class TestGetDownloadDirInfo:
     def test_type_filter_respected(self):
         from app.downloader.client_factory import DownloadClientFactory
 
-        media = self._media(MediaType.TV)
+        media = self._media(ProviderMediaType.SERIES)
         dirs = [
             {"type": "movie", "save_path": "/data/movies"},
             {"type": "tv", "save_path": "/data/tv"},
@@ -523,7 +520,7 @@ class TestGetDownloadDirInfo:
     def test_content_profile_filter_matches_plugin_type(self):
         from app.downloader.client_factory import DownloadClientFactory
 
-        media = self._media(MediaType.MOVIE)
+        media = self._media(ProviderMediaType.MOVIE)
         media.content_profile = "demo"
         dirs = [
             {"type": "movie", "save_path": "/data/movies"},
@@ -535,7 +532,7 @@ class TestGetDownloadDirInfo:
     def test_too_small_free_space_skipped(self, monkeypatch):
         from app.downloader.client_factory import DownloadClientFactory
 
-        media = self._media(MediaType.MOVIE)
+        media = self._media(ProviderMediaType.MOVIE)
         dirs = [
             {"type": "movie", "save_path": "/data/full"},
             {"type": "movie", "save_path": "/data/ok"},
@@ -551,6 +548,6 @@ class TestGetDownloadDirInfo:
     def test_empty_dir_returns_none(self):
         from app.downloader.client_factory import DownloadClientFactory
 
-        media = self._media(MediaType.MOVIE)
+        media = self._media(ProviderMediaType.MOVIE)
         info = DownloadClientFactory.get_download_dir_info(media, [])
         assert info["path"] is None

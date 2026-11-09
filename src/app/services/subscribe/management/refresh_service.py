@@ -4,20 +4,30 @@ import log
 from app.core.settings import settings
 from app.db.transaction import transaction_scope
 from app.domain.entities.rss import SubscribeState
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media import meta_info
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.services.subscribe.management.utils import gen_rss_note
 
 
 class SubscribeRefreshService:
     """刷新订阅服务"""
 
-    def __init__(self, movie_repo, tv_repo, tv_episode_repo, media_service, metadata_service=None):
+    _metadata_gateway: MetadataGateway | None = None
+
+    def __init__(
+        self,
+        movie_repo,
+        tv_repo,
+        tv_episode_repo,
+        media_service,
+        metadata_gateway: MetadataGateway | None = None,
+    ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
         self._tv_episode_repo = tv_episode_repo
         self._media = media_service
-        self._metadata = metadata_service
+        self._metadata_gateway = metadata_gateway
 
     def refresh_rss_metainfo(self, get_subscribe_movies_fn, get_subscribe_tvs_fn) -> None:
         legacy_fallback = bool((settings.get("media") or {}).get("legacy_tmdb_fallback", True))
@@ -40,13 +50,15 @@ class SubscribeRefreshService:
             year = rss_info.get("year") or ""
             tmdbid = rss_info.get("tmdbid")
             if tmdbid:
-                log.debug(f"[Subscribe]{MediaType.MOVIE.display_name} {name} 已有 TMDB ID {tmdbid}，跳过刷新")
+                log.debug(f"[Subscribe]{ProviderMediaType.MOVIE.display_name} {name} 已有 TMDB ID {tmdbid}，跳过刷新")
                 continue
-            media_info = self.__get_media_info(tmdbid=tmdbid, name=name, year=year, mtype=MediaType.MOVIE, cache=True)
+            media_info = self.__get_media_info(
+                tmdbid=tmdbid, name=name, year=year, mtype=ProviderMediaType.MOVIE, cache=True
+            )
             if media_info and media_info.tmdb_id and media_info.title != name:
                 log.info(
                     f"[Subscribe]检测到TMDB信息变化，"
-                    f"更新{MediaType.MOVIE.display_name}订阅 {name} 为 {media_info.title}"
+                    f"更新{ProviderMediaType.MOVIE.display_name}订阅 {name} 为 {media_info.title}"
                 )
                 self._movie_repo.update_tmdb(
                     rid=rssid,
@@ -78,12 +90,19 @@ class SubscribeRefreshService:
             total = rss_info.get("total")
             total_ep = rss_info.get("total_ep")
             if tmdbid:
-                log.debug(f"[Subscribe]{MediaType.TV.display_name} {name} 已有 TMDB ID {tmdbid}，跳过刷新")
+                log.debug(f"[Subscribe]{ProviderMediaType.SERIES.display_name} {name} 已有 TMDB ID {tmdbid}，跳过刷新")
                 continue
-            media_info = self.__get_media_info(tmdbid=tmdbid, name=name, year=year, mtype=MediaType.TV, cache=True)
+            media_info = self.__get_media_info(
+                tmdbid=tmdbid, name=name, year=year, mtype=ProviderMediaType.SERIES, cache=True
+            )
             if media_info and media_info.tmdb_id:
-                total_episode = self._media.get_tmdb_season_episodes_num(
-                    tv_info=media_info.provider_data, season=int(str(season).replace("S", ""))
+                total_episode = self._season_episode_count(
+                    media_info=media_info,
+                    title=str(name or media_info.title or ""),
+                    year=str(media_info.year or year or "") or None,
+                    media_type=ProviderMediaType.SERIES,
+                    season=int(str(season).replace("S", "")),
+                    content_profile="default",
                 )
                 if total_ep:
                     total_episode = total_ep
@@ -98,7 +117,7 @@ class SubscribeRefreshService:
                     lack_episode = len(missing)
                     log.info(
                         f"[Subscribe]检测到TMDB信息变化，"
-                        f"更新{MediaType.TV.display_name}订阅 {name} 为 {media_info.title}，"
+                        f"更新{ProviderMediaType.SERIES.display_name}订阅 {name} 为 {media_info.title}，"
                         f"总集数为：{total_episode}，待下载 {lack_episode} 集"
                     )
                     # TV 订阅需同时更新 tv_repo + tv_episode_repo，使用事务保证原子性
@@ -141,21 +160,28 @@ class SubscribeRefreshService:
                 return str(ref.get("external_id") or "")
         return ""
 
-    def _snapshot_for(self, rss_info: dict, media_type: MediaType) -> dict | None:
-        if self._metadata is None:
+    def _snapshot_for(self, rss_info: dict, media_type: ProviderMediaType) -> dict | None:
+        if self._metadata_gateway is None:
             return None
         provider = str(rss_info.get("anchor_provider") or "").strip()
         external = str(rss_info.get("anchor_external_id") or "").strip()
         if not provider or not external:
             return None
+        content_profile = str(rss_info.get("content_profile") or "default")
         try:
-            return self._metadata.compose_for_ref(
+            envelope = self._metadata_gateway.resolve(
                 provider,
                 external,
+                context=MetadataContext(
+                    user_id=rss_info.get("user_id"),
+                    purpose="subscribe.refresh",
+                    allow_private=True,
+                    content_profile=content_profile,
+                ),
                 media_type=media_type,
-                content_profile=str(rss_info.get("content_profile") or "default"),
                 max_age_seconds=300,
             )
+            return envelope.metadata if envelope is not None else None
         except Exception as exc:  # noqa: BLE001
             log.debug(f"[Subscribe]统一身份刷新失败 {provider}:{external}: {exc}")
             return None
@@ -171,7 +197,7 @@ class SubscribeRefreshService:
         }
 
     def _refresh_anchor_movie(self, rss_info: dict) -> bool:
-        snapshot = self._snapshot_for(rss_info, MediaType.MOVIE)
+        snapshot = self._snapshot_for(rss_info, ProviderMediaType.MOVIE)
         if not snapshot:
             return False
         title = str(self._snapshot_value(snapshot, "title") or rss_info.get("name") or "")
@@ -182,7 +208,7 @@ class SubscribeRefreshService:
         media_info = meta_info(title=f"{title} {year}".strip())
         media_info.title = title
         media_info.year = year
-        media_info.type = MediaType.MOVIE
+        media_info.type = ProviderMediaType.MOVIE
         media_info.poster_path = poster
         media_info.overview = overview
         media_info.release_date = str(self._snapshot_value(snapshot, "release_date") or "")
@@ -207,7 +233,7 @@ class SubscribeRefreshService:
         return True
 
     def _refresh_anchor_tv(self, rss_info: dict) -> bool:
-        snapshot = self._snapshot_for(rss_info, MediaType.TV)
+        snapshot = self._snapshot_for(rss_info, ProviderMediaType.SERIES)
         if not snapshot:
             return False
         title = str(self._snapshot_value(snapshot, "title") or rss_info.get("name") or "")
@@ -229,7 +255,7 @@ class SubscribeRefreshService:
         media_info = meta_info(title=f"{title} {year}".strip())
         media_info.title = title
         media_info.year = year
-        media_info.type = MediaType.TV
+        media_info.type = ProviderMediaType.SERIES
         media_info.poster_path = poster
         media_info.overview = overview
         media_info.release_date = str(self._snapshot_value(snapshot, "first_air_date") or "")
@@ -271,15 +297,55 @@ class SubscribeRefreshService:
             self._tv_repo.update(rss_info.get("id"), **updates)
         return True
 
+    def _season_episode_count(
+        self,
+        *,
+        media_info,
+        title: str,
+        year: str | None,
+        media_type: ProviderMediaType,
+        season: int,
+        content_profile: str,
+    ) -> int:
+        if self._metadata_gateway is None:
+            return 0
+        return self._metadata_gateway.resolve_season_episode_count(
+            context=MetadataContext(
+                content_profile=content_profile,
+                purpose="subscribe.refresh",
+                allow_private=True,
+            ),
+            provider="tmdb",
+            external_id=str(getattr(media_info, "tmdb_id", "") or ""),
+            title=title,
+            year=year,
+            media_type=media_type,
+            season=season,
+            content_profile=content_profile,
+            provider_data=getattr(media_info, "provider_data", None),
+        )
+
     def __get_media_info(self, tmdbid, name, year, mtype, cache=True):
         """综合返回媒体信息"""
+        if self._metadata_gateway is None:
+            log.warn("[Subscribe]元数据网关不可用，跳过刷新媒体信息")
+            return None
         if tmdbid and not str(tmdbid).startswith("DB:"):
             media_info = meta_info(title=("%s %s" % (name, year)).strip())
-            tmdb_info = self._media.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
+            tmdb_info = self._metadata_gateway.details("tmdb", tmdbid, media_type=mtype)
             media_info.set_provider_data(tmdb_info)
         else:
-            media_info = self._media.get_media_info(
-                title=f"{name} {year}".strip(), mtype=mtype, strict=True, cache=cache
+            media_info = self._metadata_gateway.resolve_by_title(
+                title=f"{name} {year}".strip(),
+                media_type=mtype,
+                year=str(year or "") or None,
+                strict=True,
+                cache=cache,
+                context=MetadataContext(
+                    content_profile="default",
+                    purpose="subscribe.refresh",
+                    allow_private=True,
+                ),
             )
         return media_info
 

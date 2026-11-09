@@ -89,7 +89,7 @@ class TestTransferLoopMarksUnrecognizedAsFailure:
         svc._path_resolver.unknown_path = None
         svc._path_resolver.movie_category_flag = False
         svc._event_bus = MagicMock()
-        svc._metadata_service = None
+        svc._metadata_service = None  # type: ignore[attr-defined]
         svc._subscribe_repo = None
         return svc
 

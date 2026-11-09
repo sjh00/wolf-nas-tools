@@ -106,7 +106,7 @@ def _service(progress=None):
         DownloadService(
             downloader=downloader,
             searcher=MagicMock(),
-            media_service=MagicMock(),
+            metadata_gateway=MagicMock(),
             sites=MagicMock(),
             site_engine=MagicMock(),
             indexer_service=MagicMock(),

@@ -22,7 +22,9 @@ def _service(recognized: dict[str, str] | None = None):
         return info
 
     media.get_media_info.side_effect = get_media_info
-    svc._media = media
+    gateway = MagicMock()
+    gateway.resolve_by_title.side_effect = lambda title, **kw: media.get_media_info(title=title)
+    svc._metadata_gateway = gateway
     svc._downloader = MagicMock()
     svc._downloader.download.return_value = (None, True, "")
     svc._sites = MagicMock()

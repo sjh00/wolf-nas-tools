@@ -5,10 +5,7 @@
 
 from typing import Any
 
-import log
-from app.domain.mediatypes import MediaType
-
-from .adapters import MemoryCacheAdapter, RedisCacheAdapter
+from .adapters import MemoryCacheAdapter
 from .base import CacheAdapter
 
 
@@ -36,132 +33,6 @@ class TypedCache:
     def get_stats(self) -> dict[str, Any]:
         return self._adapter.get_stats()
 
-
-class TMDBCache(TypedCache):
-    """TMDB专用缓存"""
-
-    # 不同数据类型的 TTL（秒）
-    TTL_TMDB_INFO = 7 * 24 * 3600  # 7 天
-    TTL_MEDIA_INFO = 24 * 3600  # 24 小时
-    TTL_SEASON_INFO = 12 * 3600  # 12 小时
-    TTL_SEASON_NOT_FOUND = 6 * 3600  # 季不存在（404）短期缓存，避免重复打 TMDB
-    TTL_PERSON_INFO = 30 * 24 * 3600  # 30 天
-    TTL_TRENDING = 2 * 3600  # 2 小时
-    TTL_DEFAULT = 3600  # 1 小时（默认）
-
-    MEDIA_CACHE_VERSION = "3"  # 匹配逻辑变更时递增，自动作废旧缓存
-    TMDB_CACHE_VERSION = "3"  # 中文名补全/广告清洗逻辑变更时递增，作废含污染标题的旧缓存
-    SEASON_NOT_FOUND_MARKER = "__not_found__"
-
-    def __init__(self, adapter: CacheAdapter | None = None):
-        if adapter is None:
-            # 默认使用Redis适配器
-            adapter = RedisCacheAdapter(name="tmdb")
-        super().__init__(adapter)
-
-    def _make_key(self, prefix: str, *parts) -> str:
-        """构建缓存键"""
-        return f"{prefix}:{':'.join(str(p) for p in parts)}"
-
-    def get_tmdb_info(self, mtype: Any, tmdbid: str, language: str | None = None, extra: str = "") -> Any | None:
-        """获取TMDB信息缓存（DB:/content_id 等非 TMDB 引用直接返回空）"""
-
-        if not str(tmdbid or "").isdigit():
-            return None
-        if mtype == MediaType.ANIME:
-            mtype = MediaType.TV
-        key = self._make_key("tmdb", self.TMDB_CACHE_VERSION, mtype.value, tmdbid, language or "default", extra)
-        return self.get(key)
-
-    def set_provider_data(
-        self, mtype: Any, tmdbid: str, info: Any, language: str | None = None, ttl: int | None = None, extra: str = ""
-    ) -> bool:
-        """设置TMDB信息缓存"""
-
-        if mtype == MediaType.ANIME:
-            mtype = MediaType.TV
-        key = self._make_key("tmdb", self.TMDB_CACHE_VERSION, mtype.value, tmdbid, language or "default", extra)
-        ttl = ttl or self.TTL_TMDB_INFO
-        log.debug(f"[TMDBCache]缓存信息: {key}, TTL={ttl}秒")
-        return self.set(key, info, ttl)
-
-    def get_media_info(self, title: str, year: str | None = None, mtype: Any = None) -> Any | None:
-        """获取媒体信息缓存"""
-
-        if mtype == MediaType.ANIME:
-            mtype = MediaType.TV
-        key = self._make_key("media", self.MEDIA_CACHE_VERSION, title, year or "", mtype.value if mtype else "")
-        return self.get(key)
-
-    def set_media_info(
-        self, title: str, info: Any, year: str | None = None, mtype: Any = None, ttl: int | None = None
-    ) -> bool:
-        """设置媒体信息缓存"""
-
-        if mtype == MediaType.ANIME:
-            mtype = MediaType.TV
-        key = self._make_key("media", self.MEDIA_CACHE_VERSION, title, year or "", mtype.value if mtype else "")
-        ttl = ttl or self.TTL_MEDIA_INFO
-        return self.set(key, info, ttl)
-
-    def get_season_info(self, tmdbid: str, season: int) -> Any | None:
-        """获取季详情缓存；返回 SEASON_NOT_FOUND_MARKER 表示季不存在（negative cache）"""
-        key = self._make_key("tmdb:season", tmdbid, season)
-        return self.get(key)
-
-    def set_season_info(self, tmdbid: str, season: int, info: Any, ttl: int | None = None) -> bool:
-        """设置季详情缓存"""
-        key = self._make_key("tmdb:season", tmdbid, season)
-        ttl = ttl or self.TTL_SEASON_INFO
-        return self.set(key, info, ttl)
-
-    def mark_season_not_found(self, tmdbid: str, season: int) -> bool:
-        """缓存季不存在（404 短期缓存）"""
-        key = self._make_key("tmdb:season", tmdbid, season)
-        return self.set(key, self.SEASON_NOT_FOUND_MARKER, self.TTL_SEASON_NOT_FOUND)
-
-    def is_season_not_found(self, tmdbid: str, season: int) -> bool:
-        """检查季是否已知不存在（命中 negative cache）"""
-        return self.get_season_info(tmdbid, season) == self.SEASON_NOT_FOUND_MARKER
-
-    def get_person_info(self, person_id: str) -> Any | None:
-        """获取演员信息缓存"""
-        key = self._make_key("tmdb:person", person_id)
-        return self.get(key)
-
-    def set_person_info(self, person_id: str, info: Any, ttl: int | None = None) -> bool:
-        """设置演员信息缓存"""
-        key = self._make_key("tmdb:person", person_id)
-        ttl = ttl or self.TTL_PERSON_INFO
-        return self.set(key, info, ttl)
-
-    def get_trending(self, media_type: str, time_window: str, page: int = 1) -> Any | None:
-        """获取热门趋势缓存"""
-        key = self._make_key("tmdb:trending", media_type, time_window, page)
-        return self.get(key)
-
-    def set_trending(self, media_type: str, time_window: str, page: int, info: Any, ttl: int | None = None) -> bool:
-        """设置热门趋势缓存"""
-        key = self._make_key("tmdb:trending", media_type, time_window, page)
-        ttl = ttl or self.TTL_TRENDING
-        return self.set(key, info, ttl)
-
-    def clear_tmdb_cache(self, tmdbid: str) -> None:
-        """清除指定TMDB ID的所有缓存（兼容旧版无版本号 key 与新版带版本号 key）"""
-        for pattern in (f"tmdb:*:*:{tmdbid}:*", f"tmdb:*:{tmdbid}:*"):
-            for key in self._adapter.keys(pattern):
-                self._adapter.delete(key)
-        log.debug(f"[TMDBCache]清除TMDB ID {tmdbid} 的所有缓存")
-
-    def clear_media_cache(self, title: str) -> None:
-        """清除指定标题的所有媒体缓存"""
-        pattern = f"media:{title}:*"
-        keys = self._adapter.keys(pattern)
-        for key in keys:
-            self._adapter.delete(key)
-        log.debug(f"[TMDBCache]清除标题 {title} 的所有媒体缓存")
-
-
 class MediaInfoCache(TypedCache):
     """媒体信息缓存"""
 
@@ -177,7 +48,6 @@ class MediaInfoCache(TypedCache):
         """设置媒体信息缓存，默认 TTL 24 小时."""
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
-
 
 class SearchResultCache(TypedCache):
     """搜索结果缓存"""
@@ -195,7 +65,6 @@ class SearchResultCache(TypedCache):
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
 
-
 class TokenCache(TypedCache):
     """Token缓存"""
 
@@ -211,7 +80,6 @@ class TokenCache(TypedCache):
         """设置 Token 缓存，默认 TTL 7 天."""
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
-
 
 class RBACSnapshotCache(TypedCache):
     """RBAC 用户权限快照缓存（权限码 + 角色码），授权变更时主动失效"""
@@ -229,7 +97,6 @@ class RBACSnapshotCache(TypedCache):
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
 
-
 class ConfigLoadCache(TypedCache):
     """配置加载缓存"""
 
@@ -245,7 +112,6 @@ class ConfigLoadCache(TypedCache):
         """设置配置加载缓存，默认 TTL 10 分钟."""
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
-
 
 class CategoryLoadCache(TypedCache):
     """分类加载缓存"""
@@ -263,7 +129,6 @@ class CategoryLoadCache(TypedCache):
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
 
-
 class OpenAISessionCache(TypedCache):
     """OpenAI会话缓存"""
 
@@ -280,7 +145,6 @@ class OpenAISessionCache(TypedCache):
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
 
-
 class SiteInfoCache(TypedCache):
     """站点信息缓存"""
 
@@ -296,7 +160,6 @@ class SiteInfoCache(TypedCache):
         """设置站点信息缓存，默认 TTL 6 小时."""
         ttl = ttl or self.DEFAULT_TTL
         return super().set(key, value, ttl)
-
 
 class WordsProcessCache(TypedCache):
     """识别词处理缓存"""

@@ -1,5 +1,6 @@
 import os
 import urllib.parse
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -19,12 +20,13 @@ from api.deps import (
     get_media_library_service,
     get_media_migrate_service,
     get_media_recommendation_service,
-    get_metadata_service,
+    get_metadata_admin_service,
+    get_metadata_blacklist_service,
+    get_metadata_gateway,
     get_search_result_service,
     get_searcher_service,
     get_subscribe_service,
     get_sync_service,
-    get_tmdb_blacklist_service,
     get_transfer_history_service,
     require_any_permission,
     require_permission,
@@ -36,9 +38,10 @@ from app.core.exceptions import (
     ServiceError,
     ValidationError,
 )
-from app.domain.mediatypes import MediaType, normalize_media_type_input
+from app.domain.media_types import ProviderMediaType, media_type_registry, normalize_media_type_input
 from app.infrastructure.cache_system import TokenCache
 from app.media.metadata import ProviderError, ProviderRef
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.media.metadata.naming import naming_field_catalog, naming_field_keys
 from app.media.metadata.registry import registry as metadata_registry
 from app.schemas.common import CommonResponse
@@ -53,13 +56,11 @@ from app.services.media_service import (
     SearchResultService,
     TransferHistoryService,
 )
-from app.services.metadata_service import MetadataService
 from app.services.search_service import Searcher
 from app.services.series_service import SeriesService
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
 from app.services.transfer.retention_service import RetentionPolicy, RetentionService
-from app.services.web.utils import get_mediainfo_from_id
 from app.utils import StringUtils
 from app.utils.response import fail, success
 from app.utils.timeout import run_with_timeout
@@ -73,6 +74,17 @@ def _private_scope(current_user) -> tuple[bool, set[str] | None]:
         return True, None
     permissions = set(getattr(current_user, "permissions", []) or [])
     return "metadata:private:view" in permissions, permissions
+
+
+def _metadata_context(current_user, *, purpose: str, content_profile: str = "default") -> MetadataContext:
+    allow_private, permissions = _private_scope(current_user)
+    return MetadataContext(
+        user_id=getattr(current_user, "user_id", None),
+        permissions=None if permissions is None else frozenset(permissions),
+        content_profile=content_profile or "default",
+        purpose=purpose,
+        allow_private=allow_private,
+    )
 
 
 # ---------- Request Models ----------
@@ -315,8 +327,9 @@ class FileBatchRequest(BaseModel):
     backend_id: str = "local"
 
 
-class TmdbBlacklistRequest(BaseModel):
-    tmdb_id: str | None = None
+class MetadataBlacklistRequest(BaseModel):
+    provider: str = "tmdb"
+    external_id: str | None = None
     media_type: str | None = None
 
 
@@ -325,7 +338,9 @@ def _field_value(fields: dict, name: str):
     return item.get("value") if isinstance(item, dict) else None
 
 
-def _record_detail_data(record: dict, media_type: MediaType, status: dict | None) -> dict:
+def _record_detail_data(
+    record: dict, media_type: ProviderMediaType, status: dict | None, gateway: MetadataGateway | None = None
+) -> dict:
     """非默认画像直接使用 provider 记录，避免通用合成丢失私有来源图片."""
     provider = str(record.get("provider") or "")
     external_id = str(record.get("external_id") or "")
@@ -364,19 +379,62 @@ def _record_detail_data(record: dict, media_type: MediaType, status: dict | None
     ):
         if value:
             facts.append({label: value})
+
+    refs = [
+        item
+        for item in (record.get("refs") or [])
+        if isinstance(item, dict) and item.get("provider") and item.get("external_id")
+    ]
+    if (
+        provider
+        and external_id
+        and not any(
+            str(item.get("provider")) == provider and str(item.get("external_id")) == external_id for item in refs
+        )
+    ):
+        refs.insert(0, {"provider": provider, "external_id": external_id})
+    links = []
+    seen_providers: set[str] = set()
+    for ref in refs:
+        ref_provider = str(ref.get("provider") or "")
+        ref_external_id = str(ref.get("external_id") or "")
+        if not ref_provider or not ref_external_id or ref_provider in seen_providers:
+            continue
+        seen_providers.add(ref_provider)
+        if gateway is not None:
+            url = gateway.provider_detail_url(ref_provider, ref_external_id, media_type)
+            label = gateway.provider_display_name(ref_provider)
+        else:
+            url = metadata_registry.provider_detail_url(ref_provider, ref_external_id, media_type)
+            ref_entry = metadata_registry.get_provider(ref_provider)
+            descriptor = getattr(ref_entry, "descriptor", None)
+            label = str(getattr(descriptor, "display_name", "") or ref_provider)
+        if not url:
+            continue
+        links.append({"provider": ref_provider, "label": label, "url": url})
+    tmdb_ref = next((item for item in refs if item.get("provider") == "tmdb"), None)
+    douban_ref = next((item for item in refs if item.get("provider") == "douban"), None)
     return {
         "id": external_id,
         "mediaid": external_id,
-        "tmdbid": "",
+        "tmdbid": str(tmdb_ref.get("external_id")) if tmdb_ref else "",
         "provider": provider,
         "anchor_provider": provider,
         "anchor_external_id": external_id,
-        "douban_id": "",
+        "douban_id": str(douban_ref.get("external_id")) if douban_ref else "",
         "title": record.get("title") or "",
         "original_title": record.get("original_title") or "",
         "year": record.get("year") or "",
         "overview": record.get("overview") or "",
         "type": media_type.value,
+        "media_type_name": (
+            media_type_registry.resolve_profile(record.get("content_profile"))
+            or media_type_registry.resolve(media_type, record.get("content_profile"))
+        ).display_name,
+        "media_kind": (
+            media_type_registry.resolve_profile(record.get("content_profile"))
+            or media_type_registry.resolve(media_type, record.get("content_profile"))
+        ).kind.value,
         "image": poster,
         "poster": poster,
         "background": backdrop,
@@ -389,8 +447,8 @@ def _record_detail_data(record: dict, media_type: MediaType, status: dict | None
         "fact": facts,
         "seasons": record.get("seasons") or [],
         "episode_count": record.get("episode_count"),
-        "links": [],
-        "link": "",
+        "links": links,
+        "link": links[0]["url"] if links else "",
         "similar": [],
         "fav": (status or {}).get("fav", "0"),
         "rssid": (status or {}).get("rssid", ""),
@@ -696,8 +754,14 @@ def get_downloaded(
                     "orgid": item.TMDBID,
                     "tmdbid": item.TMDBID,
                     "title": item.TITLE,
-                    "type": MediaType.from_string(item.TYPE or "").value,
-                    "media_type": MediaType.from_string(item.TYPE or "").display_name,
+                    "type": (
+                        resolved := media_type_registry.resolve_profile(getattr(item, "CONTENT_PROFILE", None))
+                        or media_type_registry.resolve(item.TYPE, getattr(item, "CONTENT_PROFILE", None))
+                    ).content_type.value,
+                    "media_type": resolved.display_name,
+                    "media_type_key": resolved.key,
+                    "media_type_name": resolved.display_name,
+                    "media_kind": resolved.kind.value,
                     "year": item.YEAR,
                     "vote": item.VOTE,
                     "image": item.POSTER,
@@ -976,9 +1040,14 @@ def media_detail(
     return success(data=result)
 
 
-def _minimal_detail_record(req: "MediaDetailByRefRequest", media_type: MediaType | None, svc: MetadataService) -> dict:
+def _minimal_detail_record(
+    req: "MediaDetailByRefRequest",
+    media_type: ProviderMediaType | None,
+    gateway: MetadataGateway,
+    context: MetadataContext | None = None,
+) -> dict:
     """来源详情不可用时，用锚点/前端标题构造最小记录，并补齐豆瓣分集数."""
-    mtype = media_type or MediaType.MOVIE
+    mtype = media_type or ProviderMediaType.MOVIE
     base_title = str(req.title or f"{req.provider}:{req.external_id}")
     season_number = SeriesService.split_title_season(str(req.title or ""))[1] or 1
     record = {
@@ -989,39 +1058,23 @@ def _minimal_detail_record(req: "MediaDetailByRefRequest", media_type: MediaType
         "title": base_title,
         "year": str(req.year or ""),
         "type": mtype.value,
+        "media_type_name": (
+            media_type_registry.resolve_profile(req.content_profile)
+            or media_type_registry.resolve(mtype, req.content_profile)
+        ).display_name,
+        "media_kind": (
+            media_type_registry.resolve_profile(req.content_profile)
+            or media_type_registry.resolve(mtype, req.content_profile)
+        ).kind.value,
         "refs": [{"provider": req.provider, "external_id": req.external_id}],
         "images": {},
         "ratings": {},
         "genres": [],
         "credits": [],
     }
-    try:
-        legacy = run_with_timeout(
-            lambda: get_mediainfo_from_id(mtype, f"{req.provider}:{req.external_id}"),
-            3.0,
-            name="media-detail-legacy",
-        )
-    except Exception:  # noqa: BLE001 - 详情兜底不能再抛错
-        legacy = None
-    if legacy is not None:
-        record["title"] = str(getattr(legacy, "title", None) or record["title"])
-        record["year"] = str(getattr(legacy, "year", None) or record["year"])
-        record["overview"] = str(getattr(legacy, "overview", None) or "")
-        poster = getattr(legacy, "get_poster_image", lambda: "")()
-        if poster:
-            record["images"] = {"poster": [{"url": poster}]}
-        total = getattr(legacy, "total_episodes", None)
-        if total:
-            record["episode_count"] = int(total)
-            record["seasons"] = [
-                {
-                    "season_number": int(season_number),
-                    "episode_count": int(total),
-                    "name": f"第{season_number}季",
-                }
-            ]
     if not record.get("seasons") and base_title:
-        total = svc.resolve_season_episode_count(
+        total = gateway.resolve_season_episode_count(
+            context=context,
             provider=req.provider,
             external_id=req.external_id,
             title=str(record.get("title") or base_title),
@@ -1045,38 +1098,38 @@ def _minimal_detail_record(req: "MediaDetailByRefRequest", media_type: MediaType
 def media_detail_by_ref(
     req: MediaDetailByRefRequest,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
     sub_svc=Depends(get_subscribe_service),
 ):
-    allow_private, permissions = _private_scope(current_user)
     request_type, content_profile = normalize_media_type_input(req.media_type, req.content_profile)
-    media_type = MediaType.from_string(request_type) if request_type else None
-    if media_type == MediaType.UNKNOWN:
+    media_type = ProviderMediaType.from_value(request_type) if request_type else None
+    if media_type == ProviderMediaType.UNKNOWN:
         media_type = None
+    context = _metadata_context(current_user, purpose="api.detail_by_ref", content_profile=content_profile)
     record = None
     is_custom_profile = content_profile != "default"
     if is_custom_profile:
         try:
-            record = svc.lookup(
+            record = gateway.lookup(
                 req.provider,
                 req.external_id,
+                context=context,
                 media_type=media_type,
-                allow_private=allow_private,
-                permissions=permissions,
+                content_profile=content_profile,
             )
         except Exception:  # noqa: BLE001 - 上游抓取/熔断时仍可用前端已有标题展示
-            record = _minimal_detail_record(req, media_type, svc)
+            record = _minimal_detail_record(req, media_type, gateway, context)
             if record is None:
                 return fail(code=ErrorCode.OPERATION_FAILED, msg="无法获取媒体详情")
     if is_custom_profile and req.content_id:
         # 前端已知道内容编号时，优先按编号取聚合详情，避免来源 slug 失效。
         try:
-            aggregate = svc.lookup(
+            aggregate = gateway.lookup(
                 content_profile,
                 req.content_id,
+                context=context,
                 media_type=media_type,
-                allow_private=allow_private,
-                permissions=permissions,
+                content_profile=content_profile,
             )
             if aggregate:
                 record = aggregate
@@ -1085,12 +1138,12 @@ def media_detail_by_ref(
     if not record and is_custom_profile:
         # 源 provider 使用 slug 或临时失效时，回退到该内容画像的聚合 provider。
         try:
-            record = svc.lookup(
+            record = gateway.lookup(
                 content_profile,
                 req.external_id,
+                context=context,
                 media_type=media_type,
-                allow_private=allow_private,
-                permissions=permissions,
+                content_profile=content_profile,
             )
         except Exception:  # noqa: BLE001 - 聚合回退失败按原错误处理
             record = None
@@ -1108,12 +1161,12 @@ def media_detail_by_ref(
         )
         if content_id and req.provider != content_profile:
             try:
-                aggregate = svc.lookup(
+                aggregate = gateway.lookup(
                     content_profile,
                     content_id,
+                    context=context,
                     media_type=media_type,
-                    allow_private=allow_private,
-                    permissions=permissions,
+                    content_profile=content_profile,
                 )
                 if aggregate:
                     record = aggregate
@@ -1122,52 +1175,49 @@ def media_detail_by_ref(
         status = sub_svc.get_subscribe_by_anchor(
             str(record.get("provider") or req.provider),
             str(record.get("external_id") or req.external_id),
-            media_type or MediaType.MOVIE,
+            media_type or ProviderMediaType.MOVIE,
             user=current_user,
         )
-        return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
+        return success(data=_record_detail_data(record, media_type or ProviderMediaType.MOVIE, status, gateway))
     record = record or {}
     try:
-        snapshot = run_with_timeout(
-            lambda: svc.compose_for_ref(
+        envelope = run_with_timeout(
+            lambda: gateway.resolve(
                 req.provider,
                 req.external_id,
-                media_type=media_type or MediaType.MOVIE,
-                content_profile=content_profile,
-                include_tmdb=True,
-                user_id=current_user.user_id,
-                allow_private=allow_private,
-                permissions=permissions,
+                context=context,
+                media_type=media_type or ProviderMediaType.MOVIE,
                 with_episodes=False,
             ),
             8.0,
             name="media-detail",
         )
+        snapshot = envelope.metadata if envelope is not None else None
     except Exception:  # noqa: BLE001 - 上游慢/失败时走最小记录兜底
         snapshot = None
     if not snapshot:
         if not record:
             try:
-                record = svc.lookup(
+                record = gateway.lookup(
                     req.provider,
                     req.external_id,
+                    context=context,
                     media_type=media_type,
-                    allow_private=allow_private,
-                    permissions=permissions,
+                    content_profile=content_profile,
                 )
             except Exception:  # noqa: BLE001
                 record = None
         if not record:
-            record = _minimal_detail_record(req, media_type, svc)
+            record = _minimal_detail_record(req, media_type, gateway, context)
         if not record:
             return fail(msg="无法获取媒体详情")
         status = sub_svc.get_subscribe_by_anchor(
             str(record.get("provider") or req.provider),
             str(record.get("external_id") or req.external_id),
-            media_type or MediaType.MOVIE,
+            media_type or ProviderMediaType.MOVIE,
             user=current_user,
         )
-        return success(data=_record_detail_data(record, media_type or MediaType.MOVIE, status))
+        return success(data=_record_detail_data(record, media_type or ProviderMediaType.MOVIE, status, gateway))
     fields = snapshot.get("fields") or {}
     images = snapshot.get("images") or {}
     poster = next(
@@ -1266,16 +1316,17 @@ def media_detail_by_ref(
                     "episode_count": episodes_count,
                 }
             )
-    if not seasons and media_type in {MediaType.TV, MediaType.ANIME}:
+    if not seasons and media_type in {ProviderMediaType.SERIES, ProviderMediaType.ANIME}:
         title_hint = str(_field_value(fields, "title") or req.title or "")
         base_hint, parsed_hint = SeriesService.split_title_season(title_hint)
         season_hint = int(parsed_hint or 1)
-        total_hint = svc.resolve_season_episode_count(
+        total_hint = gateway.resolve_season_episode_count(
+            context=context,
             provider=req.provider,
             external_id=req.external_id,
             title=title_hint or base_hint,
             year=str(req.year or "") or None,
-            media_type=media_type or MediaType.TV,
+            media_type=media_type or ProviderMediaType.SERIES,
             season=season_hint,
         )
         if total_hint:
@@ -1307,11 +1358,9 @@ def media_detail_by_ref(
     provider = str(record.get("provider") or req.provider)
     external_id = str(record.get("external_id") or req.external_id)
     links = []
-    provider_url = metadata_registry.provider_detail_url(provider, external_id, media_type or MediaType.MOVIE)
-    provider_item = metadata_registry.get_provider(provider)
-    provider_desc = getattr(provider_item, "descriptor", None)
+    provider_url = gateway.provider_detail_url(provider, external_id, media_type or ProviderMediaType.MOVIE)
     if provider_url:
-        label = str(getattr(provider_desc, "display_name", "") or provider)
+        label = gateway.provider_display_name(provider)
         links.append({"provider": provider, "label": label, "url": provider_url})
     tmdb_ref = (
         next((item for item in snapshot.get("refs", []) if item.get("provider") == "tmdb"), None)
@@ -1321,7 +1370,7 @@ def media_detail_by_ref(
     status = sub_svc.get_subscribe_by_anchor(
         provider,
         external_id,
-        media_type or MediaType.MOVIE,
+        media_type or ProviderMediaType.MOVIE,
         user=current_user,
     )
     data = {
@@ -1337,7 +1386,15 @@ def media_detail_by_ref(
         "original_title": _field_value(fields, "original_title") or "",
         "year": _field_value(fields, "year") or record.get("year") or "",
         "overview": _field_value(fields, "overview") or record.get("overview") or "",
-        "type": (media_type or MediaType.MOVIE).value,
+        "type": (media_type or ProviderMediaType.MOVIE).value,
+        "media_type_name": (
+            media_type_registry.resolve_profile(record.get("content_profile") or req.content_profile)
+            or media_type_registry.resolve(media_type, record.get("content_profile") or req.content_profile)
+        ).display_name,
+        "media_kind": (
+            media_type_registry.resolve_profile(record.get("content_profile") or req.content_profile)
+            or media_type_registry.resolve(media_type, record.get("content_profile") or req.content_profile)
+        ).kind.value,
         "image": poster,
         "poster": poster,
         "background": backdrop,
@@ -1351,13 +1408,12 @@ def media_detail_by_ref(
         "seasons": seasons,
         "links": links,
         "link": links[0]["url"] if links else "",
-        "similar": svc.similar_for_ref(
+        "similar": gateway.similar_for_ref(
             provider,
             external_id,
-            media_type=media_type or MediaType.MOVIE,
+            context=context,
+            media_type=media_type or ProviderMediaType.MOVIE,
             title=str(_field_value(fields, "title") or record.get("title") or ""),
-            allow_private=allow_private,
-            permissions=permissions,
         ),
         "fav": (status or {}).get("fav", "0"),
         "rssid": (status or {}).get("rssid", ""),
@@ -1382,22 +1438,21 @@ def search_media_infos(
 def metadata_search(
     req: MetadataSearchRequest,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
-    allow_private, permissions = _private_scope(current_user)
     request_type, content_profile = normalize_media_type_input(req.media_type, req.content_profile)
-    media_type = MediaType.from_string(request_type) if request_type else None
-    if media_type == MediaType.UNKNOWN:
+    media_type = ProviderMediaType.from_value(request_type) if request_type else None
+    if media_type == ProviderMediaType.UNKNOWN:
         media_type = None
+    context = _metadata_context(current_user, purpose="api.search", content_profile=content_profile)
     return success(
-        data=svc.search(
+        data=gateway.search(
             query=req.query,
+            context=context,
             provider=req.provider,
             media_type=media_type,
             content_profile=content_profile,
             limit=req.limit,
-            allow_private=allow_private,
-            permissions=permissions,
             wait_timeout=req.timeout_seconds,
         )
     )
@@ -1411,21 +1466,21 @@ def metadata_lookup(
     scope: str = "default",
     allow_missing: bool = False,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
-    allow_private, permissions = _private_scope(current_user)
-    request_type, _profile = normalize_media_type_input(media_type, scope)
-    ref_type = MediaType.from_string(request_type) if request_type else None
-    if ref_type == MediaType.UNKNOWN:
+    request_type, profile = normalize_media_type_input(media_type, scope)
+    ref_type = ProviderMediaType.from_value(request_type) if request_type else None
+    if ref_type == ProviderMediaType.UNKNOWN:
         ref_type = None
+    context = _metadata_context(current_user, purpose="api.lookup", content_profile=profile)
     try:
-        data = svc.lookup(
+        data = gateway.lookup(
             provider,
             external_id,
+            context=context,
             media_type=ref_type,
             scope=scope,
-            allow_private=allow_private,
-            permissions=permissions,
+            content_profile=profile,
         )
     except ProviderError as exc:
         # 单源 404/抓取失败不应变成 500；允许多源回退时返回空结果。
@@ -1455,9 +1510,12 @@ def metadata_lookup(
 @router.get("/metadata/metrics", response_model=CommonResponse, summary="元数据链路指标")
 def metadata_metrics(
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    admin: Any = Depends(get_metadata_admin_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
-    return success(data=svc.metrics())
+    data = admin.metrics()
+    data["gateway"] = gateway.metrics()
+    return success(data=data)
 
 
 @router.get("/providers", response_model=CommonResponse, summary="元数据 provider 能力与健康状态")
@@ -1465,11 +1523,12 @@ def metadata_providers(
     include_health: bool = Query(True),
     provider: str | None = Query(None),
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
     allow_private, permissions = _private_scope(current_user)
     return success(
-        data=svc.list_providers(
+        data=gateway.list_providers(
+            context=_metadata_context(current_user, purpose="api.providers"),
             allow_private=allow_private,
             permissions=permissions,
             probe_health=include_health,
@@ -1482,9 +1541,9 @@ def metadata_providers(
 def person_detail(
     person_id: str,
     current_user=Depends(require_permission("metadata:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
-    data = svc.person_detail(person_id)
+    data = gateway.person_detail(person_id)
     return success(data=data) if data else fail(msg="人员不存在")
 
 
@@ -1492,28 +1551,28 @@ def person_detail(
 def identity_merge(
     req: IdentityMergeRequest,
     current_user=Depends(require_permission("metadata:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    admin=Depends(get_metadata_admin_service),
 ):
-    return success(data={"merged": svc.merge_identity(req.source_id, req.target_id)})
+    return success(data={"merged": admin.merge_identity(req.source_id, req.target_id)})
 
 
 @router.get("/identity/conflicts", response_model=CommonResponse, summary="待审核的跨源链接")
 def identity_conflicts(
     limit: int = 100,
     current_user=Depends(require_permission("metadata:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
-    return success(data=svc.pending_links(limit=limit))
+    return success(data=gateway.pending_links(limit=limit))
 
 
 @router.get("/identity/{identity_id}", response_model=CommonResponse, summary="作品身份详情")
 def identity_detail(
     identity_id: str,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
     allow_private, _permissions = _private_scope(current_user)
-    data = svc.identity_detail(identity_id, allow_private=allow_private)
+    data = gateway.identity_detail(identity_id, allow_private=allow_private)
     return success(data=data) if data else fail(msg="身份不存在")
 
 
@@ -1521,9 +1580,9 @@ def identity_detail(
 def identity_review_link(
     req: IdentityReviewRequest,
     current_user=Depends(require_permission("metadata:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    admin=Depends(get_metadata_admin_service),
 ):
-    result = svc.review_link(
+    result = admin.review_link(
         req.identity_id,
         provider=req.provider,
         external_id=req.external_id,
@@ -1568,17 +1627,16 @@ def discovery_items(
 def metadata_preview(
     req: MetadataPreviewRequest,
     current_user=Depends(require_any_permission("library:view", "library:manage")),
-    svc: MetadataService = Depends(get_metadata_service),
+    gateway: MetadataGateway = Depends(get_metadata_gateway),
 ):
     if not req.refs:
         return fail(msg="未指定元数据引用")
-    private_allowed, permissions = _private_scope(current_user)
     request_type, content_profile = normalize_media_type_input(req.media_type, req.content_profile)
     refs = []
     for item in req.refs:
         ref_type_value, _profile = normalize_media_type_input(item.media_type, content_profile)
-        ref_type = MediaType.from_string(ref_type_value) if ref_type_value else None
-        if ref_type == MediaType.UNKNOWN:
+        ref_type = ProviderMediaType.from_value(ref_type_value) if ref_type_value else None
+        if ref_type == ProviderMediaType.UNKNOWN:
             ref_type = None
         refs.append(
             ProviderRef(
@@ -1588,18 +1646,17 @@ def metadata_preview(
                 scope=item.scope,
             )
         )
-    media_type = MediaType.from_string(request_type) if request_type else None
-    if media_type == MediaType.UNKNOWN:
+    media_type = ProviderMediaType.from_value(request_type) if request_type else None
+    if media_type == ProviderMediaType.UNKNOWN:
         media_type = None
     try:
-        result = svc.preview(
+        result = gateway.preview(
             refs,
+            context=_metadata_context(current_user, purpose="api.preview", content_profile=content_profile),
             policy=req.policy,
             anchor_provider=req.anchor_provider,
             content_profile=content_profile,
             media_type=media_type,
-            allow_private=private_allowed,
-            permissions=permissions,
         )
     except ValidationError as exc:
         return fail(msg=exc.message)
@@ -1757,15 +1814,16 @@ def get_library_paths(
     return success(data=result)
 
 
-@router.get("/tmdb_blacklist/list", response_model=CommonResponse, summary="获取 TMDB 黑名单")
-def get_tmdb_blacklist(
+@router.get("/metadata_blacklist/list", response_model=CommonResponse, summary="获取识别黑名单")
+def get_metadata_blacklist(
     page: int = Query(1, ge=1),
     count: int = Query(30, ge=1, le=100),
     s: str | None = Query(""),
+    provider: str | None = Query(None),
     current_user=Depends(require_permission("library:manage")),
-    tmdb_svc=Depends(get_tmdb_blacklist_service),
+    metadata_svc=Depends(get_metadata_blacklist_service),
 ):
-    items, total = tmdb_svc.get_blacklist(tmdb_id=s if s else None, page=page, count=count)
+    items, total = metadata_svc.get_blacklist(external_id=s if s else None, page=page, count=count, provider=provider)
     return success(
         data={
             "items": items,
@@ -1776,35 +1834,37 @@ def get_tmdb_blacklist(
     )
 
 
-@router.post("/tmdb_blacklist/add", response_model=CommonResponse, summary="添加 TMDB 黑名单")
-def add_tmdb_blacklist(
-    req: TmdbBlacklistRequest,
+@router.post("/metadata_blacklist/add", response_model=CommonResponse, summary="添加识别黑名单")
+def add_metadata_blacklist(
+    req: MetadataBlacklistRequest,
     current_user=Depends(require_permission("library:manage")),
-    tmdb_svc=Depends(get_tmdb_blacklist_service),
+    metadata_svc=Depends(get_metadata_blacklist_service),
 ):
-    if not tmdb_svc.is_blacklisted(req.tmdb_id, req.media_type):
-        tmdb_svc.add_to_blacklist(tmdb_id=req.tmdb_id, media_type=req.media_type)
+    if not metadata_svc.is_blacklisted(req.external_id, req.media_type, provider=req.provider):
+        metadata_svc.add_to_blacklist(external_id=req.external_id, media_type=req.media_type, provider=req.provider)
     return success()
 
 
-@router.post("/tmdb_blacklist/delete", response_model=CommonResponse, summary="删除 TMDB 黑名单")
-def delete_tmdb_blacklist(
-    req: TmdbBlacklistRequest,
+@router.post("/metadata_blacklist/delete", response_model=CommonResponse, summary="删除识别黑名单")
+def delete_metadata_blacklist(
+    req: MetadataBlacklistRequest,
     current_user=Depends(require_permission("library:manage")),
-    tmdb_svc=Depends(get_tmdb_blacklist_service),
+    metadata_svc=Depends(get_metadata_blacklist_service),
 ):
-    if tmdb_svc.is_blacklisted(req.tmdb_id, req.media_type):
-        tmdb_svc.remove_from_blacklist(tmdb_id=req.tmdb_id, media_type=req.media_type)
+    if metadata_svc.is_blacklisted(req.external_id, req.media_type, provider=req.provider):
+        metadata_svc.remove_from_blacklist(
+            external_id=req.external_id, media_type=req.media_type, provider=req.provider
+        )
     return success()
 
 
-@router.post("/tmdb_blacklist/clear", response_model=CommonResponse, summary="清空 TMDB 黑名单")
-def clear_tmdb_blacklist(
+@router.post("/metadata_blacklist/clear", response_model=CommonResponse, summary="清空识别黑名单")
+def clear_metadata_blacklist(
     current_user=Depends(require_permission("library:manage")),
-    tmdb_svc=Depends(get_tmdb_blacklist_service),
+    metadata_svc=Depends(get_metadata_blacklist_service),
 ):
-    if tmdb_svc.get_blacklist():
-        tmdb_svc.clear_blacklist()
+    if metadata_svc.get_blacklist():
+        metadata_svc.clear_blacklist()
     return success()
 
 

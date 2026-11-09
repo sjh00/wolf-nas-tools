@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, Sequence, String, Text, UniqueConstraint
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -16,10 +17,12 @@ class MediaIdentity(Base):
     __table_args__ = (Index("INDX_MEDIA_IDENTITY_TYPE_PROFILE", "MEDIA_TYPE", "CONTENT_PROFILE"),)
 
     IDENTITY_ID: Mapped[str] = mapped_column(String(26), primary_key=True)
-    MEDIA_TYPE: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    MEDIA_TYPE: Mapped[str] = mapped_column(String(128), nullable=False, default="unknown")
+    MEDIA_KIND: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
     CONTENT_PROFILE: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     CANONICAL_TITLE: Mapped[str | None] = mapped_column(String(255), nullable=True)
     YEAR: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ALIASES: Mapped[str | None] = mapped_column(Text, nullable=True)
     PARENT_IDENTITY_ID: Mapped[str | None] = mapped_column(String(26), nullable=True)
     SEASON_NUMBER: Mapped[int | None] = mapped_column(Integer, nullable=True)
     CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
@@ -46,7 +49,7 @@ class MediaExternalRef(Base):
     )
     PROVIDER: Mapped[str] = mapped_column(String(64), nullable=False)
     EXTERNAL_ID: Mapped[str] = mapped_column(String(255), nullable=False)
-    MEDIA_TYPE: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    MEDIA_TYPE: Mapped[str | None] = mapped_column(String(128), nullable=True)
     SCOPE: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     URL: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     CONFIDENCE: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
@@ -80,7 +83,7 @@ class MediaMetadataSnapshot(Base):
     CONTENT_PROFILE: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     SCOPE: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     SNAPSHOT_HASH: Mapped[str] = mapped_column(String(64), nullable=False)
-    PAYLOAD: Mapped[str] = mapped_column(Text, nullable=False)
+    PAYLOAD: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=False)
     PROVIDERS: Mapped[str | None] = mapped_column(Text, nullable=True)
     STATUS: Mapped[str] = mapped_column(String(32), nullable=False, default="ok")
     CREATED_AT: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

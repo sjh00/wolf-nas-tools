@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.models import MediaInfo
 from app.message.core.message_builder import MessageBuilder, _message_variables, _type_label
 
@@ -23,22 +23,21 @@ class TestEmptyTypeTolerated:
         assert MediaInfo.model_validate({"title": "x"}).type is None
 
     def test_valid_type_still_parsed(self):
-        assert MediaInfo.model_validate({"title": "x", "type": "movie"}).type is MediaType.MOVIE
-        assert MediaInfo.model_validate({"title": "x", "type": "TV"}).type is MediaType.TV
+        assert MediaInfo.model_validate({"title": "x", "type": "movie"}).type is ProviderMediaType.MOVIE
+        assert MediaInfo.model_validate({"title": "x", "type": "TV"}).type is ProviderMediaType.SERIES
 
     def test_chinese_alias_parsed(self):
-        assert MediaInfo.model_validate({"title": "x", "type": "电视剧"}).type is MediaType.TV
-        assert MediaInfo.model_validate({"title": "x", "type": "电影"}).type is MediaType.MOVIE
+        assert MediaInfo.model_validate({"title": "x", "type": "电视剧"}).type is ProviderMediaType.SERIES
+        assert MediaInfo.model_validate({"title": "x", "type": "电影"}).type is ProviderMediaType.MOVIE
 
     def test_unknown_value_degrades_to_unknown(self):
-        assert MediaInfo.model_validate({"title": "x", "type": "???garbage"}).type is MediaType.UNKNOWN
+        assert MediaInfo.model_validate({"title": "x", "type": "???garbage"}).type is ProviderMediaType.UNKNOWN
 
     def test_roundtrip_through_event_payload(self):
         """model_dump 会输出空串 type，回灌校验必须仍然成功（事件总线路径）。"""
         empty = MediaInfo()
         restored = MediaInfo.model_validate(empty.to_dict())
         assert restored.type is None
-
 
 class TestTypeLabelWithoutType:
     def test_label_falls_back_to_unknown(self):
@@ -53,7 +52,6 @@ class TestTypeLabelWithoutType:
     def test_profile_label_still_wins(self):
         media = MediaInfo()
         assert _type_label(media, "profiles:anime") != ""
-
 
 class TestDownloadMessageWithEmptyMedia:
     def test_send_download_message_does_not_raise(self):

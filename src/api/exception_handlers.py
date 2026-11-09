@@ -30,13 +30,16 @@ async def wolfnas_error_handler(request: Request, exc: WolfNasError) -> JSONResp
     if exc.http_status >= 500:
         log.error(f"[API]业务异常: {request.method} {request.url.path} - {exc}")
     elif exc.details.get("expected"):
-        # 预期内的空结果（如上游没有该图片、媒体条目缺少某张图），
-        # 与 access token 正常过期同理，不该按异常告警
-        log.debug(f"[API]预期内的空结果: {request.method} {request.url.path} - {exc}")
-    elif exc.details.get("expired"):
-        # access token 正常过期（15 分钟有效），前端会自动刷新并重试，
-        # 不是配置或凭证问题，降为 debug 免得每 15 分钟刷一条告警
-        log.debug(f"[API]Access Token 已过期（前端将自动刷新）: {request.method} {request.url.path}")
+        # ?????????????????????
+        log.debug(f"[API]???????: {request.method} {request.url.path} - {exc}")
+    elif exc.errcode in {
+        ErrorCode.UNAUTHORIZED,
+        ErrorCode.TOKEN_EXPIRED,
+        ErrorCode.TOKEN_INVALID,
+        ErrorCode.REFRESH_TOKEN_INVALID,
+    }:
+        # ???/????/????????????
+        log.debug(f"[API]?????: {request.method} {request.url.path} - {exc.errcode}")
     else:
         log.warn(f"[API]业务异常: {request.method} {request.url.path} - {exc}")
     return JSONResponse(

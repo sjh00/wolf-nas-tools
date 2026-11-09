@@ -1,8 +1,12 @@
 import random
 
 import log
-from app.domain.media_type_utils import MediaTypeMapper
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import (
+    ProviderMediaType,
+    external_protocol_type,
+    external_protocol_value,
+    provider_media_type_of,
+)
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.lookup.tmdb_client import TmdbClient
 
@@ -27,7 +31,7 @@ class TmdbDiscover:
             return []
         try:
             movies = self.client.movie.similar(movie_id=tmdbid, page=page) or []
-            return self._dict_infos(movies, MediaType.MOVIE)
+            return self._dict_infos(movies, ProviderMediaType.MOVIE)
         except Exception as e:
             if _is_not_found(e):
                 log.debug(f"[TmdbDiscover]电影 {tmdbid} 相似作品不存在（TMDB 404）")
@@ -40,7 +44,7 @@ class TmdbDiscover:
             return []
         try:
             movies = self.client.movie.recommendations(movie_id=tmdbid, page=page) or []
-            return self._dict_infos(movies, MediaType.MOVIE)
+            return self._dict_infos(movies, ProviderMediaType.MOVIE)
         except Exception as e:
             if _is_not_found(e):
                 log.debug(f"[TmdbDiscover]电影 {tmdbid} 推荐不存在（TMDB 404）")
@@ -53,7 +57,7 @@ class TmdbDiscover:
             return []
         try:
             tvs = self.client.tv.similar(tv_id=tmdbid, page=page) or []
-            return self._dict_infos(tvs, MediaType.TV)
+            return self._dict_infos(tvs, ProviderMediaType.SERIES)
         except Exception as e:
             if _is_not_found(e):
                 log.debug(f"[TmdbDiscover]电视剧 {tmdbid} 相似作品不存在（TMDB 404）")
@@ -66,7 +70,7 @@ class TmdbDiscover:
             return []
         try:
             tvs = self.client.tv.recommendations(tv_id=tmdbid, page=page) or []
-            return self._dict_infos(tvs, MediaType.TV)
+            return self._dict_infos(tvs, ProviderMediaType.SERIES)
         except Exception as e:
             if _is_not_found(e):
                 log.debug(f"[TmdbDiscover]电视剧 {tmdbid} 推荐不存在（TMDB 404）")
@@ -77,87 +81,88 @@ class TmdbDiscover:
     def discover(self, mtype, params=None, page=1):
         if not self.client.discover:
             return []
+        provider_type = external_protocol_type(provider_media_type_of(mtype))
         try:
-            if mtype == MediaType.MOVIE:
+            if provider_type == ProviderMediaType.MOVIE:
                 movies = self.client.discover.discover_movies(params=params, page=page)
-                return self._dict_infos(infos=movies, mtype=mtype, poster_filter=True)
-            elif mtype == MediaType.TV:
+                return self._dict_infos(infos=movies, mtype=provider_type, poster_filter=True)
+            if provider_type == ProviderMediaType.SERIES:
                 tvs = self.client.discover.discover_tv_shows(params=params, page=page)
-                return self._dict_infos(infos=tvs, mtype=mtype, poster_filter=True)
+                return self._dict_infos(infos=tvs, mtype=provider_type, poster_filter=True)
         except Exception as e:
             log.warn(f"[TmdbDiscover]发现内容失败: {e}")
         return []
 
     def get_tmdb_hot_movies(self, page):
-        cached = self.client.redis_cache.get_trending("movie", "popular", page)
+        cached = self.client.redis_cache.get_trending("tmdb", "movie", "popular", page)
         if cached:
             log.debug(f"[Meta]从缓存获取热门电影，第 {page} 页")
             return cached
         if not self.client.movie:
             return []
-        result = self._dict_infos(self.client.movie.popular(page), MediaType.MOVIE)
+        result = self._dict_infos(self.client.movie.popular(page), ProviderMediaType.MOVIE)
         if result:
-            self.client.redis_cache.set_trending("movie", "popular", page, result)
+            self.client.redis_cache.set_trending("tmdb", "movie", "popular", page, result)
         return result
 
     def get_tmdb_hot_tvs(self, page):
-        cached = self.client.redis_cache.get_trending("tv", "popular", page)
+        cached = self.client.redis_cache.get_trending("tmdb", "tv", "popular", page)
         if cached:
             log.debug(f"[Meta]从缓存获取热门电视剧，第 {page} 页")
             return cached
         if not self.client.tv:
             return []
-        result = self._dict_infos(self.client.tv.popular(page), MediaType.TV)
+        result = self._dict_infos(self.client.tv.popular(page), ProviderMediaType.SERIES)
         if result:
-            self.client.redis_cache.set_trending("tv", "popular", page, result)
+            self.client.redis_cache.set_trending("tmdb", "tv", "popular", page, result)
         return result
 
     def get_tmdb_new_movies(self, page):
-        cached = self.client.redis_cache.get_trending("movie", "now_playing", page)
+        cached = self.client.redis_cache.get_trending("tmdb", "movie", "now_playing", page)
         if cached:
             log.debug(f"[Meta]从缓存获取最新电影，第 {page} 页")
             return cached
         if not self.client.movie:
             return []
         try:
-            result = self._dict_infos(self.client.movie.now_playing(page), MediaType.MOVIE)
+            result = self._dict_infos(self.client.movie.now_playing(page), ProviderMediaType.MOVIE)
         except Exception as e:
             log.warn(f"[TmdbDiscover]获取最新电影失败: {e}")
             return []
         if result:
-            self.client.redis_cache.set_trending("movie", "now_playing", page, result)
+            self.client.redis_cache.set_trending("tmdb", "movie", "now_playing", page, result)
         return result
 
     def get_tmdb_new_tvs(self, page):
-        cached = self.client.redis_cache.get_trending("tv", "on_the_air", page)
+        cached = self.client.redis_cache.get_trending("tmdb", "tv", "on_the_air", page)
         if cached:
             log.debug(f"[Meta]从缓存获取最新电视剧，第 {page} 页")
             return cached
         if not self.client.tv:
             return []
         try:
-            result = self._dict_infos(self.client.tv.on_the_air(page), MediaType.TV)
+            result = self._dict_infos(self.client.tv.on_the_air(page), ProviderMediaType.SERIES)
         except Exception as e:
             log.warn(f"[TmdbDiscover]获取最新电视剧失败: {e}")
             return []
         if result:
-            self.client.redis_cache.set_trending("tv", "on_the_air", page, result)
+            self.client.redis_cache.set_trending("tmdb", "tv", "on_the_air", page, result)
         return result
 
     def get_tmdb_upcoming_movies(self, page):
-        cached = self.client.redis_cache.get_trending("movie", "upcoming", page)
+        cached = self.client.redis_cache.get_trending("tmdb", "movie", "upcoming", page)
         if cached:
             log.debug(f"[Meta]从缓存获取即将上映电影，第 {page} 页")
             return cached
         if not self.client.movie:
             return []
-        result = self._dict_infos(self.client.movie.upcoming(page), MediaType.MOVIE)
+        result = self._dict_infos(self.client.movie.upcoming(page), ProviderMediaType.MOVIE)
         if result:
-            self.client.redis_cache.set_trending("movie", "upcoming", page, result)
+            self.client.redis_cache.set_trending("tmdb", "movie", "upcoming", page, result)
         return result
 
     def get_tmdb_trending_all_week(self, page=1):
-        cached = self.client.redis_cache.get_trending("all", "week", page)
+        cached = self.client.redis_cache.get_trending("tmdb", "all", "week", page)
         if cached:
             log.debug(f"[Meta]从缓存获取本周趋势，第 {page} 页")
             return cached
@@ -165,7 +170,7 @@ class TmdbDiscover:
             return []
         result = self._dict_infos(self.client.trending.all_week(page=page))
         if result:
-            self.client.redis_cache.set_trending("all", "week", page, result)
+            self.client.redis_cache.set_trending("tmdb", "all", "week", page, result)
         return result
 
     def get_random_backdrop(self):
@@ -199,28 +204,18 @@ class TmdbDiscover:
             if poster_filter and not image:
                 continue
             overview = info.get("overview")
-            if mtype:
-                media_type = mtype.value
-                year = (
-                    info.get("release_date")[0:4]
-                    if info.get("release_date") and mtype == MediaType.MOVIE
-                    else info.get("first_air_date")[0:4]
-                    if info.get("first_air_date")
-                    else ""
-                )
-                typestr = MediaTypeMapper.to_tmdb(mtype)
-                title = info.get("title") if mtype == MediaType.MOVIE else info.get("name")
-            else:
-                media_type = MediaType.MOVIE.value if info.get("media_type") == "movie" else MediaType.TV.value
-                year = (
-                    info.get("release_date")[0:4]
-                    if info.get("release_date") and info.get("media_type") == "movie"
-                    else info.get("first_air_date")[0:4]
-                    if info.get("first_air_date")
-                    else ""
-                )
-                typestr = "movie" if info.get("media_type") == "movie" else "tv"
-                title = info.get("title") if info.get("media_type") == "movie" else info.get("name")
+            provider_type = provider_media_type_of(mtype or info.get("media_type"))
+            is_movie = provider_type == ProviderMediaType.MOVIE
+            media_type = provider_type.value
+            year = (
+                info.get("release_date")[0:4]
+                if info.get("release_date") and is_movie
+                else info.get("first_air_date")[0:4]
+                if info.get("first_air_date")
+                else ""
+            )
+            typestr = external_protocol_value(provider_type)
+            title = info.get("title") if is_movie else info.get("name")
             ret_infos.append(
                 {
                     "id": tmdbid,

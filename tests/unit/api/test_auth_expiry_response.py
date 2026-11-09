@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from api.deps import get_current_user
 from api.exception_handlers import register_exception_handlers
+from app.core.error_codes import ErrorCode
 from app.services import auth_service as auth_mod
 
 _FOREIGN_SECRET = "someone-elses-secret-key-0123456789abcdef"
@@ -51,15 +52,23 @@ def _expired_access_token() -> str:
 
 
 class TestExpiredTokenResponse:
-    def test_expired_token_marks_details_expired(self, client):
-        """过期 token → 401 且 details.expired=True"""
+    def test_expired_token_reports_token_expired_code(self, client):
+        """过期 token → 401 且错误码为 TOKEN_EXPIRED（前端据此刷新）"""
         resp = client.get("/api/demo", headers={"Authorization": f"Bearer {_expired_access_token()}"})
 
         assert resp.status_code == 401
-        assert resp.json()["details"].get("expired") is True
+        assert resp.json()["code"] == ErrorCode.TOKEN_EXPIRED
 
-    def test_invalid_token_does_not_mark_expired(self, client):
-        """伪造 token → 401 但不带 expired 标记（按安全事件处理）"""
+    def test_expired_token_is_not_logged_as_warning(self, client):
+        """正常过期属于预期流程，不应产生 WARNING 噪声"""
+        with patch("api.exception_handlers.log") as mock_log:
+            resp = client.get("/api/demo", headers={"Authorization": f"Bearer {_expired_access_token()}"})
+
+        assert resp.status_code == 401
+        mock_log.warn.assert_not_called()
+
+    def test_invalid_token_reports_invalid_code(self, client):
+        """伪造 token → 401 且错误码为 TOKEN_INVALID"""
         forged = jwt.encode(
             {"exp": datetime.now(timezone.utc) + timedelta(hours=1), "type": "access"},
             _FOREIGN_SECRET,
@@ -68,28 +77,4 @@ class TestExpiredTokenResponse:
         resp = client.get("/api/demo", headers={"Authorization": f"Bearer {forged}"})
 
         assert resp.status_code == 401
-        assert not (resp.json().get("details") or {}).get("expired")
-
-    def test_missing_credentials_not_marked_expired(self, client):
-        """完全没带凭证 → 401 但不带 expired 标记"""
-        resp = client.get("/api/demo")
-
-        assert resp.status_code == 401
-        assert not (resp.json().get("details") or {}).get("expired")
-
-    def test_expiry_is_logged_at_debug_not_warn(self, client):
-        """过期属正常轮换，应降为 debug，避免每 15 分钟刷一条告警"""
-        with patch("api.exception_handlers.log") as mock_log:
-            resp = client.get("/api/demo", headers={"Authorization": f"Bearer {_expired_access_token()}"})
-
-        assert resp.status_code == 401
-        mock_log.warn.assert_not_called()
-        mock_log.debug.assert_called_once()
-
-    def test_invalid_credentials_still_warn(self, client):
-        """无效凭证仍需告警（安全审计）"""
-        with patch("api.exception_handlers.log") as mock_log:
-            resp = client.get("/api/demo", headers={"Authorization": "Bearer not-a-jwt"})
-
-        assert resp.status_code == 401
-        mock_log.warn.assert_called_once()
+        assert resp.json()["code"] == ErrorCode.TOKEN_INVALID

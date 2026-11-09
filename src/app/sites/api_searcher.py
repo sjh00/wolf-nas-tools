@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import log
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.infrastructure.http.client import HttpClient
 from app.infrastructure.http.config import HttpClientConfig
 from app.media.metadata.registry import registry as metadata_registry
@@ -44,7 +44,7 @@ class ApiSiteSearcher:
         self,
         keyword: str = "",
         page: int = 0,
-        mtype: MediaType | None = None,
+        mtype: ProviderMediaType | None = None,
         page_size: int | None = None,
         content_profile: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -169,6 +169,13 @@ class ApiSiteSearcher:
             self.last_error = f"{type(e).__name__}"
             log.warn(f"[ApiSiteSearcher]{self._site.name} 搜索失败, url={url}, error={e}")
             return []
+        if isinstance(resp_data, dict) and resp_data.get("code") is not None:
+            code = str(resp_data.get("code"))
+            if code not in {"0", "200", "success"} and not resp_data.get("data"):
+                message = str(resp_data.get("message") or resp_data.get("msg") or "").strip()
+                self.last_error = f"API {code}: {message}".strip()
+                log.warn(f"[ApiSiteSearcher]{self._site.name} 接口返回错误: {self.last_error}, url={url}")
+                return []
         result = self._parse_response(resp_data, search_config)
         log.debug(f"[ApiSiteSearcher]{self._site.name} 返回 {len(result)} 条结果, url={url}")
         if len(result) == 0:

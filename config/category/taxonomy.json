@@ -517,6 +517,30 @@
         "Taiwanese"
       ]
     },
+    "bo": {
+      "labels": {
+        "zh": "藏语",
+        "en": "Tibetan"
+      },
+      "aliases": [
+        "藏语",
+        "藏語",
+        "Tibetan",
+        "bo"
+      ]
+    },
+    "za": {
+      "labels": {
+        "zh": "壮语",
+        "en": "Zhuang"
+      },
+      "aliases": [
+        "壮语",
+        "壯語",
+        "Zhuang",
+        "za"
+      ]
+    },
     "ja": {
       "labels": {
         "zh": "日语",
@@ -1163,6 +1187,11 @@
         "中国",
         "China",
         "中國",
+        "中国大陆",
+        "中国大陆地区",
+        "大陆",
+        "内地",
+        "Mainland China",
         "CN",
         "CHN",
         "中国大陆",

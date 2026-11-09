@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType, media_kind_of, provider_media_type_of
 from app.infrastructure.cache_system import lru_cache_with_ttl
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.lookup.tmdb_client import TmdbClient
@@ -31,7 +31,7 @@ from ..models import (
     SeasonRecord,
     SourceTier,
 )
-from .genres import classify_media_type
+from .genres import classify_provider_media_type
 
 ImageUrlBuilder = Callable[[str | None], str | None]
 
@@ -40,7 +40,7 @@ class _DetailLike(Protocol):
     def get_detail(
         self,
         tmdbid: str,
-        mtype: MediaType,
+        mtype: ProviderMediaType | ProviderMediaType,
         language: str | None = None,
         append_to_response: str | None = None,
     ) -> dict[str, Any] | None: ...
@@ -59,7 +59,7 @@ class _SearchLike(Protocol):
 def tmdb_detail_to_record(
     info: dict[str, Any],
     *,
-    media_type: MediaType,
+    media_type: ProviderMediaType | ProviderMediaType,
     external_id: str | None = None,
     scope: str = "default",
     locale: str | None = None,
@@ -68,7 +68,11 @@ def tmdb_detail_to_record(
     image_url: ImageUrlBuilder | None = None,
 ) -> ProviderRecord:
     """把 TMDB movie/tv detail 字典映射为规范记录."""
-    media_type, content_profile = classify_media_type(media_type, info.get("genres"), content_profile)
+    provider_type, content_profile = classify_provider_media_type(
+        provider_media_type_of(media_type),
+        info.get("genres"),
+        content_profile,
+    )
     tmdb_id = str(external_id or info.get("id") or "")
     release_date = info.get("release_date") or info.get("first_air_date")
     runtime = info.get("runtime")
@@ -76,9 +80,22 @@ def tmdb_detail_to_record(
         runtimes = info.get("episode_run_time") or []
         runtime = runtimes[0] if runtimes else None
 
-    refs = [ProviderRef(provider="tmdb", external_id=tmdb_id, media_type=media_type, scope=scope)]
+    refs = [
+        ProviderRef(
+            provider="tmdb",
+            external_id=tmdb_id,
+            provider_media_type=provider_type,
+            scope=scope,
+        )
+    ]
     if info.get("imdb_id"):
-        refs.append(ProviderRef(provider="imdb", external_id=str(info["imdb_id"]), media_type=media_type))
+        refs.append(
+            ProviderRef(
+                provider="imdb",
+                external_id=str(info["imdb_id"]),
+                provider_media_type=provider_type,
+            )
+        )
     if info.get("external_ids", {}).get("wikidata_id"):
         refs.append(ProviderRef(provider="wikidata", external_id=str(info["external_ids"]["wikidata_id"])))
     if info.get("external_ids", {}).get("tvdb_id"):
@@ -86,7 +103,7 @@ def tmdb_detail_to_record(
             ProviderRef(
                 provider="tvdb",
                 external_id=str(info["external_ids"]["tvdb_id"]),
-                media_type=media_type,
+                provider_media_type=provider_type,
             )
         )
 
@@ -97,11 +114,13 @@ def tmdb_detail_to_record(
         provider="tmdb",
         external_id=tmdb_id,
         refs=refs,
-        media_type=media_type,
+        media_type=provider_type,
+        provider_media_type=provider_type,
         content_profile=content_profile,
         locale=locale,
         title=info.get("title") or info.get("name"),
         original_title=info.get("original_title") or info.get("original_name"),
+        aliases=_aliases(info),
         year=(release_date or "")[:4] or None,
         release_date=release_date,
         runtime=runtime,
@@ -125,6 +144,36 @@ def tmdb_detail_to_record(
             "tmdb.homepage": info.get("homepage"),
         },
     )
+
+
+def _aliases(info: dict[str, Any]) -> list[str]:
+    """提取多语言标题：also_known_as + alternative_titles + translations."""
+    values: list[str] = []
+    raw = info.get("also_known_as") or []
+    if isinstance(raw, list):
+        values.extend(str(item) for item in raw if item)
+    alternative = info.get("alternative_titles") or {}
+    for key in ("titles", "results"):
+        for item in alternative.get(key) or []:
+            value = item.get("title") if hasattr(item, "get") else getattr(item, "title", None)
+            if value:
+                values.append(str(value))
+    translations = (info.get("translations") or {}).get("translations") or []
+    for item in translations:
+        data = item.get("data") if hasattr(item, "get") else getattr(item, "data", None)
+        if data is not None:
+            value = data.get("name") if hasattr(data, "get") else getattr(data, "name", None)
+            value = value or (data.get("title") if hasattr(data, "get") else getattr(data, "title", None))
+            if value:
+                values.append(str(value))
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if text and text.casefold() not in seen:
+            seen.add(text.casefold())
+            result.append(text)
+    return result
 
 
 def _images(info: dict[str, Any], image_url: ImageUrlBuilder | None) -> dict[str, list[ImageAsset]]:
@@ -215,7 +264,7 @@ class TmdbProvider:
         display_name="TMDB",
         ref_prefixes=frozenset({"TMDB"}),
         subscription_id_format="{id}",
-        default_media_type=MediaType.MOVIE,
+        default_provider_media_type=ProviderMediaType.MOVIE,
         detail_url_template="https://www.themoviedb.org/{media_type}/{external_id}",
         capabilities=frozenset(
             {
@@ -229,7 +278,8 @@ class TmdbProvider:
                 ProviderCapability.RELEASE_DATES,
             }
         ),
-        media_types=frozenset({MediaType.MOVIE, MediaType.TV, MediaType.ANIME}),
+        provider_media_types=frozenset({ProviderMediaType.MOVIE, ProviderMediaType.SERIES, ProviderMediaType.ANIME}),
+        media_kinds=frozenset({MediaKind.MOVIE, MediaKind.EPISODIC}),
         source_tiers=frozenset({SourceTier.API}),
         allowed_hosts=frozenset(HOSTS),
         rate_limit_per_minute=RATE,
@@ -251,18 +301,21 @@ class TmdbProvider:
         self._search = search
 
     def search(self, query: SearchQuery, ctx: object) -> list[SearchHit]:
-        media_types = [query.media_type] if query.media_type is not None else [MediaType.MOVIE, MediaType.TV]
+        requested = provider_media_type_of(query.media_type) if query.media_type is not None else None
+        provider_types = [requested] if requested is not None else [ProviderMediaType.MOVIE, ProviderMediaType.SERIES]
         hits: list[SearchHit] = []
         seen: set[tuple[str, str]] = set()
-        for media_type in media_types:
-            if media_type == MediaType.MOVIE:
+        for provider_type in provider_types:
+            if provider_type == ProviderMediaType.MOVIE:
                 raw = self._search.search_movie_infos(query.query, query.year)
             else:
                 raw = self._search.search_tv_infos(query.query, query.year)
             for item in raw or []:
                 if not item.get("id"):
                     continue
-                hit_type, hit_profile = classify_media_type(media_type, item.get("genre_ids"), query.content_profile)
+                hit_type, hit_profile = classify_provider_media_type(
+                    provider_type, item.get("genre_ids"), query.content_profile
+                )
                 external_id = str(item.get("id"))
                 key = (hit_type.value, external_id)
                 if key in seen:
@@ -274,7 +327,7 @@ class TmdbProvider:
                         ref=ProviderRef(
                             provider="tmdb",
                             external_id=external_id,
-                            media_type=hit_type,
+                            provider_media_type=hit_type,
                         ),
                         title=item.get("title") or item.get("name") or "",
                         year=(item.get("release_date") or item.get("first_air_date") or "")[:4] or None,
@@ -290,20 +343,44 @@ class TmdbProvider:
         return hits
 
     def detail(self, ref: ProviderRef, ctx: object) -> ProviderRecord | None:
-        media_type = ref.media_type or MediaType.MOVIE
-        info = self._detail.get_detail(
-            ref.external_id,
-            media_type,
-            append_to_response="credits,images,external_ids",
-        )
+        provider_type = provider_media_type_of(ref.provider_media_type or ref.media_type)
+        info: dict[str, Any] | None = None
+        if provider_type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
+            info = self._detail.get_detail(
+                ref.external_id,
+                provider_type,
+                append_to_response="credits,images,external_ids,alternative_titles,translations",
+            )
+            resolved_type = provider_type
+        elif provider_type == ProviderMediaType.MOVIE:
+            info = self._detail.get_detail(
+                ref.external_id,
+                ProviderMediaType.MOVIE,
+                append_to_response="credits,images,external_ids,alternative_titles,translations",
+            )
+            resolved_type = ProviderMediaType.MOVIE
+        else:
+            info = self._detail.get_detail(
+                ref.external_id,
+                ProviderMediaType.MOVIE,
+                append_to_response="credits,images,external_ids,alternative_titles,translations",
+            )
+            resolved_type = ProviderMediaType.MOVIE
+            if not info:
+                info = self._detail.get_detail(
+                    ref.external_id,
+                    ProviderMediaType.SERIES,
+                    append_to_response="credits,images,external_ids,alternative_titles,translations",
+                )
+                resolved_type = ProviderMediaType.SERIES
         if not info:
             raise ProviderNotFound("tmdb", f"未找到 {ref.external_id}")
         episodes: list[EpisodeRecord] = []
-        if media_type in {MediaType.TV, MediaType.ANIME}:
+        if media_kind_of(resolved_type) == MediaKind.EPISODIC:
             episodes = self._episodes(ref.external_id, _season_from_scope(ref.scope))
         return tmdb_detail_to_record(
             info,
-            media_type=media_type,
+            media_type=resolved_type,
             external_id=ref.external_id,
             scope=ref.scope,
             episodes=episodes,

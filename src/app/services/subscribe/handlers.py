@@ -7,13 +7,8 @@ from typing import Any
 
 import log
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
-from app.db.repositories.subscribe_repo_adapter import (
-    SubscribeMovieRepositoryAdapter,
-    SubscribeTvEpisodeRepositoryAdapter,
-    SubscribeTvRepositoryAdapter,
-)
 from app.domain.entities.rss import SubscribeState
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event, on_event
 from app.events.constants import (
     MANUAL_DOWNLOAD_SUBSCRIBE_UPDATE,
@@ -39,6 +34,11 @@ from app.media import MediaInfo
 from app.media.parser import RegexParser
 from app.services.subscribe.management.service import SubscribeService
 from app.services.subscribe.strategies.queue_search import QueueSearchStrategy
+from app.services.subscribe_repo_adapter import (
+    SubscribeMovieRepositoryAdapter,
+    SubscribeTvEpisodeRepositoryAdapter,
+    SubscribeTvRepositoryAdapter,
+)
 
 
 @on_event(SUBSCRIBE_FINISHED)
@@ -48,7 +48,6 @@ def handle_subscribe_finished(event: Event) -> None:
     if not isinstance(payload, SubscribeFinishedPayload):
         payload = SubscribeFinishedPayload(**payload)
     log.info(f"[Event]订阅完成: rssid={payload.rssid}")
-
 
 def build_manual_download_subscribe_handler(subscribe_service: SubscribeService):
     """构造手动下载后自动订阅更新事件处理器并注册。"""
@@ -70,7 +69,7 @@ def build_manual_download_subscribe_handler(subscribe_service: SubscribeService)
             log.warn("[Event]手动下载订阅更新: media_info 缺少 type 字段，跳过")
             return
 
-        mtype = MediaType.from_string(mtype_str) if isinstance(mtype_str, str) else mtype_str
+        mtype = ProviderMediaType.from_value(mtype_str) if isinstance(mtype_str, str) else mtype_str
         year = media_info.get("year")
         season = media_info.get("season")
         tmdbid = media_info.get("tmdb_id")
@@ -86,13 +85,15 @@ def build_manual_download_subscribe_handler(subscribe_service: SubscribeService)
             log.info(f"[Event]未找到订阅: {title}")
             return
 
-        if mtype == MediaType.MOVIE:
+        if mtype == ProviderMediaType.MOVIE:
             rss_info = subscribe_service.get_subscribe_movies(rid=rssid)
             if not rss_info:
                 log.info(f"[Event]未找到电影订阅: rssid={rssid}")
                 return
             if rss_info.get("over_edition"):
-                subscribe_service.update_subscribe_over_edition(rtype=MediaType.MOVIE, rssid=rssid, media=media_info)
+                subscribe_service.update_subscribe_over_edition(
+                    rtype=ProviderMediaType.MOVIE, rssid=rssid, media=media_info
+                )
                 log.info(f"[Event]电影 {title} 更新为 over_edition 状态")
             else:
                 subscribe_service.finish_rss_subscribe(rssid=rssid, media=media_info)
@@ -109,7 +110,6 @@ def build_manual_download_subscribe_handler(subscribe_service: SubscribeService)
 
     return handle_manual_download_subscribe_update
 
-
 @on_event(SUBSCRIBE_ADD)
 def handle_subscribe_add(event: Event) -> None:
     """订阅添加事件处理器"""
@@ -117,7 +117,6 @@ def handle_subscribe_add(event: Event) -> None:
     if not isinstance(payload, SubscribeAddPayload):
         payload = SubscribeAddPayload(**payload)
     log.info(f"[Event]订阅添加: rssid={payload.rssid}")
-
 
 def build_rss_auto_subscribe_handler(subscribe_service: SubscribeService):
     """构造 RSS 自动订阅事件处理器并注册到事件系统。"""
@@ -152,7 +151,6 @@ def build_rss_auto_subscribe_handler(subscribe_service: SubscribeService):
             log.error(f"[Event]处理自定义RSS订阅请求失败：{e!s}")
 
     return handle_rss_auto_subscribe
-
 
 def handle_media_episode_transferred(event: Event, finalize_fn=None) -> None:
     """单集转移完成事件处理器 — 更新订阅进度；缺失清零时定稿（finalize_fn）。"""
@@ -250,7 +248,6 @@ def handle_media_episode_transferred(event: Event, finalize_fn=None) -> None:
     except Exception as e:
         log.error(f"[Event]更新订阅进度失败：{e!s}")
 
-
 def build_media_episode_transferred_handler(subscribe_service: SubscribeService):
     """构造转移定稿处理器：转移落盘确认后按订阅行定稿（写历史、删订阅、联动兄弟）。"""
 
@@ -259,7 +256,7 @@ def build_media_episode_transferred_handler(subscribe_service: SubscribeService)
         media_type = getattr(payload, "media_type", None)
         if media_type:
             try:
-                mtype = MediaType(media_type)
+                mtype = ProviderMediaType(media_type)
             except ValueError:
                 mtype = None
         subscribe_service.finalize_tv_by_rssid(rssid, mtype)
@@ -269,7 +266,6 @@ def build_media_episode_transferred_handler(subscribe_service: SubscribeService)
         handle_media_episode_transferred(event, finalize_fn=_finalize)
 
     return _handle
-
 
 def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
     """构造电影定稿处理器：电影入库确认后按订阅行定稿。
@@ -284,7 +280,7 @@ def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
         if not isinstance(payload, MediaTransferFinishedPayload):
             payload = MediaTransferFinishedPayload(**payload)
         info = payload.media_info or {}
-        if info.get("type") != MediaType.MOVIE.value:
+        if info.get("type") != ProviderMediaType.MOVIE.value:
             return
         profile = str(info.get("content_profile") or "default")
         anchor_provider = str(info.get("anchor_provider") or "").strip()
@@ -292,7 +288,7 @@ def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
         tmdb = str(info.get("tmdb_id") or info.get("id") or info.get("orgid") or "")
         if not tmdb and profile == "default" and not (anchor_provider and anchor_external):
             return
-        media = MediaInfo(type=MediaType.MOVIE, tmdb_id=tmdb)
+        media = MediaInfo(type=ProviderMediaType.MOVIE, tmdb_id=tmdb)
         media.title = info.get("title") or ""
         media.year = info.get("year") or ""
         media.overview = info.get("overview") or ""
@@ -317,7 +313,6 @@ def build_movie_transfer_finalize_handler(subscribe_service: SubscribeService):
             subscribe_service.finalize_movie_by_rssid(sid)
 
     return _handle
-
 
 def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
     """构造转移失败回滚处理器：重开对应订阅、回补失败集缺失并复位下载历史，允许重新下载。"""
@@ -368,7 +363,7 @@ def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
                     continue
                 if owner is not None and getattr(sub, "user_id", None) != owner:
                     continue
-                subscribe_service.update_rss_state(MediaType.TV, sub.id, SubscribeState.RUNNING.value)
+                subscribe_service.update_rss_state(ProviderMediaType.SERIES, sub.id, SubscribeState.RUNNING.value)
                 if failed_eps:
                     current = ep_repo.get(sub.id) or []
                     merged = sorted(set(int(e) for e in current) | set(failed_eps))
@@ -390,7 +385,7 @@ def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
                     continue
                 if owner is not None and getattr(msub, "user_id", None) != owner:
                     continue
-                subscribe_service.update_rss_state(MediaType.MOVIE, msub.id, SubscribeState.RUNNING.value)
+                subscribe_service.update_rss_state(ProviderMediaType.MOVIE, msub.id, SubscribeState.RUNNING.value)
                 reopened += 1
             # 复位下载历史状态，解除“已完成”过滤，使订阅可重新匹配下载
             DownloadHistoryRepositoryAdapter().update_state(history.downloader, history.download_id, "downloading")
@@ -399,7 +394,6 @@ def build_transfer_fail_reopen_handler(subscribe_service: SubscribeService):
             log.error(f"[Event]转移失败回滚失败：{e!s}")
 
     return _handle
-
 
 def build_subscribe_add_search_handler(queue_strategy: QueueSearchStrategy, thread_executor: ThreadExecutor):
     """构造订阅添加/更新后自动触发队列搜索的事件处理器。"""

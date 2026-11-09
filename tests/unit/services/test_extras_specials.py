@@ -122,7 +122,7 @@ class TestExtrasPathNaming:
     def _resolve(org_string: str, monkeypatch):
         from types import SimpleNamespace
 
-        from app.domain.mediatypes import MediaType
+        from app.domain.media_types import ProviderMediaType
         from app.services.transfer.path_resolver import TransferPathResolver
 
         resolver = TransferPathResolver(
@@ -135,7 +135,7 @@ class TestExtrasPathNaming:
             "get_format_dict",
             lambda *a, **k: {"title": "示例剧集", "season": 1, "episode": 9},
         )
-        media = SimpleNamespace(type=MediaType.TV, org_string=org_string, note={"is_extras": True})
+        media = SimpleNamespace(type=ProviderMediaType.SERIES, org_string=org_string, note={"is_extras": True})
         dir_name, season_name, file_name = TransferPathResolver.get_tv_dest_path(resolver, media, None, None)
         return dir_name, season_name, file_name
 

@@ -2,14 +2,15 @@ import difflib
 import re
 
 from app.core.settings import settings
-from app.db.repositories.plugin_repo_adapter import TmdbBlacklistRepositoryAdapter
-from app.domain.mediatypes import MediaType
+from app.db.repositories.plugin_repo_adapter import MetadataBlacklistRepositoryAdapter
+from app.domain.media_types import ProviderMediaType, external_protocol_type
 from app.domain.validators.media_title import (
     clean_advertisement_title,
     is_advertisement_title,
     sanitize_title,
 )
-from app.infrastructure.cache_system import TMDBCache, get_cache_manager
+from app.infrastructure.cache_system import get_cache_manager
+from app.infrastructure.cache_system.metadata_cache import MetadataCache
 from app.infrastructure.external.tmdbv3api import (
     TV,
     Discover,
@@ -30,7 +31,7 @@ from app.utils.config_tools import get_tmdbapi_url
 class TmdbClient:
     """TMDB API 客户端封装"""
 
-    def __init__(self, tmdb_blacklist_repo: TmdbBlacklistRepositoryAdapter | None = None):
+    def __init__(self, metadata_blacklist_repo: MetadataBlacklistRepositoryAdapter | None = None):
         self.tmdb = None
         self.search = None
         self.movie = None
@@ -42,18 +43,15 @@ class TmdbClient:
         self.discover = None
         self.genre = None
         self._default_language = "zh"
-        self._tmdb_blacklist_repo = tmdb_blacklist_repo or TmdbBlacklistRepositoryAdapter()
+        self._metadata_blacklist_repo = metadata_blacklist_repo or MetadataBlacklistRepositoryAdapter()
         self._init_config()
 
     def reset(self) -> None:
         """重置配置并清除缓存（热重载时由 ConfigReloader 调用）"""
         self._init_config()
-        self.redis_cache.clear()
-        # API Key 缺失期间 TMDB 查询必然失败并被 24h 负缓存（tmdb_lookup 命名空间），
-        # 配置修好后必须一并清理，否则同一标题在 TTL 内仍返回"未找到"
-        lookup_cache = get_cache_manager().get("tmdb_lookup")
-        if lookup_cache is not None:
-            lookup_cache.clear()
+        self.redis_cache.clear_provider("tmdb")
+        # API Key 缺失期间 TMDB 查询必然失败并被负缓存，配置修好后必须一并清理。
+        MetadataCache(prefix="lookup").clear()
 
     def _init_config(self):
         # 先清空再按当前配置重建：否则清空/更换 API Key 后仍会沿用旧客户端（表现为"Key 未设置"依旧）
@@ -86,15 +84,15 @@ class TmdbClient:
             self.trending = Trending()
             self.discover = Discover()
             self.genre = Genre()
-        self.redis_cache = TMDBCache(get_cache_manager().get("tmdb"))
-        self.blacklist = self._tmdb_blacklist_repo
-        self._blacklist_cache = get_cache_manager().get_or_create("tmdb_blacklist", "memory", maxsize=1, ttl=300)
+        self.redis_cache = MetadataCache()
+        self.blacklist = self._metadata_blacklist_repo
+        self._blacklist_cache = get_cache_manager().get_or_create("metadata_blacklist", "memory", maxsize=1, ttl=300)
 
     def get_blacklist(self):
         cached = self._blacklist_cache.get("all")
         if cached is not None:
             return cached
-        all_items = self.blacklist.get_tmdb_blacklist()
+        all_items = self.blacklist.get_blacklist()
         self._blacklist_cache.set("all", all_items)
         return all_items
 
@@ -106,9 +104,7 @@ class TmdbClient:
         else:
             self.tmdb.language = self._default_language
 
-
 # ---------- 纯工具函数 ----------
-
 
 def compare_tmdb_names(file_name, tmdb_names):
     if not file_name or not tmdb_names:
@@ -143,22 +139,19 @@ def compare_tmdb_names(file_name, tmdb_names):
             return True
     return False
 
-
 def _has_cjk(s: str) -> bool:
     """判断字符串是否含 CJK 字符"""
     return bool(re.search(r"[\u3000-\u9fff]", s))
-
 
 def get_genre_ids_from_detail(genres):
     if not genres:
         return []
     return [genre.get("id") for genre in genres]
 
-
 def get_tmdb_chinese_title(tmdbinfo):
     if not tmdbinfo:
         return None
-    if tmdbinfo.get("media_type") == MediaType.MOVIE:
+    if external_protocol_type(tmdbinfo.get("media_type")) == ProviderMediaType.MOVIE:
         alternative_titles = tmdbinfo.get("alternative_titles", {}).get("titles", [])
     else:
         alternative_titles = tmdbinfo.get("alternative_titles", {}).get("results", [])
@@ -186,8 +179,9 @@ def get_tmdb_chinese_title(tmdbinfo):
         return zh_cn
     if zh_tw:
         return to_simplified(zh_tw)
-    return tmdbinfo.get("title") if tmdbinfo.get("media_type") == MediaType.MOVIE else tmdbinfo.get("name")
-
+    if external_protocol_type(tmdbinfo.get("media_type")) == ProviderMediaType.MOVIE:
+        return tmdbinfo.get("title")
+    return tmdbinfo.get("name")
 
 def _get_chinese_title_from_translations(tmdbinfo):
     """从 translations 提取中文名：优先 zh-CN/zh（简体），回退 zh-TW/zh-HK（繁体）"""
@@ -213,21 +207,21 @@ def _get_chinese_title_from_translations(tmdbinfo):
             zh_tw = title
     return zh_cn, zh_tw
 
-
 def update_tmdbinfo_cn_title(tmdb_info, default_language):
-    org_title = tmdb_info.get("title") if tmdb_info.get("media_type") == MediaType.MOVIE else tmdb_info.get("name")
-    # 中文语言配置（zh/zh-CN/zh-Hans...）下补全中文名；非中文配置保持原样。
-    # 「已被灌入广告的伪中文名」也要走补全：它虽然含中文，但不是可用标题。
+    is_movie = external_protocol_type(tmdb_info.get("media_type")) == ProviderMediaType.MOVIE
+    org_title = tmdb_info.get("title") if is_movie else tmdb_info.get("name")
+    # ???????zh/zh-CN/zh-Hans...??????????????????
+    # ?????????????????????????????????
     needs_cn = not StringUtils.is_chinese(org_title) or is_advertisement_title(org_title)
     if needs_cn and str(default_language or "").lower().startswith("zh"):
         cn_title = get_tmdb_chinese_title(tmdbinfo=tmdb_info)
         if cn_title and cn_title != org_title:
-            if tmdb_info.get("media_type") == MediaType.MOVIE:
+            if is_movie:
                 tmdb_info["title"] = cn_title
             else:
                 tmdb_info["name"] = cn_title
     # 社区译名可能已被灌入推广广告，兜底剥离后再落库（整条是广告时回退原名）
-    if tmdb_info.get("media_type") == MediaType.MOVIE:
+    if tmdb_info.get("media_type") == ProviderMediaType.MOVIE:
         tmdb_info["title"] = sanitize_title(tmdb_info.get("title"), tmdb_info.get("original_title"))
         tmdb_info["original_title"] = clean_advertisement_title(tmdb_info.get("original_title"))
     else:

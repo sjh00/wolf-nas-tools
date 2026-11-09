@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Protocol
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType, provider_media_type_of
 from app.media.external.bangumi import Bangumi
 
 from ..errors import ProviderNotFound
@@ -34,11 +34,12 @@ class _BangumiClientLike(Protocol):
 def bangumi_item_to_record(
     item: dict[str, Any],
     *,
-    media_type: MediaType = MediaType.ANIME,
+    media_type: ProviderMediaType = ProviderMediaType.ANIME,
     external_id: str | None = None,
     content_profile: str = "anime",
 ) -> ProviderRecord:
     """把 Bangumi v0 subject / calendar item 映射为规范记录."""
+    provider_type = provider_media_type_of(media_type)
     bid = str(external_id or item.get("id") or "")
     images = item.get("images") or {}
     rating = item.get("rating") or {}
@@ -66,7 +67,7 @@ def bangumi_item_to_record(
         value = info.get("value")
         if key in {"动画制作", "製作", "制作"} and isinstance(value, str) and value:
             studios.append(value)
-        if key == "别名":
+        if key == "别名" or "英文" in key or key.lower() in {"english", "en"}:
             aliases.extend(_infobox_names(value))
         role = role_map.get(key)
         if role == "studio" and isinstance(value, str) and value.strip():
@@ -80,8 +81,14 @@ def bangumi_item_to_record(
     return ProviderRecord(
         provider="bangumi",
         external_id=bid,
-        refs=[ProviderRef(provider="bangumi", external_id=bid, media_type=media_type)],
-        media_type=media_type,
+        refs=[
+            ProviderRef(
+                provider="bangumi",
+                external_id=bid,
+                provider_media_type=provider_type,
+            )
+        ],
+        media_type=provider_type,
         content_profile=content_profile,
         locale="zh-CN",
         title=item.get("name_cn") or item.get("name") or None,
@@ -168,7 +175,7 @@ class BangumiProvider:
         display_name="Bangumi",
         ref_prefixes=frozenset({"BG", "BGM", "BANGUMI"}),
         subscription_id_format="BG:{id}",
-        default_media_type=MediaType.TV,
+        default_provider_media_type=ProviderMediaType.SERIES,
         default_content_profile="anime",
         detail_url_template="https://bgm.tv/subject/{external_id}",
         capabilities=frozenset(
@@ -181,7 +188,8 @@ class BangumiProvider:
                 ProviderCapability.DISCOVERY,
             }
         ),
-        media_types=frozenset({MediaType.ANIME, MediaType.TV}),
+        provider_media_types=frozenset({ProviderMediaType.ANIME, ProviderMediaType.SERIES}),
+        media_kinds=frozenset({MediaKind.EPISODIC}),
         content_profiles=frozenset({"anime"}),
         source_tiers=frozenset({SourceTier.API}),
         allowed_hosts=frozenset(HOSTS),
@@ -204,10 +212,14 @@ class BangumiProvider:
             hits.append(
                 SearchHit(
                     provider="bangumi",
-                    ref=ProviderRef(provider="bangumi", external_id=str(bid), media_type=MediaType.ANIME),
+                    ref=ProviderRef(
+                        provider="bangumi",
+                        external_id=str(bid),
+                        provider_media_type=ProviderMediaType.ANIME,
+                    ),
                     title=item.get("name_cn") or item.get("name") or "",
                     year=str(air_date)[:4] or None,
-                    media_type=MediaType.ANIME,
+                    media_type=ProviderMediaType.ANIME,
                     content_profile="anime",
                     poster=images.get("large") or images.get("common"),
                     score=float(rating.get("score") or 0.0),

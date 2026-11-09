@@ -9,7 +9,7 @@ import log
 from app.core.constants import ANIME_GENREIDS
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.domain.media_ref import MediaRef
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType, media_type_registry
 from app.domain.validators.media_title import clean_advertisement_title, sanitize_title
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.image_resolver import MediaImageResolver
@@ -39,14 +39,12 @@ def _genre_keys_from_rules(rules: Any) -> set[str]:
             keys |= taxonomy.genre_keys([item])
     return keys
 
-
 def _genre_keys_of_side(rule_map: dict[str, dict[str, Any]], side: str) -> set[str]:
     """某一侧（movie/tv）分类规则里用到的全部题材键。"""
     keys: set[str] = set()
     for rules in rule_map.get(side, {}).values():
         keys |= _genre_keys_from_rules(rules)
     return keys
-
 
 def _tv_only_genre_keys(rule_map: dict[str, dict[str, Any]]) -> set[str]:
     """只在 TV 侧有归属的题材键。
@@ -63,7 +61,6 @@ def _tv_only_genre_keys(rule_map: dict[str, dict[str, Any]]) -> set[str]:
     configured = _genre_keys_of_side(rule_map, "tv") - _genre_keys_of_side(rule_map, "movie")
     return configured | _NON_FILM_GENRES
 
-
 # 固有非电影题材：这几个题材的内容以电视/演出形态为主，不属于电影栏目。
 # 只影响「题材判定」这一步，具体落到 TV 下哪个分类仍由分类规则决定。
 _NON_FILM_GENRES: frozenset[str] = frozenset(
@@ -78,7 +75,6 @@ _NON_FILM_GENRES: frozenset[str] = frozenset(
         "sport",
     }
 )
-
 
 # 以叙事为主、本身就构成一部电影的题材。命中这些说明该作品是剧情片/传记片等，
 # 即使带「音乐」「纪录片」标签也不该移出电影侧 —— 典型例子是音乐传记片
@@ -107,12 +103,11 @@ _FILM_NARRATIVE_GENRES: frozenset[str] = frozenset(
 # 但它的归属应该是 TV/纪录片，不能被叙事题材保护逻辑抢回电影侧。
 _PRIORITY_TV_GENRES: frozenset[str] = frozenset({"documentary"})
 
-
 def correct_type_by_genres(
-    media_type: MediaType | None,
+    media_type: ProviderMediaType | None,
     genres: Any,
     rule_map: dict[str, dict[str, Any]],
-) -> MediaType | None:
+) -> ProviderMediaType | None:
     """按题材把 movie 纠正为 tv（纪录片/综艺/音乐演出等非电影题材）。
 
     识别链路有两条：TMDB detail 走 `set_provider_data`，多源快照走
@@ -127,7 +122,7 @@ def correct_type_by_genres(
     :param rule_map: 分类配置 {movie: {分类: 规则}, tv: {...}}
     :return: 纠正后的类型
     """
-    if media_type != MediaType.MOVIE:
+    if media_type != ProviderMediaType.MOVIE:
         return media_type
     tv_only = _tv_only_genre_keys(rule_map)
     if not tv_only:
@@ -142,15 +137,14 @@ def correct_type_by_genres(
         return media_type
     # 纪录片优先归 TV
     if keys & _PRIORITY_TV_GENRES:
-        return MediaType.TV
+        return ProviderMediaType.SERIES
     # 叙事电影题材保护（音乐传记片、歌舞剧情片等）
     if keys & _FILM_NARRATIVE_GENRES:
         return media_type
     # 其余纯非叙事题材（综艺/音乐演出/儿童等）归 TV
     if keys & tv_only:
-        return MediaType.TV
+        return ProviderMediaType.SERIES
     return media_type
-
 
 def build_category_rule_map(entities: Any) -> dict[str, dict[str, Any]]:
     """把分类配置实体整理成 {movie|tv|anime: {分类名: 规则}}，默认分类规则置空。"""
@@ -163,9 +157,8 @@ def build_category_rule_map(entities: Any) -> dict[str, dict[str, Any]]:
             )
     return rule_map
 
-
 def _coerce_enum(enum_cls: type[Enum], value: str) -> Any:
-    """把字符串归一为该枚举成员；无法识别时优先走 `from_string` 兜底。
+    """把字符串归一为该枚举成员；无法识别时优先走枚举自带的归一方法。
 
     返回非枚举值（原样字符串）是刻意的：让 Pydantic 校验继续报错，
     避免把真正写错的值静默吞掉。
@@ -179,11 +172,17 @@ def _coerce_enum(enum_cls: type[Enum], value: str) -> Any:
         return enum_cls(text.lower())
     except ValueError:
         pass
-    from_string = getattr(enum_cls, "from_string", None)
-    if callable(from_string):
-        return from_string(text)
+    # ProviderMediaType 用 from_value 做别名归一（电视剧/电影/动漫等）
+    for method_name in ("from_value", "from_string"):
+        method = getattr(enum_cls, method_name, None)
+        if callable(method):
+            try:
+                resolved = method(text)
+            except Exception:  # noqa: BLE001 - 归一失败按原值交给校验
+                continue
+            if isinstance(resolved, enum_cls):
+                return resolved
     return value
-
 
 class MediaInfo(BaseModel):
     """统一的媒体信息模型 — 替代 MetaBase + MediaInfoModel"""
@@ -247,7 +246,9 @@ class MediaInfo(BaseModel):
     org_string: str | None = None
     rev_string: str | None = None
     subtitle: str | None = None
-    type: MediaType | None = None
+    type: ProviderMediaType | None = None
+    media_type_key: str | None = None
+    media_kind: str | None = None
     content_profile: str = "default"
     anchor_provider: str | None = None
     anchor_external_id: str | None = None
@@ -381,7 +382,7 @@ class MediaInfo(BaseModel):
         return ""
 
     def get_season_string(self) -> str:
-        if self.type == MediaType.MOVIE:
+        if self.type == ProviderMediaType.MOVIE:
             return ""
         if self.begin_season is not None:
             b = self.begin_season
@@ -389,27 +390,27 @@ class MediaInfo(BaseModel):
             if e is None or (isinstance(b, int) and isinstance(e, int) and e == b):
                 return "S{}".format(str(b).rjust(2, "0"))
             return "S{}-S{}".format(str(b).rjust(2, "0"), str(e).rjust(2, "0"))
-        if self.type == MediaType.MOVIE:
+        if self.type == ProviderMediaType.MOVIE:
             return ""
         return "S01"
 
     def get_season_item(self) -> str:
         if self.begin_season is not None:
             return "S{}".format(str(self.begin_season).rjust(2, "0"))
-        if self.type == MediaType.MOVIE:
+        if self.type == ProviderMediaType.MOVIE:
             return ""
         return "S01"
 
     def get_season_seq(self) -> str:
         if self.begin_season is not None:
             return str(self.begin_season)
-        if self.type == MediaType.MOVIE:
+        if self.type == ProviderMediaType.MOVIE:
             return ""
         return "1"
 
     def get_season_list(self) -> list:
         if self.begin_season is None:
-            if self.type == MediaType.MOVIE:
+            if self.type == ProviderMediaType.MOVIE:
                 return []
             return [1]
         if self.end_season is not None:
@@ -500,7 +501,7 @@ class MediaInfo(BaseModel):
         return self.get_episode_seqs()
 
     def get_season_episode_string(self) -> str:
-        if self.type == MediaType.MOVIE:
+        if self.type == ProviderMediaType.MOVIE:
             return ""
         season = self.get_season_string()
         episode = self.get_episode_string()
@@ -553,7 +554,7 @@ class MediaInfo(BaseModel):
         return ""
 
     def get_type_string(self) -> str:
-        return f"类型：{self.type.value}" if self.type else ""
+        return f"类型：{self.type.display_name}" if self.type else ""
 
     def get_overview_string(self, max_len: int = 140) -> str:
         if not hasattr(self, "overview"):
@@ -693,8 +694,8 @@ class MediaInfo(BaseModel):
     def _has_tv_only_genre(self, info: dict[str, Any], rule_map: dict[str, dict[str, Any]]) -> bool:
         """兼容旧调用：等价于 correct_type_by_genres 是否把 movie 改判为 tv。"""
         return (
-            correct_type_by_genres(MediaType.MOVIE, info.get("genres") or info.get("genre_ids"), rule_map)
-            == MediaType.TV
+            correct_type_by_genres(ProviderMediaType.MOVIE, info.get("genres") or info.get("genre_ids"), rule_map)
+            == ProviderMediaType.SERIES
         )
 
     def set_download_info(self, download_setting=None, save_path=None):
@@ -714,10 +715,10 @@ class MediaInfo(BaseModel):
                     if not effective:
                         log.debug(f"[MediaInfo]分类『{name}』({side}) 无有效规则，将作为兜底")
         media_type = info.get("media_type")
-        if media_type is not None and not isinstance(media_type, MediaType):
+        if media_type is not None and not isinstance(media_type, ProviderMediaType):
             # 兼容字符串（"tv"/"movie"）：否则会被直接赋值为字符串并跳过动漫判定
-            parsed_media_type = MediaType.from_string(str(media_type))
-            if parsed_media_type != MediaType.UNKNOWN:
+            parsed_media_type = ProviderMediaType.from_value(str(media_type))
+            if parsed_media_type != ProviderMediaType.UNKNOWN:
                 media_type = parsed_media_type
         raw_genres = info.get("genres") or []
         # TMDB 返回 [{"id","name"}]，多元数据 provider 常返回 ["动画", ...]。
@@ -726,7 +727,7 @@ class MediaInfo(BaseModel):
             value = genre.get("name") or genre.get("id") if hasattr(genre, "get") else genre
             if value not in (None, ""):
                 self.genres.append(str(value))
-        if media_type == MediaType.TV:
+        if media_type == ProviderMediaType.SERIES:
             genre_ids = info.get("genre_ids") or []
             # TMDB detail 返回 genres（数组）而非 genre_ids，需兼容提取
             if not genre_ids:
@@ -736,13 +737,13 @@ class MediaInfo(BaseModel):
             else:
                 genre_ids = [str(genre_ids).upper()]
             if set(genre_ids).intersection(set(ANIME_GENREIDS)):
-                self.type = MediaType.ANIME
+                self.type = ProviderMediaType.ANIME
             elif genre_ids:
-                self.type = MediaType.TV
-            elif self.type not in (MediaType.ANIME, MediaType.TV):
+                self.type = ProviderMediaType.SERIES
+            elif self.type not in (ProviderMediaType.ANIME, ProviderMediaType.SERIES):
                 # 无类型信息时保留已推断的结果（站点分类/文件名），
                 # 避免把 ANIME 误降级为 TV 而入错媒体库目录
-                self.type = MediaType.TV
+                self.type = ProviderMediaType.SERIES
         elif media_type:
             # 题材只在 TV 侧有归属（纪录片/综艺/音乐演出等）→ 按 TV 归档，
             # 否则会落进电影的默认分类，且无法进入 TV/纪录片 等目录
@@ -760,19 +761,19 @@ class MediaInfo(BaseModel):
         self.overview = info.get("overview")
         self.original_language = info.get("original_language")
         self.networks = [network.get("name") for network in info.get("networks") or []]
-        if self.type == MediaType.MOVIE:
+        if self.type == ProviderMediaType.MOVIE:
             tmdb_year = info.get("release_date", "")[:4] if info.get("release_date") else ""
             if self.year and tmdb_year and str(self.year) != str(tmdb_year):
                 log.debug(f"[MediaInfo]TMDB年份不匹配: 种子={self.year}, TMDB={tmdb_year}, 保留种子元数据")
                 tmdb_year = ""  # 年份冲突时不覆盖
-        elif self.type != MediaType.MOVIE and self.year and info:
+        elif self.type != ProviderMediaType.MOVIE and self.year and info:
             tmdb_year = info.get("first_air_date", "")[:4] if info.get("first_air_date") else ""
             if tmdb_year.isdigit() and self.year.isdigit() and abs(int(self.year) - int(tmdb_year)) > 5:
                 self.tmdb_id = None  # type: ignore[reportAttributeAccessIssue]
                 self.provider_data = {}
                 return
 
-        if media_type == MediaType.MOVIE:
+        if media_type == ProviderMediaType.MOVIE:
             # 社区译名可能被灌入推广广告，落库前兜底清洗（整条是广告时回退原名）
             self.title = sanitize_title(info.get("title"), info.get("original_title"))
             self.original_title = clean_advertisement_title(info.get("original_title"))
@@ -795,7 +796,7 @@ class MediaInfo(BaseModel):
                         break
             if self.release_date and (not self.year or str(self.year).strip() in ("", "\t")):
                 self.year = self.release_date[0:4]
-            self.category = get_category(rule_map.get("movie"), info, MediaType.MOVIE.value)
+            self.category = get_category(rule_map.get("movie"), info, ProviderMediaType.MOVIE.value)
             log.debug(
                 f"[MediaInfo]电影分类匹配: title={self.title!r} lang={info.get('original_language')} "
                 f"origin={info.get('origin_country')} genre={info.get('genre_ids')} -> {self.category!r}"
@@ -832,16 +833,16 @@ class MediaInfo(BaseModel):
                         break
             if self.release_date and (not self.year or str(self.year).strip() in ("", "\t")):
                 self.year = self.release_date[0:4]
-            if self.type == MediaType.MOVIE:
-                self.category = get_category(rule_map.get("movie"), info, MediaType.MOVIE.value)
+            if self.type == ProviderMediaType.MOVIE:
+                self.category = get_category(rule_map.get("movie"), info, ProviderMediaType.MOVIE.value)
                 log.debug(
                     f"[MediaInfo]电影分类匹配: title={self.title!r} lang={info.get('original_language')} "
                     f"origin={info.get('origin_country')} genre={info.get('genre_ids')} -> {self.category!r}"
                 )
-            elif self.type == MediaType.TV:
-                self.category = get_category(rule_map.get("tv"), info, MediaType.TV.value)
+            elif self.type == ProviderMediaType.SERIES:
+                self.category = get_category(rule_map.get("tv"), info, ProviderMediaType.SERIES.value)
             else:
-                self.category = get_category(rule_map.get("anime"), info, MediaType.ANIME.value)
+                self.category = get_category(rule_map.get("anime"), info, ProviderMediaType.ANIME.value)
             self.poster_path = (
                 ImageProxy.get_tmdbimage_url(info.get("poster_path"), size="medium") if info.get("poster_path") else ""
             )
@@ -883,7 +884,7 @@ class MediaInfo(BaseModel):
                 raw_id = str(ref.external_id or "")
             if not raw_id.isdigit():
                 return ""
-            base = "movie" if self.type == MediaType.MOVIE else "tv"
+            base = "movie" if self.type == ProviderMediaType.MOVIE else "tv"
             return f"https://www.themoviedb.org/{base}/{raw_id}"
         if target == "bangumi":
             external = self.anchor_external_id or (ref.external_id if ref and ref.provider == "bangumi" else "")
@@ -941,6 +942,9 @@ class MediaInfo(BaseModel):
         return MediaImageResolver.get_poster_image(self, original=original)
 
     def to_dict(self) -> dict:
+        resolved_type = media_type_registry.resolve_profile(self.content_profile) or media_type_registry.resolve(
+            self.media_type_key or self.type, self.content_profile
+        )
         return {
             "id": self.tmdb_id,
             "orgid": self.tmdb_id,
@@ -948,6 +952,9 @@ class MediaInfo(BaseModel):
             "year": self.year,
             "type": self.type.value if self.type else "",
             "media_type": self.type.value if self.type else "",
+            "media_type_key": self.media_type_key or (resolved_type.key if resolved_type.key != "unknown" else None),
+            "media_kind": self.media_kind or resolved_type.kind.value,
+            "media_type_name": resolved_type.display_name,
             "vote": self.vote_average,
             "image": self.poster_path,
             "imdb_id": self.imdb_id,
@@ -1084,7 +1091,7 @@ class MediaInfo(BaseModel):
             ):
                 self.end_season = end_season
                 self.total_seasons = (self.end_season - self.begin_season) + 1
-            self.type = MediaType.TV
+            self.type = ProviderMediaType.SERIES
         # 第x集
         episode_str = re.search(subtitle_episode_re, title_text, re.IGNORECASE)
         if episode_str:
@@ -1113,7 +1120,7 @@ class MediaInfo(BaseModel):
             ):
                 self.end_episode = end_episode
                 self.total_episodes = (self.end_episode - self.begin_episode) + 1
-            self.type = MediaType.TV
+            self.type = ProviderMediaType.SERIES
         # x集全
         episode_all_str = re.search(subtitle_episode_all_re, title_text, re.IGNORECASE)
         if episode_all_str:
@@ -1125,7 +1132,7 @@ class MediaInfo(BaseModel):
                     return
                 self.begin_episode = None
                 self.end_episode = None
-                self.type = MediaType.TV
+                self.type = ProviderMediaType.SERIES
         # 全x季 x季全
         season_all_str = re.search(subtitle_season_all_re, title_text, re.IGNORECASE)
         if season_all_str:
@@ -1137,4 +1144,4 @@ class MediaInfo(BaseModel):
                     return
                 self.begin_season = 1
                 self.end_season = self.total_seasons
-                self.type = MediaType.TV
+                self.type = ProviderMediaType.SERIES

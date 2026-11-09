@@ -115,7 +115,6 @@ class TestEpisodeTransferredEndToEnd:
     """真实仓储 + 真实处理器：转移完成必须推进订阅进度。"""
 
     def test_transfer_updates_lack_and_progress(self, repo_and_mgr, monkeypatch):
-        from app.db.repositories import subscribe_repo_adapter
         from app.events import Event
         from app.events.constants import MEDIA_EPISODE_TRANSFERRED
         from app.events.payloads import MediaEpisodeTransferredPayload
@@ -124,13 +123,7 @@ class TestEpisodeTransferredEndToEnd:
         repo, mgr = repo_and_mgr
         _seed(mgr, season="S02", total=12)
 
-        monkeypatch.setattr(subscribe_repo_adapter, "SubscribeRepository", lambda *a, **k: SubscribeRepository())
-        monkeypatch.setattr(
-            handlers, "SubscribeTvRepositoryAdapter", subscribe_repo_adapter.SubscribeTvRepositoryAdapter
-        )
-        monkeypatch.setattr(
-            handlers, "SubscribeTvEpisodeRepositoryAdapter", subscribe_repo_adapter.SubscribeTvEpisodeRepositoryAdapter
-        )
+        # repo_and_mgr ????????????????????????
 
         handlers.handle_media_episode_transferred(
             Event(

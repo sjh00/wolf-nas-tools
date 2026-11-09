@@ -93,11 +93,11 @@ class TestMediaInfoEpisodePayload:
 
     @staticmethod
     def _info(begin, end=None):
-        from app.domain.mediatypes import MediaType
+        from app.domain.media_types import ProviderMediaType
         from app.media.models import MediaInfo
 
         info = MediaInfo()
-        info.type = MediaType.TV
+        info.type = ProviderMediaType.SERIES
         info.title = "测试剧"
         info.tmdb_id = 12345
         info.begin_season = 1
@@ -114,11 +114,11 @@ class TestMediaInfoEpisodePayload:
         assert d["episode"] == list(range(1, 11))
 
     def test_movie_has_no_episode(self):
-        from app.domain.mediatypes import MediaType
+        from app.domain.media_types import ProviderMediaType
         from app.media.models import MediaInfo
 
         info = MediaInfo()
-        info.type = MediaType.MOVIE
+        info.type = ProviderMediaType.MOVIE
         info.title = "测试电影"
         info.tmdb_id = 999
         assert info.to_dict()["episode"] == []

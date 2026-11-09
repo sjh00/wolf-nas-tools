@@ -12,8 +12,9 @@ from app.core.exceptions import DomainError, RepositoryError, ServiceError
 from app.core.settings import settings
 from app.domain.enums import SearchType, channel_key
 from app.domain.interfaces.chat import ChatPort
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType, media_type_registry
 from app.media import meta_info
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.media.metadata.registry import registry as metadata_registry
 from app.media.service import MediaService
 from app.message import Message
@@ -34,6 +35,8 @@ from app.utils import StringUtils
 class MessageSearchService:
     """消息中心搜索服务"""
 
+    _metadata_gateway: MetadataGateway | None = None
+
     def __init__(
         self,
         downloader: DownloaderCore,
@@ -45,7 +48,7 @@ class MessageSearchService:
         media_service: MediaService,
         agent_service: ChatPort,
         message: Message,
-        metadata_service=None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._downloader = downloader
         self._searcher = searcher
@@ -56,7 +59,7 @@ class MessageSearchService:
         self._media_service = media_service
         self._chat_port = agent_service
         self._message = message
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
         self._pagination = SearchPaginationManager(message=message)
         self._pending_subscriptions: dict[str, dict] = {}
 
@@ -173,16 +176,18 @@ class MessageSearchService:
         title = item.TITLE or item.TORRENT_NAME or "未知标题"
         year = item.YEAR or ""
 
-        mtype = MediaType.from_string(item.TYPE)
+        mtype = ProviderMediaType.from_value(item.TYPE)
 
-        tmdb_info = None
-        if item.TMDBID:
-            tmdb_info = self._media_service.get_tmdb_info(mtype=mtype, tmdbid=item.TMDBID)
-        else:
-            tmdb_info = self._media_service.get_media_info(title=f"{title} {year or ''}".strip(), mtype=mtype)
-
+        if self._metadata_gateway is None:
+            self._message.send_channel_msg(channel=in_from, title="元数据网关不可用", user_id=user_id)
+            return
         media_info = meta_info(title=f"{title} {year}".strip(), mtype=mtype)
-        media_info.set_provider_data(tmdb_info)
+        if item.TMDBID:
+            media_info.set_provider_data(self._metadata_gateway.details("tmdb", item.TMDBID, media_type=mtype))
+        else:
+            resolved = self._metadata_gateway.resolve_by_title(f"{title} {year or ''}".strip(), media_type=mtype)
+            if resolved is not None:
+                media_info = resolved
 
         if not media_info or not media_info.provider_data:
             self._message.send_channel_msg(channel=in_from, title=f"无法识别媒体信息: {title}", user_id=user_id)
@@ -246,21 +251,28 @@ class MessageSearchService:
             return
         external_id = value
         title = name
-        media_type = MediaType.TV if profile == "anime" else MediaType.MOVIE
+        media_type = (
+            media_type_registry.resolve_profile(profile) or media_type_registry.resolve(None, profile)
+        ).content_type
         if not is_id and profile == "default":
-            if self._metadata_service is None:
+            if self._metadata_gateway is None:
                 self._message.send_channel_msg(channel=in_from, title="元数据服务未启用", user_id=user_id)
                 return
             content_profile = profile
+            context = MetadataContext(
+                permissions=frozenset(permissions or ()),
+                content_profile=content_profile,
+                purpose="message",
+                allow_private=False,
+            )
             try:
-                hits = self._metadata_service.search(
+                hits = self._metadata_gateway.search(
                     query=value,
+                    context=context,
                     provider=provider,
                     media_type=media_type,
                     content_profile=content_profile,
                     limit=5,
-                    allow_private=False,
-                    permissions=set(permissions or []),
                 )
             except Exception as exc:  # noqa: BLE001
                 self._message.send_channel_msg(channel=in_from, title=f"元数据搜索失败: {exc}", user_id=user_id)
@@ -427,7 +439,10 @@ class MessageSearchService:
             return
 
         filename = os.path.basename(filepath)
-        meta_info = self._media_service.get_media_info(title=filename)
+        if self._metadata_gateway is None:
+            self._message.send_channel_msg(channel=in_from, title="元数据网关不可用", user_id=user_id)
+            return
+        meta_info = self._metadata_gateway.resolve_by_title(filename)
         if not meta_info:
             self._message.send_channel_msg(channel=in_from, title="无法识别种子文件名！", user_id=user_id)
             return
@@ -517,8 +532,11 @@ class MessageSearchService:
             else:
                 if media_info.douban_id:
                     title = media_info.get_title_string()
-                    media_info = self._media_service.get_media_info(
-                        title=f"{media_info.title} {media_info.year}", mtype=media_info.type, strict=True
+                    if self._metadata_gateway is None:
+                        self._message.send_channel_msg(channel=in_from, title="元数据网关不可用", user_id=user_id)
+                        return
+                    media_info = self._metadata_gateway.resolve_by_title(
+                        f"{media_info.title} {media_info.year}", media_type=media_info.type, strict=True
                     )
                     if not media_info or not media_info.provider_data:
                         self._message.send_channel_msg(

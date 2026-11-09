@@ -8,13 +8,12 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from app.domain.mediatypes import MediaType
-from app.media.metadata.registry import registry as metadata_registry
+from app.domain.media_types import ProviderMediaType
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.schemas.auth import UserContext
 
 if TYPE_CHECKING:
     from app.services.media_info_service import MediaInfoService
-    from app.services.metadata_service import MetadataService
     from app.services.rss_automation.task_service import RssTaskService
     from app.services.subscribe.management.service import SubscribeService
 
@@ -35,31 +34,57 @@ def _normalized_title(title: str) -> str:
     return "".join(ch for ch in str(title or "").lower() if ch.isalnum())
 
 
-def _provider_label(provider: str) -> str:
-    descriptor = getattr(metadata_registry.get_provider(provider), "descriptor", None)
-    return str(getattr(descriptor, "display_name", "") or provider or "").strip()
+def _provider_label(provider: str, metadata_gateway: MetadataGateway | None = None) -> str:
+    if metadata_gateway is None:
+        return str(provider or "").strip()
+    return metadata_gateway.provider_display_name(provider).strip()
 
 
 class SubscribeCalendarService:
     """订阅日历服务 — 聚合电影/电视剧的日历事件."""
+
+    _metadata_gateway: MetadataGateway | None = None
 
     def __init__(
         self,
         media_info_service: MediaInfoService,
         subscribe: SubscribeService,
         rss_task_service: RssTaskService,
-        metadata_service: MetadataService | None = None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._media_info_service = media_info_service
         self._subscribe = subscribe
         self._rss_task_service = rss_task_service
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
         self._episode_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
         self._episode_cache_ttl = 600.0
         self._movie_cache: dict[str, tuple[float, dict | None]] = {}
         self._movie_cache_ttl = 600.0
         self._events_cache: dict[str, tuple[float, float, list[dict]]] = {}
         self._events_cache_ttl = 600.0
+
+    def _context(self, user: UserContext | None, *, content_profile: str, purpose: str) -> MetadataContext:
+        permissions = frozenset(getattr(user, "permissions", ()) or ())
+        allow_private = bool(user and user.has_permission("metadata:private:view"))
+        return MetadataContext(
+            user_id=getattr(user, "user_id", None),
+            permissions=permissions,
+            content_profile=content_profile or "default",
+            purpose=purpose,
+            allow_private=allow_private,
+        )
+
+    def _lookup(self, provider: str, external_id: str, user: UserContext | None, **kwargs):
+        if self._metadata_gateway is None:
+            return None
+        kwargs.pop("allow_private", None)
+        kwargs.pop("permissions", None)
+        kwargs["context"] = self._context(
+            user,
+            content_profile=str(kwargs.get("content_profile") or "default"),
+            purpose="subscribe.calendar",
+        )
+        return self._metadata_gateway.lookup(provider, external_id, **kwargs)
 
     def get_movie_items(self, user: UserContext | None = None) -> list[dict]:
         """获取电影订阅项目（含非 TMDB 的插件内容画像）."""
@@ -171,20 +196,18 @@ class SubscribeCalendarService:
         season: int,
         user: UserContext | None,
     ) -> list[dict]:
-        if self._metadata_service is None:
+        if self._metadata_gateway is None:
             return []
         key = (provider, external_id, season)
         cached = self._episode_cache.get(key)
         if cached and time.monotonic() - cached[0] < self._episode_cache_ttl:
             return cached[1]
-        allow_private = bool(user and user.has_permission("metadata:private:view"))
         try:
-            episodes = self._metadata_service.episodes(
+            episodes = self._metadata_gateway.episodes(
                 provider,
                 external_id,
                 season,
-                allow_private=allow_private,
-                permissions=set(user.permissions) if user else None,
+                context=self._context(user, content_profile="default", purpose="subscribe.calendar"),
             )
         except Exception:  # noqa: BLE001 - 单个来源失败不影响其余日历事件
             episodes = []
@@ -283,7 +306,7 @@ class SubscribeCalendarService:
         if provider_events:
             return provider_events
         fallback_events = self._tmdb_fallback_events(tv, user)
-        source_label = _provider_label(provider) or provider.upper()
+        source_label = _provider_label(provider, self._metadata_gateway) or provider.upper()
         for event in fallback_events:
             event["source_label"] = source_label
             event["date_source_label"] = "TMDB"
@@ -304,7 +327,7 @@ class SubscribeCalendarService:
                 title = f"{title} 第{number}集"
             if ep_title:
                 title = f"{title} {ep_title}"
-            source_label = _provider_label(provider) or provider.upper()
+            source_label = _provider_label(provider, self._metadata_gateway) or provider.upper()
             events.append(
                 {
                     "id": f"{provider}:{external_id}:{tv.get('season')}:{number}",
@@ -326,12 +349,13 @@ class SubscribeCalendarService:
 
     def _detail_provider_key(self, profile: str, user: UserContext | None = None) -> str:
         """按内容画像选择能提供详情的能力源（优先键名与画像一致）。"""
-        if self._metadata_service is None or not profile or profile == "default":
+        if self._metadata_gateway is None or not profile or profile == "default":
             return ""
         allow_private = bool(user and user.has_permission("metadata:private:view"))
         permissions = set(user.permissions) if user else None
         try:
-            providers = self._metadata_service.list_providers(
+            providers = self._metadata_gateway.list_providers(
+                context=self._context(user, content_profile=profile, purpose="subscribe.calendar"),
                 allow_private=allow_private,
                 permissions=permissions,
                 probe_health=False,
@@ -351,7 +375,7 @@ class SubscribeCalendarService:
         )
 
     def _plugin_movie_event(self, movie: dict, user: UserContext | None = None) -> dict | None:
-        if self._metadata_service is None:
+        if self._metadata_gateway is None:
             return None
         key = str(movie.get("external_id") or movie.get("metadata_ref") or "")
         if not key:
@@ -377,10 +401,11 @@ class SubscribeCalendarService:
         used_provider = provider
         if provider and external_id:
             try:
-                record = self._metadata_service.lookup(
+                record = self._lookup(
                     provider,
                     external_id,
-                    media_type=MediaType.MOVIE,
+                    user,
+                    media_type=ProviderMediaType.MOVIE,
                     scope="default",
                     allow_private=allow_private,
                     content_profile=profile,
@@ -394,10 +419,11 @@ class SubscribeCalendarService:
             detail_provider = self._detail_provider_key(profile, user)
             if detail_provider:
                 try:
-                    record = self._metadata_service.lookup(
+                    record = self._lookup(
                         detail_provider,
                         str(movie.get("external_id")),
-                        media_type=MediaType.MOVIE,
+                        user,
+                        media_type=ProviderMediaType.MOVIE,
                         scope="release",
                         allow_private=allow_private,
                         content_profile=profile,
@@ -414,11 +440,13 @@ class SubscribeCalendarService:
             poster_list = images.get("poster") or []
             if poster_list:
                 poster = str(poster_list[0].get("url") or "")
-            source_label = str(movie.get("source_label") or "").strip() or _provider_label(provider)
+            source_label = str(movie.get("source_label") or "").strip() or _provider_label(
+                provider, self._metadata_gateway
+            )
             date_source = (
                 "插件聚合"
                 if detail_provider and used_provider == detail_provider
-                else (_provider_label(used_provider) or used_provider)
+                else (_provider_label(used_provider, self._metadata_gateway) or used_provider)
             )
             event = {
                 "id": f"{provider or used_provider}:{external_id}",
@@ -440,16 +468,17 @@ class SubscribeCalendarService:
         return event
 
     def _tmdb_fallback_events(self, tv: dict, user: UserContext | None = None) -> list[dict]:
-        if self._metadata_service is None:
+        if self._metadata_gateway is None:
             return []
         name = str(tv.get("name") or "").strip()
         if not name:
             return []
         profile = str(tv.get("content_profile") or "default")
-        media_type = MediaType.ANIME if profile == "anime" else MediaType.TV
+        media_type = ProviderMediaType.ANIME if profile == "anime" else ProviderMediaType.SERIES
         try:
-            hits = self._metadata_service.search(
+            hits = self._metadata_gateway.search(
                 query=name,
+                context=self._context(user, content_profile=profile, purpose="subscribe.calendar"),
                 provider="tmdb",
                 media_type=media_type,
                 content_profile=profile,
@@ -481,7 +510,7 @@ class SubscribeCalendarService:
         for info in infos:
             if not info.get("id"):
                 continue
-            if media_type == MediaType.ANIME:
+            if media_type == ProviderMediaType.ANIME:
                 info["type"] = "anime"
             info["source_label"] = "TMDB"
             info["content_profile"] = str(tv.get("content_profile") or "default")
