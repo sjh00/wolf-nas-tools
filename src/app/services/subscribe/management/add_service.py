@@ -579,7 +579,10 @@ class SubscribeAddService:
                 if media_info is not None:
                     media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
                     # TMDB 号按类型分区：同一个数字在电影/剧集下是两部作品。
-                    # 先用标题校验解析结果是否就是要订阅的那部，不符时尝试另一类型。
+                    # 先用标题校验解析结果是否就是要订阅的那部，不符时尝试另一类型；
+                    # 两种类型都对不上会被清空，此时号与作品无关，锚点也必须一并丢弃，
+                    # 否则后续查详情还会解析回那部错误的作品。
+                    tmdb_rejected = False
                     if provider_ref[0] == "tmdb" and not fuzzy_match:
                         resolved = self._resolve_tmdb_identity(
                             media_info,
@@ -599,6 +602,7 @@ class SubscribeAddService:
                             # 类型被纠正：原类型下的 ID 指向的是另一部作品
                             mtype = resolved.type
                         media_info = resolved
+                        tmdb_rejected = not getattr(media_info, "tmdb_id", "")
                     mtype = self._resolve_subscribe_type(
                         provider=provider_ref[0],
                         requested=mtype,
@@ -618,6 +622,11 @@ class SubscribeAddService:
                         content_profile = "anime"
                         media_info.content_profile = "anime"
                     anchor_ref = _split_provider_ref(mediaid)
+                    if tmdb_rejected:
+                        # 号与作品不符：不写回该锚点，改为按名称识别
+                        anchor_ref = None
+                        source_ref = None
+                        source_provider = None
                     if anchor_ref:
                         media_info.anchor_provider = anchor_ref[0]
                         media_info.anchor_external_id = anchor_ref[1]
