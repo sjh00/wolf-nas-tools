@@ -88,7 +88,15 @@ class MediaIdentityRepository(BaseRepository):
             if year and identity.YEAR != year:
                 identity.YEAR = year
                 changed = True
-            if media_type and media_type != "unknown" and identity.MEDIA_TYPE != media_type:
+            # 身份一旦确立类型，就不能被另一类型改写：同号电影与剧集是两部作品，
+            # 类型来回翻转会让既有订阅/历史的展示信息互相污染。
+            # 只有原本为 unknown（未知）时才允许补填。
+            if (
+                media_type
+                and media_type != "unknown"
+                and str(identity.MEDIA_TYPE or "unknown") == "unknown"
+                and identity.MEDIA_TYPE != media_type
+            ):
                 identity.MEDIA_TYPE = media_type
                 changed = True
             if content_profile and identity.CONTENT_PROFILE != content_profile:
@@ -243,19 +251,45 @@ class MediaIdentityRepository(BaseRepository):
             if ref is None and scope != "default":
                 # 同一外部实体可能先以 season/profile scope 创建；仍归属同一作品
                 ref = self._find_ref(db, provider, external_id, "default", media_type)
+            if ref is None and not media_type:
+                # 调用方不知道类型时才允许跨类型兜底
+                ref = self._find_ref_any_scope(db, provider, external_id, None)
             if ref is None:
-                ref = (
-                    db.query(MediaExternalRef)
-                    .filter(
-                        MediaExternalRef.PROVIDER == provider,
-                        MediaExternalRef.EXTERNAL_ID == str(external_id),
-                    )
-                    .order_by(MediaExternalRef.IS_PRIMARY.desc(), MediaExternalRef.ID.asc())
-                    .first()
-                )
+                # 已知类型时只放宽 scope：同一作品可能先以季/profile scope 创建，
+                # 但绝不能跨类型命中 —— TMDB 等来源的数字 ID 按类型分区，
+                # 同一数字在电影与剧集下是两部作品，跨类型命中会让剧集引用
+                # 并进电影身份，标题随之被换成那部电影。
+                ref = self._find_ref_any_scope(db, provider, external_id, media_type)
             if ref is None:
                 return None
             return db.query(MediaIdentity).filter(MediaIdentity.IDENTITY_ID == ref.IDENTITY_ID).first()
+
+    def _find_ref_any_scope(
+        self,
+        db,
+        provider: str,
+        external_id: str,
+        media_type: str | None,
+    ) -> MediaExternalRef | None:
+        """忽略 scope 查找 ref；给定类型时只返回同类型（含 anime/tv 等价与未回填）的记录。"""
+        wanted = _normalize_ref_media_type(media_type)
+        rows = (
+            db.query(MediaExternalRef)
+            .filter(
+                MediaExternalRef.PROVIDER == provider,
+                MediaExternalRef.EXTERNAL_ID == str(external_id),
+            )
+            .order_by(MediaExternalRef.IS_PRIMARY.desc(), MediaExternalRef.ID.asc())
+            .all()
+        )
+        if not wanted:
+            return rows[0] if rows else None
+        for row in rows:
+            row_type = _normalize_ref_media_type(getattr(row, "MEDIA_TYPE", None))
+            # 未回填类型的历史记录按兼容处理，其余必须与请求类型一致
+            if row_type == wanted or not row_type:
+                return row
+        return None
 
     # ---------- refs ----------
 

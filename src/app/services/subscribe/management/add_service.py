@@ -323,6 +323,25 @@ class SubscribeAddService:
         media_info.tmdb_id = ""
         return media_info
 
+    def _series_title_conflicts(self, resolution: Any, media_info: Any) -> bool:
+        """剧集记录标题是否与本次识别结果矛盾到不能采用。
+
+        判定条件：标题不同 **且** 年份也不同。
+        标题不同但年份相同多为同一作品的中英文名差异；年份不同但标题相同
+        可能是重拍，都还可用剧集记录作为母标题。
+        """
+        series_title = str(getattr(resolution, "title", "") or "").strip()
+        media_title = str(getattr(media_info, "title", "") or "").strip()
+        if not series_title or not media_title:
+            return False
+        if self._titles_look_same(series_title, media_title):
+            return False
+        series_year = str(getattr(resolution, "year", "") or "").strip()
+        media_year = str(getattr(media_info, "year", "") or "").strip()
+        if not series_year or not media_year:
+            return False
+        return series_year != media_year
+
     def _provider_media_info(
         self,
         provider: str,
@@ -772,11 +791,20 @@ class SubscribeAddService:
                             season = resolution.season_number
                             setattr(media_info, "series_key", resolution.series_key)
                             if resolution.title:
-                                # 统一剧集模型：标题用母标题，季由 SEASON 字段表达
-                                media_info.title = resolution.title
+                                # 统一剧集模型：标题用母标题，季由 SEASON 字段表达。
+                                # 但剧集记录可能被历史数据污染（同号错配写入的标题），
+                                # 与本次已解析出的作品明显不符时以本次识别为准，避免
+                                # 订阅被改名成另一部作品。
+                                if self._series_title_conflicts(resolution, media_info):
+                                    log.warn(
+                                        f"[Subscribe]剧集记录标题《{resolution.title}》与"
+                                        f"识别结果《{media_info.title}》不符，保留识别结果"
+                                    )
+                                else:
+                                    media_info.title = resolution.title
                                 base_keyword, _ = SeriesService.split_title_season(str(keyword or ""))
-                                keyword = base_keyword or resolution.title
-                                name = resolution.title
+                                keyword = base_keyword or str(media_info.title or "")
+                                name = str(media_info.title or "")
                 if total_ep:
                     total = total_ep
                 else:

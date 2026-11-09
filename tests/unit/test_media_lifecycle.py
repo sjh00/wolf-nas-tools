@@ -770,6 +770,34 @@ def test_find_by_ref_falls_back_to_other_scope():
     assert found.IDENTITY_ID == identity.IDENTITY_ID
 
 
+def test_find_by_ref_never_crosses_media_type():
+    """已知类型时不得命中另一类型的同号引用。
+
+    TMDB 数字 ID 按类型分区：同一数字在电影与剧集下是两部不同作品。
+    跨类型命中会把剧集引用并进电影身份，订阅标题随之被换成那部电影。
+    """
+    from app.db.repositories.media_identity_repository import MediaIdentityRepository
+
+    repo = MediaIdentityRepository()
+    movie_identity = repo.ensure_identity(media_type="movie", title="Some Movie", year="1939")
+    repo.upsert_ref(
+        movie_identity.IDENTITY_ID,
+        provider="tmdb",
+        external_id="999002",
+        media_type="movie",
+        scope="default",
+    )
+
+    # 同号的剧集查询不应返回电影身份
+    assert repo.find_by_ref("tmdb", "999002", media_type="tv") is None
+    # 同号的电影查询仍能命中
+    found = repo.find_by_ref("tmdb", "999002", media_type="movie")
+    assert found is not None
+    assert found.IDENTITY_ID == movie_identity.IDENTITY_ID
+    # 类型未知时保留历史宽松行为
+    assert repo.find_by_ref("tmdb", "999002") is not None
+
+
 def test_active_subscription_without_lifecycle_rows_is_visible():
     from app.db.repositories.base_repository import BaseRepository
 

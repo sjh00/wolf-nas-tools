@@ -1,11 +1,25 @@
 """规范剧集解析：来源条目 -> 内部 series_key + 规范季号，不依赖 TMDB."""
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import log
 from app.db.repositories.media_series_repository import MediaSeriesRepository
 from app.utils.string_utils import StringUtils
+
+
+def _titles_look_same(a: Any, b: Any) -> bool:
+    """两个标题是否指向同一作品（忽略大小写、空格与标点）。"""
+
+    def norm(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return re.sub(r"[\W_]+", "", text) if text else ""
+
+    left, right = norm(a), norm(b)
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
 
 
 @dataclass
@@ -61,12 +75,21 @@ class SeriesService:
             alias = self._repo.get_alias(provider, external_id, scope)
         if alias is not None:
             series = self._repo.get_series(alias.SERIES_KEY)
-            return SeriesResolution(
-                series_key=alias.SERIES_KEY,
-                season_number=int(alias.SEASON_NUMBER or 1),
-                title=series.TITLE if series else title,
-                year=series.YEAR if series else year,
-            )
+            if series is not None and self._alias_conflicts(series, base, year):
+                # 别名指向的剧集与当前作品明显不符（历史污染：同号错配留下的记录）。
+                # 继续沿用会把正确作品的标题覆盖成另一部作品，因此放弃该别名，
+                # 改按标题重新匹配，并在下方重建别名指向正确剧集。
+                log.warn(
+                    f"[Series]别名 {provider}:{external_id} 指向与「{base}」不符的"
+                    f"《{series.TITLE}》({series.YEAR})，忽略该别名并重新匹配"
+                )
+            else:
+                return SeriesResolution(
+                    series_key=alias.SERIES_KEY,
+                    season_number=int(alias.SEASON_NUMBER or 1),
+                    title=series.TITLE if series else title,
+                    year=series.YEAR if series else year,
+                )
         candidates = self._repo.find_series_by_title(base)
         series = None
         if candidates:
@@ -113,6 +136,27 @@ class SeriesService:
             year=series.YEAR,
             created=created,
         )
+
+    @staticmethod
+    def _alias_conflicts(series: Any, title: str, year: Any) -> bool:
+        """别名指向的剧集是否与当前作品矛盾。
+
+        只在「标题不同 **且** 年份也不同」时判定为矛盾：
+        - 标题不同但年份相同：多为同一作品的中英文名差异，属于正常情况
+        - 年份不同但标题相同：可能是重拍/续作，标题目录仍可复用
+        两者同时不符才说明这条别名确实指向另一部作品。
+        """
+        series_title = getattr(series, "TITLE", None)
+        series_year = getattr(series, "YEAR", None)
+        if not title or not series_title:
+            return False
+        if _titles_look_same(title, series_title):
+            return False
+        text_year = str(year or "").strip()
+        text_series_year = str(series_year or "").strip()
+        if not text_year or not text_series_year:
+            return False
+        return text_year != text_series_year
 
     def get_episode_offset(self, series_key: str | None, season_number: int | None) -> int:
         """读取规范季的集号偏移；连续编号资源与订阅相对集号匹配时使用."""
