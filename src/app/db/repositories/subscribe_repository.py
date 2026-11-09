@@ -1745,6 +1745,15 @@ class SubscribeRepository(BaseRepository):
         with self.session() as db:
             return db.query(SubscribeTorrents).filter(SubscribeTorrents.TORRENT_NAME == torrent_name).first()
 
+    @staticmethod
+    def _not_null_text(value) -> str:
+        """NOT NULL 文本列的兜底：None 会违反约束，统一落成空串。
+
+        SUBSCRIBE_TORRENTS 的 TYPE/TITLE/YEAR/SEASON/EPISODE 都是 NOT NULL 且无默认值，
+        而「简式记录」只关心去重用的名称/链接，识别失败的条目这些字段本就为空。
+        """
+        return "" if value is None else str(value)
+
     def insert_rss_torrent(
         self,
         torrent_name: str,
@@ -1772,11 +1781,11 @@ class SubscribeRepository(BaseRepository):
                 SubscribeTorrents(
                     TORRENT_NAME=torrent_name,
                     ENCLOSURE=enclosure,
-                    TYPE=type_,
-                    TITLE=title,
-                    YEAR=year,
-                    SEASON=season,
-                    EPISODE=episode,
+                    TYPE=self._not_null_text(type_),
+                    TITLE=self._not_null_text(title),
+                    YEAR=self._not_null_text(year),
+                    SEASON=self._not_null_text(season),
+                    EPISODE=self._not_null_text(episode),
                     IDENTITY_ID=identity_id,
                     ANCHOR_PROVIDER=anchor_provider,
                     ANCHOR_EXTERNAL_ID=anchor_external_id,
@@ -1785,7 +1794,11 @@ class SubscribeRepository(BaseRepository):
             )
 
     def simple_insert_rss_torrent(self, title: str, enclosure: str) -> None:
-        """简式插入 RSS 种子记录"""
+        """简式插入 RSS 种子记录。
+
+        只用于「已处理过」标记（豆瓣榜单、RSS 文章同步等），去重靠名称/链接；
+        其余 NOT NULL 列必须显式给空串，否则插入会触发 NOT NULL 约束失败。
+        """
         if enclosure and enclosure.startswith("magnet:"):
             enclosure = enclosure.split("&")[0]
         elif enclosure:
@@ -1796,7 +1809,12 @@ class SubscribeRepository(BaseRepository):
             db.add(
                 SubscribeTorrents(
                     TORRENT_NAME=title,
-                    ENCLOSURE=enclosure,
+                    ENCLOSURE="" if enclosure is None else str(enclosure),
+                    TYPE="",
+                    TITLE="",
+                    YEAR="",
+                    SEASON="",
+                    EPISODE="",
                 )
             )
 

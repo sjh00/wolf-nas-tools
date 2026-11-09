@@ -202,10 +202,12 @@ class RssHelper:
         enclosure = self.canonicalize_enclosure(media_info.enclosure)
         if enclosure and len(enclosure) > 8192:
             enclosure = enclosure[:8192]
+        # 识别失败的条目 type/title 可能为空，直接取 .value 会抛 AttributeError
+        media_type = getattr(media_info, "type", None)
         self._repo.insert(
             torrent_name=media_info.org_string,
             enclosure=enclosure,
-            type_=media_info.type.value,
+            type_=getattr(media_type, "value", "") or "",
             title=media_info.title,
             year=media_info.year,
             season=media_info.get_season_string(),
