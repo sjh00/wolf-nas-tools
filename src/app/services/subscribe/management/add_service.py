@@ -207,6 +207,35 @@ class SubscribeAddService:
             naming_profile=naming_profile,
         ).as_kwargs()
 
+    @staticmethod
+    def _resolve_subscribe_type(
+        *,
+        provider: str,
+        requested: Any,
+        detail_type: Any,
+        external_id: str = "",
+    ) -> Any:
+        """决定订阅落地类型。
+
+        显式指定了 TMDB 号与具体类型时以调用方为准：库里同名作品很多，
+        详情源返回另一种类型往往意味着错配（例如把电视剧匹配成同名电影），
+        此时跟随详情类型会把订阅建成完全不同的作品。
+        其余来源（豆瓣/Bangumi/插件）仍以详情类型为准。
+        """
+        concrete = (MediaType.MOVIE, MediaType.TV, MediaType.ANIME)
+        if (
+            str(provider or "").strip().lower() == "tmdb"
+            and requested in concrete
+            and detail_type in concrete
+            and detail_type != requested
+        ):
+            log.warn(
+                f"[SubscribeAdd]TMDB {external_id} 详情类型为 {detail_type.value}，"
+                f"按调用方指定保留 {requested.value}"
+            )
+            return requested
+        return detail_type if detail_type is not None else requested
+
     def _provider_media_info(
         self,
         provider: str,
@@ -462,7 +491,13 @@ class SubscribeAddService:
                     )
                 if media_info is not None:
                     media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
-                    mtype = media_info.type
+                    mtype = self._resolve_subscribe_type(
+                        provider=provider_ref[0],
+                        requested=mtype,
+                        detail_type=media_info.type,
+                        external_id=provider_ref[1],
+                    )
+                    media_info.type = mtype
                     # 插件详情源熔断/超时时，用内容画像聚合源补海报，避免订阅卡片空白。
                     if not media_info.poster_path and content_profile:
                         profile_ref = _split_provider_ref(mediaid)
