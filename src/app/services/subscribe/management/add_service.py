@@ -1,5 +1,6 @@
 """Subscribe add service - 添加订阅."""
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any, cast
@@ -235,6 +236,89 @@ class SubscribeAddService:
             )
             return requested
         return detail_type if detail_type is not None else requested
+
+    @staticmethod
+    def _titles_look_same(a: Any, b: Any) -> bool:
+        """两个标题是否指向同一作品（忽略大小写、空格与标点）。
+
+        用于校验「TMDB 号 + 类型」解析出的作品是否与用户要的一致：
+        TMDB 号按类型分区，同一个数字在电影与剧集下可能是完全不同的作品。
+        """
+        def norm(value: Any) -> str:
+            text = str(value or "").strip().lower()
+            if not text:
+                return ""
+            return re.sub(r"[\W_]+", "", text)
+
+        left, right = norm(a), norm(b)
+        if not left or not right:
+            return False
+        return left == right or left in right or right in left
+
+    def _resolve_tmdb_identity(
+        self,
+        media_info: Any,
+        *,
+        name: str | None,
+        year: Any,
+        requested: MediaType,
+        content_profile: str | None,
+        allow_private: bool,
+        permissions: set[str] | None,
+        external_id: str,
+    ) -> Any:
+        """校验 TMDB 号在给定类型下解析出的作品是否就是要订阅的那部。
+
+        TMDB 的数字 ID 按类型分区：剧集 279155 与电影 279155 是两部毫无关系的作品。
+        调用方若带着「剧集 ID + 电影类型」来创建订阅，会静默订阅成另一部电影。
+        这里用标题比对发现这种情况，并尝试另一类型，匹配上就纠正。
+        """
+        if not name or not external_id:
+            return media_info
+        candidates = [
+            media_info.title,
+            getattr(media_info, "cn_name", None),
+            getattr(media_info, "original_title", None),
+        ]
+        if any(self._titles_look_same(name, item) for item in candidates):
+            return media_info
+        concrete = (MediaType.MOVIE, MediaType.TV)
+        if requested not in concrete:
+            return media_info
+        alternate = MediaType.MOVIE if requested == MediaType.TV else MediaType.TV
+        try:
+            alt_info = self._provider_media_info(
+                "tmdb",
+                external_id,
+                name=name,
+                year=year,
+                content_profile=content_profile,
+                allow_private=allow_private,
+                permissions=permissions,
+                media_type=alternate,
+            )
+        except Exception as exc:  # noqa: BLE001 - 校验失败保留原结果
+            log.debug(f"[SubscribeAdd]TMDB {external_id} 换类型校验失败: {exc}")
+            return media_info
+        if alt_info is None:
+            return media_info
+        alt_candidates = [
+            alt_info.title,
+            getattr(alt_info, "cn_name", None),
+            getattr(alt_info, "original_title", None),
+        ]
+        if any(self._titles_look_same(name, item) for item in alt_candidates):
+            log.warn(
+                f"[SubscribeAdd]TMDB {external_id} 在 {requested.value} 下是《{media_info.title}》，"
+                f"与要订阅的「{name}」不符；按 {alternate.value} 解析为《{alt_info.title}》"
+            )
+            alt_info.tmdb_id = external_id
+            return alt_info
+        log.warn(
+            f"[SubscribeAdd]TMDB {external_id} 解析为《{media_info.title}》，"
+            f"与要订阅的「{name}」标题不一致，仍按调用方信息创建"
+        )
+        return media_info
 
     def _provider_media_info(
         self,
@@ -491,6 +575,27 @@ class SubscribeAddService:
                     )
                 if media_info is not None:
                     media_info.tmdb_id = provider_ref[1] if provider_ref[0] == "tmdb" else ""
+                    # TMDB 号按类型分区：同一个数字在电影/剧集下是两部作品。
+                    # 先用标题校验解析结果是否就是要订阅的那部，不符时尝试另一类型。
+                    if provider_ref[0] == "tmdb" and not fuzzy_match:
+                        resolved = self._resolve_tmdb_identity(
+                            media_info,
+                            name=name,
+                            year=year,
+                            requested=mtype,
+                            content_profile=content_profile,
+                            allow_private=allow_private,
+                            permissions=permissions,
+                            external_id=provider_ref[1],
+                        )
+                        if resolved is not media_info and resolved.type in (
+                            MediaType.MOVIE,
+                            MediaType.TV,
+                            MediaType.ANIME,
+                        ):
+                            # 类型被纠正：原类型下的 ID 指向的是另一部作品
+                            mtype = resolved.type
+                        media_info = resolved
                     mtype = self._resolve_subscribe_type(
                         provider=provider_ref[0],
                         requested=mtype,
