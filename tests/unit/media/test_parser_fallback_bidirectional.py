@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.parser.base import BaseParser, ParserResult
 from app.media.service import MediaService
 
@@ -34,7 +34,6 @@ class _FakeParser(BaseParser):
     def parse_batch(self, titles: list[str]) -> list[ParserResult | None]:
         return [self.parse(t) for t in titles]
 
-
 def _service(llm_parser: BaseParser, regex_parser: BaseParser) -> MediaService:
     svc = MediaService.__new__(MediaService)
     svc._llm_parser = llm_parser
@@ -50,9 +49,7 @@ def _service(llm_parser: BaseParser, regex_parser: BaseParser) -> MediaService:
     svc._rmt_match_mode = MagicMock()
     return svc
 
-
-_OK_RULE = ParserResult(title_cn="测试影片", year="2024", type=MediaType.MOVIE)
-
+_OK_RULE = ParserResult(title_cn="测试影片", year="2024", type=ProviderMediaType.MOVIE)
 
 class TestFallbackParserSelection:
     def test_llm_primary_falls_back_to_regex(self):
@@ -87,7 +84,6 @@ class TestFallbackParserSelection:
         svc = _service(llm, regex)
 
         assert svc._parser_or_fallback() is regex
-
 
 class TestIdentifyFilesFallback:
     """下载器/同步源入库主干：LLM 失败必须由规则解析接手。"""
@@ -132,7 +128,6 @@ class TestIdentifyFilesFallback:
         assert parsed.season == 2
         assert parsed.episode == 5
 
-
 class TestServiceWiring:
     @staticmethod
     def _fake_settings(monkeypatch):
@@ -159,7 +154,6 @@ class TestServiceWiring:
         svc._regex_parser = regex
 
         assert svc._build_parser() is regex
-
 
 class TestRecognizerCooldown:
     """连续调用异常后熔断，避免一批文件逐条撞同一个 429。"""
@@ -221,7 +215,6 @@ class TestRecognizerCooldown:
         svc.structured_chat.return_value = MediaResult(title_en="Movie", title_cn=None)
         assert rec.recognize("ok.mkv") is not None
         assert rec.in_cooldown is False
-
 
 @pytest.mark.parametrize(
     "name",

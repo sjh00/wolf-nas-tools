@@ -13,10 +13,10 @@ from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryA
 from app.db.repositories.subscribe_repository import SubscribeRepository
 from app.domain.enums import SearchType
 from app.domain.lifecycle import LifecycleStage, LifecycleStatus
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType, media_type_registry
 from app.infrastructure.temp import temp_manager
-from app.media import MediaService
 from app.media.display_image_policy import transform_display_image, unwrap_display_image_url
+from app.media.metadata.gateway import MetadataGateway
 from app.media.models import MediaInfo
 from app.media.poster_resolver import preferred_profile_poster
 from app.schemas.download import (
@@ -43,11 +43,12 @@ class DownloadService:
     - 索引器统计数据格式化
     """
 
+    _metadata_gateway: MetadataGateway | None = None
+
     def __init__(
         self,
         downloader: Downloader,
         searcher: Searcher,
-        media_service: MediaService,
         sites: SiteCache,
         site_engine: SiteEngine,
         indexer_service: IndexerService,
@@ -56,10 +57,10 @@ class DownloadService:
         file_index_service: Any | None = None,
         subscribe_repo: SubscribeRepository | None = None,
         lifecycle: LifecycleProjector | None = None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._downloader = downloader
         self._searcher = searcher
-        self._media = media_service
         self._sites = sites
         self._site_engine = site_engine
         self._indexer_service = indexer_service
@@ -68,7 +69,13 @@ class DownloadService:
         self._file_index = file_index_service
         self._subscribe_repo = subscribe_repo or SubscribeRepository()
         self._lifecycle = lifecycle
+        self._metadata_gateway = metadata_gateway
         self._progress_reported: dict[str, int] = {}
+
+    def _gw(self) -> MetadataGateway:
+        if self._metadata_gateway is None:
+            raise ServiceError("元数据网关不可用")
+        return self._metadata_gateway
 
     # ---------- 下载编排 ----------
 
@@ -94,7 +101,7 @@ class DownloadService:
 
     def _multi_version_scope(self, media: MediaInfo) -> set[tuple[int, int]] | None:
         """本次下载要判定的季集范围；None 表示按整部作品判定（电影或无集数信息）。"""
-        if getattr(media, "type", None) not in (MediaType.TV, MediaType.ANIME):
+        if getattr(media, "type", None) not in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
             return None
         episodes = media.get_episode_list() if hasattr(media, "get_episode_list") else []
         if not episodes:
@@ -133,7 +140,7 @@ class DownloadService:
                 if key is not None and key in scope:
                     scoped.append(version)
             existing = scoped
-        elif getattr(media, "type", None) in (MediaType.TV, MediaType.ANIME):
+        elif getattr(media, "type", None) in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
             # 剧集但拿不到季集信息：无法判断是否为同一集，宁可不拦，
             # 否则每添加一集新剧都会被要求处理"历史集版本"。
             return None
@@ -156,7 +163,7 @@ class DownloadService:
         if not title:
             return None
         try:
-            media = self._media.get_media_info(title=title, subtitle=description)
+            media = self._gw().resolve_by_title(title, subtitle=description)
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Download]预检识别失败 {title}: {e}")
             return None
@@ -176,7 +183,7 @@ class DownloadService:
         for res in results:
             title = getattr(res, "TITLE", "") or getattr(res, "TORRENT_NAME", "")
             subtitle = getattr(res, "DESCRIPTION", "")
-            media = self._media.get_media_info(title=title, subtitle=subtitle)
+            media = self._gw().resolve_by_title(title, subtitle=subtitle)
             if not media:
                 media = MediaInfo()
                 media.tmdb_id = getattr(res, "TMDBID", 0) or 0
@@ -205,8 +212,8 @@ class DownloadService:
         fail_messages = []
         for res in results:
             enclosure = self._resolve_download_url(res.PAGEURL, res.ENCLOSURE)
-            media = self._media.get_media_info(
-                title=res.TITLE or res.TORRENT_NAME,
+            media = self._gw().resolve_by_title(
+                res.TITLE or res.TORRENT_NAME,
                 subtitle=res.DESCRIPTION,
             )
             if not media:
@@ -239,6 +246,7 @@ class DownloadService:
                 media.anchor_provider,
                 media.anchor_external_id,
                 media.type,
+                self._metadata_gateway,
             )
             # 保存站点原始种子名，用于下载历史记录和后续识别
             media.org_string = res.TORRENT_NAME
@@ -303,7 +311,7 @@ class DownloadService:
         if not title or not enclosure:
             return DownloadResultDTO(success=False, message="种子信息有误")
 
-        media = self._media.get_media_info(title=title, subtitle=description)
+        media = self._gw().resolve_by_title(title, subtitle=description)
         if not media:
             # 识别完全失败时，用原始资源名创建最小 MediaInfo
             media = MediaInfo()
@@ -382,15 +390,15 @@ class DownloadService:
                     log.warn(f"[Download]种子文件不存在: {file_path}")
                     continue
                 uploaded_files.append(file_path)
-                # 识别源优先级：调用方标题（仅单条）→ 种子内部发布名 → 原始文件名。
-                # 上传后的临时名（upload_xxxx.torrent）绝不能作为识别源，
-                # 否则下载记录与入库命名都会变成临时名。
+                # ?????????????????? ??????? ? ??????
+                # ????????upload_xxxx.torrent??????????
+                # ???????????????????
                 identify_title = (
                     batch_title
                     or self._torrent_inner_name(file_path)
                     or self._torrent_title_fallback(file_name)
                 )
-                media_info = self._media.get_media_info(title=identify_title)
+                media_info = self._gw().resolve_by_title(identify_title)
                 if not media_info:
                     media_info = MediaInfo()
                     media_info.title = identify_title
@@ -445,7 +453,7 @@ class DownloadService:
                     if not file_path:
                         return DownloadResultDTO(success=False, message=f"下载种子文件失败： {retmsg}")
                     identify_title = batch_title or os.path.basename(file_path)
-                    media_info = self._media.get_media_info(title=identify_title, subtitle=description)
+                    media_info = self._gw().resolve_by_title(identify_title, subtitle=description)
                     if not media_info:
                         media_info = MediaInfo()
                         media_info.title = identify_title
@@ -455,7 +463,7 @@ class DownloadService:
                 else:
                     # magnet 链接：用前端传入的 title/description 识别
                     identify_title = batch_title or url
-                    media_info = self._media.get_media_info(title=identify_title, subtitle=description)
+                    media_info = self._gw().resolve_by_title(identify_title, subtitle=description)
                     if not media_info:
                         media_info = MediaInfo()
                         media_info.title = identify_title
@@ -769,7 +777,10 @@ class DownloadService:
         media.title = str(getattr(task, "title", "") or getattr(task, "torrent", "") or "")
         media.year = str(getattr(task, "year", "") or "")
         media.tmdb_id = str(getattr(task, "tmdb_id", "") or "")
-        media.type = MediaType.TV if str(getattr(task, "media_type", "") or "").lower() == "tv" else MediaType.MOVIE
+        media_ref = self._task_media_ref(task)
+        media.media_type_key = media_ref.key
+        media.media_kind = media_ref.kind.value
+        media.type = self._task_media_type(task)
         media.anchor_provider = getattr(task, "anchor_provider", None)
         media.anchor_external_id = getattr(task, "anchor_external_id", None)
         media.identity_id = getattr(task, "identity_id", None)
@@ -785,6 +796,23 @@ class DownloadService:
             )
         except Exception as exc:  # noqa: BLE001 - 进度投影失败不影响下载状态
             log.debug(f"[DownloadService]下载进度投影失败 {key}: {exc}")
+
+    @staticmethod
+    def _task_media_ref(task):
+        value = str(getattr(task, "media_type", "") or "").strip()
+        profile = str(getattr(task, "content_profile", "") or "").strip()
+        return media_type_registry.resolve_profile(profile) or media_type_registry.resolve(value, profile)
+
+    @classmethod
+    def _task_media_type(cls, task) -> ProviderMediaType:
+        resolved = cls._task_media_ref(task)
+        if resolved.key == ProviderMediaType.ANIME.value:
+            return ProviderMediaType.ANIME
+        if resolved.kind == MediaKind.MOVIE:
+            return ProviderMediaType.MOVIE
+        if resolved.kind == MediaKind.EPISODIC:
+            return ProviderMediaType.SERIES
+        return ProviderMediaType.UNKNOWN
 
     def _build_display_info(self, task) -> tuple[str, str]:
         """根据下载历史任务构建显示标题和海报"""

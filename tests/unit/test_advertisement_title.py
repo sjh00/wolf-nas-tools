@@ -5,7 +5,7 @@
 广告域名常用 Unicode 数学数字（𝟲/𝟵）与全角冒号伪装，规避常规裸域名规则。
 """
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.domain.validators.media_title import (
     clean_advertisement_title,
     is_advertisement_title,
@@ -39,7 +39,6 @@ _CLEAN = [
     "色情男女",
 ]
 
-
 class TestIsAdvertisementTitle:
     def test_detects_polluted_titles(self):
         for name in _POLLUTED:
@@ -66,7 +65,6 @@ class TestIsAdvertisementTitle:
         for name in ("色情男女", "淫片", "黄漫"):
             assert is_advertisement_title(name) is False, name
 
-
 class TestCleanAdvertisementTitle:
     def test_strips_ad_keeps_real_title(self):
         assert clean_advertisement_title(_POLLUTED[0]) == "镖人：风起大漠"
@@ -86,7 +84,6 @@ class TestCleanAdvertisementTitle:
         for name in _CLEAN:
             assert clean_advertisement_title(name) == name, name
 
-
 class TestSanitizeTitle:
     def test_falls_back_when_fully_ad(self):
         assert sanitize_title(_PURE_AD, "Moon Man") == "Moon Man"
@@ -97,18 +94,16 @@ class TestSanitizeTitle:
     def test_none_uses_fallback(self):
         assert sanitize_title(None, "Moon Man") == "Moon Man"
 
-
 class TestValidMediaTitleUnaffected:
     def test_clean_titles_still_valid(self):
         for name in _CLEAN:
             assert is_valid_media_title(name) is True, name
 
-
 class TestTmdbCnTitleRejectsAd:
     def test_polluted_translation_skipped(self):
         """被灌入广告的 zh-CN 译名不得被采纳"""
         info = {
-            "media_type": MediaType.MOVIE,
+            "media_type": ProviderMediaType.MOVIE,
             "title": "Moon Man",
             "original_title": "Moon Man",
             "alternative_titles": {"titles": []},
@@ -123,7 +118,7 @@ class TestTmdbCnTitleRejectsAd:
     def test_polluted_translation_falls_back_to_clean_one(self):
         """多个中文译名时，跳过广告条目取正常的"""
         info = {
-            "media_type": MediaType.MOVIE,
+            "media_type": ProviderMediaType.MOVIE,
             "title": "Moon Man",
             "alternative_titles": {"titles": []},
             "translations": {
@@ -137,7 +132,7 @@ class TestTmdbCnTitleRejectsAd:
 
     def test_polluted_alternative_title_skipped(self):
         info = {
-            "media_type": MediaType.MOVIE,
+            "media_type": ProviderMediaType.MOVIE,
             "title": "Moon Man",
             "alternative_titles": {"titles": [{"title": _PURE_AD, "iso_3166_1": "CN"}]},
             "translations": {"translations": []},
@@ -147,7 +142,7 @@ class TestTmdbCnTitleRejectsAd:
     def test_update_sanitizes_already_chinese_polluted_title(self):
         """title 本身已是（被污染的）中文时，补全分支原本不会进入，仍需兜底清洗"""
         info = {
-            "media_type": MediaType.MOVIE,
+            "media_type": ProviderMediaType.MOVIE,
             "title": _PURE_AD,
             "original_title": "Moon Man",
             "alternative_titles": {"titles": []},
@@ -159,14 +154,13 @@ class TestTmdbCnTitleRejectsAd:
 
     def test_update_keeps_clean_title(self):
         info = {
-            "media_type": MediaType.MOVIE,
+            "media_type": ProviderMediaType.MOVIE,
             "title": "独行月球",
             "original_title": "Moon Man",
             "alternative_titles": {"titles": []},
             "translations": {"translations": []},
         }
         assert update_tmdbinfo_cn_title(info, "zh")["title"] == "独行月球"
-
 
 class TestMetaInfoStripsAd:
     """存量库里已被污染的目录名再次刮削时，也要能还原出正确片名"""

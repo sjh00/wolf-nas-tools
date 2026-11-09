@@ -20,8 +20,8 @@ from app.core.settings import settings
 from app.db.repositories.media_identity_repository import MediaIdentityRepository
 from app.db.repositories.person_identity_repository import PersonIdentityRepository
 from app.domain.media_ref import MediaSubject
-from app.domain.mediatypes import MediaType
-from app.infrastructure.cache_system import get_cache_manager
+from app.domain.media_types import ProviderMediaType
+from app.infrastructure.cache_system.metadata_cache import MetadataCache
 from app.media.display_image_policy import transform_display_image
 from app.media.metadata import (
     ANCHOR_POLICY,
@@ -35,6 +35,7 @@ from app.media.metadata import (
     SearchQuery,
     resolve_policy,
 )
+from app.media.metadata.aliases import select_aliases
 from app.media.metadata.errors import ProviderError
 from app.media.metadata.legacy import parse_legacy_ref
 from app.media.metadata.metrics import record_degraded, record_event, record_snapshot
@@ -86,6 +87,10 @@ class IdentityRepositoryProtocol(Protocol):
     ) -> Any: ...
 
     def get_identity(self, identity_id: str) -> Any: ...
+
+    def update_aliases(self, identity_id: str, aliases: list[str] | set[str]) -> bool: ...
+
+    def replace_aliases(self, identity_id: str, aliases: list[str] | set[str]) -> bool: ...
 
     def list_refs(self, identity_id: str) -> list[Any]: ...
 
@@ -174,6 +179,9 @@ class MetadataPreviewResult:
         return bool(self.errors)
 
 
+DETAIL_CACHE_VERSION = 3
+
+
 class MetadataService:
     """元数据预览与快照保存."""
 
@@ -199,9 +207,9 @@ class MetadataService:
         # 同一条目详情并发去重：详情页反复刷新时只允许一个浏览器抓取。
         self._inflight_lock = threading.Lock()
         self._inflight: dict[str, Future[Any]] = {}
-        self._detail_cache = get_cache_manager().get_or_create(
-            "metadata_detail", cache_type="tiered", maxsize=500, ttl=600
-        )
+        self._detail_cache = MetadataCache(prefix="detail")
+        self._search_cache = MetadataCache(prefix="search")
+        self._episodes_cache = MetadataCache(prefix="episodes")
         self._detail_version_lock = threading.Lock()
         self._anchor_cache: dict[tuple, tuple[float, str, str]] = {}
         self._anchor_locks: dict[tuple, threading.Lock] = {}
@@ -219,7 +227,7 @@ class MetadataService:
         policy: str | None = None,
         anchor_provider: str | None = None,
         content_profile: str = "default",
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         allow_private: bool = False,
         permissions: set[str] | None = None,
     ) -> MetadataPreviewResult:
@@ -249,7 +257,7 @@ class MetadataService:
         self,
         media_info: Any,
         *,
-        media_type: MediaType,
+        media_type: ProviderMediaType,
         mediaid: str | None = None,
         content_profile: str | None = None,
         metadata_policy: str | None = None,
@@ -265,7 +273,7 @@ class MetadataService:
         profile = (
             content_profile
             or str(getattr(media_info, "content_profile", "") or "")
-            or ("anime" if media_type == MediaType.ANIME else "default")
+            or ("anime" if media_type == ProviderMediaType.ANIME else "default")
         )
         fallback_provider = str(getattr(media_info, "anchor_provider", "") or "")
         fallback_external = str(getattr(media_info, "anchor_external_id", "") or "")
@@ -293,7 +301,7 @@ class MetadataService:
             media_type,
         )
         season_num = 0
-        if media_type in (MediaType.TV, MediaType.ANIME):
+        if media_type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
             season_num = int(getattr(media_info, "get_season_seq", lambda: 0)() or 0)
         if matched is not None and season_num and anchor.provider != "tmdb" and matched.provider == "tmdb":
             matched = matched.model_copy(update={"scope": f"season={season_num}"})
@@ -445,7 +453,7 @@ class MetadataService:
         media_info: Any,
         *,
         policy: str | None = None,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
     ) -> bool:
         """按系统策略为普通媒体选择主源锚点，失败时按回退链尝试。
 
@@ -485,7 +493,7 @@ class MetadataService:
         ).strip()
         if not title:
             return False
-        target_type = media_type or getattr(media_info, "type", None) or MediaType.MOVIE
+        target_type = media_type or getattr(media_info, "type", None) or ProviderMediaType.MOVIE
         cache_key = (policy_key, title.casefold(), str(getattr(media_info, "year", "") or ""), target_type.value)
         cached = self._anchor_cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < 300:
@@ -493,7 +501,7 @@ class MetadataService:
             media_info.anchor_provider = cached_provider
             media_info.anchor_external_id = cached_external
             if cached_provider == "bangumi":
-                media_info.type = MediaType.ANIME
+                media_info.type = ProviderMediaType.ANIME
                 media_info.content_profile = "anime"
             return True
         with self._anchor_locks_guard:
@@ -506,7 +514,7 @@ class MetadataService:
                 media_info.anchor_provider = cached_provider
                 media_info.anchor_external_id = cached_external
                 if cached_provider == "bangumi":
-                    media_info.type = MediaType.ANIME
+                    media_info.type = ProviderMediaType.ANIME
                     media_info.content_profile = "anime"
                 return True
             return self._identify_anchor_search(
@@ -524,7 +532,7 @@ class MetadataService:
         *,
         policy_key: str,
         title: str,
-        target_type: MediaType,
+        target_type: ProviderMediaType,
         order: list[str],
         cache_key: tuple,
     ) -> bool:
@@ -573,7 +581,7 @@ class MetadataService:
             media_info.anchor_external_id = external_id
             self._anchor_cache[cache_key] = (time.monotonic(), provider, external_id)
             if content_profile == "anime":
-                media_info.type = MediaType.ANIME
+                media_info.type = ProviderMediaType.ANIME
                 media_info.content_profile = content_profile
             log.info(f"[Metadata]主源策略 {policy_key} 命中 {provider}:{external_id}")
             return True
@@ -600,13 +608,13 @@ class MetadataService:
         with_episodes=True 时按需展开分集（豆瓣 HTML 较慢，仅供刮削后台调用）。
         """
         self._ensure_builtin()
-        media_type = getattr(media_info, "type", None) or MediaType.UNKNOWN
+        media_type = getattr(media_info, "type", None) or ProviderMediaType.UNKNOWN
         anchor_provider = anchor_provider or str(getattr(media_info, "anchor_provider", "") or "")
         anchor_external = str(getattr(media_info, "anchor_external_id", "") or "")
         ref = parse_legacy_ref(str(getattr(media_info, "tmdb_id", "") or ""), media_type)
         refs = []
         season = None
-        if media_type in {MediaType.TV, MediaType.ANIME}:
+        if media_type in {ProviderMediaType.SERIES, ProviderMediaType.ANIME}:
             try:
                 season = int(getattr(media_info, "get_season_seq", lambda: 0)() or 0) or None
             except (TypeError, ValueError):
@@ -698,7 +706,7 @@ class MetadataService:
                 )
         except ValueError:
             resolved = self.get_policy(None, anchor_provider=anchor)
-        profile = content_profile or media_profile or ("anime" if media_type == MediaType.ANIME else "default")
+        profile = content_profile or media_profile or ("anime" if media_type == ProviderMediaType.ANIME else "default")
         identity = self._resolve_identity(media_info, refs, media_type, profile, persist=persist)
         identity_id = identity.IDENTITY_ID if identity is not None else "preview"
 
@@ -714,7 +722,7 @@ class MetadataService:
                         cached_ok = not self._refs_support_images(refs)
                     if (
                         cached_ok
-                        and media_type in {MediaType.MOVIE, MediaType.TV, MediaType.ANIME}
+                        and media_type in {ProviderMediaType.MOVIE, ProviderMediaType.SERIES, ProviderMediaType.ANIME}
                         and self._refs_support_images(refs)
                         and not (cached_metadata.images or {}).get("poster")
                     ):
@@ -742,7 +750,7 @@ class MetadataService:
         metadata = result.metadata
         if metadata is not None:
             self._attach_source_hints(metadata, media_info)
-        if with_episodes and metadata is not None and media_type in {MediaType.TV, MediaType.ANIME}:
+        if with_episodes and metadata is not None and media_type in {ProviderMediaType.SERIES, ProviderMediaType.ANIME}:
             target_seasons = [season] if season else [item.season_number for item in metadata.seasons] or [1]
             for target_season in target_seasons:
                 if any(item.season_number == target_season for item in metadata.episodes):
@@ -759,6 +767,22 @@ class MetadataService:
                     if episodes:
                         metadata.episodes.extend(episodes)
                         break
+        if identity is not None and metadata is not None:
+            title_field = metadata.fields.get("title")
+            original_field = metadata.fields.get("original_title")
+            language_field = metadata.fields.get("original_language")
+            alias_values = select_aliases(
+                getattr(title_field, "value", None),
+                getattr(original_field, "value", None),
+                metadata.aliases,
+                countries=metadata.countries,
+                original_language=getattr(language_field, "value", None),
+            )
+            if alias_values:
+                try:
+                    self._identity_repo.replace_aliases(identity.IDENTITY_ID, alias_values)
+                except Exception as exc:  # noqa: BLE001 - 别名持久化失败不影响刮削
+                    log.debug(f"[Metadata]别名落库失败 {identity.IDENTITY_ID}: {exc}")
         if persist and identity is not None and metadata is not None and user_id is None:
             try:
                 self._persist_snapshot(identity, metadata, resolved.key, refs, scope=snapshot_scope)
@@ -794,7 +818,7 @@ class MetadataService:
         self,
         media_info: Any,
         refs: list[ProviderRef],
-        media_type: MediaType,
+        media_type: ProviderMediaType,
         profile: str,
         *,
         persist: bool,
@@ -842,12 +866,12 @@ class MetadataService:
         self,
         identity: Any,
         refs: list[ProviderRef],
-        media_type: MediaType,
+        media_type: ProviderMediaType,
         season: int,
         title: str | None,
         year: str | None,
     ) -> None:
-        if media_type not in {MediaType.TV, MediaType.ANIME} or season <= 0:
+        if media_type not in {ProviderMediaType.SERIES, ProviderMediaType.ANIME} or season <= 0:
             return
         tmdb_ref = next(
             (ref for ref in refs if ref.provider == "tmdb" and str(ref.external_id).isdigit()),
@@ -1065,7 +1089,7 @@ class MetadataService:
 
     def latest_snapshot_for_media(self, media_info: Any) -> MediaMetadata | None:
         """只读快照，供重命名/整理消费；不发起网络请求."""
-        media_type = getattr(media_info, "type", None) or MediaType.UNKNOWN
+        media_type = getattr(media_info, "type", None) or ProviderMediaType.UNKNOWN
         anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
         anchor_external = str(getattr(media_info, "anchor_external_id", "") or "")
         ref = None
@@ -1092,7 +1116,7 @@ class MetadataService:
         if identity is None:
             return None
         scope = "default"
-        if media_type in {MediaType.TV, MediaType.ANIME}:
+        if media_type in {ProviderMediaType.SERIES, ProviderMediaType.ANIME}:
             try:
                 season = int(getattr(media_info, "get_season_seq", lambda: 0)() or 0)
             except (TypeError, ValueError):
@@ -1113,7 +1137,7 @@ class MetadataService:
         *,
         query: str,
         provider: str | None = None,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         content_profile: str = "default",
         limit: int = 20,
         allow_private: bool = False,
@@ -1123,6 +1147,14 @@ class MetadataService:
         self._ensure_builtin()
         if not query.strip():
             return []
+        perm_key = ",".join(sorted(permissions or ()))
+        cache_key = (
+            f"{provider or 'all'}:{query.strip()}:{media_type.value if media_type else 'auto'}:"
+            f"{content_profile}:{limit}:{int(allow_private)}:{perm_key}"
+        )
+        cached = self._search_cache.get(cache_key)
+        if isinstance(cached, list):
+            return cached
         providers = self._registry.list_providers(capability=ProviderCapability.SEARCH)
         if provider:
             providers = [item for item in providers if item.descriptor.provider_key == provider]
@@ -1131,9 +1163,11 @@ class MetadataService:
             descriptor = item.descriptor
             if descriptor.visibility == "private":
                 required = descriptor.required_permission or "metadata:private:view"
-                if not allow_private or (
-                    permissions is not None and "*" not in permissions and required not in permissions
-                ):
+                if not allow_private:
+                    continue
+                # 超级管理员的权限集为空表示不受细粒度权限限制；
+                # 只有显式携带权限集时才继续检查 provider 专属权限。
+                if permissions is not None and "*" not in permissions and required not in permissions:
                     continue
             selected.append(item)
 
@@ -1197,14 +1231,16 @@ class MetadataService:
                     continue
                 seen.add(key)
             deduped.append(hit)
-        return deduped[:limit]
+        result = deduped[:limit]
+        self._search_cache.set(cache_key, result, ttl=60 if result else 20)
+        return result
 
     def compose_for_ref(
         self,
         provider: str,
         external_id: str,
         *,
-        media_type: MediaType = MediaType.UNKNOWN,
+        media_type: ProviderMediaType = ProviderMediaType.UNKNOWN,
         content_profile: str = "default",
         include_tmdb: bool = True,
         max_age_seconds: int = 300,
@@ -1220,7 +1256,7 @@ class MetadataService:
         identity = self._identity_repo.find_by_ref(
             provider,
             str(external_id),
-            media_type=media_type.value if media_type != MediaType.UNKNOWN else None,
+            media_type=media_type.value if media_type != ProviderMediaType.UNKNOWN else None,
         )
         tmdb_id = ""
         season = 0
@@ -1299,7 +1335,7 @@ class MetadataService:
         external_id: str,
         title: str,
         year: str | None = None,
-        media_type: MediaType = MediaType.TV,
+        media_type: ProviderMediaType = ProviderMediaType.SERIES,
         season: int = 1,
         content_profile: str = "default",
         allow_private: bool = False,
@@ -1353,9 +1389,11 @@ class MetadataService:
                 continue
             if item.descriptor.visibility == "private":
                 required = item.descriptor.required_permission or "metadata:private:view"
-                if not allow_private or (
-                    permissions is not None and "*" not in permissions and required not in permissions
-                ):
+                if not allow_private:
+                    continue
+                # 超级管理员的权限集为空表示不受细粒度权限限制；
+                # 只有显式携带权限集时才继续检查 provider 专属权限。
+                if permissions is not None and "*" not in permissions and required not in permissions:
                     continue
             hits = []
             try:
@@ -1409,7 +1447,7 @@ class MetadataService:
         provider: str,
         external_id: str,
         *,
-        media_type: MediaType = MediaType.MOVIE,
+        media_type: ProviderMediaType = ProviderMediaType.MOVIE,
         title: str | None = None,
         content_profile: str = "default",
         limit: int = 12,
@@ -1482,13 +1520,22 @@ class MetadataService:
     ) -> list[dict]:
         """获取非 TMDB 来源的分集（含播出日期），供订阅日历使用."""
         self._ensure_builtin()
+        perm_key = ",".join(sorted(permissions or ()))
+        cache_key = f"{provider}:{external_id}:{int(season or 1)}:{int(allow_private)}:{perm_key}"
+        cached = self._episodes_cache.get(cache_key)
+        if isinstance(cached, list):
+            return cached
         target = self._registry.get_provider(provider)
         if target is None:
             return []
         ref = ProviderRef(
             provider=provider,
             external_id=str(external_id),
-            media_type=target.descriptor.default_media_type or MediaType.TV,
+            media_type=(
+                target.descriptor.default_provider_media_type
+                if target.descriptor.default_provider_media_type is not None
+                else ProviderMediaType.SERIES
+            ),
             scope="default",
         )
         self._check_visibility([ref], allow_private=allow_private, permissions=permissions)
@@ -1504,14 +1551,16 @@ class MetadataService:
             log.warn(f"[Metadata]分集获取失败 {provider}:{external_id}: {exc}")
             return []
         runtime.record_success()
-        return [record.model_dump(mode="json") for record in records]
+        result = [record.model_dump(mode="json") for record in records]
+        self._episodes_cache.set(cache_key, result, ttl=300 if result else 60)
+        return result
 
     def lookup(
         self,
         provider: str,
         external_id: str,
         *,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         scope: str = "default",
         allow_private: bool = False,
         content_profile: str | None = None,
@@ -1532,6 +1581,22 @@ class MetadataService:
         cache_key = f"v{version}:{provider}:{external_id}:{scope}:{type_key}"
         cached = self._detail_cache.get(cache_key)
         if isinstance(cached, dict):
+            identity = self._identity_repo.find_by_ref(
+                provider,
+                str(external_id),
+                scope=scope,
+                media_type=media_type.value if media_type else None,
+            )
+            if identity is not None:
+                aliases = select_aliases(
+                    cached.get("title"),
+                    cached.get("original_title"),
+                    cached.get("aliases"),
+                    countries=cached.get("countries"),
+                    original_language=cached.get("original_language"),
+                )
+                if aliases:
+                    self._identity_repo.replace_aliases(identity.IDENTITY_ID, aliases)
             return cached
         key = f"{provider}:{external_id}:{scope}:{type_key}"
         with self._inflight_lock:
@@ -1558,6 +1623,22 @@ class MetadataService:
             data = record.model_dump(mode="json") if record is not None else None
             if isinstance(data, dict) and self._has_detail_payload(data):
                 self._detail_cache.set(cache_key, data, ttl=600)
+                identity = self._identity_repo.find_by_ref(
+                    provider,
+                    str(external_id),
+                    scope=scope,
+                    media_type=media_type.value if media_type else None,
+                )
+                if identity is not None:
+                    aliases = select_aliases(
+                        data.get("title"),
+                        data.get("original_title"),
+                        data.get("aliases"),
+                        countries=data.get("countries"),
+                        original_language=data.get("original_language"),
+                    )
+                    if aliases:
+                        self._identity_repo.replace_aliases(identity.IDENTITY_ID, aliases)
             else:
                 self._detail_cache.delete(cache_key)
             future.set_result(data)
@@ -1581,9 +1662,11 @@ class MetadataService:
         with self._detail_version_lock:
             raw = self._detail_cache.get("__version__")
             try:
-                version = int(str(raw)) if raw is not None else 2
+                version = int(str(raw)) if raw is not None else DETAIL_CACHE_VERSION
             except (TypeError, ValueError):
-                version = 2
+                version = DETAIL_CACHE_VERSION
+            if version < DETAIL_CACHE_VERSION:
+                version = DETAIL_CACHE_VERSION
                 self._detail_cache.set("__version__", version)
             return version
 
@@ -1592,9 +1675,9 @@ class MetadataService:
         with self._detail_version_lock:
             raw = self._detail_cache.get("__version__")
             try:
-                current = int(str(raw)) if raw is not None else 2
+                current = int(str(raw)) if raw is not None else DETAIL_CACHE_VERSION
             except (TypeError, ValueError):
-                current = 2
+                current = DETAIL_CACHE_VERSION
             version = current + 1
             self._detail_cache.set("__version__", version)
             return version
@@ -1608,6 +1691,77 @@ class MetadataService:
             or data.get("credits")
             or (data.get("images") or {}).get("poster")
         )
+
+    def find_identity_id(
+        self,
+        provider: str,
+        external_id: str,
+        *,
+        scope: str = "default",
+        media_type: str | None = None,
+    ) -> str | None:
+        """按 ref 查询已有身份，供网关填充 envelope，不触发 provider 请求."""
+        identity = self._identity_repo.find_by_ref(
+            provider,
+            str(external_id),
+            scope=scope,
+            media_type=media_type,
+        )
+        return identity.IDENTITY_ID if identity is not None else None
+
+    def latest_snapshot_record(
+        self,
+        identity_id: str,
+        *,
+        policy_key: str | None = None,
+        scope: str | None = None,
+    ) -> Any:
+        return self._identity_repo.latest_snapshot(identity_id, policy_key=policy_key, scope=scope)
+
+    def provider_descriptor(self, provider_key: str) -> Any:
+        self._ensure_builtin()
+        provider = self._registry.get_provider(provider_key)
+        return getattr(provider, "descriptor", None)
+
+    def cached_details(
+        self,
+        provider: str,
+        external_id: str | int | None,
+        *,
+        media_type: ProviderMediaType | str | None = None,
+        extra: str = "",
+        extras: tuple[str, ...] | None = None,
+        scope: str = "default",
+    ) -> Any | None:
+        """只读 provider 详情缓存，不发起网络请求."""
+        if external_id in (None, ""):
+            return None
+        type_key = getattr(media_type, "value", str(media_type or "auto"))
+        own_key = f"v{self._detail_cache_version()}:{provider}:{external_id}:{scope}:{type_key}"
+        own_cached = self._detail_cache.get(own_key)
+        if own_cached is not None:
+            return own_cached
+        try:
+            cache = MetadataCache()
+        except Exception as exc:  # noqa: BLE001 - 缓存不可用不影响主流程
+            log.debug(f"[Metadata]详情缓存不可用: {exc}")
+            return None
+        candidates = extras if extras is not None else (extra,)
+        for candidate in candidates:
+            try:
+                info = cache.get_detail(
+                    provider,
+                    str(external_id),
+                    media_type or ProviderMediaType.UNKNOWN,
+                    extra=candidate,
+                    scope=scope,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug(f"[Metadata]读取详情缓存失败 {provider}:{external_id}: {exc}")
+                return None
+            if info is not None:
+                return info
+        return None
 
     def list_providers(
         self,
@@ -1626,9 +1780,11 @@ class MetadataService:
                 continue
             if descriptor.visibility == "private":
                 required = descriptor.required_permission or "metadata:private:view"
-                if not allow_private or (
-                    permissions is not None and "*" not in permissions and required not in permissions
-                ):
+                if not allow_private:
+                    continue
+                # 超级管理员的权限集为空表示不受细粒度权限限制；
+                # 只有显式携带权限集时才继续检查 provider 专属权限。
+                if permissions is not None and "*" not in permissions and required not in permissions:
                     continue
             visible.append(provider)
         # 内置 provider 置顶，插件保持注册顺序；来源由注册表动态判定
@@ -1673,7 +1829,8 @@ class MetadataService:
                     "provider": descriptor.provider_key,
                     "name": descriptor.display_name,
                     "capabilities": sorted(str(item) for item in descriptor.capabilities),
-                    "media_types": sorted(str(item) for item in descriptor.media_types),
+                    "provider_media_types": sorted(item.value for item in descriptor.provider_media_types),
+                    "media_kinds": sorted(item.value for item in descriptor.media_kinds),
                     "content_profiles": sorted(descriptor.content_profiles),
                     "visibility": descriptor.visibility,
                     "required_permission": descriptor.required_permission,
@@ -1689,6 +1846,8 @@ class MetadataService:
 
     def clear_cache(self) -> None:
         self._orchestrator.clear_cache()
+        self._search_cache.clear()
+        self._episodes_cache.clear()
 
     def save_snapshot(self, identity_id: str, metadata: MediaMetadata, policy_key: str) -> None:
         """保存合成快照（调用方负责 identity 已存在）."""

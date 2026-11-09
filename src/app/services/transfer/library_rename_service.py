@@ -11,7 +11,7 @@ from app.core.exceptions import ResourceNotFoundError, ValidationError
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.db.repositories.library_rename_repo_adapter import LibraryRenameRepositoryAdapter
 from app.db.repositories.library_rename_repository import now_str
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.services.transfer.library_rename_backend import (
     basename,
@@ -44,7 +44,7 @@ class LibraryRenameService:
         download_repo,
         thread_executor,
         transfer_history_service=None,
-        metadata_service=None,
+        metadata_gateway=None,
     ):
         self._repo = rename_repo
         self._storage_repo = storage_repo
@@ -54,7 +54,7 @@ class LibraryRenameService:
         self._download_repo = download_repo
         self._thread_executor = thread_executor
         self._transfer_history_service = transfer_history_service
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
         self._category_repo = CategoryConfigRepositoryAdapter()
         self._executor = LibraryRenameExecutor(
             rename_repo,
@@ -67,14 +67,19 @@ class LibraryRenameService:
 
     def create_plan(self, scope_data: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
         scope = self._parse_scope(scope_data)
-        resolver = LibraryMetadataResolver(self._media_service, self._media_server, self._repo, self._download_repo)
+        resolver = LibraryMetadataResolver(
+            self._media_server,
+            self._repo,
+            self._download_repo,
+            metadata_gateway=self._metadata_gateway,
+        )
         planner = LibraryRenamePlanner(
             self._media_config_service,
             self._storage_repo,
             resolver,
             self._media_service,
             self._category_repo,
-            metadata_service=self._metadata_service,
+            metadata_gateway=self._metadata_gateway,
         )
         rule_snapshot = planner.prepare(scope)
         items = planner.build_items(scope)
@@ -207,10 +212,10 @@ class LibraryRenameService:
     ) -> dict[str, Any]:
         normalized_path = norm_path(path)
         self._validate_library_path(backend_id, normalized_path)
-        mtype = MediaType.from_string(media_type)
-        if mtype == MediaType.UNKNOWN:
+        mtype = ProviderMediaType.from_value(media_type)
+        if mtype == ProviderMediaType.UNKNOWN:
             raise ValidationError(f"非法媒体类型: {media_type}")
-        if mtype != MediaType.MOVIE and (season is None or episode is None):
+        if mtype != ProviderMediaType.MOVIE and (season is None or episode is None):
             raise ValidationError("剧集必须提供 season 和 episode")
         ref_provider = str(anchor_provider or "").strip()
         ref_external = str(anchor_external_id or "").strip()
@@ -248,10 +253,10 @@ class LibraryRenameService:
 
     def _parse_scope(self, data: dict[str, Any]) -> RenameScope:
         raw_types = data.get("media_types") or ["movie", "tv", "anime"]
-        types: list[MediaType] = []
+        types: list[ProviderMediaType] = []
         for value in raw_types:
-            media_type = MediaType.from_string(str(value))
-            if media_type != MediaType.UNKNOWN and media_type not in types:
+            media_type = ProviderMediaType.from_value(str(value))
+            if media_type != ProviderMediaType.UNKNOWN and media_type not in types:
                 types.append(media_type)
         if not types:
             raise ValidationError("media_types 不能为空")

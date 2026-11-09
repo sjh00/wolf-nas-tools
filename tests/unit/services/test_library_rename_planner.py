@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import cast
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.transfer.library_rename_metadata import LibraryMetadataResolver
 from app.services.transfer.library_rename_models import RenameScope
 from app.services.transfer.library_rename_planner import LibraryRenamePlanner
@@ -93,7 +93,6 @@ def test_planner_generates_rename_item_from_filename(tmp_path, monkeypatch):
     video.write_bytes(b"video")
 
     resolver = LibraryMetadataResolver(
-        media_service=SimpleNamespace(),
         media_server=_FakeMediaServer(),
         rename_repo=_FakeRepo(),
         download_repo=_FakeDownloadRepo(),
@@ -106,7 +105,7 @@ def test_planner_generates_rename_item_from_filename(tmp_path, monkeypatch):
         category_repo=_FakeCategoryRepo(),
     )
     scope = RenameScope(
-        media_types=[MediaType.MOVIE],
+        media_types=[ProviderMediaType.MOVIE],
         roots=[str(root)],
         use_mediaserver_metadata=False,
     )
@@ -132,7 +131,6 @@ class _FakeRemoteBackend:
 
 def test_remote_scan_walks_directories():
     resolver = LibraryMetadataResolver(
-        media_service=SimpleNamespace(),
         media_server=_FakeMediaServer(),
         rename_repo=_FakeRepo(),
         download_repo=_FakeDownloadRepo(),

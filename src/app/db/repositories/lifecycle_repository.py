@@ -11,6 +11,7 @@ from sqlalchemy import func
 import log
 from app.db.models.download import DOWNLOADHISTORY
 from app.db.models.lifecycle import MediaLifecycle, MediaLifecycleEvent
+from app.db.models.media_identity import MediaIdentity
 from app.db.models.subscribe import SubscribeHistory, SubscribeMovies, SubscribeTvEpisodes, SubscribeTvs
 from app.db.models.transfer import TRANSFERHISTORY
 from app.db.repositories.base_repository import BaseRepository
@@ -57,6 +58,7 @@ class LifecycleRepository(BaseRepository):
             .first()
         )
         if current is None:
+            _fill_snapshot_metadata(db, event.IDENTITY_ID, snapshot)
             db.add(MediaLifecycle(**snapshot))
             return
         current_rank = stage_rank(current.STAGE)
@@ -121,6 +123,23 @@ class LifecycleRepository(BaseRepository):
             setattr(current, key, value)
         if advanced:
             current.STAGE_STARTED_AT = event.OCCURRED_AT
+        _fill_current_metadata(db, current)
+
+    def has_succeeded_stage(self, identity_id: str, stage: str, season: int = 0, episode: int = 0) -> bool:
+        """身份是否曾在指定阶段成功过（用于重启/重复转移后的通知幂等）."""
+        with self.readonly() as db:
+            row = (
+                db.query(MediaLifecycleEvent.ID)
+                .filter(
+                    MediaLifecycleEvent.IDENTITY_ID == identity_id,
+                    MediaLifecycleEvent.SEASON == int(season),
+                    MediaLifecycleEvent.EPISODE == int(episode),
+                    MediaLifecycleEvent.STAGE == stage,
+                    MediaLifecycleEvent.STATUS == LifecycleStatus.SUCCEEDED.value,
+                )
+                .first()
+            )
+            return row is not None
 
     def get_current(self, identity_id: str, season: int = 0, episode: int = 0, *, user=None) -> MediaLifecycle | None:
         with self.readonly() as db:
@@ -295,6 +314,12 @@ class LifecycleRepository(BaseRepository):
                     key = str(identity)
                     if key not in activity or occurred > activity[key]:
                         activity[key] = occurred
+            identity_kind_map = {
+                str(identity_id): str(kind or "unknown")
+                for identity_id, kind in db.query(MediaIdentity.IDENTITY_ID, MediaIdentity.MEDIA_KIND)
+                .filter(MediaIdentity.IDENTITY_ID.in_(identities))
+                .all()
+            }
             subscription_map = _subscription_map(db, identities)
             active_identities = _active_subscription_identities(db, identities)
             completed_identities = _completed_subscription_identities(db, identities)
@@ -302,6 +327,7 @@ class LifecycleRepository(BaseRepository):
             grouped = _group_lifecycle_rows(rows)
             for item in grouped:
                 item["ACTIVITY_AT"] = activity.get(str(item.get("IDENTITY_ID")), datetime.min)
+                item["MEDIA_KIND"] = identity_kind_map.get(str(item.get("IDENTITY_ID")), "unknown")
             _apply_subscription_state(
                 grouped, subscription_map, active_identities, completed_identities, cancelled_identities
             )
@@ -740,6 +766,44 @@ def _apply_subscription_state(
             item["STATUS"] = "cancelled"
 
 
+_METADATA_FALLBACK_FIELDS = ("TITLE", "YEAR", "POSTER", "CONTENT_PROFILE", "USER_ID")
+
+
+def _fill_snapshot_metadata(db, identity_id: str, snapshot: dict[str, Any]) -> None:
+    """新生命周期行继承同身份其他分集的元数据，避免 E0 工作行覆盖掉海报."""
+    missing = [field for field in _METADATA_FALLBACK_FIELDS if not snapshot.get(field)]
+    if not missing:
+        return
+    for sibling in _lifecycle_metadata_siblings(db, identity_id):
+        for field in missing:
+            if snapshot.get(field):
+                continue
+            value = getattr(sibling, field, None)
+            if value:
+                snapshot[field] = value
+
+
+def _fill_current_metadata(db, current: MediaLifecycle) -> None:
+    """已有行缺少元数据时，从同身份最新非空行回填."""
+    missing = [field for field in _METADATA_FALLBACK_FIELDS if not getattr(current, field, None)]
+    if not missing:
+        return
+    for sibling in _lifecycle_metadata_siblings(db, str(current.IDENTITY_ID), exclude_id=current.ID):
+        for field in missing:
+            if getattr(current, field, None):
+                continue
+            value = getattr(sibling, field, None)
+            if value:
+                setattr(current, field, value)
+
+
+def _lifecycle_metadata_siblings(db, identity_id: str, exclude_id: int | None = None):
+    query = db.query(MediaLifecycle).filter(MediaLifecycle.IDENTITY_ID == identity_id)
+    if exclude_id is not None:
+        query = query.filter(MediaLifecycle.ID != exclude_id)
+    return query.order_by(MediaLifecycle.LAST_EVENT_AT.desc(), MediaLifecycle.ID.desc()).all()
+
+
 def _group_lifecycle_rows(rows: list[MediaLifecycle]) -> list[dict[str, Any]]:
     groups: dict[str, list[MediaLifecycle]] = {}
     for row in rows:
@@ -779,6 +843,24 @@ def _group_lifecycle_rows(rows: list[MediaLifecycle]) -> list[dict[str, Any]]:
             and stage_rank(item.STAGE) >= stage_rank(LifecycleStage.DOWNLOAD_QUEUED.value)
         ]
         data = representative.as_dict()
+        # 代表行可能是后写入的 E0 占位/失败记录，元数据字段为空；从同组最新非空行补齐。
+        for field in ("POSTER", "TITLE", "YEAR", "MEDIA_TYPE", "CONTENT_PROFILE", "USER_ID"):
+            if data.get(field):
+                continue
+            fallback = next(
+                (
+                    getattr(item, field, None)
+                    for item in sorted(
+                        items,
+                        key=lambda row: row.LAST_EVENT_AT or row.UPDATED_AT,
+                        reverse=True,
+                    )
+                    if getattr(item, field, None)
+                ),
+                None,
+            )
+            if fallback is not None:
+                data[field] = fallback
         data["ACTIVE_STAGE"] = max(active_items, key=lambda item: stage_rank(item.STAGE)).STAGE if active_items else ""
         if status == LifecycleStatus.SUCCEEDED.value and stage not in {
             LifecycleStage.SCRAPED.value,
@@ -788,6 +870,12 @@ def _group_lifecycle_rows(rows: list[MediaLifecycle]) -> list[dict[str, Any]]:
         if episode_items:
             data["SEASON"] = max(int(item.SEASON or 0) for item in episode_items)
             data["EPISODE"] = max(int(item.EPISODE or 0) for item in episode_items)
+            media_types = [str(item.MEDIA_TYPE or "") for item in episode_items if item.MEDIA_TYPE]
+            if media_types:
+                data["MEDIA_TYPE"] = max(set(media_types), key=media_types.count)
+            profiles = [str(item.CONTENT_PROFILE or "") for item in episode_items if item.CONTENT_PROFILE]
+            if profiles:
+                data["CONTENT_PROFILE"] = max(set(profiles), key=profiles.count)
         providers = [
             str(item.SOURCE_PROVIDER) for item in state_items if item.SOURCE_PROVIDER not in {None, "", "content_id"}
         ]

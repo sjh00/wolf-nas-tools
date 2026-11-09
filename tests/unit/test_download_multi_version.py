@@ -11,7 +11,7 @@ def _make_svc(file_index=None, media=None, downloader=None):
     return DownloadService(
         downloader=downloader if downloader else MagicMock(),
         searcher=MagicMock(),
-        media_service=media if media else MagicMock(),
+        metadata_gateway=media if media else MagicMock(),
         sites=MagicMock(),
         site_engine=MagicMock(),
         indexer_service=MagicMock(),

@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.models import MediaInfo
 from app.services.transfer.filetransfer_service import (
     FileTransferService,
@@ -28,7 +28,7 @@ from app.services.transfer.filetransfer_service import (
 
 def _media(pix="2160p", effect="", tmdb_id=801803, title="独行月球") -> MediaInfo:
     return MediaInfo(
-        type=MediaType.MOVIE,
+        type=ProviderMediaType.MOVIE,
         tmdb_id=tmdb_id,
         title=title,
         year="2022",
@@ -36,22 +36,20 @@ def _media(pix="2160p", effect="", tmdb_id=801803, title="独行月球") -> Medi
         resource_effect=effect,
     )
 
-
 def _anime_movie(pix="1080p", tmdb_id=456, title="你的名字") -> MediaInfo:
     """动画剧场版：type=ANIME、无集号。"""
     return MediaInfo(
-        type=MediaType.ANIME,
+        type=ProviderMediaType.ANIME,
         tmdb_id=tmdb_id,
         title=title,
         year="2016",
         resource_pix=pix,
     )
 
-
 def _anime_episode(pix="1080p", tmdb_id=456, title="某番剧", episode=3) -> MediaInfo:
     """普通动画剧集：type=ANIME、有集号。"""
     return MediaInfo(
-        type=MediaType.ANIME,
+        type=ProviderMediaType.ANIME,
         tmdb_id=tmdb_id,
         title=title,
         year="2020",
@@ -60,7 +58,6 @@ def _anime_episode(pix="1080p", tmdb_id=456, title="某番剧", episode=3) -> Me
         begin_episode=episode,
         end_episode=episode,
     )
-
 
 def _row(dest_path: str, dest_filename: str, source_path: str = "/src/original.mkv", season_episode: str = ""):
     """构造转移历史实体替身（字段名与 TransferHistoryEntity 一致，均为小写）。"""
@@ -71,7 +68,6 @@ def _row(dest_path: str, dest_filename: str, source_path: str = "/src/original.m
         season_episode=season_episode,
     )
 
-
 @pytest.fixture
 def service():
     """最小可用服务：只装配去重所需的 history（行为用 MagicMock 编排）。"""
@@ -81,22 +77,18 @@ def service():
     svc._history.get_by_source.return_value = None
     return svc
 
-
 def _history(svc) -> Any:
     """以宽松类型取 history 替身，便于断言调用（与仓库其它用例一致）。"""
     return cast(Any, svc._history)
 
-
 def _set_history(svc, rows: list) -> None:
     _history(svc).get_transfer_info_by.return_value = rows
-
 
 def _touch(path: str, size: int) -> str:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as fh:
         fh.write(b"x" * size)
     return path
-
 
 class TestSpecSignature:
     def test_includes_resolution_and_edition(self):
@@ -114,7 +106,6 @@ class TestSpecSignature:
     def test_from_filename_handles_garbage(self):
         assert _spec_signature_from_filename("") == ""
         assert _spec_signature_from_filename("x") == ""
-
 
 class TestSingleFileClassification:
     def test_movie_is_single_file(self, service):
@@ -134,7 +125,6 @@ class TestSingleFileClassification:
 
     def test_row_with_episode_is_not_single_file(self, service):
         assert not service._is_single_file_row(_row("/lib", "a.mkv", season_episode="S01E03"))
-
 
 class TestMovieDuplicateTarget:
     def test_title_drift_same_spec_is_duplicate(self, service, tmp_path):
@@ -206,7 +196,6 @@ class TestMovieDuplicateTarget:
         src = _touch(str(tmp_path / "src.mkv"), 777)
         assert service._identity_duplicate_target(_media(pix="2160p"), src)
 
-
 class TestAnimeMovieDedup:
     """动画剧场版（ANIME 且无集号）此前两侧去重都不覆盖"""
 
@@ -235,7 +224,6 @@ class TestAnimeMovieDedup:
 
         src = _touch(str(tmp_path / "src.mkv"), 600)
         assert service._identity_duplicate_target(_anime_movie(pix="1080p"), src) == ""
-
 
 class TestPollutedTitleDuplicate:
     """端到端语义：被灌广告的标题不得再产生一份"""

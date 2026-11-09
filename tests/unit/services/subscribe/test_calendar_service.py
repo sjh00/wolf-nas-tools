@@ -42,6 +42,9 @@ class _FakeMetadata:
     def __init__(self):
         self.calls = []
 
+    def provider_display_name(self, provider):
+        return str(provider or "")
+
     def episodes(self, provider, external_id, season, **kwargs):
         self.calls.append((provider, external_id, season, kwargs))
         return [
@@ -68,7 +71,7 @@ def _service(metadata=None):
         media_info_service=cast(Any, _FakeMediaInfo()),
         subscribe=cast(Any, _FakeSubscribe()),
         rss_task_service=cast(Any, _FakeRssTasks()),
-        metadata_service=cast(Any, metadata or _FakeMetadata()),
+        metadata_gateway=cast(Any, metadata or _FakeMetadata()),
     )
 
 

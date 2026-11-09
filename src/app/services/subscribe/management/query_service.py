@@ -6,12 +6,12 @@ from typing import Any
 
 import log
 from app.core.constants import ANIME_GENREIDS
+from app.db.repositories.media_identity_repository import MediaIdentityRepository
 from app.db.repositories.media_series_repository import MediaSeriesRepository
 from app.domain.entities.custom_rss import custom_rss_id
-from app.domain.mediatypes import MediaType
-from app.infrastructure.cache_system.caches import TMDBCache
+from app.domain.media_types import ProviderMediaType
 from app.media.display_image_policy import transform_display_image
-from app.media.metadata.registry import registry as metadata_registry
+from app.media.metadata.gateway import MetadataGateway
 from app.schemas.auth import UserContext
 from app.services.search_subject import SearchSubject
 from app.services.subscribe.management.utils import parse_rss_desc
@@ -31,52 +31,45 @@ def _genres_are_anime(genres) -> bool:
     return False
 
 
-def _resolve_subscribe_type(value, tmdbid=None, genres=None) -> str:
+def _resolve_subscribe_type(value, tmdbid=None, genres=None, metadata_gateway: MetadataGateway | None = None) -> str:
     """订阅媒体类型归一化：movie/tv/anime.
 
     历史订阅未把 media_type 写入 NOTE 时，回退用 TMDB 缓存 genres 判断是否为动漫，
     避免"全部是动漫却有部分显示电视剧"。
     """
-    parsed = MediaType.from_string(str(value or ""))
-    if parsed == MediaType.MOVIE:
-        return MediaType.MOVIE.value
-    if parsed == MediaType.ANIME:
-        return MediaType.ANIME.value
+    parsed = ProviderMediaType.from_value(str(value or ""))
+    if parsed == ProviderMediaType.MOVIE:
+        return ProviderMediaType.MOVIE.value
+    if parsed == ProviderMediaType.ANIME:
+        return ProviderMediaType.ANIME.value
     # NOTE 中持久化的通用题材优先（TMDB/豆瓣/插件都可能写入）
     if _genres_are_anime(genres):
-        return MediaType.ANIME.value
+        return ProviderMediaType.ANIME.value
     # TV 或缺失类型都继续用 TMDB genres 判定：历史动漫订阅通常 media_type=tv，
     # 但实际是动画，不能因为 NOTE 里有 media_type 就直接当成电视剧。
-    if tmdbid:
+    if tmdbid and metadata_gateway is None:
+        log.warn(f"[Subscribe]缺少 MetadataGateway，无法推断订阅类型: {tmdbid}")
+        return ProviderMediaType.UNKNOWN.value
+    if tmdbid and metadata_gateway is not None:
         try:
             # TMDB 详情缓存可能带不同 append_to_response 后缀，逐一尝试已知形态，
             # 否则会误判为缓存未命中并把动漫降级成电视剧。
-            info = None
-            cache = TMDBCache()
-            for extra in (
-                "",
-                "credits,images,external_ids",
-                "all",
-                "alternative_titles,translations",
-            ):
-                info = cache.get_tmdb_info(mtype=MediaType.TV, tmdbid=tmdbid, extra=extra)
-                if info is not None:
-                    break
-            # 缓存值可能是 tmdbv3api 的 AsObj（非 dict 但支持 .get）
-            genres = None
-            if info is not None:
-                genres = info.get("genres") if hasattr(info, "get") else getattr(info, "genres", None)
-            # genres 元素也可能是 tmdbv3api 的 AsObj，需兼容 .get / 属性访问
-            genre_ids = set()
-            for genre in genres or []:
-                genre_id = genre.get("id") if hasattr(genre, "get") else getattr(genre, "id", None)
-                if genre_id:
-                    genre_ids.add(str(genre_id))
+            genre_ids = metadata_gateway.genres(
+                "tmdb",
+                tmdbid,
+                media_type=ProviderMediaType.SERIES,
+                extras=(
+                    "",
+                    "credits,images,external_ids",
+                    "all",
+                    "alternative_titles,translations",
+                ),
+            )
             if genre_ids.intersection(ANIME_GENREIDS):
-                return MediaType.ANIME.value
+                return ProviderMediaType.ANIME.value
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Subscribe]推断订阅类型失败 {tmdbid}: {e!s}")
-    return MediaType.TV.value
+    return ProviderMediaType.SERIES.value
 
 
 _REF_PREFIX_ALIASES = {
@@ -94,6 +87,7 @@ def _source_label(
     raw_id: str | None = None,
     metadata_ref: str | None = None,
     source_provider: str | None = None,
+    metadata_gateway: MetadataGateway | None = None,
 ) -> str:
     """来源展示名：优先真实订阅来源，虚拟元数据 provider 不作为来源。"""
     value = str(provider or "").strip().lower()
@@ -103,15 +97,13 @@ def _source_label(
         value = _REF_PREFIX_ALIASES.get(prefix, prefix)
     if value == "content_id":
         return "插件"
-    item = metadata_registry.get_provider(value) if value else None
-    desc = getattr(item, "descriptor", None)
-    if getattr(desc, "virtual", False) and source_provider:
-        real = metadata_registry.get_provider(str(source_provider).strip().lower())
-        real_desc = getattr(real, "descriptor", None)
-        return str(getattr(real_desc, "display_name", "") or source_provider)
-    if getattr(desc, "virtual", False):
+    is_virtual = metadata_gateway is not None and metadata_gateway.provider_is_virtual(value)
+    if is_virtual and source_provider and metadata_gateway is not None:
+        real = str(source_provider).strip().lower()
+        return metadata_gateway.provider_display_name(real) or source_provider
+    if is_virtual:
         return "未知来源"
-    return str(getattr(desc, "display_name", "") or value or "未知")
+    return metadata_gateway.provider_display_name(value) if metadata_gateway is not None else (value or "未知")
 
 
 def _normalized_anchor(provider, external_id) -> tuple[str | None, str | None]:
@@ -144,7 +136,18 @@ def _canonical_ref(row) -> str:
 class SubscribeQueryService:
     """订阅查询服务"""
 
-    def __init__(self, movie_repo, tv_repo, tv_episode_repo, history_repo, sites, indexer_service, user_repo=None):
+    def __init__(
+        self,
+        movie_repo,
+        tv_repo,
+        tv_episode_repo,
+        history_repo,
+        sites,
+        indexer_service,
+        user_repo=None,
+        *,
+        metadata_gateway: MetadataGateway,
+    ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
         self._tv_episode_repo = tv_episode_repo
@@ -152,6 +155,7 @@ class SubscribeQueryService:
         self._sites = sites
         self._indexer_service = indexer_service
         self._user_repo = user_repo
+        self._metadata_gateway = metadata_gateway
 
     def _usernames(self, rows) -> dict[int, str]:
         """批量解析订阅归属用户名（无 user_repo 时返回空映射）"""
@@ -181,6 +185,20 @@ class SubscribeQueryService:
             "new_today": sum(1 for item in movies if is_today(item)) + sum(1 for item in tvs if is_today(item)),
             "profiles": profiles,
         }
+
+    @staticmethod
+    def _attach_aliases(items: dict) -> dict:
+        identity_ids = {str(item.get("identity_id")) for item in items.values() if item.get("identity_id")}
+        if not identity_ids:
+            return items
+        try:
+            aliases_map = MediaIdentityRepository().get_aliases_map(identity_ids)
+        except Exception as exc:  # noqa: BLE001 - 别名只用于预筛，不影响订阅列表
+            log.debug(f"[Subscribe]读取订阅别名失败: {exc}")
+            return items
+        for item in items.values():
+            item["aliases"] = aliases_map.get(str(item.get("identity_id")), [])
+        return items
 
     def get_subscribe_movies(
         self, rid: int | None = None, state: str | None = None, user: UserContext | None = None
@@ -254,6 +272,7 @@ class SubscribeQueryService:
                     rss_movie.TMDBID,
                     getattr(rss_movie, "METADATA_REF", None),
                     note_info.get("source_provider"),
+                    metadata_gateway=self._metadata_gateway,
                 ),
                 "content_profile": rss_movie.CONTENT_PROFILE,
                 "metadata_policy": rss_movie.METADATA_POLICY,
@@ -283,10 +302,10 @@ class SubscribeQueryService:
                 "release_date": note_info.get("release_date"),
                 "vote": note_info.get("vote"),
                 "keyword": keyword,
-                "type": MediaType.MOVIE.value,
+                "type": ProviderMediaType.MOVIE.value,
                 "add_date": rss_movie.ADD_DATE,
             }
-        return ret_dict
+        return self._attach_aliases(ret_dict)
 
     def get_subscribe_tvs(
         self, rid: int | None = None, state: str | None = None, user: UserContext | None = None
@@ -370,7 +389,12 @@ class SubscribeQueryService:
             resolved_type = (
                 subject.display_type.value
                 if subject.display_type
-                else _resolve_subscribe_type(note_info.get("media_type"), tmdbid, note_info.get("genres"))
+                else _resolve_subscribe_type(
+                    note_info.get("media_type"),
+                    tmdbid,
+                    note_info.get("genres"),
+                    metadata_gateway=self._metadata_gateway,
+                )
             )
             # 历史动漫订阅可能仍是 default 画像；序列化时按实际类型归到 anime 画像，
             # 列表 tab 才能同时满足“展示为动漫”和“出现在动漫 tab”。
@@ -404,6 +428,7 @@ class SubscribeQueryService:
                     rss_tv.TMDBID,
                     getattr(rss_tv, "METADATA_REF", None),
                     note_info.get("source_provider"),
+                    metadata_gateway=self._metadata_gateway,
                 ),
                 "content_profile": effective_profile,
                 "metadata_policy": rss_tv.METADATA_POLICY,
@@ -440,7 +465,7 @@ class SubscribeQueryService:
                 "type": resolved_type,
                 "add_date": rss_tv.ADD_DATE,
             }
-        return ret_dict
+        return self._attach_aliases(ret_dict)
 
     def get_subscribe_tv_episodes(self, rssid: int | None) -> Any:
         """查询数据库中订阅的电视剧缺失集数"""
@@ -450,7 +475,7 @@ class SubscribeQueryService:
         self,
         anchor_provider: str | None,
         anchor_external_id: str | None,
-        mtype: MediaType,
+        mtype: ProviderMediaType,
         user: UserContext | None = None,
     ) -> dict | None:
         """按 ANCHOR_PROVIDER/ANCHOR_EXTERNAL_ID 查询订阅（DB/插件锚点）."""
@@ -458,7 +483,7 @@ class SubscribeQueryService:
         external = str(anchor_external_id or "").strip()
         if not provider or not external:
             return None
-        repo = self._movie_repo if mtype == MediaType.MOVIE else self._tv_repo
+        repo = self._movie_repo if mtype == ProviderMediaType.MOVIE else self._tv_repo
         legacy_ref = f"DB:{external}" if provider == "douban" else f"BG:{external}" if provider == "bangumi" else ""
         for row in repo.get_all(user=user):
             anchor_match = (
@@ -467,7 +492,9 @@ class SubscribeQueryService:
             )
             legacy_match = bool(legacy_ref) and str(getattr(row, "tmdb_id", "") or "").strip() == legacy_ref
             if anchor_match or legacy_match:
-                seasons = self._parse_season_numbers(getattr(row, "season", None)) if mtype != MediaType.MOVIE else []
+                seasons = (
+                    self._parse_season_numbers(getattr(row, "season", None)) if mtype != ProviderMediaType.MOVIE else []
+                )
                 return {
                     "rssid": str(row.id),
                     "fav": "1",
@@ -510,7 +537,7 @@ class SubscribeQueryService:
 
     def get_subscribe_id_by_anchor(
         self,
-        mtype: MediaType,
+        mtype: ProviderMediaType,
         anchor_provider: str | None,
         anchor_external_id: str | None,
         season: str | None = None,
@@ -518,7 +545,11 @@ class SubscribeQueryService:
     ) -> int | None:
         if not anchor_provider or not anchor_external_id:
             return None
-        rows = self._movie_repo.get_all(user=user) if mtype == MediaType.MOVIE else self._tv_repo.get_all(user=user)
+        rows = (
+            self._movie_repo.get_all(user=user)
+            if mtype == ProviderMediaType.MOVIE
+            else self._tv_repo.get_all(user=user)
+        )
         for row in rows:
             if (
                 str(getattr(row, "anchor_provider", "") or "") == anchor_provider
@@ -544,7 +575,7 @@ class SubscribeQueryService:
 
     def delete_subscribe(
         self,
-        mtype: MediaType,
+        mtype: ProviderMediaType,
         title: str | None = None,
         year: str | None = None,
         season: str | None = None,
@@ -557,10 +588,10 @@ class SubscribeQueryService:
         有 rssid 时只按 rssid 删除，避免插件标题/搜索标题与订阅名不一致导致删不掉。
         """
         if rssid is not None:
-            if mtype == MediaType.MOVIE:
+            if mtype == ProviderMediaType.MOVIE:
                 return self._movie_repo.delete(rssid=rssid, user=user)
             return self._tv_repo.delete(rssid=rssid, user=user)
-        if mtype == MediaType.MOVIE:
+        if mtype == ProviderMediaType.MOVIE:
             return self._movie_repo.delete(title=title, year=year, rssid=None, tmdbid=tmdbid, user=user)
         return self._tv_repo.delete(title=title, season=season, rssid=None, tmdbid=tmdbid, user=user)
 
@@ -571,7 +602,7 @@ class SubscribeQueryService:
 
     def get_subscribe_id(
         self,
-        mtype: MediaType,
+        mtype: ProviderMediaType,
         title: str,
         year: str | None = None,
         season: str | None = None,
@@ -580,7 +611,7 @@ class SubscribeQueryService:
         content_profile: str | None = None,
     ) -> Any:
         """获取订阅ID（按归属用户与内容画像收敛）"""
-        if mtype == MediaType.MOVIE:
+        if mtype == ProviderMediaType.MOVIE:
             return self._movie_repo.get_id(
                 title=title, year=year, tmdbid=tmdbid, user_id=user_id, content_profile=content_profile
             )

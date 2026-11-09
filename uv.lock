@@ -5796,7 +5796,7 @@ wheels = [
 
 [[package]]
 name = "wolfnas"
-version = "5.7.5"
+version = "5.9.4"
 source = { virtual = "." }
 dependencies = [
     { name = "alembic" },

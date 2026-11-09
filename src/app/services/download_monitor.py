@@ -111,16 +111,12 @@ class DownloadMonitor:
                         self._processed_ids.add(uid)
                         continue
                     try:
-                        history = self._history_repo.get_by_source(task_path)
-                        if history is None and task_path:
-                            dir_lookup = getattr(self._history_repo, "get_by_source_dir", None)
-                            if dir_lookup is not None:
-                                history = dir_lookup(task_path)
-                        if history is not None:
+                        # 源文件比历史更新（重新下载）时不算已处理，仍需转移
+                        if self._has_transfer_history(task_path):
                             self._processed_ids.add(uid)
                             continue
                         # 启动期残留任务：下载器里仍标记完成，但路径已不存在时
-                        # 转移必然失败，不能让它重放并产生“无法识别”误通知。
+                        # 转移必然失败，不能让它重放并产生「无法识别」误通知。
                         # Windows 上 os.path.isabs("/foo") 为 False，而远程下载器给出的
                         # 常是 POSIX 绝对路径（/downloads/x.mkv），故同时认领根路径写法，
                         # 否则残留任务在 Windows 宿主上永远不会被跳过。
@@ -216,6 +212,38 @@ class DownloadMonitor:
 
             self._processed_ids.add(uid)
             self._publish_completed(did, task_id, task_path, task)
+
+    def _has_transfer_history(self, task_path: str) -> bool:
+        """源文件是否已有转移历史；源文件比历史更新时视为重新下载，仍需转移."""
+        if self._history_repo is None or not task_path:
+            return False
+        try:
+            history = self._history_repo.get_by_source(task_path)
+            if history is None:
+                dir_lookup = getattr(self._history_repo, "get_by_source_dir", None)
+                if dir_lookup is not None:
+                    history = dir_lookup(task_path)
+            if history is None or history == []:
+                return False
+            if self._source_newer_than_history(task_path, history):
+                return False
+            return True
+        except Exception as e:  # noqa: BLE001 - 历史查询失败不应阻断监控
+            log.debug(f"[DownloadMonitor]查询转移历史失败 {task_path}: {e}")
+            return False
+
+    @staticmethod
+    def _source_newer_than_history(task_path: str, history: Any) -> bool:
+        entries = history if isinstance(history, (list, tuple)) else [history]
+        dates = [str(getattr(item, "date", "") or "") for item in entries]
+        dates = [value for value in dates if value]
+        if not dates:
+            return False
+        try:
+            latest = max(time.mktime(time.strptime(value, "%Y-%m-%d %H:%M:%S")) for value in dates)
+            return os.path.getmtime(task_path) > latest + 5
+        except (OSError, ValueError):
+            return False
 
     def _make_id(self, downloader_id: str, task_id: str) -> str:
         """生成唯一任务标识."""

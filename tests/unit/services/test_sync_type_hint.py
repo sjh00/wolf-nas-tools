@@ -10,7 +10,7 @@ qb 的下载分类直接体现在 btstore 子目录上（btstore/tv、btstore/mo
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.sync_engine import media_type_hint_from_source
 
 
@@ -18,13 +18,13 @@ class TestMediaTypeHintFromSource:
     @pytest.mark.parametrize(
         ("source", "expected"),
         [
-            ("/media/storedisk2/btstore/tv", MediaType.TV.value),
-            ("/media/storedisk2/btstore/tv/", MediaType.TV.value),
-            ("/media/storedisk1/btstore/movie", MediaType.MOVIE.value),
-            ("/media/favorites/btstore/movie", MediaType.MOVIE.value),
-            ("/media/favorites/btstore/animetv", MediaType.ANIME.value),
-            ("/media/gof/btstore/tv", MediaType.TV.value),
-            ("/media/gof/btstore/movie", MediaType.MOVIE.value),
+            ("/media/storedisk2/btstore/tv", ProviderMediaType.SERIES.value),
+            ("/media/storedisk2/btstore/tv/", ProviderMediaType.SERIES.value),
+            ("/media/storedisk1/btstore/movie", ProviderMediaType.MOVIE.value),
+            ("/media/favorites/btstore/movie", ProviderMediaType.MOVIE.value),
+            ("/media/favorites/btstore/animetv", ProviderMediaType.ANIME.value),
+            ("/media/gof/btstore/tv", ProviderMediaType.SERIES.value),
+            ("/media/gof/btstore/movie", ProviderMediaType.MOVIE.value),
         ],
     )
     def test_known_dirs_map_to_type(self, source, expected):
@@ -49,8 +49,7 @@ class TestMediaTypeHintFromSource:
         assert media_type_hint_from_source(source) is None
 
     def test_case_insensitive(self):
-        assert media_type_hint_from_source("/media/x/btstore/TV") == MediaType.TV.value
-
+        assert media_type_hint_from_source("/media/x/btstore/TV") == ProviderMediaType.SERIES.value
 
 class TestTransferMediaKeepsHintedType:
     """下载记录缺失时不能把调用方显式传入的媒体类型丢掉。"""
@@ -64,9 +63,9 @@ class TestTransferMediaKeepsHintedType:
         return looked_up_type if looked_up_type is not None else hinted
 
     def test_hint_survives_missing_record(self):
-        assert self._lookup_result_clears_type(MediaType.TV.value) == MediaType.TV.value
+        assert self._lookup_result_clears_type(ProviderMediaType.SERIES.value) == ProviderMediaType.SERIES.value
 
     def test_record_type_wins_when_present(self):
-        looked_up_type = MediaType.MOVIE.value
-        hinted = MediaType.TV.value
-        assert (looked_up_type if looked_up_type is not None else hinted) == MediaType.MOVIE.value
+        looked_up_type = ProviderMediaType.MOVIE.value
+        hinted = ProviderMediaType.SERIES.value
+        assert (looked_up_type if looked_up_type is not None else hinted) == ProviderMediaType.MOVIE.value

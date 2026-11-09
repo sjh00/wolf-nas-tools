@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.parser.unified import UnifiedParser
 from tests.cases.meta_cases import meta_cases
 
@@ -23,14 +23,12 @@ _KNOWN_LIMITATION_PREFIXES = (
     "[Nekomoe kissaten&LoliHouse] Soredemo Ayumu",  # - 01v2 带版本号
 )
 
-
-def _norm_type(raw: str) -> MediaType | None:
+def _norm_type(raw: str) -> ProviderMediaType | None:
     if raw == "电影":
-        return MediaType.MOVIE
+        return ProviderMediaType.MOVIE
     if raw == "电视剧":
-        return MediaType.TV
+        return ProviderMediaType.SERIES
     return None
-
 
 def _parse_season(raw: str) -> tuple[int | None, int | None]:
     """'S01' -> (1, None)；'S01-S02' -> (1, 2)；'' -> (None, None)"""
@@ -42,7 +40,6 @@ def _parse_season(raw: str) -> tuple[int | None, int | None]:
         return None, None
     return int(m.group(1)), int(m.group(2)) if m.group(2) else None
 
-
 def _parse_episode(raw: str) -> tuple[int | None, int | None]:
     """'E06' -> (6, None)；'E01-E26' -> (1, 26)；'' -> (None, None)"""
     raw = (raw or "").strip()
@@ -53,11 +50,9 @@ def _parse_episode(raw: str) -> tuple[int | None, int | None]:
         return None, None
     return int(m.group(1)), int(m.group(2)) if m.group(2) else None
 
-
 @pytest.fixture(scope="module")
 def parser():
     return UnifiedParser()
-
 
 @pytest.mark.parametrize(
     "case",
@@ -76,7 +71,11 @@ def test_meta_cases(parser, case):
     # 类型：电影/电视剧 必须一致（动漫归入电视剧）
     exp_type = _norm_type(target.get("type", ""))
     if exp_type is not None:
-        got_type = MediaType.TV if result.type in (MediaType.TV, MediaType.ANIME) else result.type
+        got_type = (
+            ProviderMediaType.SERIES
+            if result.type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME)
+            else result.type
+        )
         assert got_type == exp_type, f"类型不符: 期望 {exp_type}, 实际 {result.type} | {case['title']!r}"
 
     # 年份

@@ -21,6 +21,7 @@ from app.db.repositories.download_repository import DownloadRepository
 from app.db.repositories.lifecycle_repository import LifecycleRepository
 from app.db.repositories.media_identity_repository import MediaIdentityRepository
 from app.domain.lifecycle import LifecycleStage, LifecycleStatus, map_download_state, map_task_status
+from app.domain.media_types import media_type_registry
 from app.media.display_image_policy import unwrap_display_image_url
 from app.services.identity_resolver import IdentityResolver
 from app.services.series_service import SeriesService
@@ -59,6 +60,27 @@ class LifecycleProjector:
         except Exception:  # noqa: BLE001 - 判断失败按未入库处理，保证正常通知
             return False
 
+    def has_been_in_library(self, media) -> bool:
+        """是否曾成功入库（当前阶段可能被新一轮转移事件暂时覆盖）."""
+        try:
+            resolved = self._resolver.resolve_media(media, allow_local=True)
+            identity_id = resolved.identity_id
+            if not identity_id:
+                return False
+            season = int(media.get_season_seq() or 0) if hasattr(media, "get_season_seq") else 0
+            episodes = list(media.get_episode_list()) if hasattr(media, "get_episode_list") else []
+            return any(
+                self._repo.has_succeeded_stage(
+                    identity_id,
+                    LifecycleStage.IN_LIBRARY.value,
+                    season=season,
+                    episode=int(episode or 0),
+                )
+                for episode in episodes or [0]
+            )
+        except Exception:  # noqa: BLE001 - 查询失败按未入库处理
+            return False
+
     def record(
         self,
         *,
@@ -93,6 +115,11 @@ class LifecycleProjector:
         occurred = occurred_at or datetime.now()
         stage_value = LifecycleStage(stage).value
         status_value = LifecycleStatus(status).value
+        resolved_type = media_type_registry.resolve_profile(content_profile) or media_type_registry.resolve(
+            media_type, content_profile
+        )
+        if resolved_type.key != "unknown":
+            media_type = resolved_type.key
         key = event_key or self._event_key(identity_id, season, episode, stage_value, event_type, trace_id, occurred)
         poster = unwrap_display_image_url(poster) if poster else poster
         if str(identity_id or "") and str(identity_id) != "preview" and not source_provider:
@@ -119,7 +146,7 @@ class LifecycleProjector:
             EVENT_KEY=key,
             IDENTITY_ID=identity_id,
             SERIES_KEY=series_key,
-            MEDIA_TYPE=media_type or "movie",
+            MEDIA_TYPE=media_type or "unknown",
             SEASON=int(season or 0),
             EPISODE=int(episode or 0),
             RUN_ID=run_id,
@@ -136,7 +163,7 @@ class LifecycleProjector:
         snapshot = {
             "IDENTITY_ID": identity_id,
             "SERIES_KEY": series_key,
-            "MEDIA_TYPE": media_type or "movie",
+            "MEDIA_TYPE": media_type or "unknown",
             "SEASON": int(season or 0),
             "EPISODE": int(episode or 0),
             "TITLE": title,
@@ -239,7 +266,11 @@ class LifecycleProjector:
         event_key: str | None = None,
     ) -> bool:
         """从 MediaInfo 投影事件；没有稳定身份时跳过，不影响业务."""
-        media_type = getattr(getattr(media, "type", None), "value", getattr(media, "type", "movie")) or "movie"
+        media_type = (
+            str(getattr(media, "media_type_key", "") or "")
+            or getattr(getattr(media, "type", None), "value", getattr(media, "type", ""))
+            or "unknown"
+        )
         season = 0
         if hasattr(media, "get_season_seq"):
             try:
@@ -420,6 +451,7 @@ class LifecycleReconciler:
                     count += 1
             identity_by_external: dict[str, str] = {}
             identity_by_title: dict[tuple[str, str, str], str] = {}
+            latest_download_rows: dict[str, Any] = {}
             for row in downloads:
                 identity_id = _valid_identity(row.IDENTITY_ID)
                 if not identity_id:
@@ -431,9 +463,17 @@ class LifecycleReconciler:
                     (str(row.TITLE or "").lower(), str(row.YEAR or ""), str(row.SE or "")),
                     identity_id,
                 )
+                stamp = (_parse_history_time(row.DATE), row.ID)
+                current = latest_download_rows.get(identity_id)
+                if current is None or stamp > (_parse_history_time(current.DATE), current.ID):
+                    latest_download_rows[identity_id] = row
             for row in reversed(downloads):
                 identity_id = _canonical_identity(row, identity_by_external, identity_by_title, self._resolver)
                 if not identity_id:
+                    continue
+                raw_identity = _valid_identity(row.IDENTITY_ID)
+                if raw_identity and latest_download_rows.get(raw_identity) is not row:
+                    # 同一身份存在更新的下载记录时，旧记录的完成态不能覆盖当前下载周期。
                     continue
                 stage, status = map_download_state(row.STATE)
                 episode_pairs = _parse_season_episodes(row.SE)
@@ -666,7 +706,7 @@ class LifecycleReconciler:
                         stage=stage.value,
                         status=status.value,
                         event_type="download.progress",
-                        media_type=str(row.MEDIA_TYPE or "movie"),
+                        media_type=str(row.MEDIA_TYPE or "unknown"),
                         season=int(row.SEASON or 0),
                         episode=int(row.EPISODE or 0),
                         run_id=str(row.RUN_ID or ""),
@@ -689,7 +729,7 @@ class LifecycleReconciler:
                     stage=str(row.STAGE),
                     status=LifecycleStatus.BLOCKED,
                     event_type="reconcile.stale",
-                    media_type=str(row.MEDIA_TYPE or "movie"),
+                    media_type=str(row.MEDIA_TYPE or "unknown"),
                     season=int(row.SEASON or 0),
                     episode=int(row.EPISODE or 0),
                     run_id=str(row.RUN_ID or ""),
@@ -721,7 +761,7 @@ class LifecycleReconciler:
                         stage=stage.value,
                         status=status.value,
                         event_type="download.progress",
-                        media_type=str(snapshot.MEDIA_TYPE or "movie"),
+                        media_type=str(snapshot.MEDIA_TYPE or "unknown"),
                         season=int(snapshot.SEASON or 0),
                         episode=int(snapshot.EPISODE or 0),
                         run_id=str(snapshot.RUN_ID or ""),
@@ -855,4 +895,6 @@ def _parse_history_time(value: Any) -> datetime | None:
 
 def _row_media_type(value: Any) -> str:
     key = str(value or "").lower()
-    return {"mov": "movie", "movie": "movie", "tv": "tv", "ani": "anime", "anime": "anime"}.get(key, "movie")
+    return {"mov": "movie", "movie": "movie", "tv": "tv", "ani": "anime", "anime": "anime"}.get(
+        key, str(value or "unknown")
+    )

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.models import build_category_rule_map, correct_type_by_genres
 
 
@@ -34,9 +34,7 @@ def _rule_map():
         ]
     )
 
-
 RULE_MAP = _rule_map()
-
 
 class TestNonFilmGenresBecomeTv:
     @pytest.mark.parametrize(
@@ -55,12 +53,11 @@ class TestNonFilmGenresBecomeTv:
         ],
     )
     def test_retypes_to_tv(self, case, genres):
-        assert correct_type_by_genres(MediaType.MOVIE, genres, RULE_MAP) == MediaType.TV
+        assert correct_type_by_genres(ProviderMediaType.MOVIE, genres, RULE_MAP) == ProviderMediaType.SERIES
 
     def test_documentary_wins_over_narrative_tag(self):
         # 纪录片常带「剧情」标签（历史重演/人物纪实），纪录片优先级更高
-        assert correct_type_by_genres(MediaType.MOVIE, ["剧情", "纪录"], RULE_MAP) == MediaType.TV
-
+        assert correct_type_by_genres(ProviderMediaType.MOVIE, ["剧情", "纪录"], RULE_MAP) == ProviderMediaType.SERIES
 
 class TestFilmStaysMovie:
     @pytest.mark.parametrize(
@@ -81,24 +78,22 @@ class TestFilmStaysMovie:
         ],
     )
     def test_stays_movie(self, case, genres):
-        assert correct_type_by_genres(MediaType.MOVIE, genres, RULE_MAP) == MediaType.MOVIE
+        assert correct_type_by_genres(ProviderMediaType.MOVIE, genres, RULE_MAP) == ProviderMediaType.MOVIE
 
     @pytest.mark.parametrize(
         "media_type",
-        [MediaType.TV, MediaType.ANIME, MediaType.UNKNOWN, None],
+        [ProviderMediaType.SERIES, ProviderMediaType.ANIME, ProviderMediaType.UNKNOWN, None],
     )
     def test_non_movie_untouched(self, media_type):
         # 非 movie 一律原样返回，避免把剧集/动漫降级
         assert correct_type_by_genres(media_type, ["纪录"], RULE_MAP) == media_type
 
-
 class TestEmptyConfig:
     def test_no_tv_categories_still_uses_builtin_non_film_genres(self):
         # 配置里没有任何 TV 分类时，固有非电影题材仍然生效
         empty = build_category_rule_map([])
-        assert correct_type_by_genres(MediaType.MOVIE, ["纪录"], empty) == MediaType.TV
-        assert correct_type_by_genres(MediaType.MOVIE, ["音乐"], empty) == MediaType.TV
-
+        assert correct_type_by_genres(ProviderMediaType.MOVIE, ["纪录"], empty) == ProviderMediaType.SERIES
+        assert correct_type_by_genres(ProviderMediaType.MOVIE, ["音乐"], empty) == ProviderMediaType.SERIES
 
 class TestBuildCategoryRuleMap:
     def test_default_category_rules_blanked(self):

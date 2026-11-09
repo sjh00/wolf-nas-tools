@@ -10,11 +10,10 @@
 
 from types import SimpleNamespace
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.subscribe.management.add_service import SubscribeAddService
 
 resolve = SubscribeAddService._resolve_subscribe_type
-
 
 class TestExplicitTmdbWins:
     def test_tv_request_keeps_tv_when_detail_is_movie(self):
@@ -22,45 +21,44 @@ class TestExplicitTmdbWins:
         assert (
             resolve(
                 provider="tmdb",
-                requested=MediaType.TV,
-                detail_type=MediaType.MOVIE,
+                requested=ProviderMediaType.SERIES,
+                detail_type=ProviderMediaType.MOVIE,
                 external_id="279155",
             )
-            is MediaType.TV
+            is ProviderMediaType.SERIES
         )
 
     def test_movie_request_keeps_movie_when_detail_is_tv(self):
         assert (
             resolve(
                 provider="tmdb",
-                requested=MediaType.MOVIE,
-                detail_type=MediaType.TV,
+                requested=ProviderMediaType.MOVIE,
+                detail_type=ProviderMediaType.SERIES,
                 external_id="1",
             )
-            is MediaType.MOVIE
+            is ProviderMediaType.MOVIE
         )
 
     def test_anime_request_keeps_anime(self):
         assert (
             resolve(
                 provider="tmdb",
-                requested=MediaType.ANIME,
-                detail_type=MediaType.TV,
+                requested=ProviderMediaType.ANIME,
+                detail_type=ProviderMediaType.SERIES,
                 external_id="1",
             )
-            is MediaType.ANIME
+            is ProviderMediaType.ANIME
         )
 
     def test_provider_name_is_normalized(self):
         assert (
             resolve(
                 provider=" TMDB ",
-                requested=MediaType.TV,
-                detail_type=MediaType.MOVIE,
+                requested=ProviderMediaType.SERIES,
+                detail_type=ProviderMediaType.MOVIE,
             )
-            is MediaType.TV
+            is ProviderMediaType.SERIES
         )
-
 
 class TestOtherProvidersFollowDetail:
     def test_douban_follows_detail_type(self):
@@ -68,32 +66,31 @@ class TestOtherProvidersFollowDetail:
         assert (
             resolve(
                 provider="douban",
-                requested=MediaType.TV,
-                detail_type=MediaType.MOVIE,
+                requested=ProviderMediaType.SERIES,
+                detail_type=ProviderMediaType.MOVIE,
             )
-            is MediaType.MOVIE
+            is ProviderMediaType.MOVIE
         )
 
     def test_bangumi_follows_detail_type(self):
         assert (
             resolve(
                 provider="bangumi",
-                requested=MediaType.TV,
-                detail_type=MediaType.ANIME,
+                requested=ProviderMediaType.SERIES,
+                detail_type=ProviderMediaType.ANIME,
             )
-            is MediaType.ANIME
+            is ProviderMediaType.ANIME
         )
-
 
 class TestEdgeCases:
     def test_same_type_returns_detail(self):
         assert (
             resolve(
                 provider="tmdb",
-                requested=MediaType.TV,
-                detail_type=MediaType.TV,
+                requested=ProviderMediaType.SERIES,
+                detail_type=ProviderMediaType.SERIES,
             )
-            is MediaType.TV
+            is ProviderMediaType.SERIES
         )
 
     def test_unknown_requested_falls_back_to_detail(self):
@@ -101,31 +98,30 @@ class TestEdgeCases:
             resolve(
                 provider="tmdb",
                 requested=None,
-                detail_type=MediaType.TV,
+                detail_type=ProviderMediaType.SERIES,
             )
-            is MediaType.TV
+            is ProviderMediaType.SERIES
         )
 
     def test_unknown_detail_falls_back_to_requested(self):
         assert (
             resolve(
                 provider="tmdb",
-                requested=MediaType.TV,
+                requested=ProviderMediaType.SERIES,
                 detail_type=None,
             )
-            is MediaType.TV
+            is ProviderMediaType.SERIES
         )
 
     def test_returns_value_usable_by_downstream(self):
         """返回值必须带 .value，下游有 `media_info.type.value` 之类取值。"""
         result = resolve(
             provider="tmdb",
-            requested=MediaType.TV,
-            detail_type=MediaType.MOVIE,
+            requested=ProviderMediaType.SERIES,
+            detail_type=ProviderMediaType.MOVIE,
         )
-        assert isinstance(result, MediaType)
+        assert isinstance(result, ProviderMediaType)
         assert result.value == "tv"
-
 
 class TestAddRequestCarriesAnchor:
     """路由把 anchor 归一成 metadata_ref，供服务端按锚点取详情。"""

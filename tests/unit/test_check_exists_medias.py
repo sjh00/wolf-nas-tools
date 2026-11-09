@@ -4,20 +4,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.services.download_core import DownloadCore
 
 
 class _Meta:
     def __init__(self, **kwargs):
-        self.type = kwargs.get("type", MediaType.TV)
+        self.type = kwargs.get("type", ProviderMediaType.SERIES)
         self.tmdb_id = kwargs.get("tmdb_id", 100)
         self.total_episodes = kwargs.get("total_episodes", None)
         self._season = kwargs.get("season", "1")
 
     def get_season_seq(self):
         return self._season
-
 
 @pytest.fixture
 def core():
@@ -38,7 +37,6 @@ def core():
             site_engine=MagicMock(),
         )
         return c
-
 
 class TestCheckExistsMedias:
     def test_tv_int_season_key_in_total_ep(self, core):
@@ -66,7 +64,7 @@ class TestCheckExistsMedias:
         assert no_exists == {}
 
     def test_movie_exists(self, core):
-        meta = _Meta(type=MediaType.MOVIE, tmdb_id=9)
+        meta = _Meta(type=ProviderMediaType.MOVIE, tmdb_id=9)
         core._filetransfer.get_no_exists_medias.return_value = [{"title": "X"}]
 
         exist, no_exists, _ = core.check_exists_medias(meta)

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.identity.matcher import TargetMatcher
 from app.media.identity.models import Work
 from app.services.subscribe.matcher import SubscribeMatcher
@@ -26,7 +26,6 @@ def _make_media_info(mtype, title, year, tmdb_id=None):
     media_info.subtitle = ""
     return media_info
 
-
 @pytest.fixture(autouse=True)
 def _stub_filter_repos():
     with (
@@ -38,16 +37,14 @@ def _stub_filter_repos():
         mock_r.return_value.get_by_group.return_value = []
         yield
 
-
 @pytest.fixture
 def matcher():
     return SubscribeMatcher()
 
-
 class TestSubscribeMatcher:
     def test_movie_torrent_does_not_match_tv_subscription(self, matcher):
         """电影种子不应匹配电视剧订阅."""
-        media_info = _make_media_info(MediaType.MOVIE, "攻壳机动队", "1995")
+        media_info = _make_media_info(ProviderMediaType.MOVIE, "攻壳机动队", "1995")
         rss_tvs = {
             1: {
                 "name": "攻壳机动队",
@@ -74,7 +71,7 @@ class TestSubscribeMatcher:
 
     def test_tv_torrent_matches_tv_subscription(self, matcher):
         """电视剧种子应匹配同名同年份电视剧订阅."""
-        media_info = _make_media_info(MediaType.TV, "攻壳机动队", "2026")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "攻壳机动队", "2026")
         rss_tvs = {
             1: {
                 "name": "攻壳机动队",
@@ -102,7 +99,7 @@ class TestSubscribeMatcher:
 
     def test_anime_torrent_matches_tv_subscription(self, matcher):
         """动漫种子应匹配电视剧订阅."""
-        media_info = _make_media_info(MediaType.ANIME, "攻壳机动队", "2026")
+        media_info = _make_media_info(ProviderMediaType.ANIME, "攻壳机动队", "2026")
         rss_tvs = {
             1: {
                 "name": "攻壳机动队",
@@ -130,7 +127,7 @@ class TestSubscribeMatcher:
 
     def test_movie_torrent_matches_movie_subscription(self, matcher):
         """电影种子应匹配电影订阅."""
-        media_info = _make_media_info(MediaType.MOVIE, "攻壳机动队", "1995")
+        media_info = _make_media_info(ProviderMediaType.MOVIE, "攻壳机动队", "1995")
         rss_movies = {
             1: {
                 "name": "攻壳机动队",
@@ -157,7 +154,7 @@ class TestSubscribeMatcher:
 
     def test_tv_torrent_does_not_match_movie_subscription(self, matcher):
         """电视剧种子不应匹配电影订阅."""
-        media_info = _make_media_info(MediaType.TV, "攻壳机动队", "2026")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "攻壳机动队", "2026")
         rss_movies = {
             1: {
                 "name": "攻壳机动队",
@@ -182,13 +179,13 @@ class TestSubscribeMatcher:
         assert match_flag is False
 
     def test_year_mismatch_blocks_fuzzy_match(self, matcher):
-        media_info = _make_media_info(MediaType.MOVIE, "Ghost in the Shell", "1995")
+        media_info = _make_media_info(ProviderMediaType.MOVIE, "Ghost in the Shell", "1995")
         rss_movies = {1: {"name": "Ghost in the Shell", "year": "2026", "tmdbid": "255358", "fuzzy_match": True}}
         match_flag, _, _ = matcher.match(media_info, rss_movies, {}, "test_site", None, "", False, "", {}, False)
         assert match_flag is False
 
     def test_torrent_metadata_not_mutated_after_match(self, matcher):
-        media_info = _make_media_info(MediaType.TV, "Ghost In The Shell", "2026", tmdb_id=0)
+        media_info = _make_media_info(ProviderMediaType.SERIES, "Ghost In The Shell", "2026", tmdb_id=0)
         rss_tvs = {1: {"name": "攻壳机动队", "year": "2026", "season": "S01", "tmdbid": "255358", "fuzzy_match": False}}
         o_title, o_year, o_type, o_tmdb = media_info.title, media_info.year, media_info.type, media_info.tmdb_id
         matcher.match(media_info, {}, rss_tvs, "test_site", None, "", False, "", {}, False)
@@ -197,13 +194,11 @@ class TestSubscribeMatcher:
         assert media_info.type == o_type
         assert media_info.tmdb_id == o_tmdb
 
-
 def _unified_target_matcher(works=None):
     index = MagicMock()
     if works:
         index.get_work.side_effect = lambda source, wid: works.get(wid)
     return TargetMatcher(graph=MagicMock(), index=index)
-
 
 class TestUnifiedMatching:
     """ADR-014 P3：target_matcher 开启后订阅匹配走统一身份判等"""
@@ -214,7 +209,7 @@ class TestUnifiedMatching:
 
     def test_same_tmdb_matches(self, matcher):
         """同一 tmdb_id → id_match 命中"""
-        media_info = _make_media_info(MediaType.TV, "Ghost In The Shell", "2026", tmdb_id=255358)
+        media_info = _make_media_info(ProviderMediaType.SERIES, "Ghost In The Shell", "2026", tmdb_id=255358)
         rss_tvs = {1: {"name": "攻壳机动队", "year": "2026", "season": "S01", "tmdbid": "255358", "fuzzy_match": False}}
         with (
             patch("app.services.subscribe.matcher.settings") as mock_settings,
@@ -232,7 +227,7 @@ class TestUnifiedMatching:
 
     def test_different_tmdb_rejected(self, matcher):
         """不同 tmdb_id 且无 franchise 关系 → 拒绝"""
-        media_info = _make_media_info(MediaType.TV, "Ghost In The Shell", "2026", tmdb_id=62070)
+        media_info = _make_media_info(ProviderMediaType.SERIES, "Ghost In The Shell", "2026", tmdb_id=62070)
         rss_tvs = {1: {"name": "攻壳机动队", "year": "2026", "season": "S01", "tmdbid": "255358", "fuzzy_match": False}}
         with (
             patch("app.services.subscribe.matcher.settings") as mock_settings,
@@ -261,7 +256,7 @@ class TestUnifiedMatching:
                 official_titles=["Ghost in the Shell"],
             ),
         }
-        media_info = _make_media_info(MediaType.TV, "Ghost In The Shell SAC_2045", "2020", tmdb_id=62070)
+        media_info = _make_media_info(ProviderMediaType.SERIES, "Ghost In The Shell SAC_2045", "2020", tmdb_id=62070)
         rss_tvs = {1: {"name": "攻壳机动队", "year": "2026", "season": "S01", "tmdbid": "255358", "fuzzy_match": False}}
         with (
             patch("app.services.subscribe.matcher.settings") as mock_settings,
@@ -274,13 +269,12 @@ class TestUnifiedMatching:
             match_flag, _, _ = matcher.match(media_info, {}, rss_tvs, "test_site", None, "", False, "", {}, False)
         assert match_flag is False
 
-
 class TestFuzzyNameMatch:
     """fuzzy 分支：规范化子串匹配替代裸 re.search"""
 
     def test_regex_metachar_treated_as_literal(self, matcher):
         """订阅名含正则元字符 → 按字面子串匹配，不当作正则"""
-        media_info = _make_media_info(MediaType.TV, "攻壳机动队", "2026")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "攻壳机动队", "2026")
         rss_tvs = {
             1: {"name": "攻壳机动队(2026)", "year": "2026", "season": "S01", "tmdbid": None, "fuzzy_match": True}
         }
@@ -289,7 +283,7 @@ class TestFuzzyNameMatch:
 
     def test_punct_differs_still_matches(self, matcher):
         """标点/大小写差异经归一化后仍匹配"""
-        media_info = _make_media_info(MediaType.TV, "Ghost.In.The.Shell", "2026")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "Ghost.In.The.Shell", "2026")
         rss_tvs = {
             1: {"name": "ghost in the shell", "year": "2026", "season": "S01", "tmdbid": None, "fuzzy_match": True}
         }
@@ -298,11 +292,10 @@ class TestFuzzyNameMatch:
 
     def test_name_not_in_title_rejected(self, matcher):
         """名称与种子标题无包含关系 → 拒绝"""
-        media_info = _make_media_info(MediaType.TV, "Star Wars", "1977")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "Star Wars", "1977")
         rss_tvs = {1: {"name": "攻壳机动队", "year": "2026", "season": "S01", "tmdbid": None, "fuzzy_match": True}}
         match_flag, _, _ = matcher.match(media_info, {}, rss_tvs, "test_site", None, "", False, "", {}, False)
         assert match_flag is False
-
 
 class TestMultiUserFanout:
     """多用户同媒体订阅 fan-out：主匹配 + 兄弟订阅联动记账（ADR-021 5.4）"""
@@ -327,7 +320,7 @@ class TestMultiUserFanout:
 
     def test_sibling_subscription_attached(self, matcher):
         """同媒体多用户订阅：主匹配携带兄弟订阅 id"""
-        media_info = _make_media_info(MediaType.TV, "进击的巨人", "2013")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "进击的巨人", "2013")
         rss_tvs = {1: self._tv_sub(1, 1), 2: self._tv_sub(2, 2)}
         match_flag, _, match_info = self._match(matcher, media_info, rss_tvs)
         assert match_flag is True
@@ -335,7 +328,7 @@ class TestMultiUserFanout:
 
     def test_sibling_with_different_quality_not_fanned_out(self, matcher):
         """过滤要求不同的兄弟订阅不联动（避免高要求用户被低清共享副本满足）"""
-        media_info = _make_media_info(MediaType.TV, "进击的巨人", "2013")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "进击的巨人", "2013")
         rss_tvs = {1: self._tv_sub(1, 1), 2: self._tv_sub(2, 2, filter_pix="4k")}
         match_flag, _, match_info = self._match(matcher, media_info, rss_tvs)
         assert match_flag is True
@@ -343,23 +336,22 @@ class TestMultiUserFanout:
 
     def test_sibling_with_over_edition_not_fanned_out(self, matcher):
         """开洗版的兄弟订阅不联动（洗版需要后续升级下载）"""
-        media_info = _make_media_info(MediaType.TV, "进击的巨人", "2013")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "进击的巨人", "2013")
         rss_tvs = {1: self._tv_sub(1, 1), 2: self._tv_sub(2, 2, over_edition=1)}
         match_flag, _, match_info = self._match(matcher, media_info, rss_tvs)
         assert match_flag is True
         assert match_info.get("sibling_rssids") is None
 
     def test_single_subscription_no_siblings(self, matcher):
-        media_info = _make_media_info(MediaType.TV, "进击的巨人", "2013")
+        media_info = _make_media_info(ProviderMediaType.SERIES, "进击的巨人", "2013")
         rss_tvs = {1: self._tv_sub(1, 1)}
         match_flag, _, match_info = self._match(matcher, media_info, rss_tvs)
         assert match_flag is True
         assert match_info.get("sibling_rssids") is None
 
-
 class TestDefaultFilterRule:
     def test_filter_rule_zero_uses_default_group(self, matcher):
-        media_info = _make_media_info(MediaType.MOVIE, "逃出绝命街", "2026")
+        media_info = _make_media_info(ProviderMediaType.MOVIE, "逃出绝命街", "2026")
         media_info.org_string = "The End of Oak Street 2026 1080p AMZN WEB-DL H264 DDP5.1-SCOPE"
         media_info.rev_string = media_info.org_string
         media_info.size = 8 * 1024**3
@@ -386,8 +378,7 @@ class TestDefaultFilterRule:
         assert match_flag is False
         assert any("过滤规则" in m for m in msgs)
 
-
-class TestSubscribeMediaTypePropagation:
+class TestSubscribeProviderMediaTypePropagation:
     """订阅类型需在匹配阶段透传：动漫订阅→anime，且识别的动漫不被 tv 订阅降级."""
 
     def _match(self, matcher, media_type, rss_info):
@@ -409,7 +400,7 @@ class TestSubscribeMediaTypePropagation:
     def test_anime_subscription_sets_anime(self, matcher):
         flag, media_info = self._match(
             matcher,
-            MediaType.TV,
+            ProviderMediaType.SERIES,
             {
                 "name": "克雷瓦提斯",
                 "year": "2025",
@@ -420,22 +411,22 @@ class TestSubscribeMediaTypePropagation:
             },
         )
         assert flag is True
-        assert media_info.type == MediaType.ANIME
+        assert media_info.type == ProviderMediaType.ANIME
 
     def test_identified_anime_not_downgraded_by_tv_subscription(self, matcher):
         flag, media_info = self._match(
             matcher,
-            MediaType.ANIME,
+            ProviderMediaType.ANIME,
             {"name": "克雷瓦提斯", "year": "2025", "season": "S01", "tmdbid": None, "fuzzy_match": False, "type": "tv"},
         )
         assert flag is True
-        assert media_info.type == MediaType.ANIME
+        assert media_info.type == ProviderMediaType.ANIME
 
     def test_tv_subscription_keeps_tv(self, matcher):
         flag, media_info = self._match(
             matcher,
-            MediaType.TV,
+            ProviderMediaType.SERIES,
             {"name": "克雷瓦提斯", "year": "2025", "season": "S01", "tmdbid": None, "fuzzy_match": False, "type": "tv"},
         )
         assert flag is True
-        assert media_info.type == MediaType.TV
+        assert media_info.type == ProviderMediaType.SERIES

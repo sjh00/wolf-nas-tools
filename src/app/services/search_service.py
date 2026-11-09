@@ -19,10 +19,9 @@ import log
 from app.core.exceptions import RepositoryError, ServiceError
 from app.core.settings import settings
 from app.domain.enums import ProgressKey, SearchType, channel_key, channel_name
-from app.domain.episode_utils import extract_episode_number
 from app.domain.interfaces.download_repo import IDownloadHistoryRepository
 from app.domain.interfaces.search_repo import ISearchRepository
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event
 from app.events.bus import EventBus
 from app.events.constants import SEARCH_START
@@ -30,7 +29,9 @@ from app.events.payloads import SearchStartPayload
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.progress import ProgressTracker
 from app.infrastructure.thread import ThreadExecutor
+from app.media import meta_info
 from app.media.category_taxonomy import load_taxonomy
+from app.media.metadata.aliases import select_aliases
 from app.media.service import MediaService
 from app.message import Message
 from app.schemas.search import SearchMediasResultDTO, SearchOneMediaResultDTO
@@ -70,7 +71,7 @@ class SearchQueryBuilder:
     """
 
     @staticmethod
-    def build_search_names(media_info, media_helper: MediaService) -> tuple[list[str], int]:
+    def build_search_names(media_info, metadata_gateway: Any) -> tuple[list[str], int]:
         """
         根据媒体信息构建多语言搜索词列表
         :return: (搜索词列表, 建议最大并发数)
@@ -107,7 +108,16 @@ class SearchQueryBuilder:
         else:
             search_cn_name = media_info.title
 
-        # 英文名
+        raw_aliases = [str(item).strip() for item in (getattr(media_info, "aliases", None) or []) if str(item).strip()]
+        aliases = select_aliases(
+            search_cn_name,
+            getattr(media_info, "original_title", None),
+            raw_aliases,
+            countries=getattr(media_info, "countries", None),
+            original_language=getattr(media_info, "original_language", None),
+        )
+
+        # 英文名优先复用已持久化的多语言别名，避免每次搜索都请求 provider。
         search_en_name = None
         # 语言判断统一走 taxonomy 归一化：TMDB 返回的是 ISO 639-1（中文 zh、英语 en），
         # 但部分数据源会给 cn/eng 等写法。早期这里直接 `== "en"` / `!= "cn"` 比较，
@@ -115,30 +125,29 @@ class SearchQueryBuilder:
         lang_codes = load_taxonomy().language_codes(media_info.original_language)
         if media_info.en_name:
             search_en_name = media_info.en_name
+        elif "en" in lang_codes:
+            search_en_name = media_info.original_title
         else:
-            if "en" in lang_codes:
-                search_en_name = media_info.original_title
-            else:
-                en_title = media_helper.get_tmdb_en_title(media_info)
-                if en_title:
-                    search_en_name = en_title
+            search_en_name = next(
+                (item for item in aliases if any("a" <= ch.lower() <= "z" for ch in item)),
+                None,
+            )
+            if not search_en_name and metadata_gateway is not None:
+                search_en_name = metadata_gateway.en_title(media_info) or None
+
+        def append_name(value: str | None) -> None:
+            text = str(value or "").strip()
+            if text and text not in search_name_list:
+                search_name_list.append(text)
 
         for name in (search_cn_name, search_en_name):
             if not name:
                 continue
-            base_name = _strip_season_suffix(str(name))
-            if base_name:
-                search_name_list.append(base_name)
-            search_name_list.append(str(name))
-        for alias in getattr(media_info, "aliases", None) or []:
-            alias_text = str(alias or "").strip()
-            if not alias_text:
-                continue
-            base_alias = _strip_season_suffix(alias_text)
-            if base_alias and base_alias not in search_name_list:
-                search_name_list.append(base_alias)
-            if alias_text not in search_name_list:
-                search_name_list.append(alias_text)
+            append_name(_strip_season_suffix(str(name)))
+            append_name(str(name))
+        for alias_text in aliases:
+            append_name(_strip_season_suffix(alias_text))
+            append_name(alias_text)
             if len(search_name_list) >= 6:
                 break
 
@@ -151,11 +160,7 @@ class SearchQueryBuilder:
         except Exception:
             multi_lang = False
         if multi_lang:
-            search_zhtw_name = media_helper.get_tmdb_zhtw_title(media_info)
-            if search_zhtw_name and search_zhtw_name != search_cn_name:
-                search_name_list.append(search_zhtw_name)
-            if "zh" not in lang_codes and search_en_name != media_info.original_title:
-                search_name_list.append(media_info.original_title)
+            # 多语言标题已在 aliases 中持久化，直接用别名展开，不再实时请求 provider。
             max_workers = len(search_name_list)
 
         # 去重（保持顺序；keyword 常与中文名相同）
@@ -276,7 +281,7 @@ class SearchResultProcessor:
             if episode_count > 1:
                 collection_priority = 2
             elif (
-                getattr(x, "type", None) in (MediaType.TV, MediaType.ANIME)
+                getattr(x, "type", None) in (ProviderMediaType.SERIES, ProviderMediaType.ANIME)
                 and getattr(x, "begin_season", None) is not None
                 and getattr(x, "begin_episode", None) is None
             ):
@@ -315,14 +320,10 @@ class SearchResultProcessor:
         return sorted(media_list, key=_sort_key, reverse=True)
 
     @staticmethod
-    def _episode_from_title(title: str) -> int | None:
-        return extract_episode_number(title)
-
-    @staticmethod
     def fill_missing_episode(media_item) -> None:
         """种子标题未带季集时从原始标题补全单集；合集/多集资源保持原样."""
         if (
-            getattr(media_item, "type", None) == MediaType.MOVIE
+            getattr(media_item, "type", None) == ProviderMediaType.MOVIE
             or getattr(media_item, "begin_episode", None) is not None
         ):
             return
@@ -335,11 +336,13 @@ class SearchResultProcessor:
         raw_title = str(getattr(media_item, "org_string", "") or getattr(media_item, "title", "") or "")
         if _PACK_EPISODE_HINT.search(raw_title):
             return
-        episode = SearchResultProcessor._episode_from_title(raw_title)
-        if episode:
-            media_item.begin_episode = episode
-            if getattr(media_item, "begin_season", None) is None:
-                media_item.begin_season = 1
+        parsed = meta_info(raw_title)
+        if not parsed.begin_episode:
+            return
+        media_item.begin_episode = parsed.begin_episode
+        if getattr(media_item, "begin_season", None) is None:
+            season = str(parsed.get_season_seq() or "").strip()
+            media_item.begin_season = int(season) if season.isdigit() else 1
 
     def filter_downloaded(self, media_list: list, force: bool = False, over_edition: bool = False) -> list:
         """过滤已完成/在途下载；电影按整部，剧集动漫按分集，洗版模式放行."""
@@ -429,6 +432,7 @@ class Searcher:
         progress_helper: ProgressTracker,
         indexer_service: IndexerService,
         event_bus: EventBus,
+        metadata_gateway: Any = None,
     ):
         self._download_repo = download_repo
         self._search_repo = search_repo
@@ -439,6 +443,7 @@ class Searcher:
         self.search_repo = self._search_repo
         self.indexer_service = indexer_service
         self._event_bus = event_bus
+        self._metadata_gateway = metadata_gateway
         self._search_auto = settings.get("pt").get("search_auto", True)
         self._subscription_guard = SubscriptionDownloadGuard(self._download_repo)
 
@@ -514,7 +519,7 @@ class Searcher:
             filter_args["user_id"] = user_id
 
         # 1. 构建搜索词（含关键词 + 多语言名，build_search_names 内已去重）
-        search_name_list, max_workers = SearchQueryBuilder.build_search_names(media_info, self.media)
+        search_name_list, max_workers = SearchQueryBuilder.build_search_names(media_info, self._metadata_gateway)
 
         search_started = time.time()
         log.info(f"[Searcher]开始搜索 {search_name_list} ...")
@@ -610,7 +615,7 @@ class Searcher:
         log.info(f"[Searcher]实际下载了 {len(download_items)} 个资源")
         # 电影没有"缺失集"概念：剩余候选只是同一部片的其它站点资源，不代表未完成。
         # 返回已下载项，避免订阅/搜索链路误判为"无结果"而重复下载或重复建订阅。
-        if left_medias and getattr(media_info, "type", None) != MediaType.MOVIE:
+        if left_medias and getattr(media_info, "type", None) != ProviderMediaType.MOVIE:
             return None, no_exists, len(media_list), len(download_items)
         return download_items[0], no_exists, len(media_list), len(download_items)
 
@@ -646,10 +651,12 @@ class SearchService:
         searcher: Searcher,
         downloader: Downloader,
         media_service: MediaService,
+        metadata_gateway: Any = None,
     ):
         self._searcher = searcher
         self._downloader = downloader
         self._media = media_service
+        self._metadata_gateway = metadata_gateway
 
     def search_medias(
         self, key_word: Any, filter_args: dict, match_media=None, in_from: SearchType | None = None
@@ -707,5 +714,5 @@ class SearchService:
         self._searcher.insert_search_results(media_items, title, ident_flag, session_id)
 
     def build_search_names(self, media_info) -> list[str]:
-        names, _ = SearchQueryBuilder.build_search_names(media_info, self._media)
+        names, _ = SearchQueryBuilder.build_search_names(media_info, self._metadata_gateway)
         return names

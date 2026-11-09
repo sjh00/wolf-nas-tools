@@ -17,7 +17,7 @@ from app.domain.enums import SearchType, channel_name
 from app.domain.interfaces.download_repo import IDownloadHistoryRepository
 from app.domain.interfaces.intent import IntentResolver
 from app.domain.interfaces.search_repo import ISearchRepository
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event
 from app.events.bus import EventBus
 from app.events.constants import SEARCH_START
@@ -25,6 +25,7 @@ from app.events.payloads import SearchStartPayload
 from app.infrastructure.progress import CompositeProgressGroup, ProgressTracker
 from app.media import meta_info
 from app.media.image_resolver import DEFAULT_TMDB_IMAGE
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.media.service import MediaService
 from app.message import Message
 from app.services.downloader_core import DownloaderCore as Downloader
@@ -37,6 +38,8 @@ SITE_TIER_BOOST = 100_000
 
 
 class SearchOrchestrator:
+    _metadata_gateway: MetadataGateway | None = None
+
     def __init__(
         self,
         searcher,  # Searcher
@@ -48,7 +51,7 @@ class SearchOrchestrator:
         progress_helper: ProgressTracker,
         event_bus: EventBus,
         intent_resolver: IntentResolver | None = None,
-        metadata_service=None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._searcher = searcher
         self._search_repo = search_repo
@@ -59,8 +62,38 @@ class SearchOrchestrator:
         self._progress = progress_helper
         self._event_bus = event_bus
         self._intent_resolver = intent_resolver
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
         self._search_auto = settings.get("pt").get("search_auto", True)
+
+    @property
+    def _metadata(self):
+        return self._metadata_gateway
+
+    @staticmethod
+    def _metadata_context(content_profile: str | None = None, allow_private: bool = True) -> MetadataContext:
+        return MetadataContext(
+            purpose="search",
+            allow_private=allow_private,
+            content_profile=str(content_profile or "default"),
+        )
+
+    def _metadata_lookup(self, provider: str, external_id: str, *, context=None, **kwargs):
+        if self._metadata_gateway is None:
+            return None
+        allow_private = bool(kwargs.pop("allow_private", True))
+        kwargs["context"] = context or self._metadata_context(kwargs.get("content_profile"), allow_private)
+        return self._metadata_gateway.lookup(provider, external_id, **kwargs)
+
+    def _metadata_search(self, *, context=None, **kwargs):
+        if self._metadata_gateway is None:
+            return []
+        allow_private = bool(kwargs.pop("allow_private", True))
+        kwargs["context"] = context or self._metadata_context(kwargs.get("content_profile"), allow_private)
+        return self._metadata_gateway.search(**kwargs)
+
+    def _metadata_hydrate(self, media_info) -> None:
+        if self._metadata_gateway is not None:
+            self._metadata_gateway.hydrate_media(media_info, context=self._metadata_context())
 
     def begin_search(self, session_id: str, keyword: str = "") -> None:
         """解析锚点元数据前先建立进度，避免 SSE 因长时间无记录提前断开."""
@@ -171,20 +204,22 @@ class SearchOrchestrator:
         self,
         anchor_provider: str,
         anchor_external_id: str,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         content_profile: str | None = None,
+        context: MetadataContext | None = None,
     ):
         """按新锚点模型读取独立元数据源，不经过 TMDB/旧 DB: 转换."""
-        service = self._metadata_service
+        service = self._metadata
         if service is None or not anchor_provider or not anchor_external_id:
             return None
         try:
-            record = service.lookup(
+            record = self._metadata_lookup(
                 anchor_provider,
                 str(anchor_external_id),
                 media_type=media_type,
                 content_profile=content_profile or "default",
                 allow_private=True,
+                context=context,
             )
         except Exception as exc:  # noqa: BLE001 - 来源失败由调用方决定回退
             log.warn(f"[Orchestrator]锚点元数据读取失败 {anchor_provider}:{anchor_external_id}: {exc}")
@@ -194,11 +229,15 @@ class SearchOrchestrator:
         title = str(record.get("title") or record.get("name") or "").strip()
         if not title:
             return None
-        actual_type = media_type or MediaType.from_string(str(record.get("media_type") or "")) or MediaType.TV
+        actual_type = (
+            media_type or ProviderMediaType.from_value(str(record.get("media_type") or "")) or ProviderMediaType.SERIES
+        )
         genres = record.get("genres") or []
         genre_names = [str(item.get("name") if isinstance(item, dict) else item).strip() for item in genres if item]
-        if actual_type == MediaType.TV and any(name in {"动画", "动漫", "アニメ", "Animation"} for name in genre_names):
-            actual_type = MediaType.ANIME
+        if actual_type == ProviderMediaType.SERIES and any(
+            name in {"动画", "动漫", "アニメ", "Animation"} for name in genre_names
+        ):
+            actual_type = ProviderMediaType.ANIME
         info = meta_info(title=title, mtype=actual_type)
         info.title = title
         has_cjk = any("\u4e00" <= char <= "\u9fff" for char in title)
@@ -218,7 +257,7 @@ class SearchOrchestrator:
             info.en_name = latin_alias
         info.aliases = aliases
         info.original_title = original_title or title
-        if actual_type in (MediaType.TV, MediaType.ANIME) and info.begin_season is None and title:
+        if actual_type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME) and info.begin_season is None and title:
             # 豆瓣等单季条目把季写在标题里：解析成真实季号，供匹配和过滤使用。
             _, _, title_season, _, _, _ = StringUtils.get_keyword_from_string(title)
             if title_season:
@@ -227,6 +266,14 @@ class SearchOrchestrator:
         raw_year = str(record.get("year") or "").strip()
         info.year = "" if raw_year in ("", "0", "0000") else raw_year
         info.overview = str(record.get("overview") or "")
+        ratings = record.get("ratings") or {}
+        rating = ratings.get(anchor_provider) if hasattr(ratings, "get") else None
+        if rating is None and isinstance(ratings, dict) and ratings:
+            rating = max(ratings.values())
+        try:
+            info.vote_average = round(float(rating or 0), 1)
+        except (TypeError, ValueError):
+            info.vote_average = 0.0
         info.anchor_provider = anchor_provider
         info.anchor_external_id = str(anchor_external_id)
         info.content_profile = content_profile or str(record.get("content_profile") or "default")
@@ -241,15 +288,16 @@ class SearchOrchestrator:
         self,
         provider: str,
         content_id: str,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         content_profile: str | None = None,
+        context: MetadataContext | None = None,
     ):
         """用选定 provider 搜索内容编号，再用命中的 provider 详情 ID 解析."""
-        service = self._metadata_service
+        service = self._metadata
         if service is None or not content_id:
             return None
         try:
-            hits = service.search(
+            hits = self._metadata_search(
                 query=str(content_id),
                 provider=provider or None,
                 media_type=media_type,
@@ -257,6 +305,7 @@ class SearchOrchestrator:
                 limit=5,
                 allow_private=True,
                 wait_timeout=40,
+                context=context,
             )
         except Exception as exc:  # noqa: BLE001
             log.warn(f"[Orchestrator]编号搜索失败 {provider}:{content_id}: {exc}")
@@ -264,7 +313,7 @@ class SearchOrchestrator:
         if not hits and provider:
             # 指定来源临时超时/熔断时，用同编号在全部可用来源中兜底解析。
             try:
-                hits = service.search(
+                hits = self._metadata_search(
                     query=str(content_id),
                     provider=None,
                     media_type=media_type,
@@ -272,6 +321,7 @@ class SearchOrchestrator:
                     limit=5,
                     allow_private=True,
                     wait_timeout=40,
+                    context=context,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warn(f"[Orchestrator]编号跨来源搜索失败 {content_id}: {exc}")
@@ -287,6 +337,7 @@ class SearchOrchestrator:
                 hit_external,
                 media_type=media_type,
                 content_profile=content_profile,
+                context=context,
             )
             if media is not None:
                 # 保留真实来源，content_id 只是内部定位锚点，不能覆盖通知/详情来源。
@@ -402,7 +453,7 @@ class SearchOrchestrator:
                     f"[Orchestrator]首次识别标题不匹配，按 TV 重试: 搜索名={ctx.keyword}, "
                     f"provider标题={self._provider_title(media_info)}"
                 )
-                retry = self._identify_media(ctx, force_type=MediaType.TV)
+                retry = self._identify_media(ctx, force_type=ProviderMediaType.SERIES)
                 media_info = (
                     retry
                     if retry and retry.provider_data and self._provider_title_matches(retry, ctx.keyword)
@@ -411,7 +462,7 @@ class SearchOrchestrator:
             ctx.match_media = media_info
 
         if media_info:
-            search_names, max_workers = SearchQueryBuilder.build_search_names(media_info, self._media)
+            search_names, max_workers = SearchQueryBuilder.build_search_names(media_info, self._metadata_gateway)
             search_season = media_info.get_season_list() if media_info.begin_season is not None else None
             search_episode = media_info.get_episode_list()
             if ctx.search_type == SearchType.WEB:
@@ -419,7 +470,7 @@ class SearchOrchestrator:
                 # 没有季标记时才按整部剧召回。
                 if not (ctx.filter_args or {}).get("season"):
                     title_season = None
-                    if media_info.type in (MediaType.TV, MediaType.ANIME):
+                    if media_info.type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
                         _, _, title_season, _, _, _ = StringUtils.get_keyword_from_string(
                             str(media_info.title or media_info.cn_name or "")
                         )
@@ -457,14 +508,14 @@ class SearchOrchestrator:
             filter_args["user_id"] = ctx.user_id
         return filter_args
 
-    def _identify_media(self, ctx: SearchContext, force_type: MediaType | None = None) -> Any:
+    def _identify_media(self, ctx: SearchContext, force_type: ProviderMediaType | None = None) -> Any:
         try:
             if self._intent_resolver:
                 intent = self._intent_resolver.resolve(ctx.keyword)
-                mtype = MediaType.from_string(intent.media_type) if intent.media_type else None
+                mtype = ProviderMediaType.from_value(intent.media_type) if intent.media_type else None
                 # TMDB 无动漫类型，识别按电视剧处理（与旧 Web 流水线一致）
-                if mtype == MediaType.ANIME:
-                    mtype = MediaType.TV
+                if mtype == ProviderMediaType.ANIME:
+                    mtype = ProviderMediaType.SERIES
                 season_num = intent.season
                 episode_num = intent.episode
                 keyword = intent.keywords or ctx.keyword
@@ -477,7 +528,16 @@ class SearchOrchestrator:
                 mtype = force_type
             elif ctx.media_type:
                 mtype = ctx.media_type
-            ident = self._media.get_media_info(mtype=mtype, title=keyword, cache=False)
+            ident = (
+                self._metadata_gateway.resolve_by_title(
+                    title=keyword,
+                    media_type=mtype,
+                    cache=False,
+                    context=self._metadata_context(allow_private=True),
+                )
+                if self._metadata_gateway is not None
+                else None
+            )
             if ident and ident.provider_data:
                 if season_num:
                     ident.begin_season = int(season_num)
@@ -576,7 +636,7 @@ class SearchOrchestrator:
         # 从匹配媒体注入海报/简介/评分到每条搜索结果
         match_media = ctx.match_media
         if match_media:
-            if not match_media.get_poster_image() and self._metadata_service is not None:
+            if not match_media.get_poster_image() and self._metadata is not None:
                 self._hydrate_with_timeout(match_media)
             poster_url = match_media.get_poster_image()
             overview = match_media.overview
@@ -590,10 +650,10 @@ class SearchOrchestrator:
                 if vote and not mi.vote_average:
                     mi.vote_average = vote
                 # 结果行必须继承锚点的媒体类型和身份，否则资源卡片/入库会退回默认 movie。
-                if match_media.type != MediaType.UNKNOWN:
-                    if match_media.type in (MediaType.MOVIE, MediaType.ANIME):
+                if match_media.type != ProviderMediaType.UNKNOWN:
+                    if match_media.type in (ProviderMediaType.MOVIE, ProviderMediaType.ANIME):
                         mi.type = match_media.type
-                    elif mi.type not in (MediaType.TV, MediaType.ANIME):
+                    elif mi.type not in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
                         mi.type = match_media.type
                 if not getattr(mi, "anchor_provider", None):
                     mi.anchor_provider = getattr(match_media, "anchor_provider", None)
@@ -610,14 +670,13 @@ class SearchOrchestrator:
 
     def _hydrate_with_timeout(self, match_media, timeout: float = 5.0) -> None:
         """海报补全是有界增强，不能阻塞搜索入库；超时先返回已有数据."""
-        service = self._metadata_service
-        if service is None:
+        if self._metadata is None:
             return
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="search_hydrate")
 
         def _hydrate():
             with background_engine_context():
-                service.hydrate_media(match_media)
+                self._metadata_hydrate(match_media)
 
         future = executor.submit(_hydrate)
         try:

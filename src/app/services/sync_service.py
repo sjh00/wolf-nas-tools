@@ -21,10 +21,10 @@ from app.db.repositories.storage_backend_repo_adapter import StorageBackendRepos
 from app.domain.entities.sync import SyncPathEntity
 from app.domain.entities.transfer import TransferUnknownEntity
 from app.domain.enums import SyncType
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
 from app.infrastructure.thread import ThreadExecutor
-from app.media import MediaCache
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.schemas.sync import (
     ManualTransferResultDTO,
     ReIdentifyResultDTO,
@@ -47,25 +47,21 @@ class SyncService:
     - 手工转移/自定义识别/重新识别的业务编排
     """
 
+    _metadata_gateway: MetadataGateway | None = None
+
     def __init__(
         self,
         sync: Sync,
         filetransfer: FileTransfer,
-        media_cache: MediaCache,
         thread_executor: ThreadExecutor,
         storage_backend_repo: StorageBackendRepositoryAdapter,
-        media_service=None,
-        metadata_service=None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._sync = sync
         self._filetransfer = filetransfer
-        self._media_cache = media_cache
         self._thread_executor = thread_executor
         self._storage_backend_repo = storage_backend_repo
-        # 手动转移需实时按 TMDB ID 查询详情（媒体服务会实时请求并回写缓存），
-        # 不能只依赖只读缓存，否则缓存未命中时报「识别失败，无法查询到TMDB信息」
-        self._media_service = media_service
-        self._metadata_service = metadata_service
+        self._metadata_gateway = metadata_gateway
 
     # ---------- 同步目录校验 ----------
 
@@ -179,16 +175,16 @@ class SyncService:
         return SimpleResultDTO(success=True)
 
     @staticmethod
-    def build_media_type(mtype: str) -> MediaType:
-        """根据前端类型字符串解析为 MediaType 枚举"""
-        return MediaType.from_string(mtype)
+    def build_media_type(mtype: str) -> ProviderMediaType:
+        """根据前端类型字符串解析为 ProviderMediaType 枚举"""
+        return ProviderMediaType.from_value(mtype)
 
     def manual_transfer(
         self,
         inpath: str,
         syncmod,
         outpath: str | None = None,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         episode_format: str | None = None,
         episode_details: str | None = None,
         episode_part: str | None = None,
@@ -277,7 +273,7 @@ class SyncService:
 
     def _resolve_manual_provider_info(
         self,
-        media_type: MediaType | None,
+        media_type: ProviderMediaType | None,
         content_profile: str | None,
         provider: str,
         external_id: str,
@@ -286,22 +282,26 @@ class SyncService:
         permissions: set[str] | None = None,
     ):
         """按插件 provider 构造转移元数据，不依赖 TMDB."""
-        if self._metadata_service is None:
-            return None, media_type or MediaType.MOVIE
-        record = self._metadata_service.lookup(
+        if self._metadata_gateway is None:
+            return None, media_type or ProviderMediaType.MOVIE
+        record = self._metadata_gateway.lookup(
             provider,
             str(external_id),
+            context=MetadataContext(
+                permissions=frozenset(permissions or ()),
+                content_profile=str(content_profile or "default"),
+                purpose="sync",
+                allow_private=allow_private,
+            ),
             media_type=media_type,
             content_profile=content_profile,
-            allow_private=allow_private,
-            permissions=permissions,
         )
         if not record:
-            return None, media_type or MediaType.MOVIE
+            return None, media_type or ProviderMediaType.MOVIE
 
-        resolved_type = media_type or MediaType.from_string(str(record.get("media_type") or ""))
-        if resolved_type == MediaType.UNKNOWN:
-            resolved_type = MediaType.MOVIE
+        resolved_type = media_type or ProviderMediaType.from_value(str(record.get("media_type") or ""))
+        if resolved_type == ProviderMediaType.UNKNOWN:
+            resolved_type = ProviderMediaType.MOVIE
         images = record.get("images") or {}
         posters = images.get("poster") or []
         poster = record.get("poster") or (posters[0].get("url") if posters else "")
@@ -331,9 +331,9 @@ class SyncService:
         优先**实时查询**（不依赖缓存是否命中），返回 (tmdb_info, media_type)；
         回退命中时返回纠正后的类型，避免入库到错误目录。
         """
-        primary = media_type or MediaType.MOVIE
+        primary = media_type or ProviderMediaType.MOVIE
         alternates = [primary]
-        alt = MediaType.TV if primary == MediaType.MOVIE else MediaType.MOVIE
+        alt = ProviderMediaType.SERIES if primary == ProviderMediaType.MOVIE else ProviderMediaType.MOVIE
         if alt not in alternates:
             alternates.append(alt)
         for mtype in alternates:
@@ -343,25 +343,25 @@ class SyncService:
         return None, primary
 
     def _fetch_tmdb_info(self, mtype, tmdbid):
-        """按 TMDB ID 查询详情：媒体服务实时查询优先，回退只读缓存"""
-        media_service = getattr(self, "_media_service", None)
-        if media_service is not None:
-            try:
-                return media_service.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
-            except Exception as err:
-                log.warn(f"[Rmt]查询TMDB详情失败：{str(err)}")
-                return None
-        return self._media_cache.get_tmdb_info(mtype=mtype, tmdbid=tmdbid)
+        """按 provider 引用查询详情；TMDB 兼容路径仅在网关内部处理."""
+        if self._metadata_gateway is None:
+            log.warn("[Rmt]元数据网关不可用，无法查询详情")
+            return None
+        try:
+            return self._metadata_gateway.details("tmdb", tmdbid, media_type=mtype)
+        except Exception as err:
+            log.warn(f"[Rmt]查询详情失败：{str(err)}")
+            return None
 
     @staticmethod
     def _media_type_from_info(info, fallback):
         """以 TMDB 详情里的 media_type 为准纠正类型，缺失时用回退值"""
         mtype = info.get("media_type") if isinstance(info, dict) else None
-        if isinstance(mtype, MediaType):
+        if isinstance(mtype, ProviderMediaType):
             return mtype
         if mtype:
-            parsed = MediaType.from_string(str(mtype))
-            if parsed != MediaType.UNKNOWN:
+            parsed = ProviderMediaType.from_value(str(mtype))
+            if parsed != ProviderMediaType.UNKNOWN:
                 return parsed
         return fallback
 

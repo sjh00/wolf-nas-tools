@@ -5,7 +5,7 @@ from typing import Any, Literal
 import pytest
 
 from app.core.exceptions import ValidationError
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType, media_kind_of
 from app.media.metadata import (
     ProviderCapability,
     ProviderDescriptor,
@@ -25,14 +25,17 @@ class _FakeProvider:
         *,
         visibility: Literal["public", "private"] = "public",
         capabilities=None,
-        media_type=MediaType.MOVIE,
+        media_type=ProviderMediaType.MOVIE,
         media_types=None,
     ):
         self.descriptor = ProviderDescriptor(
             provider_key=key,
             display_name=key,
             capabilities=frozenset(capabilities or {ProviderCapability.DETAIL}),
-            media_types=frozenset(media_types or {media_type}),
+            provider_media_types=frozenset(
+                {ProviderMediaType.from_value(getattr(x, "value", x)) for x in (media_types or {media_type})}
+            ),
+            media_kinds=frozenset({media_kind_of(x) for x in (media_types or {media_type})}),
             visibility=visibility,
         )
         self._title = title
@@ -42,7 +45,7 @@ class _FakeProvider:
             provider=self.descriptor.provider_key,
             external_id=ref.external_id,
             refs=[ProviderRef(provider=self.descriptor.provider_key, external_id=ref.external_id)],
-            media_type=MediaType.MOVIE,
+            media_type=ProviderMediaType.MOVIE,
             title=self._title,
             overview=f"{self._title} overview",
         )
@@ -68,6 +71,12 @@ class _FakeSnapshotRepo:
 
     def get_overrides(self, identity_id, *, user_id=None):
         return []
+
+    def update_aliases(self, identity_id, aliases):
+        return False
+
+    def replace_aliases(self, identity_id, aliases):
+        return False
 
     def get_identity(self, identity_id) -> Any:
         for identity, _kwargs in self.identities:
@@ -131,8 +140,8 @@ def test_preview_uses_anchor_policy_and_returns_snapshot():
     svc, _ = _service()
     result = svc.preview(
         [
-            ProviderRef(provider="tmdb", external_id="1", media_type=MediaType.MOVIE),
-            ProviderRef(provider="douban", external_id="2", media_type=MediaType.MOVIE),
+            ProviderRef(provider="tmdb", external_id="1", media_type=ProviderMediaType.MOVIE),
+            ProviderRef(provider="douban", external_id="2", media_type=ProviderMediaType.MOVIE),
         ],
         anchor_provider="douban",
     )
@@ -156,7 +165,7 @@ def test_preview_allows_private_provider_with_permission():
 
 def test_save_snapshot_delegates_to_repository():
     svc, repo = _service()
-    result = svc.preview([ProviderRef(provider="tmdb", external_id="1", media_type=MediaType.MOVIE)])
+    result = svc.preview([ProviderRef(provider="tmdb", external_id="1", media_type=ProviderMediaType.MOVIE)])
     assert result.metadata is not None
 
     svc.save_snapshot("identity-1", result.metadata, "tmdb_primary")
@@ -182,7 +191,7 @@ def test_link_subscription_maps_legacy_id_and_writes_ref():
         title = "肖申克的救赎"
         year = "1994"
 
-    fields = svc.link_subscription(_MediaInfo(), media_type=MediaType.MOVIE)
+    fields = svc.link_subscription(_MediaInfo(), media_type=ProviderMediaType.MOVIE)
 
     assert fields.identity_id is not None
     assert fields.anchor_provider == "douban"
@@ -203,6 +212,12 @@ def test_link_subscription_does_not_block_on_repo_failure():
 
         def get_overrides(self, identity_id, *, user_id=None):
             return []
+
+        def update_aliases(self, identity_id, aliases):
+            return False
+
+        def replace_aliases(self, identity_id, aliases):
+            return False
 
         def get_identity(self, identity_id):
             return None
@@ -241,7 +256,7 @@ def test_link_subscription_does_not_block_on_repo_failure():
         title = "x"
         year = "1994"
 
-    fields = svc.link_subscription(_MediaInfo(), media_type=MediaType.MOVIE)
+    fields = svc.link_subscription(_MediaInfo(), media_type=ProviderMediaType.MOVIE)
 
     assert fields.identity_id is None
     assert fields.anchor_provider == "tmdb"
@@ -256,7 +271,7 @@ def test_link_subscription_uses_clicked_mediaid_as_anchor():
         title = "肖申克的救赎"
         year = "1994"
 
-    fields = svc.link_subscription(_MediaInfo(), media_type=MediaType.MOVIE, mediaid="DB:1292052")
+    fields = svc.link_subscription(_MediaInfo(), media_type=ProviderMediaType.MOVIE, mediaid="DB:1292052")
 
     assert fields.anchor_provider == "douban"
     assert fields.anchor_external_id == "1292052"
@@ -285,7 +300,7 @@ def test_compose_for_media_uses_douban_ref_without_tmdb():
     svc, _ = _service()
 
     class _MediaInfo:
-        type = MediaType.TV
+        type = ProviderMediaType.SERIES
         tmdb_id = "DB:1"
         douban_id = "1"
         title = "豆瓣剧"
@@ -312,7 +327,7 @@ def test_compose_for_media_sets_tv_season_scope():
     svc = MetadataService(registry=registry, identity_repo=_FakeSnapshotRepo(), register_builtins=False)
 
     class _MediaInfo:
-        type = MediaType.TV
+        type = ProviderMediaType.SERIES
         tmdb_id = "100088"
         douban_id = None
         title = "剧"
@@ -339,7 +354,7 @@ def test_compose_for_media_with_episodes_expands_provider_episodes():
     svc = MetadataService(registry=registry, identity_repo=_FakeSnapshotRepo(), register_builtins=False)
 
     class _MediaInfo:
-        type = MediaType.TV
+        type = ProviderMediaType.SERIES
         tmdb_id = "100088"
         douban_id = None
         title = "剧"
@@ -371,7 +386,7 @@ def test_compose_for_media_applies_locked_overrides():
     ]
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = "278"
         douban_id = None
         title = "自动标题"
@@ -391,7 +406,7 @@ def test_compose_for_media_persists_and_reuses_snapshot():
     repo.find_by_ref = lambda *args, **kwargs: SimpleNamespace(IDENTITY_ID="id-2")
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = "278"
         douban_id = None
         title = "自动标题"
@@ -414,7 +429,7 @@ def test_compose_for_media_expands_all_seasons_when_no_season():
                 provider="tmdb",
                 external_id=ref.external_id,
                 refs=[ProviderRef(provider="tmdb", external_id=ref.external_id)],
-                media_type=MediaType.TV,
+                media_type=ProviderMediaType.SERIES,
                 title="全季剧",
                 seasons=[SeasonRecord(season_number=1), SeasonRecord(season_number=2)],
             )
@@ -433,7 +448,7 @@ def test_compose_for_media_expands_all_seasons_when_no_season():
     svc = MetadataService(registry=registry, identity_repo=_FakeSnapshotRepo(), register_builtins=False)
 
     class _MediaInfo:
-        type = MediaType.TV
+        type = ProviderMediaType.SERIES
         tmdb_id = "100"
         douban_id = None
         title = "全季剧"
@@ -480,7 +495,7 @@ def test_search_and_lookup_use_registry_providers():
     assert hits[0]["title"] == "测试-hit"
 
     assert svc.lookup("tmdb", "1") is None
-    detail = svc.lookup("tmdb", "1", media_type=MediaType.MOVIE)
+    detail = svc.lookup("tmdb", "1", media_type=ProviderMediaType.MOVIE)
     assert detail is not None
     assert detail["title"] == "标题"
 
@@ -488,7 +503,7 @@ def test_search_and_lookup_use_registry_providers():
 def test_lookup_cache_isolates_media_type_for_same_external_id():
     class _TypedProvider(_FakeProvider):
         def detail(self, ref, ctx):
-            media_type = ref.media_type or MediaType.MOVIE
+            media_type = ref.media_type or ProviderMediaType.MOVIE
             return ProviderRecord(
                 provider=self.descriptor.provider_key,
                 external_id=ref.external_id,
@@ -502,13 +517,13 @@ def test_lookup_cache_isolates_media_type_for_same_external_id():
         _TypedProvider(
             "tmdb",
             "标题",
-            media_types={MediaType.MOVIE, MediaType.TV},
+            media_types={ProviderMediaType.MOVIE, ProviderMediaType.SERIES},
         )
     )
     svc = MetadataService(registry=registry, identity_repo=_FakeSnapshotRepo(), register_builtins=False)
 
-    movie = svc.lookup("tmdb", "106449", media_type=MediaType.MOVIE)
-    tv = svc.lookup("tmdb", "106449", media_type=MediaType.TV)
+    movie = svc.lookup("tmdb", "106449", media_type=ProviderMediaType.MOVIE)
+    tv = svc.lookup("tmdb", "106449", media_type=ProviderMediaType.SERIES)
 
     assert movie is not None and movie["title"] == "movie:106449"
     assert tv is not None and tv["title"] == "tv:106449"
@@ -523,7 +538,7 @@ def test_compose_for_media_uses_content_profile_aggregate_provider():
                 provider="demo",
                 external_id=ref.external_id,
                 refs=[ProviderRef(provider="demo", external_id=ref.external_id, scope="demo")],
-                media_type=MediaType.MOVIE,
+                media_type=ProviderMediaType.MOVIE,
                 content_profile="demo",
                 title="聚合标题",
             )
@@ -533,7 +548,7 @@ def test_compose_for_media_uses_content_profile_aggregate_provider():
     svc = MetadataService(registry=registry, identity_repo=_FakeSnapshotRepo(), register_builtins=False)
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = None
         douban_id = None
         content_profile = "demo"
@@ -552,7 +567,7 @@ def test_compose_for_media_adds_anchor_ref_for_douban_primary():
     svc, _ = _service()
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = "278"
         douban_id = None
         content_profile = "default"
@@ -589,8 +604,6 @@ def test_system_default_policy_reads_current_settings(monkeypatch):
 def test_identify_anchor_follows_policy(monkeypatch):
     from types import SimpleNamespace
 
-    from app.domain.mediatypes import MediaType
-
     svc = MetadataService(register_builtins=True)
     svc._ensure_builtin()
     calls = []
@@ -602,7 +615,7 @@ def test_identify_anchor_follows_policy(monkeypatch):
         return []
 
     monkeypatch.setattr(svc, "search", fake_search)
-    media = SimpleNamespace(title="测试电影", year="2024", type=MediaType.MOVIE, content_profile="default")
+    media = SimpleNamespace(title="测试电影", year="2024", type=ProviderMediaType.MOVIE, content_profile="default")
     assert svc.identify_anchor(media, policy="douban_primary") is True
     assert media.anchor_provider == "douban"
     assert media.anchor_external_id == "123"
@@ -611,8 +624,6 @@ def test_identify_anchor_follows_policy(monkeypatch):
 
 def test_identify_anchor_falls_back_when_primary_misses(monkeypatch):
     from types import SimpleNamespace
-
-    from app.domain.mediatypes import MediaType
 
     svc = MetadataService(register_builtins=True)
     svc._ensure_builtin()
@@ -623,7 +634,7 @@ def test_identify_anchor_falls_back_when_primary_misses(monkeypatch):
         return []
 
     monkeypatch.setattr(svc, "search", fake_search)
-    media = SimpleNamespace(title="测试动画", year="2024", type=MediaType.ANIME, content_profile="default")
+    media = SimpleNamespace(title="测试动画", year="2024", type=ProviderMediaType.ANIME, content_profile="default")
     assert svc.identify_anchor(media, policy="douban_primary") is True
     assert media.anchor_provider == "bangumi"
     assert media.anchor_external_id == "456"
@@ -634,8 +645,6 @@ def test_identify_anchor_singleflight(monkeypatch):
     import time
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
-
-    from app.domain.mediatypes import MediaType
 
     svc = MetadataService(register_builtins=True)
     svc._ensure_builtin()
@@ -651,7 +660,7 @@ def test_identify_anchor_singleflight(monkeypatch):
 
     monkeypatch.setattr(svc, "search", fake_search)
     media_items = [
-        SimpleNamespace(title="并发测试", year="2024", type=MediaType.MOVIE, content_profile="default")
+        SimpleNamespace(title="并发测试", year="2024", type=ProviderMediaType.MOVIE, content_profile="default")
         for _ in range(6)
     ]
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -681,7 +690,7 @@ def test_compose_for_media_ignores_cached_empty_snapshot():
     )
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = "278"
         douban_id = None
         title = "自动标题"
@@ -726,7 +735,7 @@ def test_compose_for_media_recomposes_cached_snapshot_missing_images():
     )
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = "278"
         douban_id = None
         title = "自动标题"
@@ -772,7 +781,7 @@ def test_compose_for_media_recomposes_cached_snapshot_missing_poster():
     )
 
     class _MediaInfo:
-        type = MediaType.MOVIE
+        type = ProviderMediaType.MOVIE
         tmdb_id = "278"
         douban_id = None
         title = "自动标题"
@@ -783,3 +792,81 @@ def test_compose_for_media_recomposes_cached_snapshot_missing_poster():
     assert snapshot is not None
     assert snapshot.fields["title"].value == "TMDB 标题"
     assert repo.saved
+
+
+class _PrivateSearchProvider:
+    def __init__(self):
+        self.called = False
+        self.descriptor = ProviderDescriptor(
+            provider_key="private_demo",
+            display_name="Private Demo",
+            capabilities=frozenset({ProviderCapability.SEARCH}),
+            provider_media_types=frozenset({ProviderMediaType.MOVIE}),
+            media_kinds=frozenset({MediaKind.MOVIE}),
+            visibility="private",
+        )
+
+    def search(self, query, ctx):
+        self.called = True
+        return []
+
+
+def test_private_search_provider_allowed_for_unrestricted_scope():
+    """permissions=None 表示系统/超级管理员上下文."""
+    provider = _PrivateSearchProvider()
+    registry = MetadataRegistry()
+    registry.register_provider(provider)
+    svc = MetadataService(
+        registry=registry,
+        identity_repo=_FakeSnapshotRepo(),
+        register_builtins=False,
+    )
+    assert svc.search(query="demo", provider="private_demo", allow_private=True, permissions=None) == []
+    assert provider.called is True
+
+
+def test_private_search_provider_blocked_for_empty_permission_set():
+    provider = _PrivateSearchProvider()
+    registry = MetadataRegistry()
+    registry.register_provider(provider)
+    svc = MetadataService(
+        registry=registry,
+        identity_repo=_FakeSnapshotRepo(),
+        register_builtins=False,
+    )
+    assert svc.search(query="demo-empty", provider="private_demo", allow_private=True, permissions=set()) == []
+    assert provider.called is False
+
+
+def test_private_search_provider_blocked_without_private_scope():
+    provider = _PrivateSearchProvider()
+    registry = MetadataRegistry()
+    registry.register_provider(provider)
+    svc = MetadataService(
+        registry=registry,
+        identity_repo=_FakeSnapshotRepo(),
+        register_builtins=False,
+    )
+    assert svc.search(query="demo2", provider="private_demo", allow_private=False, permissions=set()) == []
+    assert provider.called is False
+
+
+def test_private_detail_allowed_for_unrestricted_scope():
+    svc, _ = _service(visibility="private")
+    result = svc.preview(
+        [ProviderRef(provider="tmdb", external_id="1")],
+        allow_private=True,
+        permissions=None,
+    )
+    assert result.metadata is not None
+
+
+def test_metadata_context_superadmin_is_unrestricted():
+    from types import SimpleNamespace
+
+    from app.media.metadata.gateway import MetadataContext
+
+    ctx = MetadataContext.from_user(SimpleNamespace(user_id=1, is_superadmin=True, permissions=[]))
+    assert ctx.allow_private is True
+    assert ctx.permissions is None
+    assert ctx.permission_set() is None

@@ -22,14 +22,14 @@ import log
 from app.core.constants import PT_TAG, RMT_MEDIAEXT
 from app.core.exceptions import DomainError, RepositoryError, ServiceError
 from app.core.settings import settings
-from app.core.system_config import SystemConfig
 from app.db.repositories.config_repo_adapter import DownloaderRepositoryAdapter
 from app.db.repositories.download_repo_adapter import (
     DownloadHistoryRepositoryAdapter,
     DownloadSettingRepositoryAdapter,
 )
 from app.db.repositories.indexer_site_config_repo_adapter import IndexerSiteConfigRepositoryAdapter
-from app.domain.mediatypes import MediaType
+from app.domain.media_ref import media_series_scope_key
+from app.domain.media_types import ProviderMediaType
 from app.downloader.client_factory import DownloadClientFactory
 from app.downloader.pipeline import DownloadPipeline
 from app.downloader.strategy import RemoveStrategy
@@ -37,6 +37,7 @@ from app.events.bus import EventBus
 from app.events.registry import EventHandlerRegistry  # noqa: F401
 from app.infrastructure.cache_system import get_cache_manager
 from app.infrastructure.distributed_lock.lock_manager import get_lock_manager
+from app.infrastructure.system_config import SystemConfig
 from app.infrastructure.task_queue import QueueUnavailableError
 from app.media import meta_info
 from app.mediaserver import MediaServer
@@ -68,7 +69,6 @@ _DOWNLOAD_UNRETRYABLE_TTL = 6 * 3600
 # 链接单飞锁数量上限，超过后清理未占用的锁避免字典无限增长
 _LINK_LOCKS_MAX = 1024
 
-
 def _torrent_lock_key(media_info) -> str:
     value = str(getattr(media_info, "enclosure", "") or getattr(media_info, "page_url", "") or "").strip()
     if not value:
@@ -77,6 +77,39 @@ def _torrent_lock_key(media_info) -> str:
     identity = match.group(1).lower() if match else value.lower()
     return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:32]
 
+def _normalize_missing_episodes(meta_info: Any, season: Any, total: Any, missing: Any) -> dict:
+    """把底层缺失集号列表统一为订阅使用的 series/season 映射."""
+    if isinstance(missing, dict):
+        return missing
+    if not missing:
+        return {}
+    key = media_series_scope_key(meta_info) or getattr(meta_info, "tmdb_id", None)
+    if not key:
+        return {}
+    episodes = sorted({int(episode) for episode in missing if str(episode).isdigit()})
+    return {
+        key: [
+            {
+                "season": season,
+                "episodes": episodes,
+                "total_episodes": int(total) if str(total).isdigit() else total,
+            }
+        ]
+    }
+
+def _lookup_total_episodes(total_ep: dict, season: Any) -> Any:
+    """兼容 int/str 季号键，避免同一季因键类型不同被判定缺失。"""
+    digits = str(season).strip().lstrip("S")
+    candidates = [season, str(season), digits]
+    if digits.isdigit():
+        candidates.extend([int(digits), f"S{int(digits):02d}"])
+    for key in candidates:
+        try:
+            if key in total_ep:
+                return total_ep[key]
+        except TypeError:
+            continue
+    return None
 
 class DownloadCore:
     """
@@ -168,7 +201,7 @@ class DownloadCore:
             - 剧集: exist_flag 表示本季集已齐；no_exists 为
               {tmdb_id: [{season, episodes, total_episodes}, ...]}，并与入参合并
         """
-        if meta_info.type == MediaType.MOVIE:
+        if meta_info.type == ProviderMediaType.MOVIE:
             exists = self._filetransfer.get_no_exists_medias(meta_info)
             if exists:
                 return True, no_exists or {}, None

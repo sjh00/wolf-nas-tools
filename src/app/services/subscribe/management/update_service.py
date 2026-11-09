@@ -6,12 +6,13 @@ from typing import Any, cast
 import log
 from app.domain.entities.rss import SubscribeState
 from app.domain.enums import SubscribeType
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event
 from app.events.constants import SUBSCRIBE_ADD
 from app.events.payloads import SubscribeAddPayload
 from app.media import meta_info
 from app.media.display_image_policy import unwrap_display_image_url
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.schemas.auth import UserContext
 from app.services.subscribe.management.utils import gen_rss_note
 from app.services.web.utils import WebUtils
@@ -19,6 +20,8 @@ from app.services.web.utils import WebUtils
 
 class SubscribeUpdateService:
     """更新订阅服务"""
+
+    _metadata_gateway: MetadataGateway | None = None
 
     def __init__(
         self,
@@ -29,6 +32,7 @@ class SubscribeUpdateService:
         event_bus,
         system_config,
         web_utils: WebUtils,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -37,6 +41,7 @@ class SubscribeUpdateService:
         self._event_bus = event_bus
         self._system_config = system_config
         self._web_utils = web_utils
+        self._metadata_gateway = metadata_gateway
 
     @staticmethod
     def _text(row, name: str) -> str:
@@ -149,7 +154,7 @@ class SubscribeUpdateService:
             "rss_sites": rss_sites,
             "search_sites": search_sites,
         }
-        if mtype != MediaType.MOVIE:
+        if mtype != ProviderMediaType.MOVIE:
             values.update(
                 {
                     "season": season or self._existing(row, "SEASON", "season", default=""),
@@ -175,6 +180,37 @@ class SubscribeUpdateService:
         media_info.metadata_ref = source_ref
         media_info.keyword = values["keyword"]
         return code, "更新成功" if code == 0 else "更新失败", media_info
+
+    def _season_episode_count(
+        self,
+        *,
+        media_info: Any,
+        title: str,
+        year: str | None,
+        media_type: ProviderMediaType,
+        season: int,
+        content_profile: str,
+        provider_data: dict[str, Any] | None,
+    ) -> int:
+        if self._metadata_gateway is None:
+            return 0
+        provider = str(getattr(media_info, "anchor_provider", "") or "tmdb")
+        external_id = str(getattr(media_info, "anchor_external_id", "") or getattr(media_info, "tmdb_id", "") or "")
+        return self._metadata_gateway.resolve_season_episode_count(
+            context=MetadataContext(
+                content_profile=content_profile,
+                purpose="subscribe.update",
+                allow_private=True,
+            ),
+            provider=provider,
+            external_id=external_id,
+            title=title,
+            year=year,
+            media_type=media_type,
+            season=season,
+            content_profile=content_profile,
+            provider_data=provider_data,
+        )
 
     def _resolve_existing_source(
         self,
@@ -246,7 +282,7 @@ class SubscribeUpdateService:
 
         # 归属校验：普通用户越权更新返回不存在（避免资源探测）
         if user is not None and not user.is_superadmin:
-            owner_repo = self._movie_repo if mtype == MediaType.MOVIE else self._tv_repo
+            owner_repo = self._movie_repo if mtype == ProviderMediaType.MOVIE else self._tv_repo
             if not owner_repo.get_all(rssid=int(rssid), user=user):
                 return -1, "订阅不存在", None
 
@@ -262,7 +298,7 @@ class SubscribeUpdateService:
         download_setting = int(str(download_setting)) if str(download_setting).replace("-", "").isdigit() else -1
         fuzzy_match = bool(fuzzy_match)
 
-        repo = self._movie_repo if mtype == MediaType.MOVIE else self._tv_repo
+        repo = self._movie_repo if mtype == ProviderMediaType.MOVIE else self._tv_repo
         existing_rows = repo.get_all(rssid=int(rssid), user=user)
         existing = existing_rows[0] if existing_rows else None
         effective_state = state or (
@@ -321,29 +357,52 @@ class SubscribeUpdateService:
                     title = "%s %s 第%s季".strip() % (name, year, season)
                 else:
                     title = "%s %s".strip() % (name, year)
-                media_info = self._media.get_media_info(title=title, mtype=mtype, strict=bool(year), cache=False)
+                media_info = (
+                    self._metadata_gateway.resolve_by_title(
+                        title=title,
+                        media_type=mtype,
+                        year=str(year or "") or None,
+                        strict=bool(year),
+                        cache=False,
+                        context=MetadataContext(
+                            content_profile=str(content_profile or "default"),
+                            purpose="subscribe.update",
+                            allow_private=True,
+                        ),
+                    )
+                    if self._metadata_gateway is not None
+                    else None
+                )
             if not media_info or not media_info.provider_data:
                 if existing is not None:
                     # 编辑已有订阅不应依赖 TMDB 可用性：保留原锚点/身份并保存可编辑字段。
                     log.warn(f"[Subscribe]更新时 TMDB 查询失败，使用现有订阅身份保存: {name} ({year})")
                     return self._update_generic(repo, existing, **generic_kwargs)
                 return 1, "TMDB无法查询到媒体信息", None
-            if media_info.type != MediaType.MOVIE:
+            if media_info.type != ProviderMediaType.MOVIE:
                 if not season and str(mediaid).startswith("DB:"):
                     season = 1
                 if season:
-                    total_episode = (
-                        total_ep
-                        if total_ep
-                        else self._media.get_tmdb_season_episodes_num(
-                            tv_info=media_info.provider_data, season=int(season)
-                        )
+                    total_episode = total_ep or self._season_episode_count(
+                        media_info=media_info,
+                        title=str(name or media_info.title or ""),
+                        year=str(media_info.year or year or "") or None,
+                        media_type=mtype,
+                        season=int(season),
+                        content_profile=str(content_profile or "default"),
+                        provider_data=media_info.provider_data,
                     )
                 else:
-                    total_seasoninfo = self._media.get_tmdb_tv_seasons(tv_info=media_info.provider_data)
+                    total_seasoninfo = (
+                        self._metadata_gateway.season_summaries(media_info.provider_data)
+                        if self._metadata_gateway is not None
+                        else []
+                    )
                     if not total_seasoninfo:
                         return 2, "获取剧集信息失败", media_info
-                    total_seasoninfo = sorted(total_seasoninfo, key=lambda x: x.get("season_number"), reverse=True)
+                    total_seasoninfo = sorted(
+                        total_seasoninfo, key=lambda x: int(x.get("season_number") or 0), reverse=True
+                    )
                     season = total_seasoninfo[0].get("season_number")
                     total_episode = total_seasoninfo[0].get("episode_count")
                 if not total_episode:
@@ -432,7 +491,7 @@ class SubscribeUpdateService:
             media_info.type = mtype
             if season:
                 media_info.begin_season = int(season)
-            if mtype == MediaType.MOVIE:
+            if mtype == ProviderMediaType.MOVIE:
                 code = self._movie_repo.update(
                     rssid=int(rssid),
                     user=user,

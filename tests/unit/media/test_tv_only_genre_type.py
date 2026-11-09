@@ -187,7 +187,7 @@ class TestSetProviderDataEndToEnd:
         monkeypatch.setattr(models_mod, "CategoryConfigRepositoryAdapter", _FakeAdapter)
 
     def test_documentary_movie_becomes_tv(self, monkeypatch):
-        from app.domain.mediatypes import MediaType
+        from app.domain.media_types import ProviderMediaType
 
         self._install_rules(monkeypatch)
         info = MediaInfo()
@@ -200,10 +200,10 @@ class TestSetProviderDataEndToEnd:
                 "production_countries": [{"iso_3166_1": "US"}],
             }
         )
-        assert info.type == MediaType.TV
+        assert info.type == ProviderMediaType.SERIES
 
     def test_normal_movie_stays_movie(self, monkeypatch):
-        from app.domain.mediatypes import MediaType
+        from app.domain.media_types import ProviderMediaType
 
         self._install_rules(monkeypatch)
         info = MediaInfo()
@@ -216,10 +216,10 @@ class TestSetProviderDataEndToEnd:
                 "production_countries": [{"iso_3166_1": "CN"}],
             }
         )
-        assert info.type == MediaType.MOVIE
+        assert info.type == ProviderMediaType.MOVIE
 
     def test_animated_documentary_stays_movie(self, monkeypatch):
-        from app.domain.mediatypes import MediaType
+        from app.domain.media_types import ProviderMediaType
 
         self._install_rules(monkeypatch)
         info = MediaInfo()
@@ -231,4 +231,4 @@ class TestSetProviderDataEndToEnd:
                 "genres": [{"id": 16, "name": "Animation"}, {"id": 99, "name": "Documentary"}],
             }
         )
-        assert info.type == MediaType.MOVIE
+        assert info.type == ProviderMediaType.MOVIE

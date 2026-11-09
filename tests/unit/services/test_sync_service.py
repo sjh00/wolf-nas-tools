@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.exceptions import ValidationError
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.schemas.sync import ManualTransferResultDTO
 from app.services.sync_service import SyncService
 
@@ -15,10 +15,16 @@ from app.services.sync_service import SyncService
 def service():
     sync = MagicMock()
     filetransfer = MagicMock()
-    media_cache = MagicMock()
     thread_executor = MagicMock()
     storage_repo = MagicMock()
-    return SyncService(sync, filetransfer, media_cache, thread_executor, storage_repo)
+    gateway = MagicMock()
+    return SyncService(
+        sync,
+        filetransfer,
+        thread_executor,
+        storage_repo,
+        metadata_gateway=gateway,
+    )
 
 
 class TestSyncServiceValidate:
@@ -78,13 +84,13 @@ class TestSyncServiceTransfer:
     @patch("os.path.exists", return_value=True)
     @patch("os.path.normpath", side_effect=lambda x: x)
     def test_manual_transfer_submit(self, mock_norm, mock_exists, service):
-        service._media_cache.get_tmdb_info.return_value = {"title": "Test"}
+        service._metadata_gateway.details.return_value = {"title": "Test"}
         service._filetransfer.get_sync_backend_by_dest.return_value = "local"
         result = service.manual_transfer(
             "/src/movie.mkv",
             "copy",
             outpath="/dst",
-            media_type=MediaType.MOVIE,
+            media_type=ProviderMediaType.MOVIE,
             tmdbid=123,
         )
         assert result.success
@@ -93,14 +99,14 @@ class TestSyncServiceTransfer:
     @patch("os.path.exists", return_value=True)
     @patch("os.path.normpath", side_effect=lambda x: x)
     def test_manual_transfer_no_tmdb(self, mock_norm, mock_exists, service):
-        service._media_cache.get_tmdb_info.return_value = None
+        service._metadata_gateway.details.return_value = None
         result = service.manual_transfer("/src/movie.mkv", "copy", tmdbid=123)
         assert not result.success
 
     def test_build_media_type(self):
-        assert SyncService.build_media_type("movie") == MediaType.MOVIE
-        assert SyncService.build_media_type("tv") == MediaType.TV
-        assert SyncService.build_media_type("unknown") == MediaType.UNKNOWN
+        assert SyncService.build_media_type("movie") == ProviderMediaType.MOVIE
+        assert SyncService.build_media_type("tv") == ProviderMediaType.SERIES
+        assert SyncService.build_media_type("unknown") == ProviderMediaType.UNKNOWN
 
 
 class TestSyncServiceReIdentify:

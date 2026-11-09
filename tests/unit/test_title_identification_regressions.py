@@ -16,14 +16,13 @@
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.domain.validators.media_title import clean_advertisement_title, is_advertisement_title
 from app.media.lookup.tmdb_lookup import TmdbLookup
 from app.media.parser import RegexParser
 from app.media.parser.base import ParserResult
 
 # ---------- 1. 广告清洗不得误伤年份 + 场景标签 ----------
-
 
 @pytest.mark.parametrize(
     "name",
@@ -41,7 +40,6 @@ def test_year_with_scene_tag_is_not_advertisement(name):
     assert is_advertisement_title(name) is False
     assert clean_advertisement_title(name) == name
 
-
 def test_real_numeric_domain_is_still_removed():
     """真正的数字域名广告仍要被剥掉（含站名粘连与全角冒号）。"""
     assert is_advertisement_title("某片网：4488569.com") is True
@@ -49,14 +47,11 @@ def test_real_numeric_domain_is_still_removed():
     assert "4488569" not in cleaned
     assert "电影名" in cleaned
 
-
 def test_year_at_token_end_with_tld_still_ok():
     """域名规则只认「终结」的 TLD，年份后跟技术标签时不受影响。"""
     assert is_advertisement_title("Movie.1999.CC.BluRay.1080p.mkv") is False
 
-
 # ---------- 2. 片名自带年份 ----------
-
 
 def test_title_year_kept_when_episode_marker_follows():
     """《请回答1988》：1988 属于片名，出品年是季集号之后的 2015。"""
@@ -67,20 +62,17 @@ def test_title_year_kept_when_episode_marker_follows():
     assert parsed.season == 1
     assert parsed.episode == 16
 
-
 def test_year_in_title_without_episode_marker():
     """无季集号时保持原有行为：取最后一个年份（Wonder Woman 1984 2020）。"""
     parsed = RegexParser().parse("Wonder.Woman.1984.2020.1080p.BluRay.x264.mkv")
     assert parsed is not None
     assert parsed.year == "2020"
 
-
 def test_release_year_after_episode_marker_preferred():
     """季集号之后的年份优先于片名中的年份。"""
     parsed = RegexParser().parse("The.100.2014.S01E01.2014.1080p.WEB-DL.mkv")
     assert parsed is not None
     assert parsed.year == "2014"
-
 
 def test_year_after_scene_tag_restored():
     """`1997.CC` 不再被广告规则删掉，年份可正常识别。"""
@@ -91,9 +83,7 @@ def test_year_after_scene_tag_restored():
     assert parsed.year == "1997"
     assert parsed.title_en == "Show Name Part Two And Three"
 
-
 # ---------- 3. 裁词重试只能裁标签 ----------
-
 
 class TestTrimmableTag:
     @pytest.mark.parametrize("token", ["Ma", "TX", "1080p", "WEB", "HFR", "x265", "2024", "A", "AD", "2AUDIO"])
@@ -106,7 +96,7 @@ class TestTrimmableTag:
 
     def test_trim_does_not_shrink_meaningful_title(self):
         """多词片名（如 `Sample Title Cop`）不得被裁成 `Sample Title`。"""
-        parsed = ParserResult(title_en="Sample Title Cop", year="1996", type=MediaType.MOVIE)
+        parsed = ParserResult(title_en="Sample Title Cop", year="1996", type=ProviderMediaType.MOVIE)
         lookup = TmdbLookup(client=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
         searched: list[str] = []
 
@@ -120,5 +110,5 @@ class TestTrimmableTag:
             }
 
         lookup.search.search_movie = fake_search  # type: ignore[method-assign]
-        assert lookup._lookup_trimmed_tail(parsed, MediaType.MOVIE, None) == {}
+        assert lookup._lookup_trimmed_tail(parsed, ProviderMediaType.MOVIE, None) == {}
         assert searched == [], "实词不应触发裁剪搜索"

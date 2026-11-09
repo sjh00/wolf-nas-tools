@@ -10,7 +10,7 @@
 
 from unittest.mock import MagicMock
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.models import MediaInfo
 from app.services.download_service import DownloadService
 
@@ -21,15 +21,13 @@ def _service(versions):
     svc._file_index.get_versions.return_value = versions
     return svc
 
-
 def _tv(season: int, episode: int) -> MediaInfo:
     media = MediaInfo()
-    media.type = MediaType.TV
+    media.type = ProviderMediaType.SERIES
     media.tmdb_id = 100
     media.begin_season = season
     media.begin_episode = episode
     return media
-
 
 def _ver(season_episode: str, spec: str = "1080p", exists: bool = True) -> dict:
     return {
@@ -39,7 +37,6 @@ def _ver(season_episode: str, spec: str = "1080p", exists: bool = True) -> dict:
         "full_path": f"/media/{season_episode}-{spec}.mkv",
         "dest_filename": f"{season_episode}-{spec}.mkv",
     }
-
 
 class TestSeasonEpisodeKey:
     def test_parses_common_formats(self):
@@ -53,7 +50,6 @@ class TestSeasonEpisodeKey:
         assert DownloadService._season_episode_key("") is None
         assert DownloadService._season_episode_key(None) is None
 
-
 class TestMultiVersionScope:
     def test_tv_with_episodes_returns_scope(self):
         svc = _service([])
@@ -62,17 +58,16 @@ class TestMultiVersionScope:
     def test_movie_has_no_scope(self):
         svc = _service([])
         media = MediaInfo()
-        media.type = MediaType.MOVIE
+        media.type = ProviderMediaType.MOVIE
         media.tmdb_id = 1
         assert svc._multi_version_scope(media) is None
 
     def test_tv_without_episodes_has_no_scope(self):
         svc = _service([])
         media = MediaInfo()
-        media.type = MediaType.TV
+        media.type = ProviderMediaType.SERIES
         media.tmdb_id = 1
         assert svc._multi_version_scope(media) is None
-
 
 class TestCheckMultiVersion:
     def test_different_episodes_do_not_trigger(self):
@@ -113,14 +108,14 @@ class TestCheckMultiVersion:
         """拿不到季集就不拦，否则连载剧加新集必被误报。"""
         svc = _service([_ver("S01 E01"), _ver("S01 E02"), _ver("S01 E03")])
         media = MediaInfo()
-        media.type = MediaType.TV
+        media.type = ProviderMediaType.SERIES
         media.tmdb_id = 100
         assert svc._check_multi_version(media) is None
 
     def test_movie_still_counts_whole_work(self):
         svc = _service([_ver("", "1080p"), _ver("", "2160p")])
         media = MediaInfo()
-        media.type = MediaType.MOVIE
+        media.type = ProviderMediaType.MOVIE
         media.tmdb_id = 1
         result = svc._check_multi_version(media)
         assert result is not None
@@ -147,7 +142,7 @@ class TestCheckMultiVersion:
             ]
         )
         media = MediaInfo()
-        media.type = MediaType.TV
+        media.type = ProviderMediaType.SERIES
         media.tmdb_id = 100
         media.begin_season = 1
         media.begin_episode = 1

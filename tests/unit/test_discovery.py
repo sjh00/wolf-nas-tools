@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from app.core.exceptions import ValidationError
+from app.domain.media_types import MediaKind, ProviderMediaType
 from app.media.metadata import (
     DiscoveryFeed,
     DiscoveryItem,
@@ -17,6 +18,8 @@ from app.media.metadata.providers.discovery import (
     BangumiDiscovery,
     DoubanDiscovery,
     TmdbDiscovery,
+    _douban_discovery_item,
+    _tmdb_discovery_item,
     season_range,
 )
 from app.media.metadata.registry import MetadataRegistry
@@ -86,12 +89,27 @@ def test_douban_discovery_maps_items():
     assert page.has_more is False
 
 
+def test_discovery_items_do_not_default_unknown_to_movie():
+    douban = _douban_discovery_item({"id": "1", "title": "未知条目"})
+    assert douban is not None
+    assert douban.ref.provider_media_type == ProviderMediaType.UNKNOWN
+    assert douban.ref.media_kind == MediaKind.UNKNOWN
+
+    tmdb = _tmdb_discovery_item({"id": 2, "title": "未知条目"})
+    assert tmdb is not None
+    assert tmdb.ref.provider_media_type == ProviderMediaType.UNKNOWN
+    assert tmdb.ref.media_kind == MediaKind.UNKNOWN
+
+
 def test_douban_discovery_prefers_poster_over_still_photo():
     provider = DoubanDiscovery(api=_FakeDoubanApi())
 
     page = provider.items("tv_animation", 1, {}, None)
 
     assert page.items[0].poster == "https://img/poster-2x3.webp"
+    assert page.items[0].content_profile == "anime"
+    assert page.items[0].ref.provider_media_type == ProviderMediaType.SERIES
+    assert page.items[0].ref.media_kind == MediaKind.EPISODIC
 
 
 class _FakeMediaService:
@@ -109,7 +127,18 @@ class _FakeMediaService:
         ]
 
     def get_tmdb_hot_tvs(self, page):
-        return []
+        return [
+            {
+                "id": 3,
+                "title": "动画剧集",
+                "type": "tv",
+                "media_type": "tv",
+                "year": "2026",
+                "vote": 8.2,
+                "image": "https://img/anime-tv.jpg",
+                "genre_ids": [16],
+            }
+        ]
 
     def get_tmdb_trending_all_week(self, page=1):
         return []
@@ -139,6 +168,25 @@ def test_tmdb_discovery_maps_and_uses_season_facet():
     assert item.rating == {"tmdb": 7.0}
 
 
+def test_tmdb_discovery_marks_animated_series_as_anime():
+    provider = TmdbDiscovery(_FakeMediaService())
+
+    page = provider.items("popular_tvs", 1, {}, None)
+
+    assert page.items[0].content_profile == "anime"
+    assert page.items[0].ref.provider_media_type == ProviderMediaType.SERIES
+
+
+def test_douban_discovery_marks_animated_items_as_anime_outside_anime_feed():
+    item = _douban_discovery_item(
+        {"id": "1", "title": "动画剧集", "type": "tv"},
+        genres=["动画"],
+    )
+
+    assert item is not None
+    assert item.content_profile == "anime"
+
+
 class _FakeBangumi:
     def calendar(self):
         return [
@@ -164,6 +212,7 @@ def test_bangumi_discovery_filters_by_season():
 
     page = provider.items("seasonal", 1, {"season": "2026-winter"}, None)
     assert [item.title for item in page.items] == ["穹庐下的魔女"]
+    assert page.items[0].content_profile == "anime"
 
     empty = provider.items("seasonal", 1, {"season": "2025-winter"}, None)
     assert empty.items == []

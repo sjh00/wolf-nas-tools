@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType, media_type_registry
 
 from .models import ProviderCapability, ProviderDescriptor
 
@@ -80,7 +80,7 @@ class MetadataRegistry:
         *,
         capability: ProviderCapability | str | None = None,
         content_profile: str | None = None,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
         visibility: str | None = None,
     ) -> list[Any]:
         with self._lock:
@@ -122,7 +122,7 @@ class MetadataRegistry:
         self,
         provider_key: str,
         external_id: str,
-        media_type: MediaType | None = None,
+        media_type: ProviderMediaType | None = None,
     ) -> str:
         provider = self.get_provider(provider_key)
         if provider is None:
@@ -130,7 +130,7 @@ class MetadataRegistry:
         template = provider.descriptor.detail_url_template
         if not template:
             return ""
-        type_value = "movie" if media_type == MediaType.MOVIE else "tv"
+        type_value = "movie" if media_type == ProviderMediaType.MOVIE else "tv"
         return template.format(external_id=external_id, media_type=type_value)
 
     # ---------- discovery ----------
@@ -287,7 +287,7 @@ def _provider_matches(
     provider: Any,
     capability: ProviderCapability | str | None,
     content_profile: str | None,
-    media_type: MediaType | None,
+    media_type: ProviderMediaType | None,
     visibility: str | None,
 ) -> bool:
     descriptor = _descriptor_of(provider)
@@ -297,7 +297,11 @@ def _provider_matches(
             return False
     if content_profile and descriptor.content_profiles and content_profile not in descriptor.content_profiles:
         return False
-    if media_type and descriptor.media_types and media_type not in descriptor.media_types:
+    if (
+        media_type
+        and descriptor.media_kinds
+        and media_type_registry.resolve(media_type).kind not in descriptor.media_kinds
+    ):
         return False
     return not (visibility and descriptor.visibility != visibility)
 

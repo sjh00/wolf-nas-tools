@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 import log
 from app.core.settings import settings
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType, provider_media_type_of
 from app.infrastructure.external.doubanapi.apiv2 import DoubanApi
 from app.infrastructure.external.doubanapi.episode_queue import episode_queue
 
@@ -30,7 +30,7 @@ from ..models import (
     SeasonRecord,
     SourceTier,
 )
-from .genres import classify_media_type
+from .genres import classify_provider_media_type
 
 
 class _EpisodeScraperLike(Protocol):
@@ -52,7 +52,7 @@ _RUNTIME_RE = re.compile(r"(\d+)")
 def douban_detail_to_record(
     info: dict[str, Any],
     *,
-    media_type: MediaType,
+    media_type: ProviderMediaType | ProviderMediaType,
     external_id: str | None = None,
     locale: str = "zh-CN",
     content_profile: str = "default",
@@ -61,19 +61,36 @@ def douban_detail_to_record(
 ) -> ProviderRecord:
     """把豆瓣 frodo detail 字典映射为规范记录."""
     genres = list(info.get("genres") or [])
-    media_type, content_profile = classify_media_type(media_type, genres, content_profile)
+    provider_type, content_profile = classify_provider_media_type(
+        provider_media_type_of(media_type),
+        genres,
+        content_profile,
+    )
     douban_id = str(external_id or info.get("id") or "")
     year = str(info.get("year") or "") or None
 
-    refs = [ProviderRef(provider="douban", external_id=douban_id, media_type=media_type)]
+    refs = [
+        ProviderRef(
+            provider="douban",
+            external_id=douban_id,
+            provider_media_type=provider_type,
+        )
+    ]
     imdb_id = str(info.get("imdb") or "").strip()
     if imdb_id.startswith("tt"):
-        refs.append(ProviderRef(provider="imdb", external_id=imdb_id, media_type=media_type))
+        refs.append(
+            ProviderRef(
+                provider="imdb",
+                external_id=imdb_id,
+                provider_media_type=provider_type,
+            )
+        )
     return ProviderRecord(
         provider="douban",
         external_id=douban_id,
         refs=refs,
-        media_type=media_type,
+        media_type=provider_type,
+        provider_media_type=provider_type,
         content_profile=content_profile,
         locale=locale,
         title=info.get("title") or None,
@@ -135,6 +152,16 @@ def parse_runtime(durations: Any) -> int | None:
     return None
 
 
+def _infer_provider_type(info: dict[str, Any]) -> ProviderMediaType:
+    """仅从详情显式字段/集数推断，未知时保持 UNKNOWN，不默认电影."""
+    explicit = provider_media_type_of(info.get("type") or info.get("type_name"))
+    if explicit != ProviderMediaType.UNKNOWN:
+        return explicit
+    if info.get("episodes_count"):
+        return ProviderMediaType.SERIES
+    return ProviderMediaType.UNKNOWN
+
+
 def _rating(info: dict[str, Any]) -> dict[str, float]:
     rating = info.get("rating") or {}
     value = rating.get("value")
@@ -193,7 +220,7 @@ class DoubanProvider:
         display_name="豆瓣",
         ref_prefixes=frozenset({"DB", "DOUBAN"}),
         subscription_id_format="DB:{id}",
-        default_media_type=MediaType.MOVIE,
+        default_provider_media_type=ProviderMediaType.MOVIE,
         detail_url_template="https://movie.douban.com/subject/{external_id}",
         capabilities=frozenset(
             {
@@ -205,7 +232,8 @@ class DoubanProvider:
                 ProviderCapability.DISCOVERY,
             }
         ),
-        media_types=frozenset({MediaType.MOVIE, MediaType.TV, MediaType.ANIME}),
+        provider_media_types=frozenset({ProviderMediaType.MOVIE, ProviderMediaType.SERIES, ProviderMediaType.ANIME}),
+        media_kinds=frozenset({MediaKind.MOVIE, MediaKind.EPISODIC}),
         rate_limit_per_minute=RATE,
         source_tiers=frozenset({SourceTier.API, SourceTier.HTML}),
     )
@@ -225,19 +253,34 @@ class DoubanProvider:
             target = item.get("target") or {}
             if not target.get("id"):
                 continue
-            media_type = MediaType.from_string(str(item.get("type_name") or target.get("type") or ""))
-            if media_type == MediaType.UNKNOWN:
-                media_type = MediaType.MOVIE
+            provider_type = provider_media_type_of(item.get("type_name") or target.get("type"))
+            # 豆瓣聚合搜索会混入图书、豆列等非影视条目；无法判定影视类型时直接丢弃。
+            if provider_type == ProviderMediaType.UNKNOWN:
+                continue
+            genres = list(target.get("genres") or [])
+            if not genres:
+                genres = [
+                    part.strip() for part in re.split(r"[/\s]+", str(target.get("card_subtitle") or "")) if part.strip()
+                ]
+            provider_type, content_profile = classify_provider_media_type(
+                provider_type,
+                genres,
+                query.content_profile,
+            )
             target_rating = target.get("rating")
             rating_value = target_rating.get("value") if isinstance(target_rating, dict) else target_rating
             hits.append(
                 SearchHit(
                     provider="douban",
-                    ref=ProviderRef(provider="douban", external_id=str(target["id"]), media_type=media_type),
+                    ref=ProviderRef(
+                        provider="douban",
+                        external_id=str(target["id"]),
+                        provider_media_type=provider_type,
+                    ),
                     title=target.get("title") or "",
                     year=str(target.get("year") or "") or None,
-                    media_type=media_type,
-                    content_profile=query.content_profile,
+                    media_type=provider_type,
+                    content_profile=content_profile,
                     poster=target.get("cover_url"),
                     extra={"rating": rating_value} if rating_value else {},
                 )
@@ -245,8 +288,8 @@ class DoubanProvider:
         return hits
 
     def detail(self, ref: ProviderRef, ctx: object) -> ProviderRecord | None:
-        media_type = ref.media_type or MediaType.MOVIE
-        if media_type in {MediaType.TV, MediaType.ANIME}:
+        provider_type = provider_media_type_of(ref.provider_media_type or ref.media_type)
+        if provider_type in (ProviderMediaType.SERIES, ProviderMediaType.ANIME):
             info = self._api.tv_detail(ref.external_id)
             if not info:
                 info = self._api.movie_detail(ref.external_id)
@@ -256,11 +299,11 @@ class DoubanProvider:
                 info = self._api.tv_detail(ref.external_id)
         if not info or info.get("localized_message") or not info.get("title"):
             raise ProviderNotFound("douban", f"未找到 {ref.external_id}")
-        if media_type == MediaType.UNKNOWN:
-            media_type = MediaType.TV if info.get("episodes_count") else MediaType.MOVIE
+        if provider_type == ProviderMediaType.UNKNOWN:
+            provider_type = _infer_provider_type(info)
         record = douban_detail_to_record(
             info,
-            media_type=media_type,
+            media_type=provider_type,
             external_id=ref.external_id,
             content_profile="default",
         )

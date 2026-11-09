@@ -12,15 +12,14 @@
 
 from unittest.mock import MagicMock
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.media.lookup.tmdb_lookup import TmdbLookup
 
 # 测试用的中性标题与虚构 TMDB ID，不指向任何真实作品
 TV_TITLE = "测试剧集"
 MOVIE_TITLE = "测试电影"
 
-
-def _parsed(title_cn=None, title_en=None, year=None, mtype=MediaType.TV, season=1, episode=None):
+def _parsed(title_cn=None, title_en=None, year=None, mtype=ProviderMediaType.SERIES, season=1, episode=None):
     p = MagicMock()
     p.title_cn = title_cn
     p.title_en = title_en
@@ -30,7 +29,6 @@ def _parsed(title_cn=None, title_en=None, year=None, mtype=MediaType.TV, season=
     p.episode = episode
     p.org_string = f"{title_cn or title_en or ''}.S01".strip(".")
     return p
-
 
 def _service(*, tv_hit=None, movie_hit=None, multi_hit=None):
     svc = TmdbLookup.__new__(TmdbLookup)
@@ -57,7 +55,6 @@ def _service(*, tv_hit=None, movie_hit=None, multi_hit=None):
     svc.detail = detail
     return svc
 
-
 TV_HIT = {
     "id": 900001,
     "name": TV_TITLE,
@@ -71,7 +68,6 @@ MOVIE_HIT = {
     "genres": [{"id": 28, "name": "Action"}],
 }
 
-
 class TestCrossTypeFlipBlocked:
     def test_tv_does_not_flip_to_movie_when_constrained(self, monkeypatch):
         """TV 命中后不得因电影模糊分更高而翻转。"""
@@ -79,10 +75,13 @@ class TestCrossTypeFlipBlocked:
         svc = _service(tv_hit=dict(TV_HIT), movie_hit=dict(MOVIE_HIT))
         monkeypatch.setattr(svc, "_match_tmdb_candidate", lambda *a, **k: True)
 
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2018"), hint_type=MediaType.TV, constrain_type=True)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2018"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=True)
         assert result is not None
         assert result.tmdb_id == TV_HIT["id"]
-        assert result.media_type == MediaType.TV
+        assert result.provider_media_type == ProviderMediaType.SERIES
 
     def test_flip_still_allowed_without_constraint(self, monkeypatch):
         """未声明类型时保留原有跨类型比较行为（不破坏既有能力）。"""
@@ -90,10 +89,12 @@ class TestCrossTypeFlipBlocked:
         svc = _service(tv_hit=dict(TV_HIT), movie_hit=dict(MOVIE_HIT))
         monkeypatch.setattr(svc, "_match_tmdb_candidate", lambda *a, **k: True)
         # TV 与电影同分时保持 TV；这里只验证「没被 constrain 挡掉」这条路径有执行
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2018"), hint_type=MediaType.TV, constrain_type=False)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2018"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=False)
         assert result is not None
         assert result.tmdb_id in (TV_HIT["id"], MOVIE_HIT["id"])
-
 
 class TestCrossTypeFallbackBlocked:
     def test_multi_search_wrong_type_rejected(self, monkeypatch):
@@ -101,7 +102,10 @@ class TestCrossTypeFallbackBlocked:
         movie = dict(MOVIE_HIT, media_type="movie")
         svc = _service(tv_hit=None, multi_hit=movie)
         monkeypatch.setattr(svc, "_match_tmdb_candidate", lambda *a, **k: True)
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2019"), hint_type=MediaType.TV, constrain_type=True)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2019"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=True)
         assert result is None
 
     def test_multi_search_same_type_accepted(self, monkeypatch):
@@ -109,7 +113,10 @@ class TestCrossTypeFallbackBlocked:
         tv = dict(TV_HIT, media_type="tv")
         svc = _service(tv_hit=None, multi_hit=tv)
         monkeypatch.setattr(svc, "_match_tmdb_candidate", lambda *a, **k: True)
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2019"), hint_type=MediaType.TV, constrain_type=True)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2019"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=True)
         assert result is not None
         assert result.tmdb_id == TV_HIT["id"]
 
@@ -117,16 +124,21 @@ class TestCrossTypeFallbackBlocked:
         """互换类型兜底在约束下不再执行。"""
         svc = _service(tv_hit=None, movie_hit=dict(MOVIE_HIT))
         monkeypatch.setattr(svc, "_match_tmdb_candidate", lambda *a, **k: True)
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2019"), hint_type=MediaType.TV, constrain_type=True)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2019"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=True)
         assert result is None
 
     def test_swap_type_search_runs_without_constraint(self, monkeypatch):
         svc = _service(tv_hit=None, movie_hit=dict(MOVIE_HIT))
         monkeypatch.setattr(svc, "_match_tmdb_candidate", lambda *a, **k: True)
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2019"), hint_type=MediaType.TV, constrain_type=False)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2019"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=False)
         # 无约束时允许多类型兜底，可能返回电影
-        assert result is None or result.media_type == MediaType.MOVIE
-
+        assert result is None or result.provider_media_type == ProviderMediaType.MOVIE
 
 class TestSameTypeFallbackPreserved:
     def test_yearless_tv_retry_still_works(self, monkeypatch):
@@ -139,12 +151,14 @@ class TestSameTypeFallbackPreserved:
 
         svc = _service()
         svc.search.search_tv = search_tv  # type: ignore[method-assign]
-        result = svc.lookup(_parsed(title_cn=TV_TITLE, year="2018"), hint_type=MediaType.TV, constrain_type=True)
+        result = svc.lookup(
+            _parsed(title_cn=TV_TITLE, year="2018"),
+            hint_type=ProviderMediaType.SERIES,
+            constrain_type=True)
         assert result is not None
         assert result.tmdb_id == TV_HIT["id"]
         # 先按年份查、再去年份查
         assert calls[-1] is None
-
 
 class TestIdentifyFilesPassesHint:
     """identify_files 必须把调用方的类型提示传给 lookup。"""
@@ -152,12 +166,12 @@ class TestIdentifyFilesPassesHint:
     def test_hint_becomes_constraint(self):
         # 复刻 identify_files 的转换逻辑
         def to_constraint(media_type):
-            hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
-            constrain = hint != MediaType.UNKNOWN
+            hint = ProviderMediaType.from_value(str(getattr(media_type, "value", media_type) or ""))
+            constrain = hint != ProviderMediaType.UNKNOWN
             return (hint if constrain else None), constrain
 
-        assert to_constraint("tv") == (MediaType.TV, True)
-        assert to_constraint(MediaType.TV) == (MediaType.TV, True)
-        assert to_constraint("movie") == (MediaType.MOVIE, True)
+        assert to_constraint("tv") == (ProviderMediaType.SERIES, True)
+        assert to_constraint(ProviderMediaType.SERIES) == (ProviderMediaType.SERIES, True)
+        assert to_constraint("movie") == (ProviderMediaType.MOVIE, True)
         assert to_constraint(None) == (None, False)
         assert to_constraint("") == (None, False)

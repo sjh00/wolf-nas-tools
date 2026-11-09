@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import MediaKind, ProviderMediaType, media_type_registry
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,25 @@ class MediaRef:
     provider: str
     external_id: str
     scope: str = "default"
-    media_type: MediaType | None = None
+    media_type: ProviderMediaType | None = None
+    provider_media_type: ProviderMediaType | None = None
+    media_kind: MediaKind | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider_media_type is None and self.media_type is not None:
+            object.__setattr__(
+                self,
+                "provider_media_type",
+                ProviderMediaType.from_value(self.media_type.value),
+            )
+        if self.media_kind is None:
+            object.__setattr__(
+                self,
+                "media_kind",
+                self.provider_media_type.kind
+                if self.provider_media_type is not None
+                else media_type_registry.resolve(self.media_type).kind,
+            )
 
 
 def normalize_identity_key(value: Any) -> str:
@@ -101,7 +119,7 @@ def identity_keys_match(left: Any, right: Any) -> bool:
 class MediaSubject:
     """供 Composer 使用的最小媒体主体，替代 SimpleNamespace/MediaInfo 鸭子类型."""
 
-    media_type: MediaType
+    media_type: ProviderMediaType
     tmdb_id: str = ""
     douban_id: str | None = None
     anchor_provider: str = ""
@@ -114,7 +132,7 @@ class MediaSubject:
     extra: dict[str, Any] | None = None
 
     @property
-    def type(self) -> MediaType:
+    def type(self) -> ProviderMediaType:
         return self.media_type
 
     def get_season_seq(self) -> int:

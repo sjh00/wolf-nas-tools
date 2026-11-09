@@ -6,10 +6,11 @@ from app.domain.media_metadata import (
     normalize_genres,
     normalize_languages,
 )
+from app.domain.media_types import ProviderMediaType, media_type_registry
 from app.domain.media_utils import check_media_exists
-from app.domain.mediatypes import MediaType
 from app.infrastructure.image_proxy import ImageProxy
-from app.media import Bangumi, DouBan, MediaService
+from app.media import Bangumi, DouBan
+from app.media.metadata.gateway import MetadataGateway
 from app.mediaserver import MediaServer
 from app.services.subscribe_service import SubscribeService as Subscribe
 from app.services.web.utils import search_media_infos
@@ -22,28 +23,28 @@ class MediaRecommendationService:
 
     def __init__(
         self,
-        media_service: MediaService,
         douban: DouBan,
         bangumi: Bangumi,
         media_server: MediaServer,
         subscribe: Subscribe,
         media_info_service,
         downloader_core,
+        metadata_gateway: MetadataGateway | None = None,
     ):
-        self._media = media_service
         self._douban = douban
         self._bangumi = bangumi
         self._media_server = media_server
         self._subscribe = subscribe
         self._media_info_service = media_info_service
         self._downloader_core = downloader_core
+        self._metadata_gateway = metadata_gateway
         self._genre_cache: dict[str, dict[int, str]] = {}
 
-    def _get_genre_map(self, mtype: MediaType) -> dict[int, str]:
+    def _get_genre_map(self, mtype: ProviderMediaType) -> dict[int, str]:
         key = mtype.value
         if key not in self._genre_cache:
             try:
-                genres = self._media.get_tmdb_genres(mtype) or []
+                genres = self._metadata_gateway.genre_catalog(mtype) if self._metadata_gateway is not None else []
                 genre_map: dict[int, str] = {}
                 if isinstance(genres, list):
                     for g in genres:
@@ -58,7 +59,7 @@ class MediaRecommendationService:
                 self._genre_cache[key] = {}
         return self._genre_cache[key]
 
-    def _genre_ids_to_names(self, genre_ids: list, mtype: MediaType) -> list[str]:
+    def _genre_ids_to_names(self, genre_ids: list, mtype: ProviderMediaType) -> list[str]:
         if not genre_ids:
             return []
         genre_map = self._get_genre_map(mtype)
@@ -80,7 +81,7 @@ class MediaRecommendationService:
         genres = [g for g in genre_part.split() if g in _CHINESE_GENRES]
         return normalize_genres(genres), normalize_countries(country)
 
-    def _enrich_recommend_items(self, items: list[dict], mtype: MediaType | None) -> list[dict]:
+    def _enrich_recommend_items(self, items: list[dict], mtype: ProviderMediaType | None) -> list[dict]:
         for item in items:
             if not item:
                 continue
@@ -96,7 +97,7 @@ class MediaRecommendationService:
                 item["countries"] = normalize_countries(["JP"])
                 item["languages"] = normalize_languages("ja")
             elif genre_ids:
-                item_type = mtype or MediaType.from_string(item.get("type") or "movie")
+                item_type = mtype or ProviderMediaType.from_value(item.get("type") or "movie")
                 item["genres"] = self._genre_ids_to_names(genre_ids, item_type)
                 item["countries"] = normalize_countries(origin_country)
                 item["languages"] = normalize_languages(original_language)
@@ -128,15 +129,19 @@ class MediaRecommendationService:
         current_page = int(data.get("page", 1))
         res_list = []
 
-        if type_ in [MediaType.MOVIE.value, MediaType.TV.value, "ALL"]:
-            if subtype == "hm":
-                res_list = self._media.get_tmdb_hot_movies(current_page)
-            elif subtype == "ht":
-                res_list = self._media.get_tmdb_hot_tvs(current_page)
-            elif subtype == "nm":
-                res_list = self._media.get_tmdb_new_movies(current_page)
-            elif subtype == "nt":
-                res_list = self._media.get_tmdb_new_tvs(current_page)
+        if type_ in [ProviderMediaType.MOVIE.value, ProviderMediaType.SERIES.value, "ALL"]:
+            category_map = {
+                "hm": "hot_movies",
+                "ht": "hot_tvs",
+                "nm": "new_movies",
+                "nt": "new_tvs",
+            }
+            if subtype in category_map:
+                res_list = (
+                    self._metadata_gateway.discover_items(category_map[subtype], page=current_page)
+                    if self._metadata_gateway is not None
+                    else []
+                )
             elif subtype == "dbom":
                 res_list = self._douban.get_douban_online_movie(current_page)
             elif subtype == "dbhm":
@@ -191,13 +196,29 @@ class MediaRecommendationService:
             items = self._downloader_core.get_download_history(page=current_page)
             res_list = self._convert_downloaded(items)
         elif type_ == "TRENDING":
-            res_list = self._media.get_tmdb_trending_all_week(page=current_page)
+            res_list = (
+                self._metadata_gateway.discover_items("trending", page=current_page)
+                if self._metadata_gateway is not None
+                else []
+            )
         elif type_ == "DISCOVER":
-            mtype = MediaType.MOVIE if MediaType.from_string(subtype or "") == MediaType.MOVIE else MediaType.TV
+            mtype = (
+                ProviderMediaType.MOVIE
+                if ProviderMediaType.from_value(subtype or "") == ProviderMediaType.MOVIE
+                else ProviderMediaType.SERIES
+            )
             params = data.get("params") or {}
-            res_list = self._media.get_tmdb_discover(mtype=mtype, page=current_page, params=params)
+            res_list = (
+                self._metadata_gateway.discover_items("discover", media_type=mtype, page=current_page, params=params)
+                if self._metadata_gateway is not None
+                else []
+            )
         elif type_ == "DOUBANTAG":
-            mtype = MediaType.MOVIE if MediaType.from_string(subtype or "") == MediaType.MOVIE else MediaType.TV
+            mtype = (
+                ProviderMediaType.MOVIE
+                if ProviderMediaType.from_value(subtype or "") == ProviderMediaType.MOVIE
+                else ProviderMediaType.SERIES
+            )
             params = data.get("params") or {}
             sort = params.get("sort") or "R"
             tags = params.get("tags") or ""
@@ -235,8 +256,15 @@ class MediaRecommendationService:
                 "orgid": item.TMDBID,
                 "tmdbid": item.TMDBID,
                 "title": item.TITLE,
-                "type": MediaType.from_string(item.TYPE).value,
-                "media_type": MediaType.from_string(item.TYPE).display_name,
+                "type": (
+                    resolved := media_type_registry.resolve_profile(getattr(item, "CONTENT_PROFILE", None))
+                    or media_type_registry.resolve(item.TYPE, getattr(item, "CONTENT_PROFILE", None))
+                ).content_type.value,
+                "media_type": resolved.display_name,
+                "media_type_key": resolved.key,
+                "media_type_name": resolved.display_name,
+                "media_kind": resolved.kind.value,
+                "content_profile": getattr(item, "CONTENT_PROFILE", "") or "",
                 "year": item.YEAR,
                 "vote": item.VOTE,
                 "image": item.POSTER,

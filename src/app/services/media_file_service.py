@@ -12,7 +12,7 @@ from app.core.exceptions import (
 from app.db.repositories.category_repo_adapter import CategoryConfigRepositoryAdapter
 from app.db.repositories.media_library_route_repo_adapter import MediaLibraryRouteRepositoryAdapter
 from app.domain.enums import OsType
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.events import Event
 from app.events.constants import SUBTITLE_DOWNLOAD
 from app.events.payloads import SubtitleDownloadPayload
@@ -37,10 +37,12 @@ class MediaFileService:
         thread_executor,
         scraper,
         route_repo=None,
+        metadata_gateway=None,
     ):
         self._event_bus = event_bus
         self._storage_backend_repo = storage_backend_repo
         self._media_service = media_service
+        self._metadata_gateway = metadata_gateway
         self._thread_executor = thread_executor
         self._scraper = scraper
         self._route_repo = route_repo or MediaLibraryRouteRepositoryAdapter()
@@ -162,17 +164,25 @@ class MediaFileService:
 
         for i, p in enumerate(movie_paths):
             item = _make_path(
-                p, MediaType.MOVIE.display_name, "movie", movie_backend[i] if i < len(movie_backend) else "local"
+                p,
+                ProviderMediaType.MOVIE.display_name,
+                "movie",
+                movie_backend[i] if i < len(movie_backend) else "local",
             )
             if item:
                 library_paths.append(item)
         for i, p in enumerate(tv_paths):
-            item = _make_path(p, MediaType.TV.display_name, "tv", tv_backend[i] if i < len(tv_backend) else "local")
+            item = _make_path(
+                p, ProviderMediaType.SERIES.display_name, "tv", tv_backend[i] if i < len(tv_backend) else "local"
+            )
             if item:
                 library_paths.append(item)
         for i, p in enumerate(anime_paths):
             item = _make_path(
-                p, MediaType.ANIME.display_name, "anime", anime_backend[i] if i < len(anime_backend) else "local"
+                p,
+                ProviderMediaType.ANIME.display_name,
+                "anime",
+                anime_backend[i] if i < len(anime_backend) else "local",
             )
             if item:
                 library_paths.append(item)
@@ -253,11 +263,15 @@ class MediaFileService:
 
     def download_subtitle(self, path: str, name: str) -> None:
         """下载字幕，失败时抛出异常"""
-        media = self._media_service.get_media_info(title=name)
+        if self._metadata_gateway is None:
+            raise ServiceError("元数据网关不可用")
+        media = self._metadata_gateway.resolve_by_title(name)
         if not media or not media.provider_data:
-            raise ResourceNotFoundError(f"{name} 无法从TMDB查询到媒体信息")
+            raise ResourceNotFoundError(f"{name} 无法查询到媒体信息")
         if not media.imdb_id:
-            media.set_provider_data(self._media_service.get_tmdb_info(mtype=media.type, tmdbid=media.tmdb_id))
+            details = self._metadata_gateway.details_for_media(media)
+            if details:
+                media.set_provider_data(details)
         self._event_bus.publish(
             Event(
                 event_type=SUBTITLE_DOWNLOAD,

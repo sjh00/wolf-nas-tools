@@ -20,16 +20,16 @@ from PIL import Image
 import log
 from app.core.module_config import ModuleConf
 from app.core.settings import settings
-from app.core.system_config import SystemConfig
 from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.domain.enums import SystemConfigKey
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 from app.infrastructure.ffmpeg import FfmpegProcessor
 from app.infrastructure.image_proxy import ImageProxy
+from app.infrastructure.system_config import SystemConfig
 from app.infrastructure.temp import temp_manager
 from app.media.display_image_policy import unwrap_display_image_url
-from app.media.external.douban import DouBan
 from app.media.fanart import Fanart
+from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.media.metadata.images import ImageResolver
 from app.media.metadata.models import Credit, ImageAsset, MediaMetadata
 from app.media.metadata.parsing import ParserChain
@@ -58,16 +58,16 @@ def _nfo_base_name(file_path: str) -> str:
 class Scraper:
     """媒体元数据刮削器 — 生成 NFO 文件、下载图片"""
 
+    _metadata_gateway: MetadataGateway | None = None
+
     def __init__(
         self,
         media_service: MediaService,
-        douban: DouBan | None = None,
         system_config: SystemConfig | None = None,
-        metadata_service=None,
+        metadata_gateway: MetadataGateway | None = None,
     ):
         self.media = media_service
-        self._metadata_service = metadata_service
-        self.douban = douban or DouBan()
+        self._metadata_gateway = metadata_gateway
         self.fanart = Fanart()
         self._system_config = system_config or SystemConfig()
         self._scraper_flag = False
@@ -78,9 +78,57 @@ class Scraper:
         self._temp_path = temp_manager.create_subdir("scraper")
         self._init_config()
         self._downloader = ImageDownloader(self._temp_path)
-        self._nfo_gen = NfoGenerator(self._downloader)
+        self._nfo_gen = NfoGenerator(self._downloader, metadata_gateway=self._metadata_gateway)
         self._images = ImageResolver()
-        self._credits = ChineseCredits(self.media)
+        self._credits = ChineseCredits(self._metadata_gateway)
+
+    @property
+    def _metadata(self):
+        return self._metadata_gateway
+
+    def _metadata_context(self, content_profile: str | None = None) -> MetadataContext:
+        return MetadataContext(
+            purpose="scrape",
+            allow_private=True,
+            content_profile=str(content_profile or "default"),
+        )
+
+    def _lookup(self, provider: str, external_id: str, **kwargs):
+        if self._metadata_gateway is None:
+            return None
+        kwargs.pop("allow_private", None)
+        kwargs.pop("permissions", None)
+        kwargs["context"] = self._metadata_context(kwargs.get("content_profile"))
+        return self._metadata_gateway.lookup(provider, external_id, **kwargs)
+
+    def _search(self, **kwargs):
+        if self._metadata_gateway is None:
+            return []
+        kwargs["context"] = self._metadata_context(kwargs.get("content_profile"))
+        return self._metadata_gateway.search(**kwargs)
+
+    def _compose(self, media_info, **kwargs):
+        if self._metadata_gateway is None:
+            return None
+        kwargs["context"] = self._metadata_context(kwargs.get("content_profile"))
+        return self._metadata_gateway.compose_for_media(media_info, **kwargs)
+
+    def _latest_snapshot(self, media_info):
+        if self._metadata_gateway is None:
+            return None
+        return self._metadata_gateway.latest_snapshot_for_media(
+            media_info,
+            context=self._metadata_context(getattr(media_info, "content_profile", None)),
+        )
+
+    def _identify_anchor(self, media_info, *, policy: str | None = None):
+        if self._metadata_gateway is None:
+            return False
+        return self._metadata_gateway.identify_anchor(
+            media_info,
+            context=self._metadata_context(getattr(media_info, "content_profile", None)),
+            policy=policy,
+        )
 
     def _init_config(self):
         self._scraper_flag = (settings.get("media") or {}).get("nfo_poster")
@@ -126,9 +174,9 @@ class Scraper:
     def _has_scraped_metadata(self, file: str, dst_backend=None) -> bool:
         """判断单个文件是否已具备当前配置要求的 NFO 与图片，供增量刮削跳过."""
         media_info = self._profile_media_info(file) or meta_info(os.path.basename(file))
-        media_type = getattr(media_info, "type", None) or MediaType.MOVIE
-        is_tv = media_type in {MediaType.TV, MediaType.ANIME}
-        if is_tv and media_type == MediaType.TV:
+        media_type = getattr(media_info, "type", None) or ProviderMediaType.MOVIE
+        is_tv = media_type in {ProviderMediaType.SERIES, ProviderMediaType.ANIME}
+        if is_tv and media_type == ProviderMediaType.SERIES:
             explicit_series = bool(
                 re.search(
                     r"(?i)(?:^|[.\s_\-\[])(?:s\d{1,2}(?:e\d{1,3})?|season[.\s]*\d+|第\s*\d+\s*季)",
@@ -197,7 +245,7 @@ class Scraper:
         if parsed is None or not getattr(parsed, "content_profile", None):
             return None
         code = getattr(parsed, "anchor_external_id", None) or os.path.basename(file_path)
-        media_info = meta_info(code, mtype=getattr(parsed, "type", None) or MediaType.MOVIE)
+        media_info = meta_info(code, mtype=getattr(parsed, "type", None) or ProviderMediaType.MOVIE)
         media_info.content_profile = parsed.content_profile
         media_info.anchor_provider = getattr(parsed, "anchor_provider", "") or ""
         media_info.anchor_external_id = getattr(parsed, "anchor_external_id", "") or ""
@@ -205,7 +253,7 @@ class Scraper:
 
     def _nfo_needs_rewrite(self, dir_path: str, file_name: str, media_type) -> bool:
         """已有 NFO 但缺少核心元数据时，增量模式也必须重写."""
-        is_tv = media_type in {MediaType.TV, MediaType.ANIME}
+        is_tv = media_type in {ProviderMediaType.SERIES, ProviderMediaType.ANIME}
         candidates = [os.path.join(dir_path, f"{file_name}.nfo")]
         if is_tv:
             candidates.extend([os.path.join(dir_path, "tvshow.nfo"), os.path.join(dir_path, "season.nfo")])
@@ -259,17 +307,17 @@ class Scraper:
                 log.info(f"[Scraper]开始刮削媒体库文件：{file} ...")
                 mi = meta_info(os.path.basename(file))
                 profile_info = self._profile_media_info(file)
-                if profile_info is not None and self._metadata_service is not None:
-                    snapshot = None if force_refresh else self._metadata_service.latest_snapshot_for_media(profile_info)
+                if profile_info is not None and self._metadata_gateway is not None:
+                    snapshot = None if force_refresh else self._latest_snapshot(profile_info)
                     if snapshot is None:
-                        snapshot = self._metadata_service.compose_for_media(
+                        snapshot = self._compose(
                             profile_info,
                             with_episodes=True,
                             persist=True,
                             max_age_seconds=0 if force_refresh else 1800,
                         )
                     if snapshot is None and force_refresh:
-                        snapshot = self._metadata_service.latest_snapshot_for_media(profile_info)
+                        snapshot = self._latest_snapshot(profile_info)
                         if snapshot is not None:
                             log.warn(f"[Scraper]{file} 强制重刮合成失败，回退最近快照")
                     if snapshot is not None:
@@ -310,8 +358,11 @@ class Scraper:
                 tmdbid = self._extract_tmdbid(file, mi, dst_backend)
                 if tmdbid and not force_nfo:
                     log.info(f"[Scraper]读取到本地nfo文件的tmdbid：{tmdbid}")
+                    if self._metadata_gateway is None:
+                        log.warn(f"[Scraper]{file} 元数据网关不可用，legacy TMDB 兜底失败")
+                        continue
                     mi.set_provider_data(
-                        self.media.get_tmdb_info(mtype=mi.type, tmdbid=tmdbid, append_to_response="all")
+                        self._metadata_gateway.details("tmdb", tmdbid, media_type=mi.type, append_to_response="all")
                     )
                     media_info = mi
                 else:
@@ -325,7 +376,7 @@ class Scraper:
                     ) = self._download_history_tmdb(file)
                     if dl_tmdbid or dl_anchor_provider:
                         log.info(f"[Scraper]从下载历史读取到tmdbid：{dl_tmdbid}，类型={dl_type}")
-                        dl_mtype = MediaType.from_string(dl_type) or mi.type or MediaType.MOVIE
+                        dl_mtype = ProviderMediaType.from_value(dl_type) or mi.type or ProviderMediaType.MOVIE
                         db_anchor = str(dl_tmdbid or "").startswith("DB:") or (
                             dl_anchor_provider and dl_anchor_provider != "tmdb" and not str(dl_tmdbid or "").isdigit()
                         )
@@ -339,42 +390,49 @@ class Scraper:
                             media_info.type = dl_mtype
                             log.info(f"[Scraper]豆瓣订阅刮削使用豆瓣元数据：{dl_anchor_external}")
                         else:
-                            tmdb_details = self.media.get_tmdb_info(
-                                mtype=dl_mtype, tmdbid=dl_tmdbid, append_to_response="all"
-                            )
-                            if tmdb_details:
-                                mi.set_provider_data(tmdb_details)
-                                # 再用 identify_files 解析季/集（有 tmdb_info 时跳过网络查询，仅做本地解析）
-                                medias = self.media.get_media_info_on_files(
-                                    file_list=[file],
-                                    tmdb_info=tmdb_details,
-                                    media_type=dl_mtype,
-                                    append_to_response="all",
-                                    backend=dst_backend,
-                                )
-                                if medias:
-                                    media_info = next(iter(medias.values()), mi)
-                                else:
-                                    media_info = mi
-                            else:
+                            if self._metadata_gateway is None:
+                                log.warn(f"[Scraper]{file} 元数据网关不可用，legacy TMDB 兜底失败")
                                 media_info = mi
+                            else:
+                                tmdb_details = self._metadata_gateway.details(
+                                    "tmdb", dl_tmdbid, media_type=dl_mtype, append_to_response="all"
+                                )
+                                if tmdb_details:
+                                    mi.set_provider_data(tmdb_details)
+                                    # 再用 identify_files 解析季/集（有 tmdb_info 时跳过网络查询，仅做本地解析）
+                                    medias = self._metadata_gateway.media_info_on_files(
+                                        file_list=[file],
+                                        tmdb_info=tmdb_details,
+                                        media_type=dl_mtype,
+                                        append_to_response="all",
+                                        backend=dst_backend,
+                                    )
+                                    if medias:
+                                        media_info = next(iter(medias.values()), mi)
+                                    else:
+                                        media_info = mi
+                                else:
+                                    log.warn(f"[Scraper]{file} 网关未返回下载历史 TMDB 详情，保留本地识别结果")
+                                    media_info = mi
                         media_info.anchor_provider = dl_anchor_provider or media_info.anchor_provider
                         media_info.anchor_external_id = dl_anchor_external or media_info.anchor_external_id
                         media_info.content_profile = dl_content_profile or media_info.content_profile or "default"
                     else:
-                        medias = self.media.get_media_info_on_files(
+                        if self._metadata_gateway is None:
+                            log.warn(f"[Scraper]{file} 元数据网关不可用，无法识别媒体信息")
+                            continue
+                        medias = self._metadata_gateway.media_info_on_files(
                             file_list=[file], append_to_response="all", backend=dst_backend
                         )
                         if not medias:
                             log.warn(f"[Scraper]{file} 无法识别媒体信息")
                             continue
                         media_info = next(iter(medias.values()), None)
-                metadata_service = self._metadata_service
-                if media_info is not None and metadata_service is not None:
+                if media_info is not None and self._metadata_gateway is not None:
                     # 转移阶段已写入的快照优先直接读取，避免重复抓取和重复限流。
-                    snapshot = metadata_service.latest_snapshot_for_media(media_info)
+                    snapshot = self._latest_snapshot(media_info)
                     if snapshot is None:
-                        snapshot = metadata_service.compose_for_media(media_info, with_episodes=True, persist=True)
+                        snapshot = self._compose(media_info, with_episodes=True, persist=True)
                     if snapshot is not None:
                         scraped = self.gen_snapshot_files(
                             snapshot=snapshot,
@@ -428,7 +486,7 @@ class Scraper:
         if not force_nfo and self._nfo_needs_rewrite(dir_path, file_name, media.type):
             log.info(f"[Scraper]{file_name} 现有 NFO 不完整，强制重写")
             force_nfo = True
-        if media.type == MediaType.MOVIE:
+        if media.type == ProviderMediaType.MOVIE:
             self._scrape_movie_from_snapshot(snapshot, media, dir_path, file_name, force_nfo, force_pic)
         else:
             self._scrape_tv_from_snapshot(snapshot, media, dir_path, file_name, file_ext, force_nfo, force_pic)
@@ -805,7 +863,7 @@ class Scraper:
 
     def _ensure_snapshot_images(self, snapshot) -> None:
         """用快照主来源补齐图片/演职人员，优先复用聚合 provider 的合并结果."""
-        if self._metadata_service is None:
+        if self._metadata_gateway is None:
             return
         images = getattr(snapshot, "images", None)
         if not isinstance(images, dict):
@@ -836,7 +894,7 @@ class Scraper:
             external_id = str(getattr(ref, "external_id", "") or "").strip()
             if not provider or not external_id or provider in {"content_id", "tmdb", "imdb"}:
                 continue
-            record = self._metadata_service.lookup(
+            record = self._lookup(
                 provider,
                 external_id,
                 media_type=getattr(ref, "media_type", None),
@@ -939,14 +997,14 @@ class Scraper:
         if scraper_pic.get("actor"):
             self._download_snapshot_actors(snapshot, target_dir, force_pic)
 
-    def _snapshot_fanart_id(self, snapshot, media=None) -> tuple[MediaType, str] | None:
+    def _snapshot_fanart_id(self, snapshot, media=None) -> tuple[ProviderMediaType, str] | None:
         """解析 Fanart.tv 所需 ID：电影用 TMDB，剧集用 TVDB."""
         media_type = getattr(snapshot, "media_type", None)
-        if not isinstance(media_type, MediaType):
+        if not isinstance(media_type, ProviderMediaType):
             media_type = getattr(media, "type", None)
-        if not isinstance(media_type, MediaType):
+        if not isinstance(media_type, ProviderMediaType):
             return None
-        if media_type == MediaType.MOVIE:
+        if media_type == ProviderMediaType.MOVIE:
             if media is not None and getattr(media, "tmdb_id", None):
                 return media_type, str(media.tmdb_id)
             refs = getattr(snapshot, "refs", []) or []
@@ -976,7 +1034,7 @@ class Scraper:
             ("banner", "banner", fanart.get_banner),
             ("thumb", "thumb", fanart.get_thumb),
         ]
-        if media_type == MediaType.MOVIE:
+        if media_type == ProviderMediaType.MOVIE:
             specs.append(("disc", "disc", fanart.get_disc))
         else:
             specs.append(("clearart", "clearart", fanart.get_clearart))
@@ -1000,7 +1058,7 @@ class Scraper:
         if query is None:
             return
         media_type, query_id = query
-        if media_type == MediaType.MOVIE:
+        if media_type == ProviderMediaType.MOVIE:
             return
         season_no = int(season_number)
         if scraper_pic.get("season_poster") and (season is None or not season.poster):
@@ -1048,8 +1106,7 @@ class Scraper:
 
     def _compose_standard_snapshot(self, file_path: str, media_info):
         """普通媒体接入 metadata snapshot：优先历史/NFO 锚点，其次按默认策略搜索."""
-        metadata_service = self._metadata_service
-        if metadata_service is None:
+        if self._metadata_gateway is None:
             return None
         provider = ""
         external_id = ""
@@ -1063,11 +1120,11 @@ class Scraper:
                 provider, external_id = "douban", raw[3:]
             elif raw.isdigit():
                 provider, external_id = "tmdb", raw
-        media_type = getattr(media_info, "type", None) or MediaType.MOVIE
+        media_type = getattr(media_info, "type", None) or ProviderMediaType.MOVIE
         policy = str((settings.get("media") or {}).get("metadata_default_policy") or "tmdb_primary")
-        if self._metadata_service is not None and not provider:
+        if self._metadata_gateway is not None and not provider:
             # 下载历史/订阅已经给出明确锚点时，不能被标题识别覆盖。
-            self._metadata_service.identify_anchor(media_info, policy=policy)
+            self._identify_anchor(media_info, policy=policy)
         anchor_provider = str(getattr(media_info, "anchor_provider", "") or "")
         anchor_external = str(getattr(media_info, "anchor_external_id", "") or "")
         if anchor_provider and anchor_external:
@@ -1085,7 +1142,7 @@ class Scraper:
             title = str(getattr(media_info, "title", "") or "")
             if title:
                 try:
-                    hits = metadata_service.search(
+                    hits = self._search(
                         query=title,
                         provider=primary,
                         media_type=media_type,
@@ -1103,16 +1160,16 @@ class Scraper:
                     ref = hit.get("ref") or {}
                     provider = str(ref.get("provider") or "")
                     external_id = str(ref.get("external_id") or "")
-                    parsed_type = MediaType.from_string(str(hit.get("media_type") or ""))
-                    if parsed_type != MediaType.UNKNOWN:
+                    parsed_type = ProviderMediaType.from_value(str(hit.get("media_type") or ""))
+                    if parsed_type != ProviderMediaType.UNKNOWN:
                         media_type = parsed_type
         if not provider or not external_id:
             return None
         if provider == "bangumi":
-            media_info.type = MediaType.ANIME
+            media_info.type = ProviderMediaType.ANIME
             media_info.content_profile = "anime"
         try:
-            return metadata_service.compose_for_media(
+            return self._compose(
                 media_info,
                 policy=policy,
                 anchor_provider=provider,
@@ -1183,7 +1240,7 @@ class Scraper:
 
     def _extract_tmdbid(self, file_path, meta_info, dst_backend=None):
         """从本地 NFO 文件提取 TMDB ID"""
-        if meta_info.type == MediaType.MOVIE:
+        if meta_info.type == ProviderMediaType.MOVIE:
             movie_nfo = os.path.join(os.path.dirname(file_path), "movie.nfo")
             if dst_backend is not None:
                 if dst_backend.exists(movie_nfo):
@@ -1252,13 +1309,13 @@ class Scraper:
             if snapshot is not None and not self._snapshot_has_content(snapshot):
                 log.warn(f"[Scraper]{file_name} 现有快照缺少标题，重新合成")
                 snapshot = None
-            if snapshot is None and self._metadata_service is not None:
-                snapshot = self._metadata_service.latest_snapshot_for_media(media)
+            if snapshot is None and self._metadata_gateway is not None:
+                snapshot = self._latest_snapshot(media)
                 if not isinstance(snapshot, MediaMetadata) or not self._snapshot_has_content(snapshot):
                     snapshot = None
-            if snapshot is None and profile not in ("", "default") and self._metadata_service is not None:
+            if snapshot is None and profile not in ("", "default") and self._metadata_gateway is not None:
                 # 转移阶段已持久化快照；这里只对旧记录补一次，并复用近期快照。
-                snapshot = self._metadata_service.compose_for_media(
+                snapshot = self._compose(
                     media,
                     with_episodes=True,
                     persist=True,
@@ -1282,7 +1339,7 @@ class Scraper:
                 else:
                     log.error(f"[Scraper]{file_name} 快照刮削未生成完整 NFO/图片")
                 return ok
-            if media.type == MediaType.MOVIE:
+            if media.type == ProviderMediaType.MOVIE:
                 self._scrape_movie(media, dir_path, file_name, force_nfo, force_pic)
             else:
                 self._scrape_tv(media, dir_path, file_name, file_ext, force_nfo, force_pic)
@@ -1373,12 +1430,15 @@ class Scraper:
         )
         seasoninfo = None
         if need_season_detail and str(getattr(media, "tmdb_id", "") or "").isdigit():
-            try:
-                seasoninfo = self.media.get_tmdb_tv_season_detail(
-                    tmdbid=media.tmdb_id, season=int(media.get_season_seq())
-                )
-            except Exception as e:
-                log.error(f"[Scraper]获取季详情失败：{e}")
+            if self._metadata_gateway is None:
+                log.warn("[Scraper]元数据网关不可用，跳过季详情")
+            else:
+                try:
+                    seasoninfo = self._metadata_gateway.season_episodes(
+                        "tmdb", media.tmdb_id, int(media.get_season_seq())
+                    )
+                except Exception as e:
+                    log.error(f"[Scraper]获取季详情失败：{e}")
 
         # ---- season.nfo ----
         if scraper_tv_nfo.get("season_basic"):
@@ -1461,11 +1521,15 @@ class Scraper:
             try:
                 episode_thumb = os.path.join(dir_path, file_name + "-thumb.jpg")
                 if force_pic or not self._exists(episode_thumb):
-                    episode_image = self.media.get_episode_images(
-                        tv_id=media.tmdb_id,
-                        season_id=media.get_season_seq(),
-                        episode_id=media.get_episode_seq(),
-                        orginal=True,
+                    episode_image = (
+                        self._metadata_gateway.episode_images(
+                            tv_id=media.tmdb_id,
+                            season_id=media.get_season_seq(),
+                            episode_id=media.get_episode_seq(),
+                            original=True,
+                        )
+                        if self._metadata_gateway is not None
+                        else ""
                     )
                     if episode_image:
                         self._downloader.download(episode_image, episode_thumb, "", force_pic)
@@ -1478,16 +1542,68 @@ class Scraper:
                 log.error(f"[Scraper]下载 episode thumb 失败：{e}")
 
     def _fetch_douban(self, media, scraper_nfo):
-        """获取豆瓣信息（用于中文演职人员）"""
-        if scraper_nfo.get("credits") and scraper_nfo.get("credits_chinese"):
-            return self.douban.get_douban_info(media)
-        return None
+        """通过网关获取豆瓣演职人员，不再直连豆瓣详情接口."""
+        if not (scraper_nfo.get("credits") and scraper_nfo.get("credits_chinese")):
+            return None
+        if self._metadata_gateway is None:
+            return None
+        title = str(getattr(media, "title", "") or "").strip()
+        if not title:
+            return None
+        context = self._metadata_context(getattr(media, "content_profile", None))
+        try:
+            hits = self._metadata_gateway.search(
+                query=title,
+                context=context,
+                provider="douban",
+                media_type=getattr(media, "type", None),
+                limit=5,
+            )
+        except Exception as exc:  # noqa: BLE001 - 中文演职人员失败不阻断 NFO
+            log.debug(f"[Scraper]豆瓣搜索失败: {exc}")
+            return None
+        hit = next((item for item in hits if str(item.get("title") or "").strip() == title), hits[0] if hits else None)
+        if hit is None:
+            return None
+        ref = hit.get("ref") or {}
+        external_id = str(ref.get("external_id") or hit.get("external_id") or "")
+        if not external_id:
+            return None
+        try:
+            record = self._metadata_gateway.lookup(
+                "douban",
+                external_id,
+                context=context,
+                media_type=getattr(media, "type", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug(f"[Scraper]豆瓣详情失败 {external_id}: {exc}")
+            return None
+        if not record:
+            return None
+        directors: list[dict] = []
+        actors: list[dict] = []
+        for credit in record.get("credits") or []:
+            if not isinstance(credit, dict):
+                continue
+            name = str(credit.get("name") or "").strip()
+            if not name:
+                continue
+            member = {"name": name, "latin_name": "", "character": "演员"}
+            if credit.get("role") == "director":
+                directors.append(member)
+            elif credit.get("role") == "actor":
+                actors.append(member)
+        return {"title": record.get("title") or title, "directors": directors, "actors": actors}
 
     def _fetch_credits(self, tmdbinfo, scraper_nfo, doubaninfo):
         """获取导演/演员列表，可选中文匹配"""
         if not scraper_nfo.get("credits"):
             return [], []
-        directors, actors = self.media.get_tmdb_directors_actors(tmdbinfo=tmdbinfo)
+        if self._metadata_gateway is None:
+            log.warn("[Scraper]元数据网关不可用，跳过演职人员")
+            return [], []
+        directors, actors = self._metadata_gateway.directors_actors(tmdbinfo=tmdbinfo)
         if scraper_nfo.get("credits_chinese") and doubaninfo:
             directors, actors = self._credits.match(directors, actors, doubaninfo)
         return directors, actors

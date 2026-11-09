@@ -137,3 +137,30 @@ def test_snapshot_scope_isolated(repo):
     assert latest is not None
     assert latest.SCOPE == "season=1"
     assert latest.SNAPSHOT_HASH == "a" * 64
+
+
+def test_update_and_read_aliases(repo):
+    identity = repo.ensure_identity(title="Alias Demo", media_type="movie")
+    assert repo.update_aliases(identity.IDENTITY_ID, ["别名一", "Alias One", "别名一"]) is True
+    assert repo.get_aliases(identity.IDENTITY_ID) == ["别名一", "Alias One"]
+    assert repo.get_aliases_map([identity.IDENTITY_ID])[identity.IDENTITY_ID] == ["别名一", "Alias One"]
+
+
+def test_update_aliases_is_idempotent(repo):
+    identity = repo.ensure_identity(title="Alias Demo 2", media_type="movie")
+    repo.update_aliases(identity.IDENTITY_ID, ["Same"])
+    assert repo.update_aliases(identity.IDENTITY_ID, ["same"]) is False
+
+
+def test_replace_aliases_trims_old_values(repo):
+    identity = repo.ensure_identity(title="Alias Replace", media_type="movie")
+    repo.update_aliases(identity.IDENTITY_ID, ["旧1", "旧2", "Old"])
+    assert repo.replace_aliases(identity.IDENTITY_ID, ["中文", "Native", "English"]) is True
+    assert repo.get_aliases(identity.IDENTITY_ID) == ["中文", "Native", "English"]
+
+
+def test_identity_tracks_structural_media_kind(repo):
+    identity = repo.ensure_identity(title="Kind Demo", media_type="anime")
+    assert identity.MEDIA_KIND == "episodic"
+    updated = repo.ensure_identity(identity_id=identity.IDENTITY_ID, media_type="movie")
+    assert updated.MEDIA_KIND == "movie"

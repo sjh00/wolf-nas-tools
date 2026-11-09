@@ -7,6 +7,8 @@
 识别源优先级：调用方标题（仅单条）→ 种子内部 info.name → 原始文件名。
 """
 
+from unittest.mock import MagicMock
+
 import bencodepy
 import pytest
 
@@ -118,7 +120,9 @@ class _Recorder:
 
 def _service(recorder: _Recorder):
     svc = DownloadService.__new__(DownloadService)
-    svc._media = recorder  # type: ignore[assignment]
+    gateway = MagicMock()
+    gateway.resolve_by_title.side_effect = lambda title, **kw: recorder.get_media_info(title=title)
+    svc._metadata_gateway = gateway
     svc._downloader = _StubDownloader()  # type: ignore[assignment]
     svc._check_multi_version = lambda media=None: None
     return svc

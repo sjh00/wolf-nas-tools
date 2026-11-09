@@ -19,6 +19,7 @@ from app.db.models.media_identity import (
 from app.db.models.subscribe import SubscribeMovies, SubscribeTvs
 from app.db.models.transfer import TRANSFERHISTORY
 from app.db.repositories.base_repository import BaseRepository
+from app.domain.media_types import media_type_registry
 from app.utils.ulid import new_ulid
 
 
@@ -51,6 +52,74 @@ class MediaIdentityRepository(BaseRepository):
         with self.readonly() as db:
             return db.query(MediaIdentity).filter(MediaIdentity.IDENTITY_ID == identity_id).first()
 
+    @staticmethod
+    def _decode_aliases(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def get_aliases(self, identity_id: str) -> list[str]:
+        identity = self.get_identity(identity_id)
+        return self._decode_aliases(getattr(identity, "ALIASES", None)) if identity is not None else []
+
+    def get_aliases_map(self, identity_ids: list[str] | set[str]) -> dict[str, list[str]]:
+        ids = [str(item) for item in identity_ids if item]
+        if not ids:
+            return {}
+        with self.readonly() as db:
+            rows = (
+                db.query(MediaIdentity.IDENTITY_ID, MediaIdentity.ALIASES)
+                .filter(MediaIdentity.IDENTITY_ID.in_(ids))
+                .all()
+            )
+        return {str(identity_id): self._decode_aliases(raw) for identity_id, raw in rows}
+
+    def replace_aliases(self, identity_id: str, aliases: list[str] | set[str]) -> bool:
+        """用筛选后的别名替换身份别名，避免历史多语言列表持续膨胀."""
+        if not identity_id:
+            return False
+        incoming = [str(item).strip() for item in aliases if str(item).strip()]
+        with self.session() as db:
+            row = db.query(MediaIdentity).filter(MediaIdentity.IDENTITY_ID == identity_id).first()
+            if row is None:
+                return False
+            existing = self._decode_aliases(row.ALIASES)
+            if existing == incoming:
+                return False
+            row.ALIASES = json.dumps(incoming, ensure_ascii=False) if incoming else None
+            db.commit()
+            return True
+
+    def update_aliases(self, identity_id: str, aliases: list[str] | set[str]) -> bool:
+        if not identity_id:
+            return False
+        incoming = [str(item).strip() for item in aliases if str(item).strip()]
+        if not incoming:
+            return False
+        with self.session() as db:
+            row = db.query(MediaIdentity).filter(MediaIdentity.IDENTITY_ID == identity_id).first()
+            if row is None:
+                return False
+            merged = self._decode_aliases(row.ALIASES)
+            seen = {item.casefold() for item in merged}
+            changed = False
+            for alias in incoming:
+                key = alias.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(alias)
+                    changed = True
+            if changed:
+                row.ALIASES = json.dumps(merged, ensure_ascii=False)
+                db.commit()
+            return changed
+
     def ensure_identity(
         self,
         *,
@@ -70,6 +139,7 @@ class MediaIdentityRepository(BaseRepository):
                 identity = MediaIdentity(
                     IDENTITY_ID=target_id,
                     MEDIA_TYPE=media_type,
+                    MEDIA_KIND=media_type_registry.resolve(media_type, content_profile).kind.value,
                     CONTENT_PROFILE=content_profile,
                     CANONICAL_TITLE=title,
                     YEAR=year,
@@ -88,16 +158,12 @@ class MediaIdentityRepository(BaseRepository):
             if year and identity.YEAR != year:
                 identity.YEAR = year
                 changed = True
-            # 身份一旦确立类型，就不能被另一类型改写：同号电影与剧集是两部作品，
-            # 类型来回翻转会让既有订阅/历史的展示信息互相污染。
-            # 只有原本为 unknown（未知）时才允许补填。
-            if (
-                media_type
-                and media_type != "unknown"
-                and str(identity.MEDIA_TYPE or "unknown") == "unknown"
-                and identity.MEDIA_TYPE != media_type
-            ):
+            # 类型随来源更新：跨类型污染已在 find_by_ref 处根治（同号电影/剧集
+            # 不会再命中同一身份），这里按 upstream 语义同步 MEDIA_TYPE 与
+            # 结构类型 MEDIA_KIND，便于旧身份被正确归类。
+            if media_type and media_type != "unknown" and identity.MEDIA_TYPE != media_type:
                 identity.MEDIA_TYPE = media_type
+                identity.MEDIA_KIND = media_type_registry.resolve(media_type, content_profile).kind.value
                 changed = True
             if content_profile and identity.CONTENT_PROFILE != content_profile:
                 identity.CONTENT_PROFILE = content_profile

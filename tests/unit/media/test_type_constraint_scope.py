@@ -16,22 +16,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.domain.mediatypes import MediaType
+from app.domain.media_types import ProviderMediaType
 
 
 def _parsed(season=None, episode=None):
     return SimpleNamespace(season=season, episode=episode)
 
-
 def _decide(media_type, parsed_list):
     """复刻 identify_files 的类型约束判定。"""
-    hint = MediaType.from_string(str(getattr(media_type, "value", media_type) or ""))
+    hint = ProviderMediaType.from_value(str(getattr(media_type, "value", media_type) or ""))
     looks_episodic = any(
         item is not None and (item.season is not None or item.episode is not None) for item in parsed_list
     )
-    constrain = hint in (MediaType.TV, MediaType.ANIME) and looks_episodic
+    constrain = hint in (ProviderMediaType.SERIES, ProviderMediaType.ANIME) and looks_episodic
     return hint, looks_episodic, constrain
-
 
 class TestEpisodicContentConstrained:
     """剧集内容必须约束，否则会被同名老电影抢走."""
@@ -58,7 +56,6 @@ class TestEpisodicContentConstrained:
         _hint, _looks, constrain = _decide("tv", [None, _parsed(season=1, episode=2)])
         assert constrain is True
 
-
 class TestFilmContentNotConstrained:
     """电影内容不得约束：TMDB 把电影归为 tv 时仍要能接受."""
 
@@ -77,19 +74,17 @@ class TestFilmContentNotConstrained:
         _hint, _looks, constrain = _decide("movie", [_parsed(season=1, episode=1)])
         assert constrain is False
 
-
 class TestNoHint:
     def test_unknown_hint_never_constrains(self):
-        for mt in (None, "", MediaType.UNKNOWN):
+        for mt in (None, "", ProviderMediaType.UNKNOWN):
             _hint, _looks, constrain = _decide(mt, [_parsed(season=1, episode=1)])
             assert constrain is False
 
     def test_hint_still_passed_when_not_constraining(self):
         """不约束时仍要传 hint，否则电影会先被当成剧集搜."""
         hint, _looks, constrain = _decide("movie", [_parsed()])
-        assert hint == MediaType.MOVIE
+        assert hint == ProviderMediaType.MOVIE
         assert constrain is False
-
 
 class TestRealWorldShapes:
     """用真实文件名形态验证判定（不含具体作品名）."""

@@ -83,7 +83,7 @@ class AppContext:
     site_resolver: Any
     site_favicon_service: Any
     media_info_service: Any
-    metadata_service: Any
+    metadata_admin_service: Any
     discovery_service: Any
     media_config_service: Any
     media_file_service: Any
@@ -106,7 +106,7 @@ class AppContext:
     search_orchestrator: Any
     backup_restore_service: Any
     user_manage_service: Any
-    tmdb_blacklist_service: Any
+    metadata_blacklist_service: Any
     download_service: Any
     media_cleanup_service: Any
     media_consistency_service: Any
@@ -152,3 +152,5 @@ class AppContext:
     custom_rss_service: Any = None
     # 媒体库批量重命名服务（默认 None 兼容最小构造）
     library_rename_service: Any = None
+    # 元数据统一入口（ADR-028，默认 None 兼容最小构造）
+    metadata_gateway: Any = None
