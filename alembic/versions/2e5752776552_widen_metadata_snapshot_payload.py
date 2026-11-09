@@ -19,6 +19,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # SQLite 的 TEXT 本身没有长度限制，这条「加宽」对它是无意义操作；
+    # 且 SQLite 不支持 ALTER COLUMN，直接执行会报 near "TYPE": syntax error。
+    if op.get_bind().dialect.name == "sqlite":
+        return
     op.alter_column(
         "MEDIA_METADATA_SNAPSHOT",
         "PAYLOAD",
@@ -29,6 +33,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "sqlite":
+        return
     op.alter_column(
         "MEDIA_METADATA_SNAPSHOT",
         "PAYLOAD",
