@@ -164,3 +164,43 @@ class TestIdentityGuard:
         )
         assert result is media
         svc._provider_media_info.assert_not_called()
+
+
+class TestRejectedIdDropsAnchor:
+    """号被判定为无关时必须同时丢弃锚点，否则后续查详情仍解析回错误作品。
+
+    这里只校验判定契约：清空 tmdb_id 是调用方据此丢弃 anchor 的依据。
+    """
+
+    def test_cleared_id_is_detectable_by_caller(self, svc):
+        wrong = _info("Cavalcade d'amour", MediaType.MOVIE, "1939")
+        wrong.tmdb_id = "12345"
+        svc._provider_media_info = MagicMock(return_value=_info("别的东西", MediaType.TV))
+
+        result = svc._resolve_tmdb_identity(
+            wrong,
+            name="谷雨",
+            year="2026",
+            requested=MediaType.MOVIE,
+            content_profile=None,
+            allow_private=False,
+            permissions=None,
+            external_id="12345",
+        )
+        # 调用方据此判断是否丢弃 anchor/metadata_ref
+        assert not getattr(result, "tmdb_id", "")
+
+    def test_accepted_id_keeps_value(self, svc):
+        media = _info("谷雨", MediaType.TV)
+        media.tmdb_id = "279155"
+        result = svc._resolve_tmdb_identity(
+            media,
+            name="谷雨",
+            year="2026",
+            requested=MediaType.TV,
+            content_profile=None,
+            allow_private=False,
+            permissions=None,
+            external_id="279155",
+        )
+        assert result.tmdb_id == "279155"

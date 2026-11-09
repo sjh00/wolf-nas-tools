@@ -622,7 +622,7 @@ class MessageSearchService:
             user_id=bound_user_id,
         )
         if code == 0:
-            log.info(f"[Web]{media_info.type.value} {media_info.get_title_string()} 已添加订阅")
+            log.info(f"[Web]{getattr(media_info.type, 'value', '')} {media_info.get_title_string()} 已添加订阅")
         else:
             if channel_key(in_from) in self._message.get_search_types():
                 log.info(f"[Web]{media_info.title} 添加订阅失败：{msg}")

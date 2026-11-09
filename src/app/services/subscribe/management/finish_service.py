@@ -204,7 +204,7 @@ class SubscribeFinishService:
             )
         )
         log.info(
-            f"[Subscribe]{media.type.value} {media.get_title_string()} "
+            f"[Subscribe]{getattr(media.type, 'value', '')} {media.get_title_string()} "
             f"{media.get_season_string()} 订阅完成，删除订阅..."
         )
         self._message.send_rss_finished_message(media_info=media, owner_user_id=owner_user_id)
