@@ -93,8 +93,10 @@ class TestIdentityGuard:
         # 换类型查询时传的是另一类型
         assert svc._provider_media_info.call_args.kwargs["media_type"] is MediaType.TV
 
-    def test_mismatch_without_alternate_match_keeps_original(self, svc):
+    def test_mismatch_without_alternate_match_clears_tmdb_id(self, svc):
+        """两种类型都对不上：清空 TMDB 号，避免订阅挂着指向别部作品的号。"""
         wrong = _info("Cavalcade d'amour", MediaType.MOVIE, "1939")
+        wrong.tmdb_id = "12345"
         svc._provider_media_info = MagicMock(return_value=_info("别的东西", MediaType.TV))
 
         result = svc._resolve_tmdb_identity(
@@ -105,13 +107,16 @@ class TestIdentityGuard:
             content_profile=None,
             allow_private=False,
             permissions=None,
-            external_id="279155",
+            external_id="12345",
         )
         assert result is wrong
+        assert result.tmdb_id == "", "对不上的 TMDB 号必须清空"
         assert result.title == "Cavalcade d'amour"
 
     def test_alternate_lookup_failure_keeps_original(self, svc):
+        """换类型校验失败时保留原结果（不能因为查不到就把号清空）。"""
         wrong = _info("Cavalcade d'amour", MediaType.MOVIE, "1939")
+        wrong.tmdb_id = "279155"
         svc._provider_media_info = MagicMock(side_effect=RuntimeError("网络错误"))
 
         result = svc._resolve_tmdb_identity(
@@ -125,6 +130,7 @@ class TestIdentityGuard:
             external_id="279155",
         )
         assert result is wrong
+        assert result.tmdb_id == "279155"
 
     def test_no_name_skips_check(self, svc):
         media = _info("Cavalcade d'amour", MediaType.MOVIE)
