@@ -314,10 +314,13 @@ class SubscribeAddService:
             )
             alt_info.tmdb_id = external_id
             return alt_info
+        # 两种类型都对不上：这个号与用户要的作品无关，挂着它只会让订阅指向别的作品。
+        # 清空 TMDB 号，退回按名称识别，避免「名字和号不匹配」的脏订阅。
         log.warn(
             f"[SubscribeAdd]TMDB {external_id} 解析为《{media_info.title}》，"
-            f"与要订阅的「{name}」标题不一致，仍按调用方信息创建"
+            f"与要订阅的「{name}」不符；清空该 TMDB 号，按名称识别"
         )
+        media_info.tmdb_id = ""
         return media_info
 
     def _provider_media_info(
