@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -114,7 +115,10 @@ class TestDownloadMonitor:
         target.write_bytes(b"x")
         os.utime(target, (time.time() - 86400 * 3, time.time() - 86400 * 3))
         history = MagicMock()
-        history.get_by_source.return_value = SimpleNamespace(date="2026-11-07 12:39:00")
+        # 转移时间必须比源文件新，才能判定"源是旧文件"；用相对时间，
+        # 否则写死日期会随着真实日期推移在某一刻翻转结论（曾经的 CI 定时炸弹）
+        history_date = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        history.get_by_source.return_value = SimpleNamespace(date=history_date)
         m = DownloadMonitor(
             client_factory=mock_factory,
             event_bus=mock_bus,

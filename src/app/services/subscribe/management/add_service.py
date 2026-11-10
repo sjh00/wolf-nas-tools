@@ -21,7 +21,7 @@ from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.services.search_subject import SearchSubject
 from app.services.series_service import SeriesService
 from app.services.subscribe.default_settings import get_default_setting
-from app.services.subscribe.management.utils import gen_rss_note
+from app.services.subscribe.management.utils import gen_rss_note, normalize_sites
 from app.services.web.utils import WebUtils
 
 
@@ -118,6 +118,10 @@ def _season_number(value, default: int = 0) -> int:
     except (TypeError, ValueError):
         return default
 
+def _normalize_sites(value: list | str | None) -> list[str] | None:
+    """站点入参归一化（见 utils.normalize_sites）：None 与 [] 语义不同，不能合并。"""
+    return normalize_sites(value)
+
 def _preferred_profile_poster(
     image: str,
     content_profile: str | None,
@@ -165,6 +169,8 @@ class SubscribeAddService:
     """添加订阅服务"""
 
     _metadata_gateway: MetadataGateway | None = None
+    # 可选依赖：未注入时跳过「新增前扫库」，退回纯历史进度
+    _filetransfer: Any = None
 
     def __init__(
         self,
@@ -181,6 +187,7 @@ class SubscribeAddService:
         indexer_service=None,
         series_service=None,
         metadata_gateway: MetadataGateway | None = None,
+        filetransfer=None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -195,6 +202,7 @@ class SubscribeAddService:
         self._site_cache = site_cache
         self._indexer_service = indexer_service
         self._series_service = series_service or SeriesService()
+        self._filetransfer = filetransfer
 
     @property
     def _metadata(self):
@@ -294,6 +302,40 @@ class SubscribeAddService:
             content_profile=content_profile,
             naming_profile=naming_profile,
         ).as_kwargs()
+
+    def _contiguous_library_episodes(self, media_info, *, season: int, total: int, start: int = 1) -> int:
+        """媒体库里从 start 起连续已存在的集数（用于新订阅的起始进度）。
+
+        扫不到（未注入转移服务、目录不存在、解析失败）一律返回 0，让调用方退回
+        历史/默认进度，绝不因为扫描异常而把订阅进度推进。
+        """
+        if self._filetransfer is None or not total or total < 1:
+            return 0
+        scanner = getattr(self._filetransfer, "find_season_episodes", None)
+        try:
+            if scanner is not None:
+                existing = set(scanner(media_info, season=season) or set())
+            else:
+                missing = self._filetransfer.get_no_exists_medias(
+                    media_info, season=season, total_num=int(total)
+                )
+                if missing is None:
+                    # None 表示无法判定（例如路径未配置），不是"全部缺失"
+                    return 0
+                existing = set(range(1, int(total) + 1)) - {
+                    int(ep) for ep in missing if str(ep).isdigit()
+                }
+        except Exception as exc:  # noqa: BLE001 - 扫描失败只影响起始进度
+            log.debug(f"[SubscribeAdd]扫描媒体库剧集失败: {exc}")
+            return 0
+        if not existing:
+            return 0
+        episodes = 0
+        episode = max(1, int(start))
+        while episode in existing:
+            episodes += 1
+            episode += 1
+        return episodes
 
     @staticmethod
     def _resolve_subscribe_type(
@@ -617,32 +659,30 @@ class SubscribeAddService:
                         else None
                     )
                 # 订阅创建时把默认站点/目录写入订阅自身，编辑时无需再依赖运行时兜底。
-                if not rss_sites and default_rss_sites:
+                # 只填未传入（None）的项：调用方显式传空列表 = 用户取消全选，必须保留。
+                if rss_sites is None and default_rss_sites:
                     rss_sites = default_rss_sites
-                if not search_sites and default_search_sites:
+                if search_sites is None and default_search_sites:
                     search_sites = default_search_sites
                 if not save_path and default_save_path:
                     save_path = str(default_save_path)
 
         # 未配置默认站点时，把当前可见站点固化为订阅快照，避免编辑时读不到。
+        # 同样是「未传入才快照」：显式空列表代表用户主动不选任何站点，不能expand成全部。
         site_cache = getattr(self, "_site_cache", None)
         indexer_service = getattr(self, "_indexer_service", None)
-        if not rss_sites and site_cache is not None:
+        if rss_sites is None and site_cache is not None:
             try:
                 rss_sites = site_cache.get_site_names(rss=True)
             except Exception as exc:  # noqa: BLE001 - 站点快照失败不阻断订阅
                 log.warn(f"[Subscribe]读取订阅站点快照失败: {exc}")
-        if not search_sites and indexer_service is not None:
+        if search_sites is None and indexer_service is not None:
             try:
                 search_sites = indexer_service.get_user_indexer_names()
             except Exception as exc:  # noqa: BLE001
                 log.warn(f"[Subscribe]读取搜索站点快照失败: {exc}")
-        rss_sites = rss_sites or []
-        if isinstance(rss_sites, str):
-            rss_sites = rss_sites.split(",")
-        search_sites = search_sites or []
-        if isinstance(search_sites, str):
-            search_sites = search_sites.split(",")
+        rss_sites = _normalize_sites(rss_sites)
+        search_sites = _normalize_sites(search_sites)
         over_edition = 1 if over_edition else 0
         filter_rule = int(str(filter_rule)) if str(filter_rule).isdigit() else 0
         total_ep = int(str(total_ep)) if str(total_ep).isdigit() else None
@@ -996,6 +1036,21 @@ class SubscribeAddService:
                         log.info(
                             f"[SubscribeAdd]{media_info.get_title_string()} S{season} "
                             f"身份历史已有 {continue_ep} 集，从第 {current_ep} 集开始续订"
+                        )
+                # 历史记录只反映「经本项目转移/下载过」的集数。媒体库里可能已有更早
+                # 版本或手工放入的整季文件，不扫库会把订阅进度按 0 推进，随后重复下载。
+                if total:
+                    library_ep = self._contiguous_library_episodes(
+                        media_info,
+                        season=_season_number(season, 1),
+                        total=int(total),
+                        start=int(current_ep) if current_ep else 1,
+                    )
+                    if library_ep > 0:
+                        current_ep = max(current_ep or 0, library_ep + 1)
+                        log.info(
+                            f"[SubscribeAdd]{media_info.get_title_string()} S{season} "
+                            f"媒体库已有 {library_ep} 集，进度更新为第 {current_ep} 集起"
                         )
                 if not current_ep and total:
                     # 新订阅未指定进度时，首个待下载集必须是 1，不能落成 0。

@@ -47,6 +47,17 @@ def _normalize_tv_season(value: object) -> str:
     return f"S{int(match.group(1)):02d}" if match else text
 
 
+def _dump_sites(value: list | None) -> str | None:
+    """站点列表落库：None 存 NULL（未设置），空列表存 "[]"（明确一个都不选）。
+
+    二者必须可区分：NULL 表示"沿用默认设置/不限站点"，"[]"表示用户主动取消全选，
+    搜索时按零站点处理。历史数据里两者都写成了 "[]"，由迁移统一改回 NULL。
+    """
+    if value is None:
+        return None
+    return JsonUtils.dumps(list(value))
+
+
 if TYPE_CHECKING:
 
     class MediaInfo(Protocol):
@@ -506,10 +517,6 @@ class SubscribeRepository(BaseRepository):
         """
         新增RSS电影（user_id 为订阅归属用户，None 为系统/插件创建）
         """
-        if search_sites is None:
-            search_sites = []
-        if rss_sites is None:
-            rss_sites = []
         over_edition = over_edition or 0
         fuzzy_match = fuzzy_match or 0
         download_setting = download_setting or -1
@@ -560,8 +567,8 @@ class SubscribeRepository(BaseRepository):
                     YEAR=media_info.year,
                     TMDBID=media_info.tmdb_id or None,
                     IMAGE=media_info.get_poster_image(),
-                    RSS_SITES=JsonUtils.dumps(rss_sites),
-                    SEARCH_SITES=JsonUtils.dumps(search_sites),
+                    RSS_SITES=_dump_sites(rss_sites),
+                    SEARCH_SITES=_dump_sites(search_sites),
                     OVER_EDITION=over_edition,
                     FILTER_ORDER=0,
                     FILTER_RESTYPE=filter_restype,
@@ -995,10 +1002,6 @@ class SubscribeRepository(BaseRepository):
         """
         新增RSS电视剧（rssid 不为空时跳过 is_exists 检查，用于编辑替换场景；user_id 为订阅归属用户）
         """
-        if search_sites is None:
-            search_sites = []
-        if rss_sites is None:
-            rss_sites = []
         over_edition = over_edition or 0
         fuzzy_match = fuzzy_match or 0
         download_setting = download_setting or -1
@@ -1064,8 +1067,8 @@ class SubscribeRepository(BaseRepository):
                     SEASON=season_str,
                     TMDBID=media_info.tmdb_id or None,
                     IMAGE=media_info.get_poster_image(),
-                    RSS_SITES=JsonUtils.dumps(rss_sites),
-                    SEARCH_SITES=JsonUtils.dumps(search_sites),
+                    RSS_SITES=_dump_sites(rss_sites),
+                    SEARCH_SITES=_dump_sites(search_sites),
                     OVER_EDITION=over_edition,
                     FILTER_ORDER=0,
                     FILTER_RESTYPE=filter_restype,

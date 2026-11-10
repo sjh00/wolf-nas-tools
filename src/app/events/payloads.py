@@ -138,10 +138,13 @@ class SubscribeAddPayload:
     def __post_init__(self):
         if isinstance(self.rssid, str):
             object.__setattr__(self, "rssid", int(self.rssid) if self.rssid.isdigit() else None)
+        # 空字符串=未提供，归一为 None；否则会被当成"用户明确不选任何站点"
         if isinstance(self.rss_sites, str):
-            object.__setattr__(self, "rss_sites", [s.strip() for s in self.rss_sites.split(",") if s.strip()])
+            sites = [s.strip() for s in self.rss_sites.split(",") if s.strip()]
+            object.__setattr__(self, "rss_sites", sites or None)
         if isinstance(self.search_sites, str):
-            object.__setattr__(self, "search_sites", [s.strip() for s in self.search_sites.split(",") if s.strip()])
+            sites = [s.strip() for s in self.search_sites.split(",") if s.strip()]
+            object.__setattr__(self, "search_sites", sites or None)
         if isinstance(self.over_edition, int):
             object.__setattr__(self, "over_edition", bool(self.over_edition))
         if isinstance(self.fuzzy_match, int):
