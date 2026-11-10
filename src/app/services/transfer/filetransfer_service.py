@@ -493,6 +493,20 @@ class FileTransferService:
         finally:
             lock.release()
 
+    def delete_records_with_files(self, logids: list[int], targets: list[str]) -> list[dict]:
+        """删除记录，并按需一并删除源文件/媒体库文件（先删文件再删记录）."""
+        lock_key = f"transfer:delete-records:{hashlib.md5(str(logids).encode(), usedforsecurity=False).hexdigest()}"
+        lock = get_lock_manager().create_lock(lock_key, ttl_seconds=300)
+        if not lock.acquire():
+            return [{"id": int(logid), "status": "failed", "message": "删除任务正在执行"} for logid in logids]
+        try:
+            return self._cleanup.delete_records_with_files(logids, targets)
+        finally:
+            lock.release()
+
+    def history_source_refs(self, logids: list[int]) -> list[dict]:
+        return self._cleanup.source_refs(logids)
+
     def delete_record_files(self, logids: list[int], targets: list[str]) -> list[dict]:
         lock_key = f"transfer:delete-files:{hashlib.md5(str(logids).encode(), usedforsecurity=False).hexdigest()}"
         lock = get_lock_manager().create_lock(lock_key, ttl_seconds=300)

@@ -38,6 +38,7 @@ from app.core.exceptions import (
     ServiceError,
     ValidationError,
 )
+from app.db.repositories.download_repo_adapter import DownloadHistoryRepositoryAdapter
 from app.domain.media_types import ProviderMediaType, media_type_registry, normalize_media_type_input
 from app.infrastructure.cache_system import TokenCache
 from app.media.metadata import ProviderError, ProviderRef
@@ -61,6 +62,7 @@ from app.services.series_service import SeriesService
 from app.services.transfer.filetransfer_service import FileTransferService
 from app.services.transfer.name_format import FIELD_CATALOG, field_groups, render_path, validate
 from app.services.transfer.retention_service import RetentionPolicy, RetentionService
+from app.services.transfer.torrent_locator import locate_download_tasks
 from app.utils import StringUtils
 from app.utils.response import fail, success
 from app.utils.timeout import run_with_timeout
@@ -263,6 +265,15 @@ class GetTransferStatisticsRequest(BaseModel):
 
 class HistoryIdsRequest(BaseModel):
     ids: list[int] = Field(default_factory=list)
+
+
+class HistoryRecordsDeleteRequest(HistoryIdsRequest):
+    """移除识别记录时可一并处理的关联资源.
+
+    targets 取值：source（源文件）/ library（媒体库文件）/ torrent（下载器任务）
+    """
+
+    targets: list[str] = Field(default_factory=list)
 
 
 class HistoryFilesDeleteRequest(HistoryIdsRequest):
@@ -924,20 +935,59 @@ def get_transfer_statistics(
     return success(data=result)
 
 
-@router.post("/history/records/delete", response_model=CommonResponse, summary="删除识别记录（不删除文件）")
+@router.post("/history/records/delete", response_model=CommonResponse, summary="删除识别记录（可选同时删除文件/种子）")
 def delete_history_records(
-    req: HistoryIdsRequest,
+    req: HistoryRecordsDeleteRequest,
     current_user=Depends(require_permission("library:manage")),
     svc: TransferHistoryService = Depends(get_transfer_history_service),
     ft: FileTransferService = Depends(get_filetransfer_service),
+    downloader: Downloader = Depends(get_downloader_service),
 ):
     ids = [int(item) for item in req.ids if item is not None]
     if not ids:
         return fail(msg="未选择要删除的记录")
-    results = ft.delete_records(ids)
+    targets = {target for target in req.targets if target in ("source", "library", "torrent")}
+    if not targets:
+        results = ft.delete_records(ids)
+        svc.invalidate_cache()
+        deleted = sum(1 for item in results if item.get("status") == "deleted")
+        return success(data={"results": results, "deleted": deleted, "total": len(ids)})
+
+    # 顺序：种子 → 文件 → 记录。
+    # 种子先删：否则删掉源文件后下载器会把任务标记为缺失或重新抓取。
+    # 记录最后删：记录一旦消失就再也找不到文件路径，会留下无法回收的孤儿文件。
+    torrent_result = {"deleted": [], "failed": []}
+    if "torrent" in targets:
+        torrent_result = _remove_download_tasks(ft, downloader, ids)
+
+    results = ft.delete_records_with_files(ids, sorted(targets & {"source", "library"}))
     svc.invalidate_cache()
     deleted = sum(1 for item in results if item.get("status") == "deleted")
-    return success(data={"results": results, "deleted": deleted, "total": len(ids)})
+    return success(
+        data={
+            "results": results,
+            "deleted": deleted,
+            "total": len(ids),
+            "torrents": torrent_result,
+        }
+    )
+
+
+def _remove_download_tasks(ft: FileTransferService, downloader: Downloader, ids: list[int]) -> dict:
+    """按识别记录的源文件定位并删除对应下载器任务（保留文件，文件由 source 项负责）."""
+    refs = ft.history_source_refs(ids)
+    repo = DownloadHistoryRepositoryAdapter()
+    tasks = locate_download_tasks(refs, repo.get_download_history_list_by_path)
+    deleted: list[dict] = []
+    failed: list[dict] = []
+    for downloader_id, download_ids in tasks.items():
+        try:
+            downloader.delete_torrents(downloader_id=downloader_id, ids=sorted(download_ids), delete_file=False)
+            deleted.append({"downloader": downloader_id, "ids": sorted(download_ids)})
+        except Exception as exc:  # noqa: BLE001 - 单个下载器失败不影响其余清理
+            log.warn(f"[History]删除下载任务失败 downloader={downloader_id}: {exc}")
+            failed.append({"downloader": downloader_id, "ids": sorted(download_ids), "message": str(exc)})
+    return {"deleted": deleted, "failed": failed}
 
 
 @router.post("/history/files/delete", response_model=CommonResponse, summary="删除识别记录关联文件（保留记录）")

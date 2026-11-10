@@ -24,6 +24,40 @@ from app.storage.config_models import LocalStorageConfig
 from app.utils import SystemUtils
 
 
+def _path_parts(path: str) -> list[str]:
+    return [part for part in str(path or "").split("/") if part]
+
+
+def disambiguate_library_names(items: list) -> None:
+    """同名库路径逐级加上父目录前缀，直到彼此可区分（就地修改 name）。
+
+    侧栏只显示末级目录名，多盘共用同一套目录结构时会出现一排完全相同的
+    「电影」「TV」。只加一级父目录不够：各盘都是 `…/medialink/电影`，加一级
+    后仍然全是 `medialink/电影`。因此逐级加深前缀，直到组内唯一；加深到路径
+    顶端仍重名时退回完整路径，保证一定能区分。
+    """
+    by_name: dict[str, list] = {}
+    for item in items:
+        by_name.setdefault(item["name"], []).append(item)
+    for group in by_name.values():
+        if len(group) < 2:
+            continue
+        parts_list = [_path_parts(item["path"]) for item in group]
+        max_depth = max((len(parts) for parts in parts_list), default=1)
+        names = [item["name"] for item in group]
+        for depth in range(1, max_depth + 1):
+            names = [
+                "/".join(parts[-depth:]) if parts else item["name"] for parts, item in zip(parts_list, group)
+            ]
+            if len(set(names)) == len(names):
+                break
+        else:
+            # 相对路径完全相同（异常挂载）时用完整路径兜底
+            names = [item["path"] for item in group]
+        for item, name in zip(group, names):
+            item["name"] = name
+
+
 class MediaFileService:
     """
     媒体文件操作业务服务
@@ -121,18 +155,7 @@ class MediaFileService:
             return {"name": name, "path": norm, "type": ptype, "backend_id": backend_id or "local"}
 
         def _disambiguate_names(items: list) -> None:
-            """同名路径加上一级父目录前缀，避免侧栏一排「电影/TV」。"""
-            by_name: dict[str, list] = {}
-            for item in items:
-                by_name.setdefault(item["name"], []).append(item)
-            for group in by_name.values():
-                if len(group) < 2:
-                    continue
-                for item in group:
-                    parts = [p for p in item["path"].split("/") if p]
-                    parent = parts[-2] if len(parts) >= 2 else ""
-                    if parent:
-                        item["name"] = f"{parent}/{item['name']}"
+            disambiguate_library_names(items)
 
         def _dedupe(paths: list, seen: set) -> list:
             result = []

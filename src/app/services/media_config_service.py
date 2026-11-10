@@ -13,7 +13,9 @@ class MediaConfigService:
 
     LAYOUT_FLAT = "flat"
     LAYOUT_CATEGORY = "category"
-    DEFAULT_LAYOUTS = {"movie": LAYOUT_CATEGORY, "tv": LAYOUT_CATEGORY, "anime": LAYOUT_FLAT}
+    # 三类媒体库默认都按分类分目录：动漫若默认平铺，作品会直接落在库根
+    # （…/medialink/TV/作品 (年份)），与「按分类归档」的预期相反。
+    DEFAULT_LAYOUTS = {"movie": LAYOUT_CATEGORY, "tv": LAYOUT_CATEGORY, "anime": LAYOUT_CATEGORY}
 
     def __init__(self, repo: MediaConfigRepositoryAdapter):
         self._repo = repo
@@ -147,7 +149,7 @@ class MediaConfigService:
         unknown_backend: list[str] | None = None,
         movie_layout: str = LAYOUT_CATEGORY,
         tv_layout: str = LAYOUT_CATEGORY,
-        anime_layout: str = LAYOUT_FLAT,
+        anime_layout: str = LAYOUT_CATEGORY,
     ) -> bool:
         """一次性保存整个配置"""
         self._repo.set_media_config(
