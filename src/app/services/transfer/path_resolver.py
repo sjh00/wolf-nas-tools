@@ -557,7 +557,21 @@ class TransferPathResolver:
         file_name = render(self._tv_file_rmt_format, format_dict)
         # 额外内容/花絮：剧集季目录固定为 extras/，与正片分离
         note = getattr(media_info, "note", None) if media_info else None
-        if isinstance(note, dict) and note.get("is_extras"):
+        is_extras = isinstance(note, dict) and bool(note.get("is_extras"))
+        # TMDB 把特别篇放在第 0 季。以前只认源文件里的 extras 标记，季号为 0
+        # 的特别篇会落进 `Season 0/`，与正片混在同一层剧目结构里。
+        # 约定：特别篇一律进 extras/。
+        if not is_extras:
+            season_value = getattr(media_info, "begin_season", None)
+            if str(season_value if season_value is not None else "").strip() == "0":
+                is_extras = True
+        # 集号为 0 也是特别篇的通行写法（`Show.S03E00.Special...`）。
+        # 不拦下来会生成 `Season 3/S03E00 - 第0集`，在正片季里多出一个第 0 集。
+        if not is_extras:
+            episode_value = getattr(media_info, "begin_episode", None)
+            if str(episode_value if episode_value is not None else "").strip() == "0":
+                is_extras = True
+        if is_extras:
             season_name = "extras"
             # 特别篇（SP09）会被解析出集号 9，直接沿用会渲染成 S01E09，
             # 在 extras 里看起来就是正片第 9 集。改用 SP 标识命名以示区分。

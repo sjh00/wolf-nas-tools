@@ -346,6 +346,15 @@ class PathUtils:
         # 例：The.World.at.War.SP09.1973.BluRay...mkv、某某剧.SP03.mkv
         if re.search(r"(?:^|[\._ \-])SP\d{1,2}(?:$|[\._ \-])", basedir, re.IGNORECASE):
             return True
+        # 不带序号的特别篇标记：`...S08end.Sp.2012...`、`Show.Sp.1080p.mkv`。
+        # 发布组常用 Sp 单独成词表示特别篇，后面紧跟年份/分辨率等技术信息起点。
+        # 必须两侧都有分隔符，否则会误伤 Spider、Sports 这类词。
+        if re.search(
+            r"(?:^|[\._ \-])SP(?:$|[\._ \-](?=\s*(?:\d|19|20|[\[\(])))",
+            basedir,
+            re.IGNORECASE,
+        ):
+            return True
         # 路径段是花絮/特别篇目录：.../Extras/...、.../Bonus Disc/...、.../SP/...、.../Season 0/...
         normalized = path.replace("\\", "/")
         return bool(
