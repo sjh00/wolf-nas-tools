@@ -72,8 +72,10 @@ RULES: list[ExtractionRule] = [
     ExtractionRule(
         name="season_keyword",
         # 仅 1-2 位数字："The Long Season 2017" 的 "Season 2017" 是"片名 Season + 年份"，
-        # 不能被当季数；4 位数字交给 year 规则
-        pattern=re.compile(r"\bSeason\s*(\d{1,2})\b", re.IGNORECASE),
+        # 不能被当季数；4 位数字交给 year 规则。
+        # 分隔符兼容点/下划线/短横：发布名常写成 `Show.Name.Season.2.Complete`，
+        # 只允许空格会把这条漏掉，季号退回默认 1。
+        pattern=re.compile(r"\bSeason[\s._-]*(\d{1,2})(?!\d)", re.IGNORECASE),
         category="season",
         priority=85,
         confidence=0.9,

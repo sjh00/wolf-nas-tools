@@ -71,6 +71,13 @@ class RuleEngine:
                 consumed.append((start, end))
             if rule.stop:
                 category_stop.add(rule.category)
+                # 规则显式给出的类别同样锁定：高优先级规则一旦确定了某个值，
+                # 就不该被后面的低优先级规则改写。
+                # 真实故障：`SxxExx` 规则归属 episode 类别，却同时解析出季号
+                # （S01E12 → season=1）；stop 只锁住 episode，season 仍然裸露，
+                # 于是标题副标题里的罗马数字（`...Red.Dragon.II...`）被当作季号，
+                # 把 S01E12 记成 S02E12，同一部剧在媒体库里多出 Season 2。
+                category_stop.update(extracted.keys())
         return elements
 
     def apply(self, ctx: ParseContext) -> ParseContext:
