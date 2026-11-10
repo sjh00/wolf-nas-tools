@@ -100,7 +100,12 @@ def test_invalid_category_name_falls_back_to_flat():
     )
 
 
-def test_default_layouts_are_category_for_movie_tv_and_flat_for_anime():
+def test_default_layouts_are_category_for_all_media_types():
+    """三类媒体库默认都按分类分目录.
+
+    动漫早期默认 flat，作品会直接落在库根（…/medialink/TV/作品 (年份)），
+    与「按分类归档」的预期相反，分类目录形同摆设。
+    """
     assert MediaConfigService._parse_layout(None, "movie") == "category"
     assert MediaConfigService._parse_layout(None, "tv") == "category"
-    assert MediaConfigService._parse_layout(None, "anime") == "flat"
+    assert MediaConfigService._parse_layout(None, "anime") == "category"

@@ -143,6 +143,52 @@ class HistoryActionService:
                 record.files_checked_at = checked_at
         return results
 
+    def delete_records_with_files(self, logids: list[int], targets: list[str]) -> list[dict]:
+        """一次操作里删除记录，并按需一并删除源文件/媒体库文件。
+
+        删除顺序固定为「先文件、后记录」：记录一旦先删掉，就再也无法从记录里
+        找回文件路径，残留文件会变成无法回收的孤儿。
+
+        单个记录删文件失败不会阻止它被删除（用户意图是清理这条记录），失败原因
+        随结果返回。
+        """
+        wanted = [target for target in ("source", "library") if target in set(targets)]
+        file_results: list[dict] = []
+        if wanted:
+            try:
+                file_results = self.delete_record_files(logids, wanted)
+            except ValidationError:
+                file_results = []
+        record_results = self.delete_records(logids)
+        if not file_results:
+            return record_results
+        # 把文件结果并入记录结果，前端只需处理一份列表
+        by_id: dict[int, dict] = {int(item["id"]): dict(item) for item in record_results}
+        for item in file_results:
+            entry = by_id.setdefault(int(item["id"]), {"id": int(item["id"]), "status": "deleted", "message": ""})
+            entry.setdefault("files", []).append(item)
+            if item.get("status") == "failed":
+                entry["file_error"] = item.get("message") or "文件删除失败"
+        return list(by_id.values())
+
+    def source_refs(self, logids: list[int]) -> list[dict]:
+        """取记录的源文件定位信息，供「同时移除种子」在下载器里匹配任务."""
+        refs: list[dict] = []
+        for record in self._load_records(logids):
+            source_path = str(getattr(record, "SOURCE_PATH", "") or "")
+            source_filename = str(getattr(record, "SOURCE_FILENAME", "") or "")
+            if not source_path:
+                continue
+            refs.append(
+                {
+                    "id": int(record.ID),
+                    "source_path": source_path,
+                    "source_filename": source_filename,
+                    "title": str(getattr(record, "TITLE", "") or ""),
+                }
+            )
+        return refs
+
     def _load_records(self, logids: list[int]) -> list:
         records = []
         for logid in logids:

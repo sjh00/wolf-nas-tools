@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from api.deps import (
     get_current_user,
+    get_downloader_service,
     get_filetransfer_service,
     get_transfer_history_service,
 )
@@ -21,12 +22,22 @@ def mock_history_service():
 
 
 @pytest.fixture
+def mock_downloader_service():
+    return MagicMock()
+
+
+@pytest.fixture
 def mock_filetransfer_service():
     ft = MagicMock()
     ft.delete_records.return_value = [
         {"id": 1, "status": "deleted", "message": ""},
         {"id": 2, "status": "skipped", "message": "记录不存在"},
     ]
+    ft.delete_records_with_files.return_value = [
+        {"id": 1, "status": "deleted", "message": "", "files": []},
+        {"id": 2, "status": "skipped", "message": "记录不存在"},
+    ]
+    ft.history_source_refs.return_value = []
     ft.delete_record_files.return_value = [
         {"id": 1, "target": "source", "status": "deleted", "state": "deleted", "message": ""}
     ]
@@ -38,7 +49,7 @@ def mock_filetransfer_service():
 
 
 @pytest.fixture
-def client(mock_history_service, mock_filetransfer_service):
+def client(mock_history_service, mock_filetransfer_service, mock_downloader_service):
     app = FastAPI()
     app.include_router(media_router.router, prefix="/api/v1/media")
     admin_ctx = UserContext(
@@ -50,6 +61,7 @@ def client(mock_history_service, mock_filetransfer_service):
     app.dependency_overrides[get_current_user] = lambda: admin_ctx
     app.dependency_overrides[get_transfer_history_service] = lambda: mock_history_service
     app.dependency_overrides[get_filetransfer_service] = lambda: mock_filetransfer_service
+    app.dependency_overrides[get_downloader_service] = lambda: mock_downloader_service
     with TestClient(app) as test_client:
         yield test_client
 
@@ -72,6 +84,36 @@ class TestMediaHistoryRouter:
         assert response.status_code == 200
         assert response.json()["code"] != 0
         mock_filetransfer_service.delete_records.assert_not_called()
+
+    def test_delete_records_with_source_and_library_targets(
+        self, client, mock_history_service, mock_filetransfer_service
+    ):
+        """移除记录时同时删除源文件与媒体库文件：走一次调用，先文件后记录."""
+        response = client.post(
+            "/api/v1/media/history/records/delete",
+            json={"ids": [1, 2], "targets": ["source", "library"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["code"] == 0
+        mock_filetransfer_service.delete_records_with_files.assert_called_once_with(
+            [1, 2], ["library", "source"]
+        )
+        mock_filetransfer_service.delete_records.assert_not_called()
+        mock_history_service.invalidate_cache.assert_called_once()
+
+    def test_delete_records_ignores_unknown_targets(
+        self, client, mock_filetransfer_service
+    ):
+        response = client.post(
+            "/api/v1/media/history/records/delete",
+            json={"ids": [1], "targets": ["all"]},
+        )
+
+        assert response.status_code == 200
+        # 未知目标等同于「只删记录」，不能当成文件删除
+        mock_filetransfer_service.delete_records.assert_called_once_with([1])
+        mock_filetransfer_service.delete_records_with_files.assert_not_called()
 
     def test_delete_files(self, client, mock_history_service, mock_filetransfer_service):
         response = client.post(

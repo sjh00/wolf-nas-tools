@@ -62,6 +62,13 @@ class TransferCleanupService:
     def delete_records(self, logids: list[int]) -> list[dict]:
         return self._history_actions.delete_records(logids)
 
+    def delete_records_with_files(self, logids: list[int], targets: list[str]) -> list[dict]:
+        """删除记录，并按需一并删除源文件/媒体库文件（先删文件再删记录）."""
+        return self._history_actions.delete_records_with_files(logids, targets)
+
+    def source_refs(self, logids: list[int]) -> list[dict]:
+        return self._history_actions.source_refs(logids)
+
     def delete_record_files(self, logids: list[int], targets: list[str]) -> list[dict]:
         return self._history_actions.delete_record_files(logids, targets)
 
