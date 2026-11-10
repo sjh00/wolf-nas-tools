@@ -195,8 +195,10 @@ def _check_task_rss(service, taskid: int | None, event_bus: EventBus | None = No
                         year=media.year,
                         channel="manual",
                         season=media.begin_season,
-                        rss_sites=taskinfo.get("sites", {}).get("rss_sites"),
-                        search_sites=taskinfo.get("sites", {}).get("search_sites"),
+                        # 任务未配置站点时 sites 是空列表，按"未设置"传给订阅（否则会被当成
+                        # 用户明确不选任何站点，导致自动创建的订阅零站点搜索）
+                        rss_sites=taskinfo.get("sites", {}).get("rss_sites") or None,
+                        search_sites=taskinfo.get("sites", {}).get("search_sites") or None,
                         over_edition=bool(taskinfo.get("over_edition")),
                         filter_restype=taskinfo.get("filter_args", {}).get("restype"),
                         filter_pix=taskinfo.get("filter_args", {}).get("pix"),

@@ -305,6 +305,8 @@ def build_services(infra: InfrastructureObjects, facades: BusinessFacades) -> Se
         download_repo=DownloadHistoryRepositoryAdapter(),
         transfer_history_manager=history_manager,
         metadata_gateway=metadata_gateway,
+        # 新增订阅时先扫媒体库已有集数，再决定起始进度（避免重复下载已入库剧集）
+        filetransfer=filetransfer_service,
     )
 
     searcher = Searcher(

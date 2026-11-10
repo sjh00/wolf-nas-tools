@@ -21,6 +21,32 @@ _ANIME_GENRE_NAMES = {"动画", "動畫", "アニメ", "animation"}
 _ANIME_GENRE_IDS = set(ANIME_GENREIDS)
 
 
+def _load_sites(raw: Any) -> list[str] | None:
+    """读取订阅站点列：NULL → None（未设置），"[]" → []（明确一个都不选）。
+
+    两者都显示为"没勾选任何站点"，但含义不同：None 会回退到默认设置/全部站点，
+    [] 表示用户主动取消全选，绝不能当成"全部"。
+    """
+    if raw is None or str(raw).strip() == "":
+        return None
+    loaded = JsonUtils.loads(str(raw))
+    if not isinstance(loaded, list):
+        return None
+    return [str(item) for item in loaded if str(item).strip()]
+
+
+def _filter_sites(values: list[str] | None, valid: list | set, *, allow_custom_rss: bool = False) -> list[str] | None:
+    """按可用站点白名单过滤，同时保留 None（未设置）与 []（明确不选）的区别."""
+    if values is None:
+        return None
+    valid_set = set(valid or [])
+    kept = []
+    for site in values:
+        if site in valid_set or (allow_custom_rss and custom_rss_id(site) is not None):
+            kept.append(site)
+    return kept
+
+
 def _genres_are_anime(genres) -> bool:
     for genre in genres or []:
         text = str(genre).strip()
@@ -213,8 +239,8 @@ class SubscribeQueryService:
             desc = rss_movie.DESC
             note = rss_movie.NOTE
             tmdbid = rss_movie.TMDBID
-            rss_sites = JsonUtils.loads(rss_movie.RSS_SITES) if rss_movie.RSS_SITES else []
-            search_sites = JsonUtils.loads(rss_movie.SEARCH_SITES) if rss_movie.SEARCH_SITES else []
+            rss_sites = _load_sites(rss_movie.RSS_SITES)
+            search_sites = _load_sites(rss_movie.SEARCH_SITES)
             over_edition = rss_movie.OVER_EDITION == 1
             filter_restype = rss_movie.FILTER_RESTYPE
             filter_pix = rss_movie.FILTER_PIX
@@ -245,10 +271,8 @@ class SubscribeQueryService:
                 note_info = parse_rss_desc(note)
             else:
                 note_info = {}
-            rss_sites = [
-                site for site in (rss_sites or []) if site in rss_sites_valid or custom_rss_id(site) is not None
-            ]
-            search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
+            rss_sites = _filter_sites(rss_sites, rss_sites_valid, allow_custom_rss=True)
+            search_sites = _filter_sites(search_sites, search_sites_valid)
             anchor_provider, anchor_external_id = _normalized_anchor(
                 rss_movie.ANCHOR_PROVIDER, rss_movie.ANCHOR_EXTERNAL_ID
             )
@@ -324,8 +348,8 @@ class SubscribeQueryService:
             desc = rss_tv.DESC
             note = rss_tv.NOTE
             tmdbid = rss_tv.TMDBID
-            rss_sites = JsonUtils.loads(rss_tv.RSS_SITES) if rss_tv.RSS_SITES else []
-            search_sites = JsonUtils.loads(rss_tv.SEARCH_SITES) if rss_tv.SEARCH_SITES else []
+            rss_sites = _load_sites(rss_tv.RSS_SITES)
+            search_sites = _load_sites(rss_tv.SEARCH_SITES)
             over_edition = rss_tv.OVER_EDITION == 1
             filter_restype = rss_tv.FILTER_RESTYPE
             filter_pix = rss_tv.FILTER_PIX
@@ -374,10 +398,8 @@ class SubscribeQueryService:
                 note_info = parse_rss_desc(note)
             else:
                 note_info = {}
-            rss_sites = [
-                site for site in (rss_sites or []) if site in rss_sites_valid or custom_rss_id(site) is not None
-            ]
-            search_sites = [site for site in (search_sites or []) if site in search_sites_valid]
+            rss_sites = _filter_sites(rss_sites, rss_sites_valid, allow_custom_rss=True)
+            search_sites = _filter_sites(search_sites, search_sites_valid)
             anchor_provider, anchor_external_id = _normalized_anchor(rss_tv.ANCHOR_PROVIDER, rss_tv.ANCHOR_EXTERNAL_ID)
             metadata_ref = _canonical_ref(rss_tv)
             subject = SearchSubject.classify(

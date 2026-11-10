@@ -388,6 +388,22 @@ class FileTransferService:
         # 回退：文件系统扫码
         return self._existence.get_no_exists_medias(meta_info, meta_info_fn, season, total_num)
 
+    def find_season_episodes(self, meta_info, season=None) -> set[int]:
+        """媒体库中该作品某季已存在的集号（不依赖分类是否已知）.
+
+        供订阅创建时推导起始进度使用：历史记录只覆盖本项目转移过的文件，手工放入
+        或旧版本入库的文件只能靠扫库发现。季目录名由路径解析器按
+        `media_info.begin_season` 生成，`season` 仅用于季判定。
+        """
+        if meta_info is None or meta_info.type == ProviderMediaType.MOVIE:
+            return set()
+        try:
+            match = re.search(r"\d+", str(season))
+            season_num = int(match.group()) if match else int(meta_info.begin_season or 1)
+        except (TypeError, ValueError):
+            season_num = 1
+        return self._existence.find_season_episodes(meta_info, meta_info_fn, season_num)
+
     def get_best_target_path(self, mtype, in_path=None, size=0):
         return self._path_resolver.get_best_target_path(mtype, in_path, size)
 

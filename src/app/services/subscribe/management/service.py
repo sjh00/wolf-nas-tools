@@ -63,6 +63,7 @@ class SubscribeService:
         transfer_history_manager: Any = None,
         user_repo: Any = None,
         metadata_gateway: Any = None,
+        filetransfer: Any = None,
     ):
         self._movie_repo = movie_repo
         self._tv_repo = tv_repo
@@ -105,6 +106,7 @@ class SubscribeService:
             self._sites,
             self._indexer_service,
             metadata_gateway=metadata_gateway,
+            filetransfer=filetransfer,
         )
         self._finish_svc = SubscribeFinishService(
             self._movie_repo, self._tv_repo, self._history_repo, self._message, self._event_bus, self._download_repo

@@ -12,6 +12,22 @@ def parse_rss_desc(desc):
     return JsonUtils.loads(desc) or {}
 
 
+def normalize_sites(value: list | str | None) -> list[str] | None:
+    """订阅站点入参归一化：None 保持 None，空列表保持空列表。
+
+    保留 None 与 [] 的差别是「取消全选」能生效的前提：
+    - None  = 调用方没传，按未设置处理（回退默认设置 / 沿用已有值）
+    - []    = 用户取消了全选，明确一个站点都不用，搜索按零站点执行
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = value.split(",")
+    else:
+        items = list(value)
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
 def gen_rss_note(media: Any) -> str:
     """生成订阅的JSON备注信息"""
     if not media:

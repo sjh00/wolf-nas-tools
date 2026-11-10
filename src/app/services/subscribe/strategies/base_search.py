@@ -226,11 +226,19 @@ class BaseSearchStrategy:
         """订阅有效搜索站点.
 
         优先级：订阅显式配置 → 全局默认设置 → None（不限制，由用户可见站点集合决定）。
-        返回 None 表示搜索全部当前用户可见站点，避免"未配置即搜不到"。
+        - 非空列表：只用这些站点
+        - 空列表：用户取消了全选，按零站点搜索（不能回退成"全部站点"，否则等于把
+          用户的选择反过来执行）
+        - None/缺失：未设置，回退默认设置；默认也没有则 None = 全部可见站点
         """
-        sites = rss_info.get("search_sites") or []
-        if sites:
-            return sites
+        sites = rss_info.get("search_sites")
+        if sites is not None:
+            if not sites:
+                # 用户取消了全选：按零站点搜索（仍可走订阅站点/RSS），不能悄悄改回全部
+                log.debug(
+                    f"[Subscribe]订阅《{rss_info.get('name')}》未选择任何搜索站点，本轮跳过站点搜索"
+                )
+            return list(sites)
         if not self._system_config:
             return None
         try:
@@ -240,7 +248,10 @@ class BaseSearchStrategy:
                 rss_info.get("content_profile"),
                 rss_info.get("user_id"),
             )
-            return default_setting.get("search_sites") or None
+            default_sites = default_setting.get("search_sites")
+            if isinstance(default_sites, list):
+                return list(default_sites)
+            return None
         except Exception as e:
             log.debug(f"[Subscribe]读取默认订阅设置站点失败: {e}")
             return None

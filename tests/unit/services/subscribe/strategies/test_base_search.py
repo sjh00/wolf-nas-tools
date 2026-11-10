@@ -225,13 +225,14 @@ class TestEffectiveSearchSites:
         result = strategy._get_effective_search_sites({"search_sites": None}, ProviderMediaType.SERIES)
         assert result == ["defaultA"]
 
-    def test_empty_list_triggers_fallback_not_zero_sites(self, strategy):
-        # 空列表会覆盖 effective sites → 应回退默认而非 0 站点搜索
+    def test_empty_list_means_zero_sites_not_fallback(self, strategy):
+        """取消全选必须如实执行：空列表 = 不搜任何站点，不能被默认设置覆盖."""
         sys_config = MagicMock()
         sys_config.get.return_value = {"search_sites": ["defaultB"]}
         strategy._system_config = sys_config
         result = strategy._get_effective_search_sites({"search_sites": []}, ProviderMediaType.SERIES)
-        assert result == ["defaultB"]
+        assert result == []
+        sys_config.get.assert_not_called()
 
     def test_movie_uses_movie_default_setting(self, strategy):
         sys_config = MagicMock()
@@ -251,12 +252,12 @@ class TestEffectiveSearchSites:
         strategy._system_config = sys_config
         assert strategy._get_effective_search_sites({"search_sites": None}, ProviderMediaType.SERIES) is None
 
-    def test_empty_default_sites_returns_none(self, strategy):
-        """默认设置未配站点 → None（而非零站点）"""
+    def test_empty_default_sites_means_zero_sites(self, strategy):
+        """默认设置显式存成空列表 → 零站点（而非"全部站点"）"""
         sys_config = MagicMock()
         sys_config.get.return_value = {"search_sites": []}
         strategy._system_config = sys_config
-        assert strategy._get_effective_search_sites({"search_sites": []}, ProviderMediaType.SERIES) is None
+        assert strategy._get_effective_search_sites({"search_sites": None}, ProviderMediaType.SERIES) == []
 
 
 class TestSubscribeSearchEnforcesOwnerScope:

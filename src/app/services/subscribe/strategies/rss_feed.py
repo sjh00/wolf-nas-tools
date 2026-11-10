@@ -244,12 +244,14 @@ class RssFeedStrategy:
             rss_sites = rinfo.get("rss_sites")
             if rss_sites:
                 check_sites += list(rss_sites)
-            else:
+            elif rss_sites is None:
+                # 未设置 → 回退默认订阅站点；空列表=用户取消全选，不参与轮询
                 if rinfo in rss_tvs.values():
                     mtype = ProviderMediaType.SERIES
                 else:
                     mtype = ProviderMediaType.MOVIE
                 check_sites += self._get_default_rss_sites(mtype, rinfo.get("content_profile"), rinfo.get("user_id"))
+
         check_sites = list(set(check_sites))
 
         all_articles = []

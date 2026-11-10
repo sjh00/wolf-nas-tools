@@ -14,7 +14,7 @@ from app.media import meta_info
 from app.media.display_image_policy import unwrap_display_image_url
 from app.media.metadata.gateway import MetadataContext, MetadataGateway
 from app.schemas.auth import UserContext
-from app.services.subscribe.management.utils import gen_rss_note
+from app.services.subscribe.management.utils import gen_rss_note, normalize_sites
 from app.services.web.utils import WebUtils
 
 
@@ -287,10 +287,9 @@ class SubscribeUpdateService:
                 return -1, "订阅不存在", None
 
         year = int(str(year)) if str(year).isdigit() else ""
-        if isinstance(rss_sites, str):
-            rss_sites = rss_sites.split(",")
-        if isinstance(search_sites, str):
-            search_sites = search_sites.split(",")
+        # None = 本次不改站点（仓储跳过该列）；[] = 用户取消全选，写空列表
+        rss_sites = normalize_sites(rss_sites)
+        search_sites = normalize_sites(search_sites)
         over_edition = 1 if over_edition else 0
         filter_rule = int(str(filter_rule)) if str(filter_rule).isdigit() else 0
         total_ep = int(str(total_ep)) if str(total_ep).isdigit() else None

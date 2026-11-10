@@ -68,6 +68,94 @@ class MediaExistenceChecker:
             log.warn(f"[FileTransfer]远程目录列举失败，本次按空目录处理（可能导致漏转移）：{path} - {e}")
         return files
 
+    @staticmethod
+    def _target_names(meta_info_obj) -> set[str]:
+        """用于比对文件名与作品名的候选名（兼容多语言）."""
+        names = {
+            (meta_info_obj.cn_name or "").strip(),
+            (meta_info_obj.en_name or "").strip(),
+            (meta_info_obj.title or "").strip(),
+        }
+        names.discard("")
+        return names
+
+    def _episodes_from_files(self, files: list[str], meta_info_obj, meta_info_fn, season) -> set[int]:
+        """从媒体文件名里解析出属于该季、该作品的集号."""
+        episodes: set[int] = set()
+        target_names = self._target_names(meta_info_obj)
+        for file in files:
+            file_meta_info = meta_info_fn(title=os.path.basename(file))
+            if not file_meta_info.get_season_list() or not file_meta_info.get_episode_list():
+                continue
+            file_name = (file_meta_info.get_name() or "").strip()
+            if file_name and not any(
+                fn == tn or fn in tn or tn in fn for tn in target_names for fn in [file_name]
+            ):
+                continue
+            if not file_meta_info.is_in_season(season):
+                continue
+            episodes.update(int(ep) for ep in file_meta_info.get_episode_list() if str(ep).isdigit())
+        return episodes
+
+    def _list_subdirs(self, path: str, backend_id: str = "local") -> list[str]:
+        """列出一级子目录（用于在未知分类的情况下查找剧集目录）."""
+        if not path:
+            return []
+        if backend_id == "local":
+            try:
+                return [
+                    os.path.join(path, name)
+                    for name in os.listdir(path)
+                    if os.path.isdir(os.path.join(path, name))
+                ]
+            except OSError:
+                return []
+        backend = self._path_resolver.resolve_backend_by_id(backend_id)
+        if not backend:
+            return []
+        try:
+            return [finfo.path for finfo in backend.list_dir(path) if finfo.is_dir]
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[FileTransfer]列举子目录失败 {path}: {e}")
+            return []
+
+    def find_season_episodes(self, meta_info_obj, meta_info_fn, season) -> set[int]:
+        """找出剧集库中该作品某季已存在的集号，不依赖分类是否已知.
+
+        转移/入库时 media_info 带有分类，可以直接拼出目录；但订阅刚创建时分类可能
+        还没解析出来，甚至与入库时不一致。这里在根目录和「根/任意分类」两种布局下
+        都找一遍，避免因为目录不同而把整季判定成"本地没有"。
+
+        季目录名与文件命名格式由路径解析器按 `media_info.begin_season` 生成，
+        因此 `season` 只用于季判定，不参与拼路径。
+        """
+        dir_name, season_dir_name, _ = self._path_resolver.get_tv_dest_path(meta_info_obj, self._media)
+        if not dir_name or not season_dir_name:
+            return set()
+        if meta_info_obj.type == ProviderMediaType.ANIME:
+            dest_paths = self._path_resolver.anime_path
+            backends = self._path_resolver._anime_backend or []
+        else:
+            dest_paths = self._path_resolver.tv_path
+            backends = self._path_resolver._tv_backend or []
+
+        found: set[int] = set()
+        for idx, dest_path in enumerate(dest_paths):
+            backend_id = backends[idx] if idx < len(backends) else "local"
+            candidates = [os.path.join(dest_path, dir_name)]
+            for sub_dir in self._list_subdirs(dest_path, backend_id):
+                if os.path.basename(sub_dir) == dir_name:
+                    continue
+                candidates.append(os.path.join(sub_dir, dir_name))
+            for media_dir in candidates:
+                season_dir = os.path.join(media_dir, season_dir_name)
+                if not self._exists(season_dir, backend_id):
+                    continue
+                files = self._get_dir_files(season_dir, backend_id, RMT_MEDIAEXT)
+                if files:
+                    found |= self._episodes_from_files(files, meta_info_obj, meta_info_fn, season)
+        return found
+
     def is_media_exists(self, media_dest, media, dst_backend=None):
         """
         判断媒体文件是否已存在.
@@ -206,7 +294,7 @@ class MediaExistenceChecker:
                 category_flag = self._path_resolver.tv_category_flag
                 backends = self._path_resolver._tv_backend or []
             total_episodes = list(range(1, total_num + 1))
-            exists_episodes = []
+            exists_episodes: set[int] = set()
             for idx, dest_path in enumerate(dest_paths):
                 backend_id = backends[idx] if idx < len(backends) else "local"
                 category = safe_category_name(getattr(meta_info_obj, "category", ""))
@@ -217,23 +305,5 @@ class MediaExistenceChecker:
                         files.extend(self._get_dir_files(check_path, backend_id, RMT_MEDIAEXT))
                 if not files:
                     continue
-                for file in files:
-                    file_meta_info = meta_info_fn(title=os.path.basename(file))
-                    if not file_meta_info.get_season_list() or not file_meta_info.get_episode_list():
-                        continue
-                    # 同时比对 cn_name / en_name / title（兼容多语言场景）
-                    target_names = {
-                        (meta_info_obj.cn_name or "").strip(),
-                        (meta_info_obj.en_name or "").strip(),
-                        (meta_info_obj.title or "").strip(),
-                    }
-                    target_names.discard("")
-                    file_name = (file_meta_info.get_name() or "").strip()
-                    if file_name and not any(
-                        fn == tn or fn in tn or tn in fn for tn in target_names for fn in [file_name]
-                    ):
-                        continue
-                    if not file_meta_info.is_in_season(season):
-                        continue
-                    exists_episodes = list(set(exists_episodes).union(set(file_meta_info.get_episode_list())))
-            return list(set(total_episodes).difference(set(exists_episodes)))
+                exists_episodes |= self._episodes_from_files(files, meta_info_obj, meta_info_fn, season)
+            return list(set(total_episodes).difference(exists_episodes))
