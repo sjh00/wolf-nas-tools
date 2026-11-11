@@ -68,7 +68,7 @@ ENV S6_SERVICES_GRACETIME=30000 \
     PUID=0 \
     PGID=0 \
     UMASK=000 \
-    WOLFNAS_PORT=8080 \
+    WOLFNAS_PORT=3000 \
     WORKDIR="/wolfnas"
 
 # 运行期用户 wolfnas（UID/GID 911 与历史版本一致，升级后卷权限不受影响）
@@ -91,9 +91,11 @@ RUN chmod +x \
 HEALTHCHECK --interval=30s --timeout=30s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
-# 监听端口由 WOLFNAS_PORT 决定（run.py 优先读该环境变量，其次 config 的 app.web_port）。
-# 必须与上面的 HEALTHCHECK、docker-compose 的端口映射以及前端 nginx 的 BACKEND_PORT 一致，
-# 否则容器内应用监听 3000 而健康检查打 8080，容器永远 unhealthy、前端也连不上。
+# 两个端口务必区分，不能相同：
+#   WOLFNAS_PORT      Python 应用内部端口（run.py 监听它，默认 3000）
+#   8080              容器内 nginx 网关端口（固定，反代到 WOLFNAS_PORT）
+# 容器对外只暴露 nginx 的 8080，所以 EXPOSE 写 8080；
+# 把 WOLFNAS_PORT 也设成 8080 会让 Python 抢占 nginx 的端口，启动即报端口占用。
 EXPOSE 8080
 VOLUME ["/config"]
 ENTRYPOINT ["/init"]
