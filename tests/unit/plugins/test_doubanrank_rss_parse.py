@@ -5,7 +5,7 @@
     <description>…标签：2026 / 韩国 / 剧情 爱情…</description>
     <link>https://www.douban.com/doubanapp/dispatch/movie/36847425</link>
 
-旧正则 `/(\d+)/` 要求数字两侧都是斜杠，而这种 link 的数字在结尾，
+旧正则要求数字两侧都是斜杠（形如 /xxx/ 的路径段），而这种 link 的数字在结尾，
 永远匹配不到 → doubanid 恒空 → 退回标题裸搜 → 命中同名老片。
 """
 

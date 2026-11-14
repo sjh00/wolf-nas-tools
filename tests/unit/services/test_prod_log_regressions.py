@@ -14,6 +14,7 @@
    rev_string 为空时把 None 直接交给 re.search，整条过滤规则失效。
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -95,7 +96,7 @@ class TestBackendIdStringAccepted:
             def resolve_backend_by_id(self, backend_id):
                 return None  # 后端不存在 → 按本地处理
 
-        svc._path_resolver = _Resolver()
+        svc._path_resolver = cast(Any, _Resolver())
         existing = tmp_path / "a.mkv"
         existing.write_text("x", encoding="utf-8")
 
@@ -108,7 +109,7 @@ class TestBackendIdStringAccepted:
         from app.services.transfer.filetransfer_service import FileTransferService
 
         svc = FileTransferService.__new__(FileTransferService)
-        svc._path_resolver = object()
+        svc._path_resolver = cast(Any, object())
         existing = tmp_path / "b.mkv"
         existing.write_text("x", encoding="utf-8")
 
