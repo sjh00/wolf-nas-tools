@@ -77,6 +77,8 @@ _META_TOKEN_RE = re.compile(
     r"|lpcm\d*(\.\d+)?|pcm|dolby[-\s]?digital"
     # --- HDR/色彩/帧率 ---
     r"|hdr\d*|hdr10\+?|hdrvivid|hfr\d*|vfr|dovi|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
+    # Pad-HDR：华语 PT 的「自带 HDR」标记，与分辨率/来源同层
+    r"|pad[-.\s]?hdr"
     # --- 来源/平台 ---
     r"|web[-]?(dl|rip|dlr|dlmux|dlrip)?|webcast|webtv"
     r"|blu[-]?ray|bluray|bd(rip|mv|remux|iso|25|50|66|100)?|bd[-]?rip|bdmv"
@@ -90,6 +92,8 @@ _META_TOKEN_RE = re.compile(
     r"|pcok|peacock|pmtp|paramount|shdr|showtime|appletv|vudu|fandango"
     r"|mubi|criterion|shoutfactory|arrow|radiance|capelight|kino|cocp|eureka|bfi"
     r"|baha|cr|crunchyroll|abema|ani-one|ani|b-global|bilibili|viutv|myvideo"
+    # friday 同时登记在歧义表：位于元数据之后才按平台剥离，
+    # 位于片名区（His Mouse Friday）时保留，见 _AMBIGUOUS_META_TOKEN_RE
     r"|friday|kktv|linetv|catchplay|iqiyi|youku|tencent|tx|mgtv|wetv|galaxy|gimy"
     r"|ma|moviesanywhere|itunes"
     # --- 地区代码 ---
@@ -101,6 +105,8 @@ _META_TOKEN_RE = re.compile(
     # --- 版本/内容标签 ---
     r"|diy|repack|proper|rerip|internal|int"
     r"|limited|extended|uncut|unrated|directors?[-]?cut|dc"
+    # 合集装帧标签：2in1 / 3in1 / 6in1（多片合一）
+    r"|\d+in\d+"
     r"|theatrical|remastered|anniversary|special[-]?edition"
     r"|imax|open[-]?matte|widescreen|letterbox"
     r"|uncensored|censored|decensored"
@@ -165,6 +171,8 @@ _AMBIGUOUS_META_TOKEN_RE = re.compile(
     r"|special|season|complete|collection|pack|batch|trilogy|quadrilogy|mini"
     r"|plus|extra|bonus|deleted|shot|interview|preview|recap|highlights"
     r"|max|ma|dc|cr|fox|abc|nbc|cbs|hbo|starz|showtime|amc|tnt|tbs|fx|syfy|bbc|itv"
+    # Friday 既是台湾平台也是片名常用词（His Mouse Friday / The Girl Friday）
+    r"|friday"
     r"|from|share|movie([+&]?\w+)?|tv[+&]?\w*"
     r"|dual|multi|limited|extended|anniversary"
     r")$"
@@ -472,6 +480,10 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
     # 版本短语整体剔除（Extended Version / Theatrical Cut 等）
     text = _VER_PHRASE_RE.sub(" ", text).strip()
 
+    # Pad-HDR 是华语 PT 的「自带 HDR」标记；分隔符会被拆成 Pad + HDR，
+    # 只剩 Pad 时会当成片名词残留（Stalingrad Pad-HDR → Stalingrad Pad）。
+    text = re.sub(r"(?i)\bpad\s*[-._]?\s*hdr\b", " ", text).strip()
+
     # 替换非数字间的点为分隔符（含数字后的末尾点如 2045.）
     text = re.sub(r"(?<!\d)\.(?!\d)|(?<=\d)\.(?!\d)", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -501,6 +513,14 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
         chain_prev = re.search(r"[-.\s]+([A-Z0-9]{2,8})$", text)
         if chain_prev and any(c.isalpha() for c in chain_prev.group(1)):
             text = text[: chain_prev.start()].strip()
+
+    # 点/空格分隔的尾部「组名@站点」（如 DTS-HD.MA.2.0.AnimeF@ADE）。
+    # 带 @ 的 token 一定是组名标识，不可能出现在片名里。
+    if not ctx.release_group:
+        at_match = re.search(r"(?:^|[-.\s])([A-Za-z][A-Za-z0-9]*@[A-Za-z0-9]+)\s*$", text)
+        if at_match:
+            ctx.release_group = at_match.group(1)
+            text = text[: at_match.start()].strip()
 
     # 通用后缀剥词：剥离尾部短词（语种缩写、质量标签等）
     while True:

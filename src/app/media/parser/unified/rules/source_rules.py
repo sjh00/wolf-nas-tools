@@ -94,9 +94,13 @@ RULES: list[ExtractionRule] = [
     ),
     ExtractionRule(
         name="streaming_sites",
+        # friDay 用大小写敏感写法匹配：该平台固定写作 `friDay`，
+        # 而 `Friday` 是常用片名词（His Mouse Friday / The Girl Friday），
+        # 放在 IGNORECASE 选项里会把片名里的 Friday 当平台剥掉。
         pattern=re.compile(
-            r"\b(BILIBILI|Baha|B-Global|Crunchyroll|Funimation|Netflix|NF|AMZN|HMAX|DSNP|iQIYI|Tencent|YOUKU|friDay|LINETV|CATCHPLAY)\b",
-            re.IGNORECASE,
+            r"(?i:\b(BILIBILI|Baha|B-Global|Crunchyroll|Funimation|Netflix|NF|AMZN"
+            r"|HMAX|DSNP|iQIYI|Tencent|YOUKU|LINETV|CATCHPLAY)\b)"
+            r"|\bfriDay\b"
         ),
         category="source",
         priority=66,
