@@ -51,6 +51,27 @@ class MediaSeriesRepository(BaseRepository):
         provider: str,
         external_id: str,
     ) -> MediaSeries:
+        """创建规范剧集；同一来源条目已存在时返回已有记录。
+
+        SERIES_KEY 是 uuid，表上没有 (PROVIDER, EXTERNAL_ID) 唯一约束，
+        所以并发时「查不到 → 各自新建」会让同一个 TMDB ID 分裂成多个剧集
+        （真实故障：同一部剧产生 4 个 series_key）。这里按来源条目先查一次，
+        把窗口压到最小；调用方仍应以别名表为准。
+        """
+        if provider and external_id:
+            with self.session() as db:
+                existing = (
+                    db.query(MediaSeries)
+                    .filter(
+                        MediaSeries.PRIMARY_PROVIDER == provider,
+                        MediaSeries.PRIMARY_EXTERNAL_ID == external_id,
+                    )
+                    .order_by(MediaSeries.CREATED_AT.asc())
+                    .first()
+                )
+                if existing is not None:
+                    return existing
+
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         row = MediaSeries(
             SERIES_KEY=f"series:{uuid.uuid4().hex}",

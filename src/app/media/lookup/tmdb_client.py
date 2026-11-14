@@ -143,6 +143,50 @@ def _has_cjk(s: str) -> bool:
     """判断字符串是否含 CJK 字符"""
     return bool(re.search(r"[\u3000-\u9fff]", s))
 
+
+# 跨语言交叉校验的相似度下限。宽松比对用 0.75/0.85，那是同一语言内的容错；
+# 这里要区分的是「The Great Long March」与「The Long March」这类不同的作品，
+# 相似度约 0.84，必须用更高门槛才能分开。
+STRICT_NAME_RATIO = 0.9
+
+
+def compare_tmdb_names_strict(name, tmdb_names) -> bool:
+    """严格名称比对，用于跨语言交叉校验。
+
+    与 compare_tmdb_names 的区别：不做子串放行、不降低阈值。
+
+    真实故障：LLM 把 `The Great Long March` 认成「长征」，中文名搜索命中
+    另一部同名老剧《长征》(2001)，其英文名为「The Long March」。用宽松比对
+    （子串/0.75）会判定为同一部，于是同一批文件分裂成两个作品。
+    严格比对下两者相似度不足 0.9，能被正确拒绝。
+    """
+    if not name or not tmdb_names:
+        return False
+    if not isinstance(tmdb_names, list):
+        tmdb_names = [tmdb_names]
+    _fn = StringUtils.handler_special_chars(str(name))
+    target = _fn.upper() if isinstance(_fn, str) else str(name).upper()
+    target = target.strip()
+    target_simplified = to_simplified(target).upper()
+    # 短名保护：拉丁名两三个字母没有区分度（"AB" 会命中一堆），
+    # 但中文两字就是完整片名（「长征」），不能一并按长度拒绝。
+    min_len = 2 if _has_cjk(target_simplified) else 3
+    if len(target) < min_len:
+        return False
+    for tmdb_name in tmdb_names:
+        _tn = StringUtils.handler_special_chars(str(tmdb_name))
+        candidate = _tn.strip().upper() if isinstance(_tn, str) else str(tmdb_name).strip().upper()
+        if not candidate:
+            continue
+        if target == candidate or target_simplified == candidate:
+            return True
+        if len(candidate) < 3:
+            continue
+        ratio = difflib.SequenceMatcher(None, target_simplified, candidate).ratio()
+        if ratio >= STRICT_NAME_RATIO:
+            return True
+    return False
+
 def get_genre_ids_from_detail(genres):
     if not genres:
         return []

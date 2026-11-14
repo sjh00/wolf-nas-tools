@@ -13,7 +13,11 @@ from app.infrastructure.cache_system.metadata_cache import MetadataCache
 from app.infrastructure.http.exceptions import HttpRateLimitError
 from app.infrastructure.image_proxy import ImageProxy
 from app.media.lookup.base import BaseLookup, LookupResult
-from app.media.lookup.tmdb_client import TmdbClient, compare_tmdb_names
+from app.media.lookup.tmdb_client import (
+    TmdbClient,
+    compare_tmdb_names,
+    compare_tmdb_names_strict,
+)
 from app.media.lookup.tmdb_detail import TmdbDetail
 from app.media.lookup.tmdb_discover import TmdbDiscover
 from app.media.lookup.tmdb_person import TmdbPerson
@@ -111,6 +115,12 @@ class TmdbLookup(BaseLookup):
                         original_title=org_title,
                         constrain_type=constrain_type,
                     )
+                    # 中文名可能来自 LLM 识别，存在幻觉：同一批文件会得到
+                    # 「伟大的长征 / 天下长征 / 万里长征 / 长征」等不同结果，
+                    # 其中「长征」会让搜索命中另一部同名老剧，同一部剧因此分裂。
+                    # 英文名来自文件名、不经过 LLM，用它对中文名的搜索结果做交叉校验。
+                    if result and parsed.title_en and self._english_name_conflicts(result, parsed.title_en):
+                        result = None
                 # 中文名搜索失败时，使用英文名搜索
                 if not result and parsed.title_en:
                     result = self._lookup_tmdb(
@@ -293,6 +303,37 @@ class TmdbLookup(BaseLookup):
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Meta]比对TMDB别名失败: {e}")
         return False
+
+    def _english_name_conflicts(self, info: dict, english: str) -> bool:
+        """搜索结果与原始英文名是否明显不是同一部作品。
+
+        只用来交叉校验「按中文名搜到的结果」：中文名可能来自 LLM，英文名来自
+        文件名。若英文名对不上，宁可丢弃该结果、改走英文名搜索，也不要接受
+        一部名字沾边的老剧 —— 那会让同一部剧在库里分裂成两个作品。
+
+        取不到任何别名时返回 False（不阻拦），避免网络异常导致识别失败。
+        """
+        if not info or not english:
+            return False
+        tmdb_id = info.get("id")
+        raw_type = info.get("media_type")
+        if not tmdb_id or not raw_type:
+            return False
+        try:
+            _detail, names = self.search._fetch_allnames(provider_media_type_of(raw_type), tmdb_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"[Meta]英文名交叉校验取别名失败，放行: {e}")
+            return False
+        if not names:
+            return False
+        if compare_tmdb_names_strict(english, names):
+            return False
+        log.info(
+            "[Meta]{} 的搜索结果《{}》(TMDBID={})与原始英文名不符，改用英文名重新搜索".format(
+                english, info.get("name") or info.get("title"), tmdb_id
+            )
+        )
+        return True
 
     def _lookup_tmdb(
         self,
