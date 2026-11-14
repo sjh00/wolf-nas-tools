@@ -29,7 +29,33 @@ def _cn2an_extract(match: re.Match[str]) -> dict[str, int] | None:
         return None
 
 
+def _compact_air_date_extract(match: re.Match[str]) -> dict[str, int] | None:
+    """YYYYMMDD 紧凑播出日期 → 集号。
+
+    电视栏目常按播出日期命名（`节目名.20061023.本期标题`），没有 SxxExx。
+    这类文件若拿不到集号，会整批落到「未识别」。用月日（MMDD）作集号：
+    同一年内唯一、可排序，且能从命名反推播出日期。
+    日期本身还要校验月份/日合法，避免把 8 位哈希误认成日期。
+    """
+    text = match.group(0)
+    month, day = int(text[4:6]), int(text[6:8])
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return {"season": 1, "episode": month * 100 + day}
+
+
 RULES: list[ExtractionRule] = [
+    ExtractionRule(
+        name="compact_air_date",
+        # 节目名.20061023.本期标题：优先级低于所有 SxxExx/EPxx，
+        # 仅在没有任何常规集号时兜底
+        pattern=re.compile(r"\b((?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\b"),
+        category="episode",
+        priority=55,
+        confidence=0.8,
+        stop=True,
+        _extract_fn=lambda m, _: _compact_air_date_extract(m),
+    ),
     ExtractionRule(
         name="sxxexx_resolution_tight",
         # 集号与分辨率粘连（S01E071080p = S01E07 + 1080p）：非贪婪集号 + 前瞻分辨率截断，

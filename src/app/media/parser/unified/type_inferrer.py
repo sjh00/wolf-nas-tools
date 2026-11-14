@@ -39,8 +39,13 @@ def infer_type(ctx: ParseContext) -> ProviderMediaType:
     if ctx.source and not ctx.episode and not ctx.season:
         return ProviderMediaType.MOVIE
 
-    # 默认 TV
-    return ProviderMediaType.SERIES
+    # 无季集、无年份、无来源：默认 MOVIE。
+    # 剧集的命名几乎总带季集号（SxxExx / 第N集 / 裸集号 / 日期式），
+    # 落到这里的通常是「只有片名」的电影（含 BONUS_DISC 花絮盘、无年份老片）。
+    # 动漫倾向仍按 _is_anime_pattern 保留，避免无集号的动漫命名被当电影。
+    if _is_anime_pattern(ctx):
+        return ProviderMediaType.ANIME
+    return ProviderMediaType.MOVIE
 
 
 def _is_anime_pattern(ctx: ParseContext) -> bool:

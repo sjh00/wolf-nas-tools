@@ -66,8 +66,12 @@ def meta_info(title: str, subtitle: str | None = None, mtype: ProviderMediaType 
     parser = UnifiedParser()
     parsed = parser.parse(rev_title, subtitle or "")
     if parsed:
-        if mtype == ProviderMediaType.ANIME:
-            parsed.type = ProviderMediaType.ANIME
+        # 调用方显式给出的 mtype（订阅类型 / RSS 分类 / 检索结果类型）是已知事实，
+        # 优先于文件名推断。此前只有 ANIME 生效，其余被推断结果覆盖：
+        # 订阅「电视剧」时若文件名缺季集号，会被推断成电影，进而落到另一块盘的
+        # 电影媒体库（跨盘后无法硬链接）。
+        if mtype is not None and mtype != ProviderMediaType.UNKNOWN:
+            parsed.type = mtype
         media_info = MediaInfo.from_parser(parsed)
     else:
         media_info = MediaInfo()
