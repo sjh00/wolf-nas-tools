@@ -172,6 +172,9 @@ class MediaConfig(BaseModel):
     tmdb_language: str = "zh"
     metadata_default_policy: str = "tmdb_primary"
     episode_mapping_enabled: bool = True
+    # 解析结果的最低可信置信度。低于此值的解析不采纳：
+    # 规则侧交给 LLM 兜底，LLM 侧也达不到就标为未识别，绝不把猜测写进库。
+    parse_confidence_min: float = 0.75
 
 
 class PtConfig(BaseModel):

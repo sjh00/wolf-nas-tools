@@ -33,6 +33,70 @@ def is_disabled_filter_rule(rule) -> bool:
     return str(rule) == "-1"
 
 
+# 整季/全集资源标记：剧名里带 Complete/全集/合集、集号区间、跨季区间。
+# 用于「只下整季」的规则组校验：零散单集不能算命中。
+_PACK_MARKERS_RE = re.compile(
+    r"(?i)(?:\bcomplete\b|\bcollection\b|\bseason\s*\d+\b(?!.*e\d)"
+    r"|全集|合集|全\s*\d+\s*[集话話]"
+    r"|\bS\d{1,2}\s*[-~]\s*S\d{1,2}\b"
+    r"|\bS\d{1,2}\s*E\s*\d{1,4}\s*[-~]\s*E?\d{1,4}\b"
+    r"|\bE(?:P)?\s*\d{1,4}\s*[-~]\s*E?\d{1,4}\b)"
+)
+
+
+def is_complete_only_group(rulegroup_info: dict | None) -> bool:
+    """规则组是否只接受整季资源（GROUP.NOTE 里声明 complete_only）。
+
+    剧集订阅常有「只要整季完整放出、零散单集不要」的需求。以前靠规则里写
+    `全集` 关键字实现，关键字一旦丢失就退化成逐集下载。改用规则组的显式
+    声明，避免依赖正文字符串。
+    """
+    if not rulegroup_info:
+        return False
+    note = rulegroup_info.get("note")
+    if not note:
+        return False
+    text = str(note).strip()
+    if not text:
+        return False
+    try:
+        import json  # noqa: PLC0415 - 仅在解析规则组 note 时需要
+
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(parsed, dict):
+        return bool(parsed.get("complete_only"))
+    return False
+
+
+def looks_like_complete_pack(meta_info) -> bool:
+    """种子是否为整季/全集资源。
+
+    无集号（只有季号）天然是整季包；带集号时必须是区间/合集标记。
+    单集 `S01E05` 既无区间也无合集标记，判定为不完整。
+    """
+    if getattr(meta_info, "begin_episode", None) is None:
+        return True
+    raw = " ".join(
+        str(x or "")
+        for x in (
+            getattr(meta_info, "org_string", ""),
+            getattr(meta_info, "rev_string", ""),
+            getattr(meta_info, "title", ""),
+        )
+    )
+    if _PACK_MARKERS_RE.search(raw):
+        return True
+    # 多集包（E01E02 / E01-E10）由解析结果的集号区间体现
+    begin = getattr(meta_info, "begin_episode", None)
+    end = getattr(meta_info, "end_episode", None)
+    total = getattr(meta_info, "total_episodes", 0) or 0
+    if begin is not None and end is not None and end > begin:
+        return True
+    return bool(begin is not None and total > 1 and end is not None)
+
+
 def filters_from_rule_entities(entities) -> list[dict]:
     """把规则实体转成 check_rules 所需的 filters 列表。"""
     filters: list[dict] = []
@@ -65,10 +129,18 @@ class IndexerFilterEngine:
 
     @staticmethod
     def check_torrent_filter(
-        meta_info, filter_args: dict, uploadvolumefactor=None, downloadvolumefactor=None
+        meta_info,
+        filter_args: dict,
+        uploadvolumefactor=None,
+        downloadvolumefactor=None,
+        apply_media_guards: bool = True,
     ) -> tuple[bool, int, str]:
         """
         对种子进行过滤（基于 filter_args 中的基础条件）
+
+        :param apply_media_guards: 是否启用「非影视内容」守卫（音频/漫画/过小文件/
+            仅免费）。索引器与订阅匹配需要这些守卫；RSS 自动化等老调用方按原语义
+            不启用，保持行为不变。
 
         :return: (是否匹配, 优先值, 信息)
         """
@@ -100,16 +172,21 @@ class IndexerFilterEngine:
             r"キャラソン",
         ]
         _audio_extensions = [r"\.flac", r"\.mp3", r"\.m4a", r"\.wav", r"\.ogg"]
-        if not _video_markers and any(re.search(pat, text, re.IGNORECASE) for pat in _audio_tags):
-            return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
-        if any(re.search(pat, text, re.IGNORECASE) for pat in _audio_extensions):
-            return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
+        if apply_media_guards:
+            if not _video_markers and any(re.search(pat, text, re.IGNORECASE) for pat in _audio_tags):
+                return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
+            if any(re.search(pat, text, re.IGNORECASE) for pat in _audio_extensions):
+                return False, 0, f"{meta_info.org_string} 为音频文件，不匹配视频订阅"
 
         # 过滤漫画/书籍类资源（仅检查标题，不检查 description 避免误杀）
         target_type = filter_args.get("type")
         if isinstance(target_type, str):
             target_type = ProviderMediaType.from_value(target_type)
-        if target_type in (ProviderMediaType.SERIES, ProviderMediaType.MOVIE, ProviderMediaType.ANIME):
+        if apply_media_guards and target_type in (
+            ProviderMediaType.SERIES,
+            ProviderMediaType.MOVIE,
+            ProviderMediaType.ANIME,
+        ):
             _book_patterns = [
                 r"(?:漫画|コミック|单行本|Manga|Comic|巻相当|Graphic Novel)",
                 r"(?:raw|RAW)\b.*第\s*\d+\s*巻",
@@ -121,7 +198,11 @@ class IndexerFilterEngine:
                     return False, 0, f"{meta_info.org_string} 为漫画/书籍类资源，不匹配视频订阅"
 
         # 过滤过小文件（字幕/样本等非视频资源）
-        if target_type in (ProviderMediaType.SERIES, ProviderMediaType.MOVIE, ProviderMediaType.ANIME):
+        if apply_media_guards and target_type in (
+            ProviderMediaType.SERIES,
+            ProviderMediaType.MOVIE,
+            ProviderMediaType.ANIME,
+        ):
             min_filesize_mb = (settings.get("media") or {}).get("min_filesize", 150)
             if min_filesize_mb and meta_info.size:
                 size_bytes = StringUtils.num_filesize(meta_info.size)
@@ -180,7 +261,7 @@ class IndexerFilterEngine:
 
         # 只订阅免费：download_volume_factor==0 视为免费(free/2xfree)
         # downloadvolumefactor 为 None 表示无法判断(站点未开启解析)，保守跳过(搜索会补充)
-        if filter_args.get("free"):
+        if apply_media_guards and filter_args.get("free"):
             if downloadvolumefactor is None or float(downloadvolumefactor) != 0.0:
                 return False, 0, f"{meta_info.org_string} 非免费种子，仅订阅免费"
 
@@ -224,6 +305,19 @@ class IndexerFilterEngine:
         if getattr(meta_info, "description", None):
             title = f"{title} {meta_info.description}"
 
+        # 只接受整季：剧集订阅声明 complete_only 时，零散单集直接不命中。
+        # 否则订阅会「出一集下一集」，与「等整季完整放出再下」的意图相反。
+        if is_complete_only_group(rulegroup_info) and meta_info.type in (
+            ProviderMediaType.SERIES,
+            ProviderMediaType.ANIME,
+        ):
+            if not looks_like_complete_pack(meta_info):
+                log.info(
+                    f"[FilterEngine]规则组 {rulegroup_info.get('name', '')} 只接受整季资源，"
+                    f"跳过单集：{getattr(meta_info, 'org_string', '')}"
+                )
+                return False, 0, rulegroup_info.get("name", "")
+
         order_seq = 0
         group_match = True
         group_name = rulegroup_info.get("name", "")
@@ -258,19 +352,17 @@ class IndexerFilterEngine:
                     if not include_flag:
                         rule_match = False
 
-                # 不能包含的项
+                # 不能包含的项：任一命中即排除。
+                # 之前只在「所有排除项都命中」时才排除（多行规则几乎永不触发），
+                # 于是 REMUX/3D/minibd 这类本该被排除的资源照样下了。
                 excludes = filter_info.get("exclude")
                 if excludes and rule_match:
-                    exclude_flag = False
-                    exclude_count = 0
                     for exclude in excludes:
                         if not exclude:
                             continue
-                        exclude_count += 1
-                        if not re.search(rf"{exclude.strip()}", title, re.IGNORECASE):
-                            exclude_flag = True
-                    if exclude_count > 0 and not exclude_flag:
-                        rule_match = False
+                        if re.search(rf"{exclude.strip()}", title, re.IGNORECASE):
+                            rule_match = False
+                            break
 
                 # 大小
                 sizes = filter_info.get("size")

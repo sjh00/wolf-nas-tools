@@ -362,11 +362,11 @@ class FnOSClient(metaclass=Singleton):
 if __name__ == "__main__":
     # 初始化客户端
     client = FnOSClient(
-        base_url="http://192.168.50.248:5666/",
+        base_url="http://192.168.1.100:5666/",
         username="xxx",  # nosec B106
         password="xxx",  # nosec B106
         app_name="trimemedia-web",
-        auth_key="16CCEB3D-AB42-077D-36A1-F355324E4237",  # nosec B105
+        auth_key="00000000-0000-0000-0000-000000000000",  # nosec B105
     )
 
     # 示例1: 单页请求

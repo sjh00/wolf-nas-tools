@@ -123,6 +123,7 @@ class FilterGroupEntity:
     default: bool
     create_time: str | None
     update_time: str | None
+    note: str | None = None
 
     @classmethod
     def from_orm(cls, orm_model) -> Optional["FilterGroupEntity"]:
@@ -134,6 +135,7 @@ class FilterGroupEntity:
             default=str(orm_model.IS_DEFAULT).upper() == "Y",
             create_time=None,
             update_time=None,
+            note=getattr(orm_model, "NOTE", None),
         )
 
     _ORM_FIELD_MAP = {
@@ -155,6 +157,7 @@ class FilterGroupEntity:
             "default": self.default,
             "create_time": self.create_time,
             "update_time": self.update_time,
+            "note": self.note,
         }
 
 

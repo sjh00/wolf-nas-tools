@@ -65,6 +65,14 @@
           "help": "大于该评分的才会被订阅（以TMDB评分为准）"
         },
         {
+          "key": "year_limit",
+          "type": "number",
+          "label": "只订阅近 N 年",
+          "default": 2,
+          "placeholder": "2",
+          "help": "发行年份早于近 N 年的内容不订阅（榜单老片多为识别错作品或老片重制）"
+        },
+        {
           "key": "rss_addrs",
           "type": "textarea",
           "label": "RssHub订阅地址",

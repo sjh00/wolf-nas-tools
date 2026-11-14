@@ -6,130 +6,28 @@ import re
 from sqlalchemy import Column, Integer, MetaData, Table, Text, create_engine, select
 
 import log
-from app.core.constants import FILTER_LANGUAGE_OPTIONS
 from app.core.exceptions import ResourceNotFoundError, ValidationError
-from app.core.module_config import ModuleConf
 from app.db.repositories.config_repo_adapter import FilterGroupRepositoryAdapter, FilterRuleRepositoryAdapter
 from app.db.sql_adapter import adapt_sql_for_engine
-from app.domain.media_types import ProviderMediaType
+from app.indexer.core.filter_engine import IndexerFilterEngine
 from app.media import ReleaseGroupsMatcher, meta_info
 from app.utils import StringUtils
 from app.utils.json_utils import JsonUtils
 
 
 class FilterRuleEngine:
-    """
-    过滤规则引擎（纯逻辑，无状态）
-    负责种子与过滤规则的纯匹配计算
+    """过滤规则引擎（纯逻辑，无状态）。
+
+    实现已统一到 app.indexer.core.filter_engine.IndexerFilterEngine。
+    此前这里有一份几乎相同的副本，同一个缺陷要在两处各修一遍，还出现过
+    行为分歧（年份匹配一边精确、一边允许 ±1 年）。这里只保留转调，让索引器、
+    订阅匹配、RSS 自动化三条路径永远走同一套判定。
     """
 
     @staticmethod
     def check_rules(meta_info, rulegroup_info: dict, filters: list) -> tuple[bool, int, str]:
-        """
-        检查种子是否匹配站点过滤规则：排除规则、包含规则、优先规则
-        :param meta_info: 识别的信息
-        :param rulegroup_info: 已解析的规则组字典
-        :param filters: 规则列表
-        :return: 是否匹配，匹配的优先值，规则名称，值越大越优先
-        """
-        if not meta_info:
-            return False, 0, ""
-
-        # rev_string 可能为空（识别未产出重命名结果时），直接拿 None 去 re.search
-        # 会抛 `expected string or bytes-like object, got 'NoneType'`，整条规则失效。
-        title = str(meta_info.rev_string or "")
-        if meta_info.subtitle:
-            title = f"{title} {meta_info.subtitle}"
-
-        order_seq = 0
-        group_match = True
-        group_name = rulegroup_info.get("name", "")
-
-        for filter_info in filters:
-            try:
-                rule_match = True
-                order_seq = 100 - int(filter_info.get("pri", 0))
-
-                # 原始语言（守卫：rule 填了 + meta 有 original_language 才阻断，否则跳过该规则）
-                rule_original_language = filter_info.get("original_language")
-                if rule_original_language and rule_match:
-                    meta_original_language = getattr(meta_info, "original_language", None)
-                    if meta_original_language:
-                        meta_original_language = meta_original_language.strip()
-                        if rule_original_language == "other":
-                            if meta_original_language[:2] in FILTER_LANGUAGE_OPTIONS:
-                                rule_match = False
-                        elif rule_original_language[:2] != meta_original_language[:2]:
-                            rule_match = False
-
-                # 必须包括的项
-                includes = filter_info.get("include")
-                if includes and rule_match:
-                    include_flag = True
-                    for include in includes:
-                        if not include:
-                            continue
-                        if not re.search(rf"{include.strip()}", title, re.IGNORECASE):
-                            include_flag = False
-                            break
-                    if not include_flag:
-                        rule_match = False
-
-                # 不能包含的项
-                excludes = filter_info.get("exclude")
-                if excludes and rule_match:
-                    exclude_flag = False
-                    exclude_count = 0
-                    for exclude in excludes:
-                        if not exclude:
-                            continue
-                        exclude_count += 1
-                        if not re.search(rf"{exclude.strip()}", title, re.IGNORECASE):
-                            exclude_flag = True
-                    if exclude_count > 0 and not exclude_flag:
-                        rule_match = False
-
-                # 大小
-                sizes = filter_info.get("size")
-                if sizes and rule_match and meta_info.size:
-                    meta_info.size = StringUtils.num_filesize(meta_info.size)
-                    if sizes.find(",") != -1:
-                        sizes = sizes.split(",")
-                        begin_size = float(sizes[0].strip()) if StringUtils.is_numeric(sizes[0]) else 0
-                        end_size = float(sizes[1].strip()) if StringUtils.is_numeric(sizes[1]) else 0
-                    else:
-                        begin_size = 0
-                        end_size = float(sizes.strip()) if StringUtils.is_numeric(sizes) else 0
-
-                    if meta_info.type == ProviderMediaType.MOVIE:
-                        if not begin_size * (1024**3) <= int(meta_info.size) <= end_size * (1024**3):
-                            rule_match = False
-                    else:
-                        if meta_info.total_episodes and not begin_size * (1024**3) <= int(meta_info.size) / int(
-                            meta_info.total_episodes
-                        ) <= end_size * (1024**3):
-                            rule_match = False
-
-                # 促销
-                free = filter_info.get("free")
-                if free and meta_info.upload_volume_factor is not None and meta_info.download_volume_factor is not None:
-                    ul_factor, dl_factor = free.split()
-                    if (
-                        float(ul_factor) > meta_info.upload_volume_factor
-                        or float(dl_factor) < meta_info.download_volume_factor
-                    ):
-                        rule_match = False
-
-                if rule_match:
-                    return True, order_seq, group_name
-                else:
-                    group_match = False
-            except Exception as err:
-                log.error(f"[Filter]过滤规则出现严重错误 {err}，请检查：{filter_info}")
-
-        if not group_match:
-            return False, 0, group_name
-        return True, order_seq, group_name
+        """检查种子是否匹配过滤规则组。"""
+        return IndexerFilterEngine.check_rules(meta_info, rulegroup_info, filters)
 
     @staticmethod
     def check_torrent_filter(
@@ -139,110 +37,18 @@ class FilterRuleEngine:
         uploadvolumefactor=None,
         downloadvolumefactor=None,
     ) -> tuple[bool, int, str]:
+        """按订阅/站点基础条件过滤种子。
+
+        apply_media_guards=False：RSS 自动化等既有调用方沿用原语义，
+        不额外过滤音频/漫画/过小文件与「仅免费」，避免行为突变。
         """
-        对种子进行过滤
-        :param meta_info: 名称识别后的MetaBase对象
-        :param filter_args: 过滤条件的字典
-        :param rg_matcher: 制作组匹配器
-        :param uploadvolumefactor: 种子的上传因子，传空不过滤
-        :param downloadvolumefactor: 种子的下载因子，传空不过滤
-        :return: 是否匹配，匹配的优先值，匹配信息，值越大越优先
-        """
-        text = meta_info.rev_string
-        if meta_info.subtitle:
-            text = f"{text} {meta_info.subtitle}"
-
-        # 过滤质量
-        if filter_args.get("restype"):
-            restype_values = [s.strip().upper() for s in str(filter_args.get("restype")).split(",") if s.strip()]
-            restype_res = [ModuleConf.TORRENT_SEARCH_PARAMS["restype"].get(v) for v in restype_values]
-            restype_res = [r for r in restype_res if r]
-            if restype_res:
-                if not meta_info.get_edtion_string():
-                    return False, 0, f"{meta_info.org_string} 不符合质量 {filter_args.get('restype')} 要求"
-                combined_re = "|".join(restype_res)
-                if not re.search(rf"{combined_re}", meta_info.get_edtion_string(), re.I):
-                    return False, 0, f"{meta_info.org_string} 不符合质量 {filter_args.get('restype')} 要求"
-
-        # 过滤分辨率
-        if filter_args.get("pix"):
-            pix_values = [s.strip().lower() for s in str(filter_args.get("pix")).split(",") if s.strip()]
-            pix_res = [ModuleConf.TORRENT_SEARCH_PARAMS["pix"].get(v) for v in pix_values]
-            pix_res = [r for r in pix_res if r]
-            if pix_res:
-                if not meta_info.resource_pix:
-                    return False, 0, f"{meta_info.org_string} 不符合分辨率 {filter_args.get('pix')} 要求"
-                combined_re = "|".join(pix_res)
-                if not re.search(rf"{combined_re}", meta_info.resource_pix, re.I):
-                    return False, 0, f"{meta_info.org_string} 不符合分辨率 {filter_args.get('pix')} 要求"
-
-        # 过滤制作组/字幕组
-        if filter_args.get("team"):
-            team = filter_args.get("team")
-            if not meta_info.resource_team:
-                resource_team = rg_matcher.match(title=meta_info.rev_string, groups=team)
-                if not resource_team:
-                    return False, 0, f"{meta_info.org_string} 不符合制作组/字幕组 {team} 要求"
-                else:
-                    meta_info.resource_team = resource_team
-            elif not re.search(rf"{team}", meta_info.resource_team, re.I):
-                return False, 0, f"{meta_info.org_string} 不符合制作组/字幕组 {team} 要求"
-
-        # 过滤促销
-        if filter_args.get("sp_state"):
-            sp_state = filter_args.get("sp_state") or ""
-            ul_factor, dl_factor = sp_state.split()
-            if uploadvolumefactor and ul_factor not in ("*", str(uploadvolumefactor)):
-                return False, 0, f"{meta_info.org_string} 不符合促销要求"
-            if downloadvolumefactor and dl_factor not in ("*", str(downloadvolumefactor)):
-                return False, 0, f"{meta_info.org_string} 不符合促销要求"
-
-        # 过滤包含
-        if filter_args.get("include"):
-            include = filter_args.get("include")
-            if not re.search(rf"{include}", text, re.I):
-                return False, 0, f"{meta_info.org_string} 不符合包含 {include} 要求"
-
-        # 过滤排除
-        if filter_args.get("exclude"):
-            exclude = filter_args.get("exclude")
-            if re.search(rf"{exclude}", text, re.I):
-                return False, 0, f"{meta_info.org_string} 不符合排除 {exclude} 要求"
-
-        # 过滤关键字
-        if filter_args.get("key"):
-            key = filter_args.get("key")
-            if not re.search(rf"{key}", text, re.I):
-                return False, 0, f"{meta_info.org_string} 不符合 {key} 要求"
-
-        return True, 0, ""
-
-    @staticmethod
-    def is_torrent_match_sey(media_info, s_num, e_num, year_str):
-        """
-        种子名称关键字匹配
-        :param media_info: 已识别的种子信息
-        :param s_num: 要匹配的季号，为空则不匹配
-        :param e_num: 要匹配的集号，为空则不匹配
-        :param year_str: 要匹配的年份，为空则不匹配
-        :return: 是否命中
-        """
-        if s_num:
-            if not media_info.get_season_list():
-                return False
-            if not isinstance(s_num, list):
-                s_num = [s_num]
-            if not set(s_num).issuperset(set(media_info.get_season_list())):
-                return False
-        if e_num:
-            if not isinstance(e_num, list):
-                e_num = [e_num]
-            if not set(e_num).issuperset(set(media_info.get_episode_list())):
-                return False
-        if year_str:
-            if str(media_info.year) != str(year_str):
-                return False
-        return True
+        return IndexerFilterEngine.check_torrent_filter(
+            meta_info,
+            filter_args,
+            uploadvolumefactor=uploadvolumefactor,
+            downloadvolumefactor=downloadvolumefactor,
+            apply_media_guards=False,
+        )
 
 
 class FilterService:
@@ -367,8 +173,8 @@ class FilterService:
         )
 
     def is_torrent_match_sey(self, media_info, s_num, e_num, year_str):
-        """兼容方法：委托给 FilterRuleEngine"""
-        return FilterRuleEngine.is_torrent_match_sey(media_info, s_num, e_num, year_str)
+        """兼容方法：季/集/年匹配统一由 IndexerFilterEngine 判定。"""
+        return IndexerFilterEngine.is_torrent_match_sey(media_info, s_num, e_num, year_str)
 
     def is_rule_free(self, rulegroup=None):
         """判断规则中是否需要Free检测"""

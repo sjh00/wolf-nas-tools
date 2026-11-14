@@ -485,10 +485,6 @@ class TransferPathResolver:
             if not media_format_dict[i]:
                 media_format_dict[i] = "\t"
         return media_format_dict
-        for i in media_format_dict:
-            if not media_format_dict[i]:
-                media_format_dict[i] = "\t"
-        return media_format_dict
 
     @staticmethod
     def _resolve_year(media, snapshot=None) -> str | None:
