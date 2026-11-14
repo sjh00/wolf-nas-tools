@@ -20,6 +20,28 @@ from .category_matcher import get_category
 from .category_taxonomy import load_taxonomy
 
 
+def _as_text(value: Any) -> str:
+    """外部数据转字符串字段：None/空值统一成空串。
+
+    TMDB 对缺失字段会显式返回 null，而 `dict.get(key, default)` 的默认值只在
+    「键不存在」时生效，取值会直接是 None，写进 `str` 类型的模型字段就会抛
+    pydantic 校验错误，整条任务失败。
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """外部数据转整数字段：None/非法值回落默认值。"""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _genre_keys_from_rules(rules: Any) -> set[str]:
     """从分类规则里取出它用到的题材键（`genre_ids` / `genres`）。
 
@@ -754,8 +776,12 @@ class MediaInfo(BaseModel):
         if not self.tmdb_id:
             return
         if info.get("external_ids"):
-            self.tvdb_id = info.get("external_ids", {}).get("tvdb_id", 0)
-            self.imdb_id = info.get("external_ids", {}).get("imdb_id", "")
+            # TMDB 会把缺失的 external_ids 字段显式返回 null，而 dict.get 的默认值
+            # 只在「键不存在」时生效；直接取会写入 None，触发
+            # `imdb_id: str` 的校验错误（实测一次入库批量刷出 200 条任务失败）。
+            external = info.get("external_ids") or {}
+            self.tvdb_id = _as_int(external.get("tvdb_id"), 0)
+            self.imdb_id = _as_text(external.get("imdb_id"))
         self.provider_data = info
         self.vote_average = round(float(info.get("vote_average")), 1) if info.get("vote_average") else 0
         self.overview = info.get("overview")

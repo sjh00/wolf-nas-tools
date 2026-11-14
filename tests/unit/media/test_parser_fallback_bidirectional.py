@@ -137,23 +137,42 @@ class TestServiceWiring:
         fake.get.side_effect = lambda key: {"enabled": True, "media_recognizer_enabled": True} if key == "agent" else {}
         monkeypatch.setattr(service_module, "settings", fake)
 
-    def test_build_parser_returns_llm_when_enabled_and_ready(self, monkeypatch):
+    def test_primary_parser_is_local_rules_even_when_llm_ready(self, monkeypatch):
+        """AI 识别只做兜底：即使 LLM 已启用且就绪，主解析器仍是本地规则。
+
+        真实故障：LLM 作为主解析器时，同一批文件得到不一致的中文标题
+        （「伟大的长征 / 天下长征 / 万里长征 / 长征」），其中一个命中了同名的
+        其它作品，同一部剧因此在媒体库里被拆成两个条目。规则解析是确定性的。
+        """
+        self._fake_settings(monkeypatch)
+        llm = _FakeParser(is_llm=True, result=_OK_RULE)
+        regex = _FakeParser(is_llm=False, result=None)
+        svc = MediaService.__new__(MediaService)
+        svc._llm_parser = llm
+        svc._regex_parser = regex
+
+        assert svc._build_parser() is regex
+
+    def test_llm_is_the_fallback_when_ready(self, monkeypatch):
+        """规则不可信时，LLM 作为兜底可用。"""
         self._fake_settings(monkeypatch)
         llm = _FakeParser(is_llm=True, result=_OK_RULE)
         svc = MediaService.__new__(MediaService)
         svc._llm_parser = llm
         svc._regex_parser = _FakeParser(is_llm=False, result=None)
+        svc._parser = svc._build_parser()
 
-        assert svc._build_parser() is llm
+        assert svc._fallback_parser() is llm
 
-    def test_build_parser_returns_regex_when_llm_not_ready(self, monkeypatch):
+    def test_no_fallback_when_llm_not_ready(self, monkeypatch):
         self._fake_settings(monkeypatch)
         regex = _FakeParser(is_llm=False, result=_OK_RULE)
         svc = MediaService.__new__(MediaService)
         svc._llm_parser = _FakeParser(is_llm=True, result=None, ready=False)
         svc._regex_parser = regex
+        svc._parser = svc._build_parser()
 
-        assert svc._build_parser() is regex
+        assert svc._fallback_parser() is None
 
 class TestRecognizerCooldown:
     """连续调用异常后熔断，避免一批文件逐条撞同一个 429。"""
