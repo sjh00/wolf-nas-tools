@@ -127,6 +127,9 @@ _META_TOKEN_RE = re.compile(
     r"|cctv\d*k?|cgtn|nhk"
     # --- 附加片段 ---
     r"|plus|extra|bonus|deleted|featurette|behind[-]?the[-]?scenes|making[-]?of|gag[-]?reel|trailer|teaser"
+    # 花絮/预告片编号：`Some Movie_t01` 预处理会把下划线换成空格，故按裸 token 匹配。
+    # t + 两位数字在片名里罕见（T2 Trainspotting 是 1 位、T-34 带连字符，都不受影响）。
+    r"|t\d{2}"
     r"|shot|interview|preview|sneak[-]?peek|recap|highlights"
     # --- 容器 ---
     r"|mp4|mkv|avi|ts|m2ts|mov|wmv|flv|rmvb|iso|img"
