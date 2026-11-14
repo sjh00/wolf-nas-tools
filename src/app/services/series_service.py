@@ -127,13 +127,31 @@ class SeriesService:
             confidence=50 if created else 70,
             mapping_source="title_rule",
         )
-        if alias_row is None:
+        # 并发时可能有多条请求同时走到这里：只有一条能写进别名表，其余拿到的是
+        # 「已存在的那条」。此时必须以别名指向的剧集为准，否则每个请求都会各自
+        # 新建一个 MediaSeries，同一个 TMDB ID 在库里分裂成多个 series_key
+        # （真实故障：同一部剧出现 4 个不同的 series_key）。
+        resolved_key = series.SERIES_KEY
+        resolved_title = series.TITLE
+        resolved_year = series.YEAR
+        if alias_row is not None and alias_row.SERIES_KEY != series.SERIES_KEY:
+            canonical = self._repo.get_series(alias_row.SERIES_KEY)
+            if canonical is not None:
+                resolved_key = canonical.SERIES_KEY
+                resolved_title = canonical.TITLE
+                resolved_year = canonical.YEAR
+                if created:
+                    log.info(
+                        f"[Series]{provider}:{external_id} 并发创建，沿用已有剧集"
+                        f"《{canonical.TITLE}》({canonical.YEAR}) 而非新建的《{series.TITLE}》"
+                    )
+        elif alias_row is None:
             log.warn(f"[Series]别名创建失败，使用新建剧集: {provider}:{external_id}")
         return SeriesResolution(
-            series_key=series.SERIES_KEY,
+            series_key=resolved_key,
             season_number=season,
-            title=series.TITLE,
-            year=series.YEAR,
+            title=resolved_title,
+            year=resolved_year,
             created=created,
         )
 
