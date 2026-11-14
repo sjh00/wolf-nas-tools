@@ -490,8 +490,11 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
     text = re.sub(r"(?i)\b(mkv|mp4|avi|ts|m2ts|mov|wmv|flv|rmvb|iso|img)\s*$", "", text).strip()
 
     # 提取发布组后缀 (-DIy@Group / -GROUP / -Group@Site 格式)
+    # 只剥「看起来像发布组」的：全大写、含数字、带 @，或不在标题词表里。
+    # 早期实现无条件剥掉末尾 `-Word`，把《Spider-Man》的 `-Man` 当成组名，
+    # 片名被截成 `Spider`，TMDB 随即搜不到正确作品。
     group_match = re.search(r"-([A-Za-z][A-Za-z0-9]*(?:@\w+)?)\s*$", text)
-    if group_match:
+    if group_match and not _looks_like_title_word(group_match.group(1)):
         ctx.release_group = group_match.group(1)
         text = text[: group_match.start()].strip()
         # 形如 "MNHD-FRDS" 的"编码组-发布组"链：紧邻的全大写组名一并剥离
@@ -626,6 +629,7 @@ def _recover_from_original(ctx: ParseContext, original_text: str) -> None:
 
 _HIGH_FREQ_TITLE_WORDS = frozenset(
     {
+        # 冠词/连词/介词/代词
         "the",
         "and",
         "for",
@@ -649,20 +653,158 @@ _HIGH_FREQ_TITLE_WORDS = frozenset(
         "be",
         "me",
         "my",
+        "or",
+        "us",
+        "he",
+        "she",
+        "her",
+        "him",
+        "his",
+        "them",
+        "they",
+        "their",
+        "your",
+        "who",
+        "why",
+        "how",
+        "what",
+        "when",
+        "where",
+        "as",
+        "an",
+        "by",
+        "do",
+        "go",
+        "if",
+        "up",
+        "am",
+        "ok",
+        # 头衔
         "mr",
         "mrs",
         "ms",
         "dr",
         "st",
         "vs",
-        "or",
+        "sr",
+        "jr",
+        # 片名常用的短实词（2-3 字母）。这些不是发布信息，剥掉会让片名残缺：
+        # 《Spider-Man》《The Last of Us》《Men》《Her》《Up》《It》都依赖它们。
+        "man",
+        "men",
+        "boy",
+        "kid",
+        "son",
+        "dad",
+        "mom",
+        "god",
+        "war",
+        "day",
+        "way",
+        "new",
+        "old",
+        "big",
+        "top",
+        "end",
+        "own",
+        "bad",
+        "mad",
+        "max",
+        "red",
+        "ice",
+        "sky",
+        "sea",
+        "sun",
+        "run",
+        "fly",
+        "air",
+        "art",
+        "law",
+        "gun",
+        "job",
+        "key",
+        "lie",
+        "lot",
+        "low",
+        "map",
+        "net",
+        "pay",
+        "pen",
+        "pet",
+        "pop",
+        "pot",
+        "raw",
+        "row",
+        "set",
+        "sir",
+        "sit",
+        "six",
+        "ten",
+        "tie",
+        "tip",
+        "ton",
+        "toy",
+        "try",
+        "two",
+        "van",
+        "was",
+        "web",
+        "wet",
+        "win",
+        "won",
+        "yes",
+        "yet",
+        "box",
+        "car",
+        "cat",
+        "dog",
+        "eye",
+        "far",
+        "few",
+        "hot",
+        "hit",
+        "how",
+        "joe",
+        "let",
+        "now",
+        "out",
+        "own",
+        "put",
+        "say",
+        "see",
+        "she",
+        "too",
+        "use",
+        "way",
+        "who",
+        "why",
+        "you",
     }
 )
 
 
+def _looks_like_title_word(word: str) -> bool:
+    """单词形态上更像片名用词，而不是发布信息。
+
+    判据：纯字母、首字母大写、其余全小写、长度不短于 3。
+    发布组几乎不会长这样 —— 它们要么全大写（FRDS/CMCT/YTS）、要么大小写混排
+    （NTb/PlayWEB/HDSWEB）、要么带数字或 @。而 `-Man`（Spider-Man）、
+    `-Woman` 这类正是片名的连字符后半段。
+    """
+    if not word.isalpha():
+        return False
+    if len(word) < 3:
+        return False
+    return word[0].isupper() and word[1:].islower()
+
+
 def _is_likely_title_word(word: str) -> bool:
     """常见标题词汇（非发布组）"""
-    return word.lower() in _HIGH_FREQ_TITLE_WORDS or len(word) > 2
+    return (
+        word.lower() in _HIGH_FREQ_TITLE_WORDS
+        or len(word) > 2
+        or _looks_like_title_word(word)
+    )
 
 
 def _is_metadata(text: str) -> bool:

@@ -42,6 +42,7 @@ from app.services.search_subject import SearchSubject
 from app.services.series_service import SeriesService
 from app.services.subscribe.coordinator import DownloadCoordinator
 from app.services.subscribe.default_settings import get_default_setting
+from app.services.subscribe.management.utils import normalize_sites
 from app.services.subscribe.retry_policy import backoff_seconds, is_rate_limited
 from app.services.subscribe_repo_adapter import (
     SubscribeMovieRepositoryAdapter,
@@ -230,14 +231,14 @@ class BaseSearchStrategy:
         - 空列表：用户取消了全选，按零站点搜索（不能回退成"全部站点"，否则等于把
           用户的选择反过来执行）
         - None/缺失：未设置，回退默认设置；默认也没有则 None = 全部可见站点
+        - 历史 `#dontuse` 哨兵：旧版「只订阅不搜索」，等价于空列表
         """
-        sites = rss_info.get("search_sites")
+        raw = rss_info.get("search_sites")
+        sites = normalize_sites(raw) if raw is not None else None
         if sites is not None:
             if not sites:
                 # 用户取消了全选：按零站点搜索（仍可走订阅站点/RSS），不能悄悄改回全部
-                log.debug(
-                    f"[Subscribe]订阅《{rss_info.get('name')}》未选择任何搜索站点，本轮跳过站点搜索"
-                )
+                log.debug(f"[Subscribe]订阅《{rss_info.get('name')}》未选择任何搜索站点，本轮跳过站点搜索")
             return list(sites)
         if not self._system_config:
             return None

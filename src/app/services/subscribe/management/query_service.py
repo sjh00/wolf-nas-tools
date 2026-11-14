@@ -14,7 +14,7 @@ from app.media.display_image_policy import transform_display_image
 from app.media.metadata.gateway import MetadataGateway
 from app.schemas.auth import UserContext
 from app.services.search_subject import SearchSubject
-from app.services.subscribe.management.utils import parse_rss_desc
+from app.services.subscribe.management.utils import DONT_USE_SENTINEL, parse_rss_desc
 from app.utils.json_utils import JsonUtils
 
 _ANIME_GENRE_NAMES = {"动画", "動畫", "アニメ", "animation"}
@@ -26,13 +26,19 @@ def _load_sites(raw: Any) -> list[str] | None:
 
     两者都显示为"没勾选任何站点"，但含义不同：None 会回退到默认设置/全部站点，
     [] 表示用户主动取消全选，绝不能当成"全部"。
+
+    历史数据里的 `#dontuse` 哨兵（旧版「只订阅不搜索」）折算为空列表，
+    否则前端会把它当成一个真实站点显示出来。
     """
     if raw is None or str(raw).strip() == "":
         return None
     loaded = JsonUtils.loads(str(raw))
     if not isinstance(loaded, list):
         return None
-    return [str(item) for item in loaded if str(item).strip()]
+    items = [str(item) for item in loaded if str(item).strip()]
+    if DONT_USE_SENTINEL in items:
+        items = [item for item in items if item != DONT_USE_SENTINEL]
+    return items
 
 
 def _filter_sites(values: list[str] | None, valid: list | set, *, allow_custom_rss: bool = False) -> list[str] | None:

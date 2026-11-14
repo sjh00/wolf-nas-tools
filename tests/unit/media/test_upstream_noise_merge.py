@@ -33,7 +33,7 @@ class TestMultiAudioTag:
                 "Breaking.Bad.S01E01.2008.2160p.WEB-DL.AAC.2Audios-CSWEB.mkv",
                 "Breaking Bad",
             ),
-            ("The.Last.of.Us.S01E03.1080p.FLAC.5Audios.mkv", "The Last Of"),
+            ("The.Last.of.Us.S01E03.1080p.FLAC.5Audios.mkv", "The Last Of Us"),
             ("Film.Title.2020.1080p.3Audio.mkv", "Film Title"),
         ],
     )
