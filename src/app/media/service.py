@@ -88,11 +88,59 @@ class MediaService:
         self._rmt_match_mode = MatchMode.STRICT if rmt_match_mode == "STRICT" else MatchMode.NORMAL
 
     def _build_parser(self) -> BaseParser:
-        cfg = settings.get("agent") or {}
-        if cfg.get("enabled") and cfg.get("media_recognizer_enabled"):
-            if self._llm_parser and self._llm_parser.ready:
-                return self._llm_parser
+        """主解析器：本地规则永远优先，LLM 只在规则不可信时兜底。
+
+        LLM 识别对同一批文件可能给出不一致的标题（同一部剧的多个文件得到
+        「伟大的长征 / 天下长征 / 万里长征 / 长征」等多种结果），一旦其中某个
+        名字命中了同名的其它作品，同一部剧就会在库里被拆成两个条目。
+        规则解析是确定性的：同样的文件名永远得到同样的结果，因此只要它给出的
+        结果可信，就不应该让 LLM 介入。
+        """
         return self._regex_parser
+
+    # 标题里残留这些标记，说明片名没切干净（把发布信息当成了名字）。
+    # 边界允许数字：`DDP5.1`、`H265`、`AC3` 这类标记后面紧跟的就是数字。
+    _TITLE_NOISE_RE = re.compile(
+        r"(?i)(?:^|[\s._\-])("
+        r"2160p|1080p|720p|480p|576p"
+        r"|WEB[-. ]?DL|WEB[-. ]?Rip|Blu[-. ]?Ray|BDRip|HDTV|HD[-. ]?Rip|REMUX"
+        r"|x264|x265|H[-. ]?264|H[-. ]?265|HEVC|AVC|XviD|DivX"
+        r"|AAC|AC3|EAC3|DDP|DD\+|DTS|TrueHD|Atmos|FLAC|OPUS"
+        r"|UHD|HDR|DoVi|10bit|8bit"
+        r")(?=$|[\s._\-0-9])"
+    )
+    # 这些标题说明规则只解析出了垃圾，交给 LLM 重试
+    _JUNK_TITLE_RE = re.compile(
+        r"(?i)^(?:未识别|unknown|untitled|n/?a|null|none|\d+)$"
+    )
+
+    def _is_reliable_parse(self, parsed: ParserResult | None) -> bool:
+        """规则解析结果是否可信 —— 决定要不要动用 LLM 兜底。
+
+        判据（任一不满足即视为不可信）：
+        - 有标题（中文名或英文名）
+        - 标题通过领域质量校验（不是纯站点名/数字/垃圾词）
+        - 标题里没有残留发布信息（分辨率、编码、音轨等）
+
+        不做过度限制：季集号缺失本身不算失败 —— 整季包、合集本来就没有集号，
+        规则能给出干净标题就够了。
+        """
+        if not parsed:
+            return False
+        title = (parsed.title_en or parsed.title_cn or "").strip()
+        if not title:
+            return False
+        if self._JUNK_TITLE_RE.match(title):
+            return False
+        if not is_valid_media_title(title):
+            return False
+        if self._TITLE_NOISE_RE.search(title):
+            return False
+        return True
+
+    def _unreliable_indices(self, parsed_list: list) -> list[int]:
+        """找出规则解析不可信的条目下标，这些才需要 LLM 兜底。"""
+        return [i for i, p in enumerate(parsed_list) if not self._is_reliable_parse(p)]
 
     def _fallback_parser(self) -> BaseParser | None:
         """主解析器失败时的回落解析器（与主解析器互补）。
@@ -275,12 +323,16 @@ class MediaService:
                 subtitle = strip_collection_noise(parent)
         title, subtitle = self._apply_words(title, subtitle)
         parsed = self._parser.parse(title, subtitle)
-        if not parsed:
-            # Fallback: 主解析器（LLM 或规则）失败时改用另一侧，避免直接判为未识别
+        if not self._is_reliable_parse(parsed):
+            # Fallback: 规则解析不可信时才用 LLM，避免 LLM 在规则能处理时介入
             fallback = self._fallback_parser()
             if fallback is not None:
-                parsed = fallback.parse(title, subtitle)
-                if parsed:
+                candidate = fallback.parse(title, subtitle)
+                # 回落结果只有更可信时才采纳
+                if candidate and (
+                    not parsed or self._is_reliable_parse(candidate)
+                ):
+                    parsed = candidate
                     title_label = parsed.title_cn or parsed.title_en
                     log.info(f"[MediaService]{self._fallback_label()}解析回落成功: {title_label}")
         if not parsed:
@@ -543,19 +595,24 @@ class MediaService:
         # 1. Parser: 批量解析所有文件名
         parsed_list = self._parser.parse_batch(titles)
 
-        # Fallback: 主解析器失败的条目改用另一侧重解析（双向，见 _fallback_parser）
-        failed_indices = [i for i, p in enumerate(parsed_list) if not p]
+        # Fallback: 主解析器不可信的条目才改用另一侧重解析（双向，见 _fallback_parser）。
+        # 判据是「解析结果是否可信」而不是「是否为 None」：规则解析几乎总能返回
+        # 一个对象，只看 None 会让质量很差的标题一路走到 TMDB 查询。
+        failed_indices = self._unreliable_indices(parsed_list)
         if failed_indices:
             fallback = self._fallback_parser()
             if fallback is not None:
                 failed_titles = [titles[i] for i in failed_indices]
                 log.info(
-                    f"[MediaService]批量识别: {len(failed_indices)} 条主解析器失败，"
+                    f"[MediaService]批量识别: {len(failed_indices)} 条规则解析不可信，"
                     f"尝试{self._fallback_label()}解析回落"
                 )
                 fallback_results = fallback.parse_batch(failed_titles)
                 for j, idx in enumerate(failed_indices):
-                    if fallback_results[j]:
+                    # 回落结果同样要过质量判定，避免用更差的结果覆盖
+                    if fallback_results[j] and (
+                        not parsed_list[idx] or self._is_reliable_parse(fallback_results[j])
+                    ):
                         parsed_list[idx] = fallback_results[j]
                         log.info(f"[MediaService]{self._fallback_label()}解析回落 [{idx}]: {failed_titles[j][:60]}...")
 
@@ -563,9 +620,13 @@ class MediaService:
         unique_keys = {}
         key_to_indices = {}
         for idx, parsed in enumerate(parsed_list):
-            if not parsed and subtitles[idx]:
-                parsed = self._parser_or_fallback().parse(titles[idx], subtitles[idx])
-                parsed_list[idx] = parsed
+            if not self._is_reliable_parse(parsed) and subtitles[idx]:
+                candidate = self._parser_or_fallback().parse(titles[idx], subtitles[idx])
+                if candidate and (
+                    not parsed or self._is_reliable_parse(candidate)
+                ):
+                    parsed = candidate
+                    parsed_list[idx] = parsed
             if not parsed:
                 continue
             # 公共后处理（与 identify / identify_files 一致）
@@ -921,6 +982,15 @@ class MediaService:
                     file_name, _ = self._apply_words(file_name)
                     file_name = StringUtils.strip_release_noise(file_name)
                     parsed = self._parser.parse(file_name)
+                    if not self._is_reliable_parse(parsed):
+                        # 规则解析不可信时才动用 LLM 兜底
+                        fallback = self._fallback_parser()
+                        if fallback is not None:
+                            candidate = fallback.parse(file_name)
+                            if candidate and (
+                                not parsed or self._is_reliable_parse(candidate)
+                            ):
+                                parsed = candidate
                     parsed = self._post_process(parsed, file_name)
                     self._fill_episode_from_parent_paths(file_path, parsed)
                     info = MediaInfo.from_parser(parsed) if parsed else MediaInfo()
@@ -1030,21 +1100,23 @@ class MediaService:
         titles = [i["title"] for i in items]
         parsed_list = self._parser.parse_batch(titles)
 
-        # 2.1b 回落：主解析器没解析出来的条目改用另一侧重解析。
+        # 2.1b 回落：规则解析不可信的条目改用另一侧重解析。
         # 这条路径是下载器/同步源入库的主干，缺了回落会让「LLM 限流」直接
         # 变成整批未识别，而本地规则解析器本来就能处理绝大多数规范命名。
-        failed_indices = [i for i, p in enumerate(parsed_list) if not p]
+        failed_indices = self._unreliable_indices(parsed_list)
         if failed_indices:
             fallback = self._fallback_parser()
             if fallback is not None:
                 failed_titles = [titles[i] for i in failed_indices]
                 log.info(
-                    f"[MediaService]文件识别: {len(failed_indices)}/{len(titles)} 条主解析器失败，"
+                    f"[MediaService]文件识别: {len(failed_indices)}/{len(titles)} 条规则解析不可信，"
                     f"尝试{self._fallback_label()}解析回落"
                 )
                 fallback_results = fallback.parse_batch(failed_titles)
                 for j, idx in enumerate(failed_indices):
-                    if fallback_results[j]:
+                    if fallback_results[j] and (
+                        not parsed_list[idx] or self._is_reliable_parse(fallback_results[j])
+                    ):
                         parsed_list[idx] = fallback_results[j]
                         log.info(f"[MediaService]{self._fallback_label()}解析回落: {failed_titles[j][:60]}...")
 

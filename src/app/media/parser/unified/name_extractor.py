@@ -76,7 +76,7 @@ _META_TOKEN_RE = re.compile(
     r"|mp3\d*|mp2|opus|ogg|vorbis|wma"
     r"|lpcm\d*(\.\d+)?|pcm|dolby[-\s]?digital"
     # --- HDR/色彩/帧率 ---
-    r"|hdr\d*|hdr10\+?|hfr\d*|vfr|dovi|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
+    r"|hdr\d*|hdr10\+?|hdrvivid|hfr\d*|vfr|dovi|dv|sdr|10[-]?bit|8[-]?bit|hi10p"
     # --- 来源/平台 ---
     r"|web[-]?(dl|rip|dlr|dlmux|dlrip)?|webcast|webtv"
     r"|blu[-]?ray|bluray|bd(rip|mv|remux|iso|25|50|66|100)?|bd[-]?rip|bdmv"

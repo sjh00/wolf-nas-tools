@@ -1975,12 +1975,37 @@ class FileTransferService:
                 self._engine.transfer(file_item, new_file, operation, src_backend=src_backend)
         return 1, 1, alert_messages
 
-    @staticmethod
-    def _target_exists(path: str, dst_backend) -> bool:
-        """目标文件是否存在：存储后端（远端）用 backend.exists，本地用 os.path.exists"""
-        if dst_backend is not None:
+    def _resolve_backend_object(self, dst_backend):
+        """把「存储后端对象 / 后端 id / None」统一成后端对象或 None（本地）。
+
+        调用方两种写法的历史差异是真实故障来源：`_history_dest_exists` 一度把
+        转移历史里的 DST_BACKEND **id 字符串**直接传进来，而这里把它当对象调用
+        `.exists()`，每次订阅检查都会抛 `'str' object has no attribute 'exists'`
+        并以「回退本地判断」收场——远端后端上的文件因此永远被判为不存在，
+        触发重复转移。统一在这里归一，避免各处各自猜测。
+        """
+        if dst_backend is None:
+            return None
+        if not isinstance(dst_backend, str):
+            return dst_backend
+        backend_id = dst_backend.strip()
+        if not backend_id or backend_id == "local":
+            return None
+        try:
+            return self._path_resolver.resolve_backend_by_id(backend_id)
+        except Exception as e:  # noqa: BLE001 - 解析失败按本地处理，但不能静默
+            log.warn(f"[Rmt]解析存储后端失败 backend_id={backend_id}: {e}")
+            return None
+
+    def _target_exists(self, path: str, dst_backend) -> bool:
+        """目标文件是否存在：存储后端（远端）用 backend.exists，本地用 os.path.exists.
+
+        `dst_backend` 既接受后端对象，也接受后端 id 字符串（见 _resolve_backend_object）。
+        """
+        backend = self._resolve_backend_object(dst_backend)
+        if backend is not None:
             try:
-                return bool(dst_backend.exists(path))
+                return bool(backend.exists(path))
             except Exception as e:  # noqa: BLE001
                 # 远端查询失败时回退本地判断（远端路径本地通常不存在 → 视为「不存在」，
                 # 宁可多转移一次也不误判为已入库）。该回退需可见，便于排查后端异常。
@@ -1988,16 +2013,16 @@ class FileTransferService:
                 return os.path.exists(path)
         return os.path.exists(path)
 
-    @classmethod
-    def _history_dest_exists(cls, history, dst_backend) -> bool:
+    def _history_dest_exists(self, history, dst_backend) -> bool:
         """转移历史的目标文件是否仍存在（DEST 可能是库根，文件名在剧集子目录）."""
         dest_path = str(getattr(history, "dest_path", "") or "")
         dest_filename = str(getattr(history, "dest_filename", "") or "")
         if not dest_path or not dest_filename:
             return False
-        if cls._target_exists(os.path.join(dest_path, dest_filename), dst_backend):
+        if self._target_exists(os.path.join(dest_path, dest_filename), dst_backend):
             return True
-        if str(dst_backend or "local") != "local" or not os.path.isdir(dest_path):
+        # 远端后端不能靠本地 os.walk 兜底（本地根本看不到远端目录）
+        if self._resolve_backend_object(dst_backend) is not None or not os.path.isdir(dest_path):
             return False
         for _root, _dirs, files in os.walk(dest_path):
             if dest_filename in files:

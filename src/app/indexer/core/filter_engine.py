@@ -216,7 +216,9 @@ class IndexerFilterEngine:
         if not meta_info:
             return False, 0, ""
 
-        title = meta_info.rev_string
+        # rev_string 可能为空（识别未产出重命名结果时），直接拿 None 去 re.search
+        # 会抛 `expected string or bytes-like object, got 'NoneType'`，整条规则失效。
+        title = str(meta_info.rev_string or "")
         if meta_info.subtitle:
             title = f"{title} {meta_info.subtitle}"
         if getattr(meta_info, "description", None):
