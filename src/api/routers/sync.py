@@ -107,6 +107,9 @@ class RenameFileRequest(BaseModel):
 
 class RenameUdfRequest(BaseModel):
     inpath: str | None = None
+    # 批量转移：多选文件时用它一次提交多条。为 None 表示单条模式（只认 inpath），
+    # 保持旧调用方行为不变。
+    inpaths: list[str] | None = None
     outpath: str | None = None
     syncmod: str | None = None
     tmdb: int | None = None
@@ -368,40 +371,46 @@ def rename_udf(
     current_user=Depends(require_permission("setting:update")),
     svc: SyncService = Depends(get_sync_service),
 ):
-    inpath = req.inpath
+    # 批量模式：多选文件时一次请求转移多条，逐条返回结果。
+    # 单条模式下 inpaths 为 None，行为与旧版完全一致（只认 inpath）。
+    if req.inpaths is not None:
+        return _rename_udf_batch(req, current_user, svc)
+
+    ok, errcode, message = _run_udf_transfer(req, current_user, svc, req.inpath or "")
+    if ok:
+        return success(message="转移成功")
+    return fail(code=errcode, msg=message)
+
+
+def _run_udf_transfer(
+    req: RenameUdfRequest,
+    current_user,
+    svc: SyncService,
+    inpath: str,
+) -> tuple[bool, ErrorCode, str]:
+    """执行一条自定义转移，返回 (是否成功, 失败错误码, 提示信息)。"""
     src_backend_id = req.src_backend_id or "local"
     dst_backend_id = req.dst_backend_id or ""
     if src_backend_id == "local":
-        if not os.path.exists(inpath or ""):
-            return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="输入路径不存在")
+        if not os.path.exists(inpath):
+            return False, ErrorCode.PARAM_VALIDATION_FAILED, "输入路径不存在"
     else:
-        if not svc.remote_path_exists(inpath or "", src_backend_id):
-            return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="输入路径不存在")
-    outpath = req.outpath
-    syncmod = req.syncmod or ""
-    tmdbid = req.tmdb
-    mtype = req.type
-    season = req.season
-    episode_format = req.episode_format
-    episode_details = req.episode_details
-    episode_part = req.episode_part
-    episode_offset = req.episode_offset
-    min_filesize = req.min_filesize
-    media_type = svc.build_media_type(mtype or "")
+        if not svc.remote_path_exists(inpath, src_backend_id):
+            return False, ErrorCode.PARAM_VALIDATION_FAILED, "输入路径不存在"
 
     allow_private, permissions = _private_provider_scope(current_user)
     result = svc.manual_transfer(
-        inpath=inpath or "",
-        syncmod=syncmod,
-        outpath=outpath,
-        media_type=media_type,
-        episode_format=episode_format,
-        episode_details=episode_details,
-        episode_part=episode_part,
-        episode_offset=episode_offset,
-        min_filesize=min_filesize,
-        tmdbid=tmdbid,
-        season=season,
+        inpath=inpath,
+        syncmod=req.syncmod or "",
+        outpath=req.outpath,
+        media_type=svc.build_media_type(req.type or ""),
+        episode_format=req.episode_format,
+        episode_details=req.episode_details,
+        episode_part=req.episode_part,
+        episode_offset=req.episode_offset,
+        min_filesize=req.min_filesize,
+        tmdbid=req.tmdb,
+        season=req.season,
         src_backend_id=src_backend_id,
         dst_backend_id=dst_backend_id,
         content_profile=req.content_profile,
@@ -411,8 +420,33 @@ def rename_udf(
         permissions=permissions,
     )
     if result.success:
-        return success(message="转移成功")
-    return fail(code=ErrorCode.SYNC_FAILED, msg=result.message)
+        return True, ErrorCode.SUCCESS, "转移成功"
+    return False, ErrorCode.SYNC_FAILED, result.message
+
+
+def _rename_udf_batch(req: RenameUdfRequest, current_user, svc: SyncService):
+    """批量转移：逐条提交，单条失败不影响其余。
+
+    逐条结果原样返回，前端才能准确提示「哪几个成功、哪几个失败」，
+    而不是把整批压成一个笼统的成功/失败。
+    """
+    paths = [str(p).strip() for p in (req.inpaths or []) if str(p or "").strip()]
+    if not paths:
+        return fail(code=ErrorCode.PARAM_VALIDATION_FAILED, msg="未选择要转移的文件")
+
+    results: list[dict] = []
+    for inpath in paths:
+        ok, _errcode, message = _run_udf_transfer(req, current_user, svc, inpath)
+        results.append({"path": inpath, "success": ok, "message": "" if ok else message})
+
+    succeeded = sum(1 for item in results if item["success"])
+    failed = len(results) - succeeded
+    data = {"results": results, "succeeded": succeeded, "failed": failed, "total": len(results)}
+
+    if succeeded == 0:
+        return fail(code=ErrorCode.SYNC_FAILED, msg=f"全部 {failed} 个文件转移失败", data=data)
+    message = f"已提交 {succeeded} 个转移任务" + (f"，{failed} 个失败" if failed else "")
+    return success(data=data, message=message)
 
 
 @router.post("/run", response_model=CommonResponse, summary="执行目录同步")
