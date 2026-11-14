@@ -12,12 +12,21 @@ def parse_rss_desc(desc):
     return JsonUtils.loads(desc) or {}
 
 
+# 旧版本「只订阅不搜索」的哨兵值。历史订阅把它写在 search_sites 里表达
+# 「只走 RSS 轮询、不做站点搜索」。v4 已经用空列表表达同一语义，但数据库里
+# 仍留有带该标记的记录；不识别它会被当成一个不存在的站点名，导致
+# 「站点列表为空，跳过搜索」的误导日志，前端也会显示这个假站点。
+DONT_USE_SENTINEL = "#dontuse"
+
+
 def normalize_sites(value: list | str | None) -> list[str] | None:
     """订阅站点入参归一化：None 保持 None，空列表保持空列表。
 
     保留 None 与 [] 的差别是「取消全选」能生效的前提：
     - None  = 调用方没传，按未设置处理（回退默认设置 / 沿用已有值）
     - []    = 用户取消了全选，明确一个站点都不用，搜索按零站点执行
+
+    历史遗留的 `#dontuse` 哨兵一并折算为空列表：它表达的正是「一个站点都不搜」。
     """
     if value is None:
         return None
@@ -25,7 +34,10 @@ def normalize_sites(value: list | str | None) -> list[str] | None:
         items = value.split(",")
     else:
         items = list(value)
-    return [str(item).strip() for item in items if str(item).strip()]
+    cleaned = [str(item).strip() for item in items if str(item).strip()]
+    if any(item == DONT_USE_SENTINEL for item in cleaned):
+        return [item for item in cleaned if item != DONT_USE_SENTINEL]
+    return cleaned
 
 
 def gen_rss_note(media: Any) -> str:
