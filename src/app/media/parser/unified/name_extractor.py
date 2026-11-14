@@ -442,6 +442,28 @@ def _extract_cn_from_prefix(text: str) -> str | None:
     return None
 
 
+# 尾部序号前缀词：Part 1 / Vol 2 / Chapter 3 / Part II
+_PART_SEQ_WORDS = frozenset({"part", "vol", "volume", "chapter", "pt", "book", "season"})
+# 罗马数字序号（I…X）。Part 后的 II/III 属于片名，不是噪声
+_ROMAN_NUMERAL_RE = re.compile(r"(?i)^(?:i{1,3}|iv|v|vi{0,3}|ix|x{1,3})$")
+
+
+def _trailing_number_is_sequel(ctx: ParseContext, token: str) -> bool:
+    """尾部数字紧邻出品年时是续集编号（片名的一部分），不是噪声。
+
+    `Demo Movie 2 2020` / `Le Film 2 1982` 这类命名：数字后面直接跟出品年，
+    是续集发行的固定形态。若按噪声剥掉，片名会退化成原作（`Demo Movie 2`
+    变成 `Demo Movie`），元数据随即匹配到前一部作品。
+    """
+    if not token.isdigit():
+        return False
+    # (?<!\d) 只挡「长数字的片段」（2049 里的 049）；前面的点号是分隔符，必须允许，
+    # 否则 Demo.Movie.2.2020 这种点号命名的续集匹配不到。
+    return bool(
+        re.search(rf"(?<!\d){re.escape(token)}[\s._]+(?:19|20)\d{{2}}(?!\d)", ctx.text)
+    )
+
+
 def _extract_free_text(ctx: ParseContext, text: str) -> None:
     """从自由文本中提取名称"""
     # 位于元数据之前的歧义 token 属于片名（The End / Game / Mad Max / Final…），先定位再清洗文本
@@ -536,9 +558,12 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
         # 只剩 1-2 个词时视为标题，不再剥离
         if len(stripped.split()) <= 2:
             break
-        # Part/Vol 后的数字是片名（A Chinese Odyssey Part 1）
+        # Part/Vol 后的序号是片名（Demo Saga Part 1 / Demo Saga Part II）
         prev_word = stripped.split()[-1].lower()
-        if m.group(1).isdigit() and prev_word in {"part", "vol", "volume", "chapter", "pt"}:
+        if prev_word in _PART_SEQ_WORDS and (m.group(1).isdigit() or _ROMAN_NUMERAL_RE.match(m.group(1))):
+            break
+        # 紧邻出品年的尾部数字是续集编号，不是噪声（Demo Movie 2 2020 / Le Film 2 1982）
+        if _trailing_number_is_sequel(ctx, m.group(1)):
             break
         text = stripped
 
@@ -552,7 +577,6 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
     # 允许 2 字符英文片名（It / Up / Ma / Pi）与纯数字短片名（65 / 24 / 2012）；
     # 单字符仍按残留处理，与转移链路 `len(title) < 2` 的判定保持一致
     if len(text) < 2 and not StringUtils.is_chinese(text) and not text.isdigit():
-        return
         return
 
     words = text.split()
@@ -591,6 +615,9 @@ def _extract_free_text(ctx: ParseContext, text: str) -> None:
                 followed_by_title_word
                 or is_title_year
                 or after_part_word
+                # 紧邻出品年的尾部数字是续集编号，不是噪声（Demo Movie 2 2020 / Le Film 2 1982）。
+                # 按残留丢弃会让片名退化成原作，TMDB 随即匹配到错作品。
+                or _trailing_number_is_sequel(ctx, word)
                 or (idx == 0 and len(word) >= 2 and not cn_parts and not en_parts)
             ):
                 en_parts.append(word)
@@ -879,6 +906,22 @@ def _strip_name_noise(name: str, release_year: str | None = None) -> str:
     return stripped
 
 
+def _title_case_keep_roman(name: str) -> str:
+    """首字母大写，但保留罗马数字序号原样。
+
+    str.title() 会把 `Part II` 变成 `Part Ii`、`Rocky IV` 变成 `Rocky Iv`，
+    片名因此与 TMDB 上的写法对不上。
+    """
+    out = []
+    for word in name.split():
+        core = word.strip(".,:;!?'\"()[]")
+        if core and _ROMAN_NUMERAL_RE.match(core) and core.isupper():
+            out.append(word)
+        else:
+            out.append(word.title())
+    return " ".join(out)
+
+
 def clean_names(ctx: ParseContext) -> None:
     """清理并标准化提取到的名称"""
     if ctx.cn_name:
@@ -895,4 +938,4 @@ def clean_names(ctx: ParseContext) -> None:
         ctx.en_name = " ".join(_dedup_adjacent(ctx.en_name.split()))
         ctx.en_name = _strip_name_noise(ctx.en_name, ctx.year)
         if ctx.en_name:
-            ctx.en_name = ctx.en_name.title()
+            ctx.en_name = _title_case_keep_roman(ctx.en_name)

@@ -127,6 +127,8 @@ class MediaResult(BaseModel):
     format: str | None = None
     edition: str | None = None
     type: str | None = None
+    # 模型自评的置信度（0-1）。低于阈值的结果不采纳，避免把猜测当成识别结果。
+    confidence: float | None = None
 
     @model_validator(mode="before")
     @classmethod

@@ -114,6 +114,24 @@ class MediaService:
         r"(?i)^(?:未识别|unknown|untitled|n/?a|null|none|\d+)$"
     )
 
+    def _parse_confidence_min(self) -> float:
+        """解析结果的最低可信置信度（media.parse_confidence_min，默认 0.75）。
+
+        低于该值的解析不采纳：规则侧多为「只切出零碎词」的低分结果，
+        LLM 侧是模型自评没把握的结果。宁可交给下一环节判为未识别，
+        也不能把猜测当识别结果写进库。
+        """
+        try:
+            value = (settings.get("media") or {}).get("parse_confidence_min")
+        except Exception:  # noqa: BLE001 - 配置异常时取安全默认
+            return 0.75
+        if value is None:
+            return 0.75
+        try:
+            return min(max(float(value), 0.0), 1.0)
+        except (TypeError, ValueError):
+            return 0.75
+
     def _is_reliable_parse(self, parsed: ParserResult | None) -> bool:
         """规则解析结果是否可信 —— 决定要不要动用 LLM 兜底。
 
@@ -121,6 +139,7 @@ class MediaService:
         - 有标题（中文名或英文名）
         - 标题通过领域质量校验（不是纯站点名/数字/垃圾词）
         - 标题里没有残留发布信息（分辨率、编码、音轨等）
+        - 解析置信度达到 media.parse_confidence_min
 
         不做过度限制：季集号缺失本身不算失败 —— 整季包、合集本来就没有集号，
         规则能给出干净标题就够了。
@@ -135,6 +154,8 @@ class MediaService:
         if not is_valid_media_title(title):
             return False
         if self._TITLE_NOISE_RE.search(title):
+            return False
+        if float(getattr(parsed, "confidence", 0.0) or 0.0) < self._parse_confidence_min():
             return False
         return True
 
