@@ -6,6 +6,7 @@ Download Router — FastAPI 迁移
 import json
 import os
 import queue
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, UploadFile
@@ -38,6 +39,7 @@ from app.infrastructure.temp import temp_manager
 from app.infrastructure.thread import ThreadExecutor
 from app.schemas.auth import UserContext
 from app.schemas.common import CommonResponse
+from app.schemas.download import DownloadResultDTO
 from app.services.download_event_queue import (
     put_download_event,
     subscribe_download_events,
@@ -72,7 +74,7 @@ def _precheck_timeout_seconds() -> float:
         return _PRECHECK_TIMEOUT_MS_DEFAULT / 1000.0
 
 
-def _precheck(func, label: str):
+def _precheck(func: Callable[[], DownloadResultDTO | None], label: str) -> DownloadResultDTO | None:
     """执行同步预检，失败或超期都返回 None（跳过确认，照常提交下载）。"""
     try:
         return run_with_deadline(
@@ -333,10 +335,11 @@ def download(
 ):
     if req.id is None:
         return fail(msg="缺少下载ID")
+    dl_id = req.id
 
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
     if not req.confirm_strategy:
-        precheck = _precheck(lambda: svc.precheck_multi_version_by_id(dl_id=req.id), "by_id")
+        precheck = _precheck(lambda: svc.precheck_multi_version_by_id(dl_id=dl_id), "by_id")
         if precheck and precheck.need_confirm:
             return success(
                 data={
@@ -374,8 +377,10 @@ def download_link(
 ):
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
     if not req.confirm_strategy and req.title:
+        title = req.title
+        description = req.description
         precheck = _precheck(
-            lambda: svc.precheck_multi_version(title=req.title, description=req.description), "add_link"
+            lambda: svc.precheck_multi_version(title=title, description=description), "add_link"
         )
         if precheck and precheck.need_confirm:
             return success(
@@ -456,8 +461,10 @@ def download_torrent(
 
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
     if not req.confirm_strategy and req.title:
+        title = req.title
+        description = req.description
         precheck = _precheck(
-            lambda: svc.precheck_multi_version(title=req.title, description=req.description), "add_link"
+            lambda: svc.precheck_multi_version(title=title, description=description), "add_link"
         )
         if precheck and precheck.need_confirm:
             return success(

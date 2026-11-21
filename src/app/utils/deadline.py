@@ -14,8 +14,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
+from typing import TypeVar
 
 import log
+
+_T = TypeVar("_T")
 
 # 专用线程池：与 API 线程池、下载线程池隔离，避免相互挤占。
 # 少数几个槽位即可——超时后我们会立刻返回，不排队等待。
@@ -23,11 +26,11 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wolfnas-deadli
 
 
 def run_with_deadline(
-    func: Callable[[], object],
+    func: Callable[[], _T],
     timeout_seconds: float,
-    default: object = None,
+    default: _T | None = None,
     label: str = "",
-) -> object:
+) -> _T | None:
     """在专用线程池里执行 ``func``，超过 ``timeout_seconds`` 返回 ``default``。
 
     :param timeout_seconds: 期限秒数；<=0 表示不限，直接同步执行

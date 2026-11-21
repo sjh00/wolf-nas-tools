@@ -165,8 +165,12 @@ class TransferOrphanService:
 
     @staticmethod
     def _library_roots() -> list[str]:
+        from app.db.repositories.config_repo_adapter import (  # noqa: PLC0415 - 仅对账时需要，避免模块级耦合
+            MediaConfigRepositoryAdapter,
+        )
+
         try:
-            cfg = MediaConfigService().get_config()
+            cfg = MediaConfigService(MediaConfigRepositoryAdapter()).get_config()
         except Exception as e:  # noqa: BLE001
             log.debug(f"[Orphan]读取媒体库配置失败: {e}")
             return []

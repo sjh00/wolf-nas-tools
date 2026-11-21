@@ -10,6 +10,7 @@
 """
 
 import time
+from typing import Any, cast
 
 import pytest
 
@@ -55,17 +56,17 @@ class TestTransferDirBlacklist:
     def _engine():
         from app.services.transfer_engine import TransferEngine
 
-        engine = TransferEngine()
-
         class _Recorder:
             def __init__(self):
-                self.paths = []
+                self.paths: list[str] = []
 
             def insert(self, path):
                 self.paths.append(path)
 
-        engine._blacklist = _Recorder()
-        return engine
+        engine = TransferEngine()
+        recorder = _Recorder()
+        engine._blacklist = cast(Any, recorder)
+        return engine, recorder
 
     def test_all_skipped_does_not_blacklist(self, tmp_path):
         src = tmp_path / "src"
@@ -75,10 +76,10 @@ class TestTransferDirBlacklist:
         (src / "a.mkv").write_bytes(b"x")
         (dst / "a.mkv").write_bytes(b"x")  # 目标已存在 → 全部跳过
 
-        engine = self._engine()
+        engine, recorder = self._engine()
         engine.transfer_bluray_dir(str(src), str(dst), "link")
 
-        assert engine._blacklist.paths == [], "全部跳过时不能把源目录标记为已处理"
+        assert recorder.paths == [], "全部跳过时不能把源目录标记为已处理"
 
     def test_partial_transfer_blacklists(self, tmp_path):
         src = tmp_path / "src"
@@ -89,10 +90,10 @@ class TestTransferDirBlacklist:
         (src / "b.mkv").write_bytes(b"y")
         (dst / "a.mkv").write_bytes(b"x")  # 只有一个已存在
 
-        engine = self._engine()
+        engine, recorder = self._engine()
         engine.transfer_bluray_dir(str(src), str(dst), "link")
 
-        assert str(src) in engine._blacklist.paths
+        assert str(src) in recorder.paths
         assert (dst / "b.mkv").exists()
 
     def test_transfer_dir_returns_counts(self, tmp_path):
@@ -104,7 +105,8 @@ class TestTransferDirBlacklist:
         (src / "b.mkv").write_bytes(b"2")
         (dst / "b.mkv").write_bytes(b"2")
 
-        moved, skipped = self._engine().transfer_dir(str(src), str(dst), "link", record_blacklist=False)
+        engine, _recorder = self._engine()
+        moved, skipped = engine.transfer_dir(str(src), str(dst), "link", record_blacklist=False)
         assert (moved, skipped) == (1, 1)
 
 
