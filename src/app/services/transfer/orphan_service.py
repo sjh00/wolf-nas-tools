@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 
 import log
+from app.core.settings import settings
 from app.db.repositories.sync_repo_adapter import SyncPathRepositoryAdapter
 from app.db.repositories.transfer_repo_adapter import (
     TransferBlacklistRepositoryAdapter,
@@ -61,11 +62,14 @@ class TransferOrphanService:
     def uncovered_buckets(self) -> list[dict]:
         """列出存在于磁盘、但没有被任何同步源覆盖的 btstore 一级目录。
 
-        这类目录里的文件永远不会进入识别/转移流程，且不会出现在任何列表里。
+        这类目录里的文件永远不会进入识别/转移流程。若某些目录是「有意不同步」
+        （例如只放电子书、音乐、软件），把它们填进 media.orphan_ignore_buckets，
+        这里就不再提示，避免把刻意为之当成遗漏。
         """
         sources = self._sync_sources()
         if not sources:
             return []
+        ignore = {x.strip().lower() for x in self._ignore_buckets() if x.strip()}
         # 从同步源里推出 btstore 根：/media/x/btstore/tv → /media/x/btstore
         roots: set[str] = set()
         for source in sources:
@@ -81,6 +85,8 @@ class TransferOrphanService:
                 full = os.path.join(root, name)
                 if not os.path.isdir(full) or name in _IGNORE_BUCKETS or name in covered:
                     continue
+                if name.lower() in ignore:
+                    continue
                 files = 0
                 size = 0
                 for dirpath, _d, fnames in os.walk(full):
@@ -93,6 +99,17 @@ class TransferOrphanService:
                 if files:
                     out.append({"path": full, "bucket": name, "files": files, "size": size})
         return out
+
+    @staticmethod
+    def _ignore_buckets() -> list[str]:
+        """读取 media.orphan_ignore_buckets（有意不同步的 btstore 目录）。"""
+        try:
+            raw = (settings.get("media") or {}).get("orphan_ignore_buckets") or []
+        except Exception:  # noqa: BLE001
+            return []
+        if isinstance(raw, str):
+            return [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
+        return [str(x) for x in raw]
 
     # ---------- 黑名单里没有成功证据的条目 ----------
 

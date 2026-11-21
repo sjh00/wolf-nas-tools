@@ -175,6 +175,9 @@ class MediaConfig(BaseModel):
     # 解析结果的最低可信置信度。低于此值的解析不采纳：
     # 规则侧交给 LLM 兜底，LLM 侧也达不到就标为未识别，绝不把猜测写进库。
     parse_confidence_min: float = 0.75
+    # 下载器 btstore 下「有意不参与同步」的一级目录名。
+    # 这些目录里的文件本就不会进入识别/转移，遗漏对账时不必反复提示。
+    orphan_ignore_buckets: list[str] = []
 
 
 class PtConfig(BaseModel):
