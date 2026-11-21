@@ -296,6 +296,10 @@ class TransferBlacklistRepositoryAdapter:
     def is_exists(self, path: str) -> bool:
         return self._repo.is_exists_transfer_blacklist(path)
 
+    def get_all_paths(self) -> list[str]:
+        """全部黑名单路径，供遗漏对账使用。"""
+        return self._repo.get_all_transfer_blacklist()
+
     def insert(self, path: str) -> None:
         self._repo.insert_transfer_blacklist(path)
 

@@ -369,8 +369,14 @@ class FileIndexService:
             )
         return result
 
-    def get_versions(self, tmdb_id: int) -> list[dict]:
-        """列出某作品（tmdb_id）的全部版本文件，标注规格、是否存在于磁盘、硬链接兄弟。"""
+    def get_versions(self, tmdb_id: int, with_hardlinks: bool = False) -> list[dict]:
+        """列出某作品（tmdb_id）的全部版本文件，标注规格、是否存在于磁盘。
+
+        :param with_hardlinks: 是否查硬链接兄弟。默认关闭——查硬链接要对每个文件
+            起一次 ``find -inum`` 子进程，长剧（几十集）叠加后是数十次全目录扫描，
+            在下载入口的同步预检里会造成几十秒阻塞。只有确实要展示链接关系时
+            才需要（文件管理器的关系视图走的是另一个带此参数的接口）。
+        """
         if not self._history_manager or not tmdb_id:
             return []
         try:
@@ -395,7 +401,7 @@ class FileIndexService:
                 "date": getattr(info, "DATE", ""),
                 "exists": exists,
                 "spec": self._spec_from_filename(dest_filename),
-                "hardlinks": self._find_hardlinks(full) if exists else [],
+                "hardlinks": self._find_hardlinks(full) if (with_hardlinks and exists) else [],
             }
             versions.append(version)
         # 按存在性/日期排序：存在的在前、最新在前

@@ -28,6 +28,7 @@ from app.core.exceptions import (
     ServiceError,
     ValidationError,
 )
+from app.core.settings import settings
 from app.downloader.client_factory import DownloadClientFactory
 from app.downloader.registry import get_all_clients
 from app.downloader.status import TORRENT_STATUS_LABELS
@@ -48,10 +49,41 @@ from app.services.filetransfer_service import FileTransferService as FileTransfe
 from app.services.indexer_service import IndexerService
 from app.services.site_service import SiteService
 from app.utils import ExceptionUtils, SystemUtils
+from app.utils.deadline import run_with_deadline
 from app.utils.json_utils import JsonUtils
 from app.utils.response import fail, success
 
 router = APIRouter()
+
+
+# 下载入口的多版本预检要做到「快」：它跑在 HTTP 请求路径上，内部含 TMDB 识别
+# 与媒体库存在性检查。TMDB 抖动或库里文件多时，这个同步预检能拖到几十秒，
+# 超过前端请求超时后用户看到「超时失败」，但后端其实还在跑 —— 于是误判失败、
+# 准备重复添加。这里给它一个上限：超时就跳过重复版本确认直接提交任务，
+# 后台流水线本来就会再识别一次，重复版本检测也会在转移阶段继续生效。
+_PRECHECK_TIMEOUT_MS_DEFAULT = 8000
+
+
+def _precheck_timeout_seconds() -> float:
+    try:
+        raw = (settings.get("app") or {}).get("precheck_timeout_ms", _PRECHECK_TIMEOUT_MS_DEFAULT)
+        return max(float(raw), 0.0) / 1000.0
+    except Exception:  # noqa: BLE001 - 配置异常时用默认值
+        return _PRECHECK_TIMEOUT_MS_DEFAULT / 1000.0
+
+
+def _precheck(func, label: str):
+    """执行同步预检，失败或超期都返回 None（跳过确认，照常提交下载）。"""
+    try:
+        return run_with_deadline(
+            func,
+            _precheck_timeout_seconds(),
+            default=None,
+            label=f"下载预检 {label}",
+        )
+    except Exception as e:  # noqa: BLE001 - 预检失败不应阻断下载
+        log.debug(f"[Download]预检异常，跳过重复版本确认 {label}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +336,7 @@ def download(
 
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
     if not req.confirm_strategy:
-        try:
-            precheck = svc.precheck_multi_version_by_id(dl_id=req.id)
-        except Exception:  # noqa: BLE001
-            precheck = None
+        precheck = _precheck(lambda: svc.precheck_multi_version_by_id(dl_id=req.id), "by_id")
         if precheck and precheck.need_confirm:
             return success(
                 data={
@@ -345,10 +374,9 @@ def download_link(
 ):
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
     if not req.confirm_strategy and req.title:
-        try:
-            precheck = svc.precheck_multi_version(title=req.title, description=req.description)
-        except Exception:  # noqa: BLE001
-            precheck = None
+        precheck = _precheck(
+            lambda: svc.precheck_multi_version(title=req.title, description=req.description), "add_link"
+        )
         if precheck and precheck.need_confirm:
             return success(
                 data={
@@ -428,10 +456,9 @@ def download_torrent(
 
     # 未确认策略时：先同步预检多版本，命中则要求前端确认
     if not req.confirm_strategy and req.title:
-        try:
-            precheck = svc.precheck_multi_version(title=req.title, description=req.description)
-        except Exception:  # noqa: BLE001
-            precheck = None
+        precheck = _precheck(
+            lambda: svc.precheck_multi_version(title=req.title, description=req.description), "add_link"
+        )
         if precheck and precheck.need_confirm:
             return success(
                 data={

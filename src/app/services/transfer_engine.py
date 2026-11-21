@@ -203,23 +203,35 @@ class TransferEngine:
         record_blacklist: bool = True,
         src_backend: StorageBackend | None = None,
         dst_backend: StorageBackend | None = None,
-    ) -> None:
+    ) -> tuple[int, int]:
+        """目录级转移，返回 (已转移文件数, 因目标已存在而跳过的文件数)。
+
+        返回值让调用方判断「是否真的转移过」——以前无论是否实际转移都会把
+        源目录写进黑名单，于是「目标文件全都已存在」的目录被永久标记为已处理，
+        文件既没有转移记录也不会再被处理，在界面上完全不可见。
+        """
         backend = dst_backend or self._local
         src_b = src_backend or self._local
         if src_backend is not None:
             files = self._list_backend_files_recursive(src_b, src_dir)
         else:
             files = PathUtils.get_dir_files(src_dir)
+        moved = skipped = 0
         for file in files:
             # 用 relpath 拼接，避免 str.replace 把路径中任意位置的 src_dir 子串都替换
             new_file = os.path.join(target_dir, os.path.relpath(file, src_dir))
             if backend.exists(new_file):
                 log.warn(f"[Rmt]{new_file} 文件已存在")
+                skipped += 1
                 continue
             backend.mkdir(os.path.dirname(new_file), parents=True)
             self._execute(file, new_file, operation, src_backend, dst_backend)
+            moved += 1
             if record_blacklist:
                 self._blacklist.insert(file)
+        if skipped:
+            log.info(f"[Rmt]目录 {os.path.basename(src_dir)} 转移完成：新增 {moved} 个，已存在跳过 {skipped} 个")
+        return moved, skipped
 
     def _list_backend_files_recursive(self, backend: StorageBackend, dir_path: str) -> list[str]:
         """递归列举后端目录下全部文件"""
@@ -242,7 +254,7 @@ class TransferEngine:
         src_backend: StorageBackend | None = None,
         dst_backend: StorageBackend | None = None,
     ) -> None:
-        self.transfer_dir(
+        moved, skipped = self.transfer_dir(
             src_dir,
             target_dir,
             operation,
@@ -250,7 +262,16 @@ class TransferEngine:
             src_backend=src_backend,
             dst_backend=dst_backend,
         )
-        self._blacklist.insert(src_dir)
+        # 只有真的转移过文件才把源目录标记为已处理。
+        # 全部因「目标已存在」跳过时不能记黑名单：那说明库里的副本不是本次产生的，
+        # 一旦打上标记，这些文件就再也不会被识别/转移，也不会出现在任何列表里。
+        if moved > 0:
+            self._blacklist.insert(src_dir)
+        elif skipped > 0:
+            log.warn(
+                f"[Rmt]{os.path.basename(src_dir)} 全部 {skipped} 个文件已存在于目标，"
+                f"未记入转移黑名单（可再次识别）"
+            )
 
     def transfer(
         self,

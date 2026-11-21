@@ -28,6 +28,7 @@ from app.core.exceptions import (
 from app.schemas.common import CommonResponse
 from app.services.filetransfer_service import FileTransferService as FileTransfer
 from app.services.sync_service import SyncService
+from app.services.transfer.orphan_service import TransferOrphanService
 from app.services.transfer_history_service import TransferHistoryService
 from app.utils import ExceptionUtils
 from app.utils.response import fail, success
@@ -458,6 +459,60 @@ def run_directory_sync(
 ):
     thread_executor.submit(svc.transfer_sync, req.sid)
     return success(message="执行成功")
+
+
+@router.post("/orphans", response_model=CommonResponse, summary="查出被静默跳过的同步条目")
+def list_sync_orphans(
+    user: str = Depends(require_any_permission("transfer:view", "setting:update")),
+):
+    """列出两类「看不见的遗漏」：
+
+    - ``uncovered_buckets``：磁盘上存在、但没有被任何同步源覆盖的 btstore 目录，
+      里面的文件永远不会进入识别/转移；
+    - ``stale_blacklist``：黑名单里只有跳过标记、却没有对应转移记录的条目，
+      通常是「目标已存在所以跳过」时被误标，之后永久跳过且无任何记录。
+    """
+    try:
+        result = TransferOrphanService().audit()
+    except Exception as e:  # noqa: BLE001
+        ExceptionUtils.exception_traceback(e)
+        return fail(msg=f"对账失败: {e}")
+    return success(data=result)
+
+
+class ReconcileSyncRequest(BaseModel):
+    # 要解除跳过的路径；留空表示自动使用对账得到的全部 stale_blacklist 条目
+    paths: list[str] | None = None
+    # 解除标记后是否立即触发一次目录同步（默认触发）
+    run_sync: bool = True
+
+
+@router.post("/reconcile", response_model=CommonResponse, summary="解除误标并重新同步")
+def reconcile_sync(
+    req: ReconcileSyncRequest,
+    user: str = Depends(require_permission("setting:update")),
+    svc: SyncService = Depends(get_sync_service),
+    thread_executor=Depends(get_thread_executor),
+):
+    """删除「没有成功记录」的黑名单标记，让文件重新进入识别/转移。
+
+    删除标记是安全的：转移前会检查目标是否已存在，已在库里的文件只会被跳过。
+    """
+    orphan_svc = TransferOrphanService()
+    try:
+        targets = req.paths if req.paths else [x["path"] for x in orphan_svc.stale_blacklist()]
+    except Exception as e:  # noqa: BLE001
+        ExceptionUtils.exception_traceback(e)
+        return fail(msg=f"对账失败: {e}")
+    if not targets:
+        return success(data={"removed": 0}, message="没有需要解除的跳过标记")
+    removed = orphan_svc.purge_stale(targets)
+    if req.run_sync and removed:
+        thread_executor.submit(svc.transfer_sync, None)
+    return success(
+        data={"removed": removed, "run_sync": bool(req.run_sync and removed)},
+        message=f"已解除 {removed} 条跳过标记" + ("，正在重新同步" if req.run_sync and removed else ""),
+    )
 
 
 @router.post("/paths/test_connection", response_model=CommonResponse, summary="测试连接")

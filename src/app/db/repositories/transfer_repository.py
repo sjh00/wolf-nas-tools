@@ -865,6 +865,12 @@ class TransferRepository(BaseRepository):
         """
         return not self.is_transfer_in_blacklist(path)
 
+    def get_all_transfer_blacklist(self) -> list[str]:
+        """返回全部黑名单路径（用于对账：找出没有成功记录的跳过标记）."""
+        with self.session() as db:
+            rows = db.query(TRANSFERBLACKLIST.PATH).all()
+        return [str(r[0]) for r in rows if r and r[0]]
+
     def truncate_transfer_unknowns(self) -> None:
         with self.session() as db:
             db.query(TRANSFERUNKNOWN).delete()
