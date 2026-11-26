@@ -706,15 +706,11 @@ class BaseSearchStrategy:
                                         rssid=rid, media_info=media_info, seasoninfo=remaining
                                     )
                             else:
+                                # 缺集清零 → 转「待转移」并停止再匹配种子；状态切换由
+                                # clear_subscribe_tv_lack 负责，这里不能写回 RUNNING，
+                                # 否则订阅会卡在「进度满但仍在订阅」并重复下载同一批种子。
                                 if self._service:
                                     self._service.clear_subscribe_tv_lack(rid, media_info)
-                                self._tv_repo.update_state(
-                                    title=None,
-                                    year=None,
-                                    season=None,
-                                    rssid=rid,
-                                    state=SubscribeState.RUNNING.value,
-                                )
                         elif library_no_exists and library_no_exists.get(media_key):
                             if self._service:
                                 self._service.update_subscribe_tv_lack(

@@ -594,7 +594,12 @@ class SubscribeService:
         return siblings
 
     def clear_subscribe_tv_lack(self, rssid, media_info=None) -> None:
-        """整季已全部拿到时清空缺失集，避免状态回退后按旧缺集重复下载."""
+        """整季缺集清零：清空缺失集并把订阅转入「待转移」，停止继续匹配新种子。
+
+        只清缺失集不改状态会留下「进度已满但仍在订阅」的僵尸行：下一轮搜索/RSS
+        仍把它当作待下载目标，同一批种子被反复匹配下载。转入 COMPLETED 后由待转移
+        清理流程收尾——已入库则定稿删行，超时未入库则重开重试。
+        """
         targets = [rssid]
         if media_info is not None:
             for sibling in self._find_tv_siblings(rssid, media_info):
@@ -602,6 +607,9 @@ class SubscribeService:
         for target in targets:
             if target:
                 self._tv_repo.update_lack(title=None, year=None, season=None, rssid=target, lack_episodes=[])
+                self._tv_repo.update_state(
+                    title=None, year=None, season=None, rssid=target, state=SubscribeState.COMPLETED.value
+                )
 
     def update_subscribe_tv_lack(self, rssid, media_info, seasoninfo):
         self._apply_tv_lack(rssid, media_info, seasoninfo)
