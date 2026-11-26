@@ -103,8 +103,6 @@ class SubscribeService:
             self._web_utils,
             self._download_repo,
             self._transfer_history_manager,
-            self._sites,
-            self._indexer_service,
             metadata_gateway=metadata_gateway,
             filetransfer=filetransfer,
         )

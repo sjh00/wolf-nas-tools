@@ -543,8 +543,13 @@ class TestSubscribeAddService:
         movie_repo.insert.assert_called_once()
         assert movie_repo.insert.call_args.kwargs["rss_sites"] == ["site1"]
 
-    def test_add_snapshots_visible_sites_when_no_defaults(self):
-        """新增订阅必须把当前可见站点写入数据库，而不是留空依赖运行时兜底."""
+    def test_add_keeps_sites_unset_when_not_provided(self):
+        """新增订阅未传站点时必须保持「未设置」，不能展开成全部可见站点。
+
+        展开会让新建弹窗里「一个都没勾」的订阅在库里变成「全选」，用户下次打开编辑
+        看到的是满屏勾选，与新建时看到的不一致。未设置在运行时按默认设置/全部可见
+        站点解析，语义等价但库里的值必须是「未设置」。
+        """
         movie_repo = MagicMock()
         movie_repo.insert.return_value = 0
         media_service = MagicMock()
@@ -558,10 +563,6 @@ class TestSubscribeAddService:
         media_service.get_media_info.return_value = media_info
         system_config = MagicMock()
         system_config.get.return_value = {}
-        site_cache = MagicMock()
-        site_cache.get_site_names.return_value = ["M-Team"]
-        indexer_service = MagicMock()
-        indexer_service.get_user_indexer_names.return_value = ["M-Team", "观众"]
         svc = SubscribeAddService(
             movie_repo,
             MagicMock(),
@@ -570,8 +571,6 @@ class TestSubscribeAddService:
             MagicMock(),
             system_config,
             MagicMock(),
-            site_cache=site_cache,
-            indexer_service=indexer_service,
             metadata_gateway=cast(Any, _Gateway(media_service)),
         )
 
@@ -580,8 +579,48 @@ class TestSubscribeAddService:
 
         assert code == 0
         kwargs = movie_repo.insert.call_args.kwargs
-        assert kwargs["rss_sites"] == ["M-Team"]
-        assert kwargs["search_sites"] == ["M-Team", "观众"]
+        assert kwargs["rss_sites"] is None
+        assert kwargs["search_sites"] is None
+
+    def test_add_preserves_explicit_empty_sites(self):
+        """显式传空列表 = 用户取消全选，必须原样落库（不能回退成未设置或全部）."""
+        movie_repo = MagicMock()
+        movie_repo.insert.return_value = 0
+        media_service = MagicMock()
+        media_info = MagicMock()
+        media_info.provider_data = {"id": 1}
+        media_info.type = ProviderMediaType.MOVIE
+        media_info.title = "Test"
+        media_info.year = "2024"
+        media_info.tmdb_id = "123"
+        media_info.to_dict.return_value = {}
+        media_service.get_media_info.return_value = media_info
+        system_config = MagicMock()
+        system_config.get.return_value = {}
+        svc = SubscribeAddService(
+            movie_repo,
+            MagicMock(),
+            media_service,
+            MagicMock(),
+            MagicMock(),
+            system_config,
+            MagicMock(),
+            metadata_gateway=cast(Any, _Gateway(media_service)),
+        )
+
+        with patch("app.services.subscribe.management.add_service.gen_rss_note", return_value="{}"):
+            code, _msg, _result = svc.add_rss_subscribe(
+                mtype=ProviderMediaType.MOVIE,
+                name="Test",
+                year="2024",
+                rss_sites=[],
+                search_sites=[],
+            )
+
+        assert code == 0
+        kwargs = movie_repo.insert.call_args.kwargs
+        assert kwargs["rss_sites"] == []
+        assert kwargs["search_sites"] == []
 
     def test_add_movie_exists(self):
         movie_repo = MagicMock()

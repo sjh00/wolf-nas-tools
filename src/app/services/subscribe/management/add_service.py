@@ -183,8 +183,6 @@ class SubscribeAddService:
         web_utils: WebUtils,
         download_repo=None,
         transfer_history_manager=None,
-        site_cache=None,
-        indexer_service=None,
         series_service=None,
         metadata_gateway: MetadataGateway | None = None,
         filetransfer=None,
@@ -199,8 +197,6 @@ class SubscribeAddService:
         self._download_repo = download_repo
         self._transfer_history_manager = transfer_history_manager
         self._metadata_gateway = metadata_gateway
-        self._site_cache = site_cache
-        self._indexer_service = indexer_service
         self._series_service = series_service or SeriesService()
         self._filetransfer = filetransfer
 
@@ -667,20 +663,11 @@ class SubscribeAddService:
                 if not save_path and default_save_path:
                     save_path = str(default_save_path)
 
-        # 未配置默认站点时，把当前可见站点固化为订阅快照，避免编辑时读不到。
-        # 同样是「未传入才快照」：显式空列表代表用户主动不选任何站点，不能expand成全部。
-        site_cache = getattr(self, "_site_cache", None)
-        indexer_service = getattr(self, "_indexer_service", None)
-        if rss_sites is None and site_cache is not None:
-            try:
-                rss_sites = site_cache.get_site_names(rss=True)
-            except Exception as exc:  # noqa: BLE001 - 站点快照失败不阻断订阅
-                log.warn(f"[Subscribe]读取订阅站点快照失败: {exc}")
-        if search_sites is None and indexer_service is not None:
-            try:
-                search_sites = indexer_service.get_user_indexer_names()
-            except Exception as exc:  # noqa: BLE001
-                log.warn(f"[Subscribe]读取搜索站点快照失败: {exc}")
+        # 站点保持三态语义落库：None=未设置（NULL），[]=明确一个都不选，列表=指定站点。
+        # 这里**不能**把「未设置」展开成当前可见站点再写库：前端新建订阅时站点是空选，
+        # 展开后订阅会存成「全部站点」，用户再打开编辑就会看到一屏全选，与新建时看到的
+        # 完全不一致。未设置留给运行时解析（默认订阅设置 → 全部可见站点），与 RSS/搜索
+        # 两条链路的回退顺序一致。
         rss_sites = _normalize_sites(rss_sites)
         search_sites = _normalize_sites(search_sites)
         over_edition = 1 if over_edition else 0
