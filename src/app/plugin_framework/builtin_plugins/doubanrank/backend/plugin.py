@@ -334,8 +334,8 @@ class DoubanRankPlugin:
                         {
                             "title": title,
                             "link": link,
-                            "doubanid": DoubanRankPlugin._parse_douban_id(link),
-                            "douban_year": DoubanRankPlugin._parse_douban_year(desc),
+                            "doubanid": DoubanRankPlugin._parse_douban_id(link or ""),
+                            "douban_year": DoubanRankPlugin._parse_douban_year(desc or ""),
                         }
                     )
                 except Exception as e:  # noqa: BLE001

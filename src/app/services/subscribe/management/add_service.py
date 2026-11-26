@@ -867,7 +867,9 @@ class SubscribeAddService:
                         )
                         if not total_seasoninfo:
                             return 2, "获取剧集信息失败", media_info
-                        total_seasoninfo = sorted(total_seasoninfo, key=lambda x: x.get("season_number"), reverse=True)
+                        total_seasoninfo = sorted(
+                            total_seasoninfo, key=lambda x: x.get("season_number") or 0, reverse=True
+                        )
                         season = total_seasoninfo[0].get("season_number")
                         total_episode = total_seasoninfo[0].get("episode_count")
                     else:
