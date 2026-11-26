@@ -116,7 +116,17 @@ class ProviderRuntime:
             self._failure += 1
             self._failures += 1
             if self._failures >= self.descriptor.circuit_failures:
-                self._open_until = time.monotonic() + self.descriptor.circuit_cooldown_seconds
+                # 冷却时间随连续失败次数翻倍（上限 16 倍）：外部元数据源被限流后
+                # 往往要缓几分钟甚至更久，固定 60s 冷却会让熔断形同虚设。
+                extra = self._failures - self.descriptor.circuit_failures
+                cooldown = self.descriptor.circuit_cooldown_seconds * (2 ** min(extra, 4))
+                self._open_until = time.monotonic() + cooldown
+
+    @property
+    def is_open(self) -> bool:
+        """熔断是否处于冷却期（期间应跳过该 provider，避免继续触发限流）."""
+        with self._lock:
+            return time.monotonic() < self._open_until
 
     def snapshot(self) -> dict:
         with self._lock:

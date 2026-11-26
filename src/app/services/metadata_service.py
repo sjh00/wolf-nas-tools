@@ -1169,6 +1169,11 @@ class MetadataService:
                 # 只有显式携带权限集时才继续检查 provider 专属权限。
                 if permissions is not None and "*" not in permissions and required not in permissions:
                     continue
+            if self._orchestrator.runtime_for(descriptor).is_open:
+                # 冷却期内不再请求：限流/超时的源再问下去只会继续被限流，
+                # 而且会把整轮搜索拖到超时。
+                log.info(f"[Metadata]provider {descriptor.provider_key} 处于熔断冷却期，本轮跳过")
+                continue
             selected.append(item)
 
         def search_one(item: Any) -> list[dict[str, Any]]:
@@ -1217,6 +1222,12 @@ class MetadataService:
             hits.extend(payloads)
         for provider_key in timed_out:
             log.warn(f"[Metadata]搜索超时，忽略 provider: {provider_key}")
+            # 超时同样计入失败：外部源被限流时往往表现为「一直不返回」，
+            # 不计失败就永远触发不了熔断，每轮都要白等到超时。
+            for item in selected:
+                if item.descriptor.provider_key == provider_key:
+                    self._orchestrator.runtime_for(item.descriptor).record_failure()
+                    break
         hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
         deduped: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()

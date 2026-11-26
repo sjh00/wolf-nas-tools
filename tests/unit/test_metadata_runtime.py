@@ -32,3 +32,30 @@ def test_runtime_opens_circuit_after_failures():
 
     runtime.record_success()
     runtime.acquire()
+
+
+def test_runtime_is_open_flips_and_cooldown_grows():
+    """熔断状态可查询，且连续失败时冷却时间要翻倍，否则限流源会一直被请求."""
+    runtime = ProviderRuntime(
+        ProviderDescriptor(
+            provider_key="demo-cooldown",
+            display_name="demo",
+            circuit_failures=2,
+            circuit_cooldown_seconds=60,
+        )
+    )
+    assert runtime.is_open is False
+
+    runtime.record_failure()
+    assert runtime.is_open is False
+
+    runtime.record_failure()
+    assert runtime.is_open is True
+    first = runtime.snapshot()["open_until_seconds"]
+
+    runtime.record_failure()
+    second = runtime.snapshot()["open_until_seconds"]
+    assert second > first
+
+    runtime.record_success()
+    assert runtime.is_open is False
