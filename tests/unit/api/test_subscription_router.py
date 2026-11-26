@@ -299,3 +299,23 @@ class TestSubscriptionRouter:
         resp = client.post("/api/v1/subscription/history/clear", json={})
         assert resp.status_code == 200
         mock_history_service.truncate.assert_called_once()
+
+class TestAddRequestSiteDefaults:
+    """新增订阅的站点字段原样透传（默认语义由订阅服务层统一决定）。"""
+
+    def test_search_sites_passed_through(self):
+        req = subscription_router.AddRssMediaRequest(name="Demo", type="movie")
+        kwargs = subscription_router._build_add_kwargs(req)
+        assert kwargs["search_sites"] is None
+
+    def test_explicit_search_sites_kept(self):
+        req = subscription_router.AddRssMediaRequest(
+            name="Demo", type="movie", search_sites=["S1", "S2"]
+        )
+        kwargs = subscription_router._build_add_kwargs(req)
+        assert kwargs["search_sites"] == ["S1", "S2"]
+
+    def test_rss_sites_passed_through(self):
+        req = subscription_router.AddRssMediaRequest(name="Demo", type="movie")
+        kwargs = subscription_router._build_add_kwargs(req)
+        assert kwargs["rss_sites"] is None

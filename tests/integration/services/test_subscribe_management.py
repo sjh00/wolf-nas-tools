@@ -543,13 +543,8 @@ class TestSubscribeAddService:
         movie_repo.insert.assert_called_once()
         assert movie_repo.insert.call_args.kwargs["rss_sites"] == ["site1"]
 
-    def test_add_keeps_sites_unset_when_not_provided(self):
-        """新增订阅未传站点时必须保持「未设置」，不能展开成全部可见站点。
-
-        展开会让新建弹窗里「一个都没勾」的订阅在库里变成「全选」，用户下次打开编辑
-        看到的是满屏勾选，与新建时看到的不一致。未设置在运行时按默认设置/全部可见
-        站点解析，语义等价但库里的值必须是「未设置」。
-        """
+    def _add_with_default_setting(self, setting: dict):
+        """按给定的默认订阅设置新建一条订阅，返回 insert 的 kwargs."""
         movie_repo = MagicMock()
         movie_repo.insert.return_value = 0
         media_service = MagicMock()
@@ -562,7 +557,7 @@ class TestSubscribeAddService:
         media_info.to_dict.return_value = {}
         media_service.get_media_info.return_value = media_info
         system_config = MagicMock()
-        system_config.get.return_value = {}
+        system_config.get.return_value = setting
         svc = SubscribeAddService(
             movie_repo,
             MagicMock(),
@@ -573,14 +568,31 @@ class TestSubscribeAddService:
             MagicMock(),
             metadata_gateway=cast(Any, _Gateway(media_service)),
         )
-
         with patch("app.services.subscribe.management.add_service.gen_rss_note", return_value="{}"):
             code, _msg, _result = svc.add_rss_subscribe(mtype=ProviderMediaType.MOVIE, name="Test", year="2024")
-
         assert code == 0
-        kwargs = movie_repo.insert.call_args.kwargs
-        assert kwargs["rss_sites"] is None
+        return movie_repo.insert.call_args.kwargs
+
+    def test_add_uses_default_search_sites(self):
+        """默认订阅设置里配了搜索站点 → 新建订阅（含榜单/插件）照样用它."""
+        kwargs = self._add_with_default_setting({"search_sites": ["S1", "S2"]})
+        assert kwargs["search_sites"] == ["S1", "S2"]
+
+    def test_add_respects_default_no_search(self):
+        """默认订阅设置里选了「全不勾」= 空列表，必须原样生效，不能被真值判断吞掉."""
+        kwargs = self._add_with_default_setting({"search_sites": [], "rss_sites": []})
+        assert kwargs["search_sites"] == []
+        assert kwargs["rss_sites"] == []
+
+    def test_add_keeps_sites_unset_without_default(self):
+        """没有默认订阅设置时，订阅保持「未设置」，由运行时回退到可见站点。
+
+        站点只来自两处：调用方显式传入、默认订阅设置。代码不替用户写死偏好，
+        想「都不搜」就在默认订阅设置里把搜索站点全取消（见下一条用例）。
+        """
+        kwargs = self._add_with_default_setting({})
         assert kwargs["search_sites"] is None
+        assert kwargs["rss_sites"] is None
 
     def test_add_preserves_explicit_empty_sites(self):
         """显式传空列表 = 用户取消全选，必须原样落库（不能回退成未设置或全部）."""

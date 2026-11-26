@@ -654,20 +654,23 @@ class SubscribeAddService:
                         if str(default_download_setting).replace("-", "").isdigit()
                         else None
                     )
-                # 订阅创建时把默认站点/目录写入订阅自身，编辑时无需再依赖运行时兜底。
-                # 只填未传入（None）的项：调用方显式传空列表 = 用户取消全选，必须保留。
-                if rss_sites is None and default_rss_sites:
+                # 订阅创建时把默认订阅设置里的站点写进订阅自身，编辑时无需再依赖
+                # 运行时兜底。只填未传入（None）的项：调用方显式传空列表 =
+                # 用户/插件明确「一个都不选」，必须保留。
+                # 判断用 is not None 而不是真值：默认设置里选了「全不勾」时存的是
+                # 空列表，用真值判断会把它当成「没配」，等于把用户的选择丢掉。
+                if rss_sites is None and default_rss_sites is not None:
                     rss_sites = default_rss_sites
-                if search_sites is None and default_search_sites:
+                if search_sites is None and default_search_sites is not None:
                     search_sites = default_search_sites
                 if not save_path and default_save_path:
                     save_path = str(default_save_path)
 
         # 站点保持三态语义落库：None=未设置（NULL），[]=明确一个都不选，列表=指定站点。
-        # 这里**不能**把「未设置」展开成当前可见站点再写库：前端新建订阅时站点是空选，
-        # 展开后订阅会存成「全部站点」，用户再打开编辑就会看到一屏全选，与新建时看到的
-        # 完全不一致。未设置留给运行时解析（默认订阅设置 → 全部可见站点），与 RSS/搜索
-        # 两条链路的回退顺序一致。
+        # 这里既不能把「未设置」展开成当前可见站点（用户会看到一屏全选），也不能反过
+        # 来替用户决定「不搜索」——新建订阅的站点只来自两处：调用方显式传入，或默认
+        # 订阅设置（上面已赋值）。留给运行时按「订阅 → 默认订阅设置 → 可见站点」解析，
+        # 手动新建、豆瓣榜单/同步插件、智能体工具走的都是这一条，没有特例。
         rss_sites = _normalize_sites(rss_sites)
         search_sites = _normalize_sites(search_sites)
         over_edition = 1 if over_edition else 0

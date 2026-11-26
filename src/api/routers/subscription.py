@@ -193,6 +193,8 @@ def _build_add_kwargs(req: AddRssMediaRequest) -> dict:
         "metadata_ref": req.metadata_ref,
         "provider": req.provider,
         "rss_sites": req.rss_sites,
+        # search_sites 原样透传：未传即 None，「未指定 = 不搜索」由订阅服务层
+        # 统一决定（榜单/插件/手动都走同一条），避免各入口自成一派。
         "search_sites": req.search_sites,
         "over_edition": req.over_edition,
         "filter_restype": req.filter_restype,
